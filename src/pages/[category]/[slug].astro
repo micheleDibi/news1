@@ -7,8 +7,7 @@ import CategorySidebar from '../../components/CategorySidebar.astro';
 import ContactForm from '../../components/ContactForm';
 import { categories } from '../../lib/categories';
 import { generateArticleStructuredData, generateBreadcrumbStructuredData, generateFAQStructuredData } from '../../lib/seo';
-import type { SecondaryCategory, Article } from '../../lib/supabase'; // Import SecondaryCategory type
-import ContactForm from '../../components/ContactForm.tsx';
+import type { SecondaryCategory, Article } from '../../lib/supabase';
 import { slugify } from '../../lib/utils';
 
 const { category, slug } = Astro.params;
@@ -22,10 +21,11 @@ const { data: article, error: articleError } = await supabase
   .eq('isdraft', false)
   .single();
 
-const isGone = !!(articleError || !article);
-if (isGone) {
-  Astro.response.status = 410;
-  Astro.response.headers.set('X-Robots-Tag', 'noindex');
+if (articleError || !article) {
+  return new Response(`<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>410 - Contenuto rimosso</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#ef4444;margin:0">410</h1><p style="font-size:1.5rem;font-weight:bold">Contenuto rimosso</p><p>Questo articolo non è più disponibile.</p><a href="/" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#2563eb;color:white;border-radius:0.375rem;text-decoration:none">Torna alla home</a></div></body></html>`, {
+    status: 410,
+    headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' }
+  });
 }
 
 const categoryData = categories.find(c => c.slug === category);
@@ -274,29 +274,17 @@ const imageHeight = 720;
 ---
 
 <Layout
-  title={isGone ? "410 - Contenuto rimosso" : `${article.title} - EduNews24`}
-  description={isGone ? "Questo articolo non è più disponibile." : `${article.excerpt} Leggi di più.`}
-  canonicalUrl={isGone ? undefined : `https://edunews24.it/${article.category_slug}/${article.slug}`}
+  title={`${article.title} - EduNews24`}
+  description={`${article.excerpt} Leggi di più.`}
+  canonicalUrl={`https://edunews24.it/${article.category_slug}/${article.slug}`}
 >
-  {!isGone && <script type="application/ld+json" set:html={structuredData} slot="head" />}
-  {!isGone && <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />}
-  {!isGone && faqStructuredData && <script type="application/ld+json" set:html={faqStructuredData} slot="head" />}
-  {!isGone && <link rel="amphtml" href={`https://edunews24.it/amp/${article?.category_slug}/${article?.slug}`} slot="head" />}
-  {!isGone && <meta name="keywords" content={article?.tags?.length > 0 ? article.tags.join(', ') : "intelligenza artificiale, scuola, studenti, educazione, tecnologia"} slot="head" />}
-  {!isGone && article?.image_url && <link rel="preload" as="image" href={article.image_url} fetchpriority="high" slot="head" />}
+  <script type="application/ld+json" set:html={structuredData} slot="head" />
+  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
+  {faqStructuredData && <script type="application/ld+json" set:html={faqStructuredData} slot="head" />}
+  <link rel="amphtml" href={`https://edunews24.it/amp/${article.category_slug}/${article.slug}`} slot="head" />
+  <meta name="keywords" content={article.tags?.length > 0 ? article.tags.join(', ') : "intelligenza artificiale, scuola, studenti, educazione, tecnologia"} slot="head" />
+  {article.image_url && <link rel="preload" as="image" href={article.image_url} fetchpriority="high" slot="head" />}
 
-  {isGone ? (
-    <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
-      <div class="max-w-max mx-auto text-center">
-        <div class="text-red-500 text-8xl sm:text-9xl font-bold tracking-tight">410</div>
-        <p class="mt-4 text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">Contenuto rimosso</p>
-        <p class="mt-2 text-lg text-gray-600">Questo articolo non è più disponibile.</p>
-        <div class="mt-6 flex space-x-4 justify-center">
-          <a href="/" class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary">Torna alla home</a>
-        </div>
-      </div>
-    </div>
-  ) : (
   <main class="bg-gray-50 min-h-screen py-8">
     <div class="container mx-auto px-4">
       <div class="flex flex-col lg:flex-row gap-8">
@@ -446,17 +434,6 @@ const imageHeight = 720;
             </section>
           )}
 
-          <!-- Contact Form Section (if enabled) -->
-          {article.show_contact_form && (
-            <section class="w-full bg-white rounded-lg shadow-md p-6 md:p-8 mb-8">
-              <h2 class="text-2xl font-bold text-gray-900 mb-2">Hai bisogno di maggiori informazioni?</h2>
-              <p class="text-gray-600 mb-6">
-                Compila il form qui sotto e ti risponderemo al più presto.
-              </p>
-              <ContactForm client:load />
-            </section>
-          )}
-
           <!-- Mobile Sidebar -->
           <div class="lg:hidden">
             <CategorySidebar
@@ -514,7 +491,6 @@ const imageHeight = 720;
       </div>
     </div>
   </main>
-  )}
 </Layout>
 
 <style>
