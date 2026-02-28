@@ -29,7 +29,7 @@ PUBLIC_SUPABASE_ANON_KEY = os.getenv("PUBLIC_SUPABASE_ANON_KEY")
 SUPABASE_URL = PUBLIC_SUPABASE_URL
 SUPABASE_KEY = PUBLIC_SUPABASE_ANON_KEY
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost") # Changed default >
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4321")
 REFRESH_ENDPOINT = f"{FRONTEND_URL}/api/bandi/refresh"
 SCHEDULE_MINUTES = 60 # Run every hour
 

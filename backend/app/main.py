@@ -624,7 +624,7 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
         print(f"article_data = {article_data}")
 
         # Send to CMS API
-        CMS_API_URL = "http://localhost/api/articles/create"
+        CMS_API_URL = f"{os.getenv('FRONTEND_URL', 'http://localhost:4321')}/api/articles/create"
         print(f"CMS_API_URL = {CMS_API_URL}")
         headers = {
             "Content-Type": "application/json",
