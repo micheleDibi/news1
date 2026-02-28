@@ -113,7 +113,8 @@ if (categorySlug === ultimOraSlug) {
   // Existing logic for regular categories
   category = getCategoryBySlug(categorySlug || '');
 
-  if (!category) {
+  const isCategoryGone = !category;
+  if (isCategoryGone) {
     Astro.response.status = 410;
     Astro.response.headers.set('X-Robots-Tag', 'noindex');
   }
@@ -307,30 +308,27 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData(breadcrumbData
 
 ---
 
-{!category ? (
-<Layout title="410 - Contenuto rimosso">
-  <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
-    <div class="max-w-max mx-auto text-center">
-      <div class="text-red-500 text-8xl sm:text-9xl font-bold tracking-tight">410</div>
-      <p class="mt-4 text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">Contenuto rimosso</p>
-      <p class="mt-2 text-lg text-gray-600">Questa pagina non è più disponibile.</p>
-      <div class="mt-6 flex space-x-4 justify-center">
-        <a href="/" class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary">Torna alla home</a>
-        <button onclick="history.back()" class="inline-flex items-center px-4 py-2 border border-gray-300 text-base font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">Torna indietro</button>
+<Layout
+  title={isCategoryGone ? "410 - Contenuto rimosso" : `${category.name} - EduNews24`}
+  description={isCategoryGone ? "Questa pagina non è più disponibile." : metaDescription}
+  keywords={isCategoryGone ? undefined : metaKeywords}
+  canonicalUrl={isCategoryGone ? undefined : canonicalUrl}
+>
+  {!isCategoryGone && <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />}
+  {!isCategoryGone && <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />}
+
+  {isCategoryGone ? (
+    <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
+      <div class="max-w-max mx-auto text-center">
+        <div class="text-red-500 text-8xl sm:text-9xl font-bold tracking-tight">410</div>
+        <p class="mt-4 text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">Contenuto rimosso</p>
+        <p class="mt-2 text-lg text-gray-600">Questa pagina non è più disponibile.</p>
+        <div class="mt-6 flex space-x-4 justify-center">
+          <a href="/" class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary">Torna alla home</a>
+        </div>
       </div>
     </div>
-  </div>
-</Layout>
-) : (
-<Layout
-  title={`${category.name} - EduNews24`}
-  description={metaDescription}
-  keywords={metaKeywords}
-  canonicalUrl={canonicalUrl}
->
-  <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />
-  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
-
+  ) : (
   <main class="bg-gray-50 min-h-screen py-8">
     <div class="container mx-auto px-4">
       <div class="flex flex-col lg:flex-row gap-8">
@@ -602,6 +600,5 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData(breadcrumbData
       )}
     </nav>
   )}
-
+  )}
 </Layout>
-)}

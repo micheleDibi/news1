@@ -22,7 +22,8 @@ const { data: article, error: articleError } = await supabase
   .eq('isdraft', false)
   .single();
 
-if (articleError || !article) {
+const isGone = !!(articleError || !article);
+if (isGone) {
   Astro.response.status = 410;
   Astro.response.headers.set('X-Robots-Tag', 'noindex');
 }
@@ -272,41 +273,30 @@ const imageWidth = 1280;
 const imageHeight = 720;
 ---
 
-{!article ? (
-<Layout title="410 - Contenuto rimosso">
-  <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
-    <div class="max-w-max mx-auto text-center">
-      <div class="text-red-500 text-8xl sm:text-9xl font-bold tracking-tight">410</div>
-      <p class="mt-4 text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">Contenuto rimosso</p>
-      <p class="mt-2 text-lg text-gray-600">Questo articolo non è più disponibile.</p>
-      <div class="mt-6 flex space-x-4 justify-center">
-        <a href="/" class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary">Torna alla home</a>
-        <button onclick="history.back()" class="inline-flex items-center px-4 py-2 border border-gray-300 text-base font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">Torna indietro</button>
+<Layout
+  title={isGone ? "410 - Contenuto rimosso" : `${article.title} - EduNews24`}
+  description={isGone ? "Questo articolo non è più disponibile." : `${article.excerpt} Leggi di più.`}
+  canonicalUrl={isGone ? undefined : `https://edunews24.it/${article.category_slug}/${article.slug}`}
+>
+  {!isGone && <script type="application/ld+json" set:html={structuredData} slot="head" />}
+  {!isGone && <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />}
+  {!isGone && faqStructuredData && <script type="application/ld+json" set:html={faqStructuredData} slot="head" />}
+  {!isGone && <link rel="amphtml" href={`https://edunews24.it/amp/${article?.category_slug}/${article?.slug}`} slot="head" />}
+  {!isGone && <meta name="keywords" content={article?.tags?.length > 0 ? article.tags.join(', ') : "intelligenza artificiale, scuola, studenti, educazione, tecnologia"} slot="head" />}
+  {!isGone && article?.image_url && <link rel="preload" as="image" href={article.image_url} fetchpriority="high" slot="head" />}
+
+  {isGone ? (
+    <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
+      <div class="max-w-max mx-auto text-center">
+        <div class="text-red-500 text-8xl sm:text-9xl font-bold tracking-tight">410</div>
+        <p class="mt-4 text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">Contenuto rimosso</p>
+        <p class="mt-2 text-lg text-gray-600">Questo articolo non è più disponibile.</p>
+        <div class="mt-6 flex space-x-4 justify-center">
+          <a href="/" class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary">Torna alla home</a>
+        </div>
       </div>
     </div>
-  </div>
-</Layout>
-) : (
-<Layout
-  title={`${article.title} - EduNews24`}
-  description={`${article.excerpt} Leggi di più.`}
-  canonicalUrl={`https://edunews24.it/${article.category_slug}/${article.slug}`}
->
-  <!-- Add structured data for this specific article -->
-  <script type="application/ld+json" set:html={structuredData} slot="head" />
-  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
-  {faqStructuredData && (
-    <script type="application/ld+json" set:html={faqStructuredData} slot="head" />
-  )}
-
-  <!-- Link to AMP version -->
-  <link rel="amphtml" href={`https://edunews24.it/amp/${article.category_slug}/${article.slug}`} slot="head" />
-  
-  <meta name="keywords" content={article.tags && article.tags.length > 0 ? article.tags.join(', ') : "intelligenza artificiale, scuola, studenti, educazione, tecnologia"} slot="head" />
-  
-  {/* Preload the LCP image (main src) */}
-  {article.image_url && <link rel="preload" as="image" href={article.image_url} fetchpriority="high" slot="head" />}
-
+  ) : (
   <main class="bg-gray-50 min-h-screen py-8">
     <div class="container mx-auto px-4">
       <div class="flex flex-col lg:flex-row gap-8">
@@ -524,8 +514,8 @@ const imageHeight = 720;
       </div>
     </div>
   </main>
+  )}
 </Layout>
-)}
 
 <style>
   .article-content :global(p) {
