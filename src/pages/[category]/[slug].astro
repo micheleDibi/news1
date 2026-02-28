@@ -6,7 +6,7 @@ import { supabase } from '../../lib/supabase';
 import CategorySidebar from '../../components/CategorySidebar.astro';
 import ContactForm from '../../components/ContactForm';
 import { categories } from '../../lib/categories';
-import { generateArticleStructuredData, generateBreadcrumbStructuredData } from '../../lib/seo';
+import { generateArticleStructuredData, generateBreadcrumbStructuredData, generateFAQStructuredData } from '../../lib/seo';
 import type { SecondaryCategory, Article } from '../../lib/supabase'; // Import SecondaryCategory type
 import ContactForm from '../../components/ContactForm.tsx';
 import { slugify } from '../../lib/utils';
@@ -228,6 +228,32 @@ if (inOl) {
 
 const formattedContent = htmlBlocks.join('\n');
 
+// Extract FAQ items from markdown for structured data (FAQPage schema)
+const faqItems: { question: string; answer: string }[] = [];
+const faqSectionMatch = article.content.match(/^##\s+Domande frequenti\s*$/im);
+
+if (faqSectionMatch) {
+  const faqContent = article.content.substring(
+    faqSectionMatch.index! + faqSectionMatch[0].length
+  );
+  const faqParts = faqContent.split(/^###\s+/m).filter(Boolean);
+
+  for (const part of faqParts) {
+    const partLines = part.trim().split('\n');
+    const question = partLines[0].replace(/\??\s*\{#[^}]+\}/, '').trim();
+    const answer = partLines.slice(1).join(' ').trim();
+    if (question && answer) {
+      const cleanAnswer = answer
+        .replace(/\*\*(.*?)\*\*/g, '$1')
+        .replace(/(?<![\w])_([^_]+)_(?![\w])/g, '$1')
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+      faqItems.push({ question: question.replace(/\?$/, '') + '?', answer: cleanAnswer });
+    }
+  }
+}
+
+const faqStructuredData = generateFAQStructuredData(faqItems);
+
 // Helper function to generate srcset URLs
 // IMPORTANT: This assumes your backend /api/upload.ts will be modified
 // to create and store these image variants with the -<width>w.webp suffix.
@@ -254,7 +280,10 @@ const imageHeight = 720;
   <!-- Add structured data for this specific article -->
   <script type="application/ld+json" set:html={structuredData} slot="head" />
   <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
-  
+  {faqStructuredData && (
+    <script type="application/ld+json" set:html={faqStructuredData} slot="head" />
+  )}
+
   <!-- Link to AMP version -->
   <link rel="amphtml" href={`https://edunews24.it/amp/${article.category_slug}/${article.slug}`} slot="head" />
   

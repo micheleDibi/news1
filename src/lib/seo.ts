@@ -242,6 +242,28 @@ export function generateItemListStructuredData(articles: any[], listName: string
 }
 
 /**
+ * Generates FAQPage structured data from FAQ items
+ * @param faqItems Array of question/answer pairs
+ * @returns JSON-LD structured data as a string, or null if no FAQ items
+ */
+export function generateFAQStructuredData(faqItems: { question: string; answer: string }[]): string | null {
+  if (!faqItems || faqItems.length === 0) return null;
+
+  return JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": faqItems.map(item => ({
+      "@type": "Question",
+      "name": item.question,
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": item.answer
+      }
+    }))
+  });
+}
+
+/**
  * Generates meta tags for social sharing
  * @param article The article data
  * @returns Object with meta tag properties
