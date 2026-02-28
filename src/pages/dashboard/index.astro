@@ -1,0 +1,41 @@
+---
+export const prerender = false;
+
+import { supabase } from '../../lib/supabase';
+
+// Check if user is logged in
+const { data: { session } } = await supabase.auth.getSession();
+
+// Redirect to login if not logged in
+if (!session) {
+  return Astro.redirect('/login?redirect=/admin/create-users');
+}
+
+// Check user role
+const { data: profile } = await supabase
+  .from('profiles')
+  .select('role')
+  .eq('id', session.user.id)
+  .single();
+
+// Redirect based on role
+if (profile?.role === 'admin') {
+  return Astro.redirect('/admin/permissions');
+} else {
+  // For now, redirect all users to the homepage
+  return Astro.redirect('/');
+}
+---
+
+<!-- This page should redirect, but in case it doesn't: -->
+<script>
+  // If somehow we got here without redirecting:
+  window.location.href = '/admin/create-users';
+</script>
+
+<div class="flex items-center justify-center min-h-screen">
+  <div class="text-center">
+    <h1 class="text-2xl font-bold mb-4">Reindirizzamento in corso...</h1>
+    <p>Se non vieni reindirizzato automaticamente, <a href="/admin/create-users" class="text-primary underline">clicca qui</a>.</p>
+  </div>
+</div> 

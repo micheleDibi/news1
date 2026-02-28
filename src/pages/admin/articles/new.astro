@@ -1,0 +1,147 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import ArticleForm from '../../../components/ArticleForm';
+
+// Set cache control headers
+Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+Astro.response.headers.set('Pragma', 'no-cache');
+Astro.response.headers.set('Expires', '0');
+Astro.response.headers.set('Surrogate-Control', 'no-store');
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Loading...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden">
+  <AdminLayout title="New Article">
+    <ArticleForm client:only="react" />
+  </AdminLayout>
+</div>
+
+<script>
+  import { supabase } from '../../../lib/supabase';
+  
+  async function checkAuth() {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        console.log('No session found, redirecting to login');
+        window.location.href = '/login';
+        return;
+      }
+
+      console.log('User authenticated, checking permissions');
+
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('id, role, permissions, full_name, email')
+        .eq('id', session.user.id)
+        .single();
+      
+      if (error) {
+        console.error("Error fetching profile:", error);
+        window.location.href = '/login';
+        return;
+      }
+
+      console.log('Current user profile:', profile);
+      const permissions = profile.permissions || {};
+      console.log('User permissions object:', permissions);
+      
+      // Verify exact permission value and type
+      const writePermission = permissions.write_articles;
+      const categoryPermissions = permissions.category_permissions;
+      console.log('Category permissions:', categoryPermissions);
+      
+      console.log('Write permission specific value:', {
+        value: writePermission,
+        type: typeof writePermission,
+        truthy: !!writePermission
+      });
+      
+      // Verify feature articles permission
+      const featurePermission = permissions.feature_articles;
+      console.log('Feature permission specific value:', {
+        value: featurePermission,
+        type: typeof featurePermission,
+        truthy: !!featurePermission
+      });
+      
+      const isTeacher = profile.role === 'docente' || profile.role === 'insegnante' || profile.role === 'admin' || profile.role === 'redattore' || profile.role === 'giornalista' || profile.role === 'direttore';
+      const canWriteArticles = !!permissions.write_articles;
+      const hasCategoryPermission = Array.isArray(categoryPermissions) && categoryPermissions.length > 0;
+      const canFeatureArticles = !!permissions.feature_articles;
+
+      console.log('Permission check details:', {
+        isTeacher,
+        canWriteArticles,
+        hasCategoryPermission,
+        canFeatureArticles,
+        role: profile.role
+      });
+
+      // Check if user can create articles (needs write permission AND permission for at least one category)
+      const canCreateArticle = isTeacher && canWriteArticles && hasCategoryPermission;
+      console.log('Can create article?', canCreateArticle);
+
+      if (!canCreateArticle) {
+        console.log('Permission denied for article creation');
+        
+        // Determine the specific reason for denial
+        let reason = "Unknown reason";
+        if (!isTeacher) { reason = "User role does not permit article creation"; }
+        else if (!canWriteArticles) { reason = "User lacks 'write_articles' permission"; }
+        else if (!hasCategoryPermission) { reason = "User lacks permission for any category"; }
+        console.log(`Reason: ${reason}`);
+        
+        let userMessage = "You don't have permission to create new articles.";
+        if (!hasCategoryPermission && canWriteArticles) {
+          userMessage = "You don't have permission to write in any assigned categories.";
+        }
+        
+        const errorMessage = document.createElement('div');
+        errorMessage.className = 'fixed inset-0 bg-white z-50 flex items-center justify-center';
+        errorMessage.innerHTML = `
+          <div class="text-center p-6 max-w-md bg-white rounded-lg shadow-lg">
+            <svg class="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <h2 class="text-xl font-bold text-gray-900 mb-2">Permission Denied</h2>
+            <p class="text-gray-600 mb-6">${userMessage}</p>
+            <a href="/admin" class="px-4 py-2 bg-primary text-white rounded hover:bg-primary-dark">Return to Dashboard</a>
+          </div>
+        `;
+        document.body.appendChild(errorMessage);
+        return;
+      }
+      
+      // Store user permissions and profile in sessionStorage for the component
+      // This is critical for the ArticleForm component
+      sessionStorage.setItem('userPermissions', JSON.stringify(permissions));
+      sessionStorage.setItem('userProfile', JSON.stringify({
+        id: profile.id,
+        role: profile.role,
+        full_name: profile.full_name || profile.email
+      }));
+      console.log('Stored permissions and profile in sessionStorage');
+
+      // If we get here, user is authenticated and authorized
+      document.getElementById('loading-screen')?.classList.add('hidden');
+      document.getElementById('admin-content')?.classList.remove('hidden');
+    } catch (error) {
+      console.error('Error in authentication check:', error);
+      alert('An error occurred while checking permissions. See console for details.');
+    }
+  }
+
+  // Run auth check immediately
+  checkAuth();
+</script> 

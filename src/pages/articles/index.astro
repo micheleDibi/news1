@@ -1,0 +1,41 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { supabase } from '../../lib/supabase';
+import { format } from 'date-fns';
+
+const { data: articles } = await supabase
+  .from('articles')
+  .select('*')
+  .order('published_at', { ascending: false });
+---
+
+<Layout title="Articles - NewsPortal">
+  <main class="container mx-auto px-4 py-8">
+    <h1 class="text-3xl font-bold mb-8">All Articles</h1>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {articles?.map((article) => (
+        <article class="bg-white rounded-lg shadow-md overflow-hidden">
+          <img 
+            src={article.image_url} 
+            alt={article.title}
+            class="w-full h-48 object-cover"
+          />
+          <div class="p-4">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-primary text-sm font-semibold">{article.category}</span>
+              <span class="text-gray-500 text-sm">
+                {new Date(article.published_at).toLocaleDateString('en-GB')}
+              </span>
+            </div>
+            <h2 class="text-xl font-bold mb-2">
+              <a href={`/articles/${article.id}`} class="hover:text-primary">
+                {article.title}
+              </a>
+            </h2>
+            <p class="text-gray-600 line-clamp-3">{article.excerpt}</p>
+          </div>
+        </article>
+      ))}
+    </div>
+  </main>
+</Layout> 

@@ -1,0 +1,237 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { format, parseISO, isValid } from 'date-fns';
+import { it } from 'date-fns/locale';
+import type { Bando } from '../../types/bandi';
+import fs from 'fs/promises';
+import path from 'path';
+
+const { slug } = Astro.params;
+
+const dataFilePath = path.resolve(process.cwd(), 'src/data/bandi.json');
+
+// Function to generate URL-friendly slug from bando data
+function generateBandoSlug(bando: Bando): string {
+  const parts = [
+    bando.figuraRicercata,
+    bando.sedi?.join('-'),
+    bando.entiRiferimento?.join('-'),
+    bando.codice
+  ].filter(Boolean); // Remove empty/null values
+  
+  return parts
+    .join('-')
+    .toLowerCase()
+    .replace(/[^a-z0-9\-]/g, '-') // Replace non-alphanumeric chars with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+}
+
+async function loadBandiData(): Promise<Bando[]> {
+  try {
+    const jsonData = await fs.readFile(dataFilePath, 'utf-8');
+    const data = JSON.parse(jsonData);
+    return Array.isArray(data) ? data as Bando[] : [];
+  } catch (error: any) {
+    console.error('Error reading or parsing src/data/bandi.json:', error);
+    return [];
+  }
+}
+
+const bandiData: Bando[] = await loadBandiData();
+const bando = bandiData.find(b => generateBandoSlug(b) === slug);
+
+// Utility function to strip HTML tags and clean text for meta descriptions
+const stripHtmlTags = (html: string): string => {
+  if (!html) return '';
+  // Remove HTML tags
+  const withoutTags = html.replace(/<[^>]*>/g, '');
+  // Replace multiple whitespace/newlines with single space
+  const cleaned = withoutTags.replace(/\s+/g, ' ').trim();
+  return cleaned;
+};
+
+// Utility function to create a safe meta description
+const createSafeDescription = (text: string, maxLength: number = 160): string => {
+  const cleaned = stripHtmlTags(text);
+  if (cleaned.length <= maxLength) return cleaned;
+  return cleaned.substring(0, maxLength - 3) + '...';
+};
+
+// Helper function to format date (same as in bandi.astro for consistency)
+const formatDate = (dateString: string): string => {
+  try {
+    const parsedDate = parseISO(dateString);
+    if (!isValid(parsedDate)) return "Data non valida";
+    return format(parsedDate, 'dd MMMM yyyy, HH:mm', { locale: it });
+  } catch (e) {
+    return "Data non valida";
+  }
+};
+
+// Define keywords - combining relevant fields
+const keywords = [
+  bando?.titolo,
+  ...(bando?.entiRiferimento || []),
+  ...(bando?.categorie || []),
+  ...(bando?.settori || []),
+  bando?.figuraRicercata,
+  bando?.codice,
+  bando?.tipoProcedura,
+  'bando',
+  'concorso',
+]
+.filter(kw => kw) // Remove null/undefined/empty strings
+.map(kw => stripHtmlTags(kw!).toLowerCase()) // Clean HTML and convert to lowercase
+.join(', ');
+
+const pageTitle = bando ? `${bando.titolo} - Bando - EduNews24` : 'Bando non Trovato - EduNews24';
+const pageDescription = bando?.descrizioneBreve 
+  ? createSafeDescription(bando.descrizioneBreve, 160) 
+  : 'Dettagli del bando o concorso.'; // Clean description for meta tag
+
+// Generate structured data for the bando
+const structuredData = bando ? JSON.stringify(
+  Object.fromEntries(
+    Object.entries({
+      "@context": "https://schema.org",
+      "@type": "JobPosting",
+      title: bando.titolo,
+      description: bando.descrizione && stripHtmlTags(bando.descrizione),
+      datePosted: bando.dataPubblicazione?.split('T')[0],
+      validThrough: bando.dataScadenza?.split('T')[0],
+      identifier: slug,
+      sameAs: bando.linkReindirizzamento,
+      url: Astro.url?.href,
+      employmentType: bando.tipoProcedura,
+      industry: bando.categorie?.length > 0 ? bando.categorie.join(', ') : undefined,
+      hiringOrganization: bando.entiRiferimento?.length > 0 ? {
+        "@type": "Organization",
+        name: bando.entiRiferimento.join(', ')
+      } : undefined,
+      jobLocation: bando.sedi?.length > 0 ? {
+        "@type": "Place",
+        address: {
+          "@type": "PostalAddress",
+          addressLocality: bando.sedi[0],
+          addressCountry: "IT"
+        }
+      } : undefined,
+      skills: (() => {
+        const skillsArray = [
+          bando.figuraRicercata,
+          ...(bando.settori || []),
+          ...(bando.categorie || [])
+        ].filter(Boolean);
+        return skillsArray.length > 0 ? skillsArray.join(', ') : undefined;
+      })()
+    }).filter(([_, value]) => value !== undefined && value !== null && value !== '')
+  )
+) : '';
+---
+
+<Layout title={pageTitle} description={pageDescription} keywords={keywords}>
+  {bando && <script type="application/ld+json" set:html={structuredData} slot="head" />}
+  
+  <main class="bg-gray-50 py-12">
+    <div class="container mx-auto px-4 max-w-4xl">
+      {bando ? (
+        <article class="bg-white rounded-lg shadow-md overflow-hidden p-6 md:p-8">
+          {/* Header Section */}
+          <div class="border-b pb-5 mb-6">
+            <h1 class="text-2xl md:text-3xl font-bold text-primary mb-2">{bando.titolo}</h1>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
+              {bando.codice && <span>Codice: <span class="font-medium text-gray-700">{bando.codice}</span></span>}
+              {bando.entiRiferimento?.length > 0 && <span>Ente: <span class="font-medium text-gray-700">{bando.entiRiferimento.join(', ')}</span></span>}
+            </div>
+             <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+              {bando.dataPubblicazione && <span>Pubblicato il: <span class="font-medium text-gray-700">{formatDate(bando.dataPubblicazione)}</span></span>}
+              {bando.dataScadenza && <span>Scade il: <span class="font-medium text-red-600">{formatDate(bando.dataScadenza)}</span></span>}
+            </div>
+          </div>
+
+          {/* Details Grid */}
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mb-6 text-sm">
+            {bando.figuraRicercata && <div><strong class="block text-gray-500 text-xs uppercase">Figura Ricercata</strong><p>{bando.figuraRicercata}</p></div>}
+            {bando.numPosti && <div><strong class="block text-gray-500 text-xs uppercase">Posti Disponibili</strong><p>{bando.numPosti}</p></div>}
+            {bando.tipoProcedura && <div><strong class="block text-gray-500 text-xs uppercase">Tipo Procedura</strong><p>{bando.tipoProcedura}</p></div>}
+            {bando.statusLabel && <div><strong class="block text-gray-500 text-xs uppercase">Stato</strong><p class={`font-medium ${bando.calculatedStatus === 'OPEN' ? 'text-green-700' : bando.calculatedStatus === 'CLOSED' ? 'text-red-700' : 'text-yellow-700'}`}>{bando.statusLabel}</p></div>}
+            {bando.sedi?.length > 0 && <div class="md:col-span-2"><strong class="block text-gray-500 text-xs uppercase">Sedi</strong><p>{bando.sedi.join(', ')}</p></div>}
+          </div>
+
+          {/* Tags/Keywords Section */}
+          {(bando.categorie?.length > 0 || bando.settori?.length > 0) && (
+            <div class="mb-6 border-t pt-4">
+              <h3 class="text-xs text-gray-500 uppercase font-semibold mb-2">Aree Tematiche</h3>
+              <div class="flex flex-wrap gap-2">
+                {bando.categorie?.map((cat: string) => <span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded">{cat}</span>)}
+                {bando.settori?.map((sec: string) => <span class="bg-indigo-100 text-indigo-800 text-xs font-medium px-2.5 py-0.5 rounded">{sec}</span>)}
+              </div>
+            </div>
+          )}
+
+           {/* Descrizione Section */}
+          {bando.descrizione && (
+            <div class="prose prose-sm max-w-none text-gray-700 border-t pt-5">
+              <h2 class="text-lg font-semibold text-gray-800 mb-3">Descrizione Completa</h2>
+              <div set:html={bando.descrizione} />
+            </div>
+          )}
+
+          {/* Link Section */}
+          {bando.linkReindirizzamento && (
+            <div class="mt-8 pt-6 border-t border-gray-200 text-center">
+              <a
+                href={bando.linkReindirizzamento}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex items-center px-6 py-2.5 border border-primary text-base font-medium rounded-md text-primary bg-white hover:bg-primary/10 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition duration-150 ease-in-out"
+              >
+                Vai al Bando Ufficiale
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+              </a>
+            </div>
+          )}
+
+        </article>
+      ) : (
+        <div class="text-center py-20">
+          <h1 class="text-2xl font-semibold text-gray-700 mb-4">Bando non Trovato</h1>
+          <p class="text-gray-500 mb-6">Il bando che stai cercando non è disponibile o lo slug non è corretto.</p>
+          <a href="/selezione-personale" class="text-primary hover:underline">Torna alla lista dei bandi</a>
+        </div>
+      )}
+    </div>
+  </main>
+</Layout>
+
+<style is:global>
+/* Include global prose styles if needed, similar to bandi.astro */
+.prose :where(p):not(:where([class~="not-prose"] *)) {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+/* ... other prose styles ... */
+.prose a {
+    color: #0056b3;
+    text-decoration: underline;
+}
+.prose a:hover {
+    color: #003d80;
+}
+.prose strong {
+    font-weight: 600;
+    color: #333;
+}
+.prose ul, .prose ol {
+    margin-top: 0.8em;
+    margin-bottom: 0.8em;
+    padding-left: 1.5em;
+}
+.prose li {
+    margin-top: 0.2em;
+    margin-bottom: 0.2em;
+}
+</style> 

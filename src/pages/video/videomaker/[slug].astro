@@ -1,0 +1,94 @@
+---
+export const prerender = false;
+
+import Layout from '../../../layouts/Layout.astro';
+import { supabase } from '../../../lib/supabase';
+
+const siteUrl = 'https://edunews24.it';
+const slugParam = Astro.params.slug || '';
+
+if (!slugParam) {
+  return new Response('Not found', { status: 404 });
+}
+
+// Recupera l'articolo che corrisponde allo slug e ha un video
+const { data: article, error } = await supabase
+  .from('articles')
+  .select('title, summary, excerpt, video_url, thumbnail_url, image_url, published_at, video_duration, slug, category_slug, isdraft')
+  .eq('slug', slugParam)
+  .eq('isdraft', false)
+  .maybeSingle();
+
+if (error || !article || !article.video_url) {
+  console.error('Video videomaker non trovato o senza URL video:', error);
+  return new Response('Not found', { status: 404 });
+}
+
+const title = article.title || 'Video dei videomaker';
+const description = article.summary || article.excerpt || 'Video caricato da un videomaker di EduNews24.';
+const file = article.video_url;
+const thumb = (article as any).thumbnail_url?.trim?.() || (article as any).image_url?.trim?.() || '';
+const uploadDate = article.published_at ? new Date(article.published_at).toISOString() : '2024-01-01T00:00:00Z';
+const durationSeconds = typeof (article as any).video_duration === 'number' ? Math.round((article as any).video_duration) : NaN;
+const durationIso = Number.isFinite(durationSeconds) && durationSeconds > 0 ? `PT${Math.round(durationSeconds)}S` : undefined;
+
+const canonicalUrl = `${siteUrl}/video/videomaker/${encodeURIComponent(article.slug)}`;
+const articleUrl = article.category_slug ? `/${article.category_slug}/${article.slug}` : '/';
+
+const structuredData = JSON.stringify(
+  {
+    '@context': 'https://schema.org',
+    '@type': 'VideoObject',
+    name: title,
+    description,
+    thumbnailUrl: thumb || undefined,
+    contentUrl: file,
+    embedUrl: canonicalUrl,
+    uploadDate,
+    duration: durationIso,
+    isFamilyFriendly: true,
+  },
+  null,
+  2
+);
+---
+
+<Layout title={title} description={description} canonicalUrl={canonicalUrl}>
+  <script type="application/ld+json" slot="head" set:html={structuredData} />
+
+  <main class="max-w-3xl mx-auto px-4 py-10 space-y-8">
+    <header class="space-y-3">
+      <p class="text-sm text-sport-600 font-semibold uppercase">Videomaker EduNews24</p>
+      <h1 class="text-3xl font-bold text-gray-900">{title}</h1>
+      <p class="text-lg text-gray-600">{description}</p>
+      <div class="flex flex-wrap items-center gap-4 text-sm text-gray-500">
+        {uploadDate && <span>Pubblicato: {new Date(uploadDate).toLocaleDateString('it-IT')}</span>}
+        {durationIso && (
+          <>
+            <span aria-hidden="true">•</span>
+            <span>Durata: {Math.round(durationSeconds)} sec</span>
+          </>
+        )}
+      </div>
+    </header>
+
+    <section class="space-y-4">
+      <div class="overflow-hidden rounded-2xl border border-gray-200 shadow-sm mx-auto max-w-[20rem]">
+        <video
+          src={file}
+          class="w-full h-auto"
+          controls
+          preload="metadata"
+          playsinline
+        >
+          Il tuo browser non supporta il tag video.
+        </video>
+      </div>
+      <div class="text-sm">
+        <a href={articleUrl} class="text-sport-600 underline font-semibold hover:text-sport-700">
+          Torna all&apos;articolo
+        </a>
+      </div>
+    </section>
+  </main>
+</Layout>

@@ -1,0 +1,51 @@
+---
+interface Props {
+  title?: string;
+}
+
+const { title = 'Admin Dashboard' } = Astro.props;
+---
+
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title} - NewsPortal</title>
+  </head>
+  <body class="bg-gray-100">
+    <div class="min-h-screen flex">
+      <!-- Sidebar -->
+      <div class="bg-secondary text-white w-64 py-6 flex flex-col">
+        <div class="px-6 mb-8">
+          <h1 class="text-2xl font-bold">NewsPortal</h1>
+          <p class="text-sm text-gray-400">Admin Dashboard</p>
+        </div>
+        <nav class="flex-1">
+          <a
+            href="/admin"
+            class="block px-6 py-2 hover:bg-gray-700 text-gray-300 hover:text-white"
+          >
+            Articles
+          </a>
+          <a
+            href="/admin/articles/new"
+            class="block px-6 py-2 hover:bg-gray-700 text-gray-300 hover:text-white"
+          >
+            New Article
+          </a>
+        </nav>
+        <div class="px-6 py-4 border-t border-gray-700">
+          <button class="text-sm text-gray-400 hover:text-white">
+            Logout
+          </button>
+        </div>
+      </div>
+
+      <!-- Main content -->
+      <div class="flex-1">
+        <slot />
+      </div>
+    </div>
+  </body>
+</html>

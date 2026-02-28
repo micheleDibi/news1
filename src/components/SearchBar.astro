@@ -1,0 +1,271 @@
+---
+import { categories } from '../lib/categories';
+
+// Add "All" option to categories for filtering
+const searchCategories = [{ id: 'all', name: 'All', slug: 'all', color: 'sport-500' }, ...categories];
+---
+
+<div class="relative" id="search-container">
+  <!-- Search Trigger Button -->
+  <button 
+    id="search-trigger"
+    class="p-2 hover:bg-sport-700/20 rounded-full transition-colors duration-200"
+    aria-label="Search articles"
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+    </svg>
+  </button>
+
+  <!-- Search Modal -->
+  <div 
+    id="search-modal"
+    class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 hidden opacity-0 transition-opacity duration-300"
+  >
+    <div class="min-h-screen px-4 flex items-start justify-center">
+      <div class="bg-white w-full max-w-2xl rounded-xl mt-20 shadow-2xl scale-95 opacity-0 transition-all duration-300" id="search-content">
+        <!-- Search Header -->
+        <div class="p-4 border-b flex items-center gap-4">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            id="search-input"
+            class="flex-1 text-lg text-gray-900 border-none focus:ring-0 placeholder-gray-400 pl-2"
+            placeholder="Search articles..."
+          />
+          <button 
+            id="close-search"
+            class="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- Category Filter -->
+        <div class="p-4 border-b overflow-x-auto">
+          <div class="flex gap-2">
+            {searchCategories.map(category => (
+              <button
+                class={`category-filter px-4 py-1.5 rounded-full text-sm font-medium text-gray-700 border border-gray-200 hover:bg-${category.color} hover:text-white hover:border-${category.color} transition-all duration-200`}
+                data-category={category.name}
+                data-color={category.color}
+              >
+                {category.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <!-- Results -->
+        <div id="search-results" class="max-h-[60vh] overflow-y-auto">
+          <div class="p-4 space-y-4">
+            <!-- Loading State -->
+            <div id="search-loading" class="hidden">
+              <div class="flex items-center justify-center py-8">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-sport-500"></div>
+              </div>
+            </div>
+
+            <!-- Empty State -->
+            <div id="search-empty" class="hidden">
+              <div class="text-center py-8">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <h3 class="mt-4 text-lg font-medium text-gray-900">No results found</h3>
+                <p class="mt-2 text-sm text-gray-500">Try different keywords or browse categories</p>
+              </div>
+            </div>
+
+            <!-- Results List -->
+            <div id="search-results-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  import { categories } from '../lib/categories';
+  
+  let activeCategory = 'All';
+  let searchTimeout: NodeJS.Timeout;
+
+  const searchTrigger = document.getElementById('search-trigger');
+  const searchModal = document.getElementById('search-modal');
+  const searchContent = document.getElementById('search-content');
+  const closeSearch = document.getElementById('close-search');
+  const searchInput = document.getElementById('search-input') as HTMLInputElement;
+  const searchResults = document.getElementById('search-results');
+  const searchLoading = document.getElementById('search-loading');
+  const searchEmpty = document.getElementById('search-empty');
+  const searchResultsList = document.getElementById('search-results-list');
+  const categoryFilters = document.querySelectorAll('.category-filter');
+
+  function openModal() {
+    searchModal?.classList.remove('hidden');
+    // Trigger reflow
+    searchModal?.offsetHeight;
+    searchModal?.classList.remove('opacity-0');
+    searchContent?.classList.remove('scale-95', 'opacity-0');
+    document.body.classList.add('overflow-hidden');
+    searchInput?.focus();
+  }
+
+  function closeModal() {
+    searchModal?.classList.add('opacity-0');
+    searchContent?.classList.add('scale-95', 'opacity-0');
+    document.body.classList.remove('overflow-hidden');
+    setTimeout(() => {
+      searchModal?.classList.add('hidden');
+    }, 300);
+  }
+
+  searchTrigger?.addEventListener('click', openModal);
+  closeSearch?.addEventListener('click', closeModal);
+  searchModal?.addEventListener('click', (e) => {
+    if (e.target === searchModal) {
+      closeModal();
+    }
+  });
+
+  // Handle category filter clicks with new styling
+  categoryFilters.forEach(button => {
+    const color = button.getAttribute('data-color');
+    button.addEventListener('click', () => {
+      categoryFilters.forEach(btn => {
+        const btnColor = btn.getAttribute('data-color');
+        btn.classList.remove(`bg-${btnColor}`, 'text-white');
+        btn.classList.add('text-gray-700');
+      });
+      button.classList.remove('text-gray-700');
+      button.classList.add(`bg-${color}`, 'text-white');
+      activeCategory = (button as HTMLElement).dataset.category || 'All';
+      performSearch(searchInput?.value || '');
+    });
+  });
+
+  // Handle search input with debounce
+  searchInput?.addEventListener('input', (e) => {
+    const target = e.target as HTMLInputElement;
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+      performSearch(target.value);
+    }, 300);
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeModal();
+    }
+    if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      openModal();
+    }
+  });
+
+  async function performSearch(query: string) {
+    if (!searchResultsList || !searchLoading || !searchEmpty) return;
+
+    searchResultsList.innerHTML = '';
+    
+    if (!query.trim()) {
+      searchLoading.classList.add('hidden');
+      searchEmpty.classList.add('hidden');
+      return;
+    }
+
+    searchLoading.classList.remove('hidden');
+    searchEmpty.classList.add('hidden');
+
+    try {
+      // Always filter out draft articles in search results
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: query.trim(),
+          category: activeCategory === 'All' ? undefined : activeCategory,
+          isdraft: false // Explicitly set to false to exclude draft articles
+        }),
+      });
+
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+
+      searchLoading.classList.add('hidden');
+
+      if (!data.articles?.length) {
+        searchEmpty.classList.remove('hidden');
+        return;
+      }
+
+      searchResultsList.innerHTML = data.articles.map((article: any) => {
+        const categoryData = categories.find(c => c.name === article.category);
+        const categoryColor = categoryData?.color || 'sport-500';
+        return `
+          <a 
+            href="/${article.category_slug}/${article.slug}"
+            class="block p-4 hover:bg-gray-50 rounded-lg transition-colors"
+          >
+            <div class="flex gap-4">
+              <img 
+                src="${article.image_url}" 
+                alt="${article.title}"
+                class="w-24 h-24 object-cover rounded-lg"
+              />
+              <div class="flex-1">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="text-${categoryColor} text-sm font-semibold">${article.category}</span>
+                  <span class="text-gray-500 text-sm">
+                    ${new Date(article.published_at).toLocaleDateString('en-GB')}
+                  </span>
+                </div>
+                <h3 class="font-semibold text-gray-900 mb-1 line-clamp-2 hover:text-${categoryColor} transition-colors">
+                  ${article.title}
+                </h3>
+                <p class="text-sm text-gray-600 line-clamp-2">${article.excerpt}</p>
+              </div>
+            </div>
+          </a>
+        `;
+      }).join('');
+
+    } catch (error) {
+      console.error('Search error:', error);
+      searchLoading.classList.add('hidden');
+      searchResultsList.innerHTML = `
+        <div class="text-center py-8">
+          <p class="text-red-500">Error performing search. Please try again.</p>
+        </div>
+      `;
+    }
+  }
+</script>
+
+<style>
+  /* Custom scrollbar for results */
+  #search-results::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  #search-results::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+  }
+
+  #search-results::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 4px;
+  }
+
+  #search-results::-webkit-scrollbar-thumb:hover {
+    background: #999;
+  }
+</style> 

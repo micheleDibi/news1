@@ -1,0 +1,152 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { supabase } from '../../../lib/supabase';
+
+const { data: podcasts } = await supabase
+  .from('podcasts')
+  .select('*')
+  .order('created_at', { ascending: false });
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Loading...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden">
+  <AdminLayout title="Manage Podcasts">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <div class="md:flex md:items-center md:justify-between mb-6">
+          <div class="flex-1 min-w-0">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
+              Podcasts
+            </h2>
+          </div>
+          <div class="mt-4 flex md:mt-0 md:ml-4">
+            <a
+              href="/admin/podcasts/new"
+              class="ml-3 inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary"
+            >
+              <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+              Nuovo Podcast
+            </a>
+          </div>
+        </div>
+
+        <div class="bg-white shadow overflow-hidden sm:rounded-md">
+          <ul class="divide-y divide-gray-200">
+            {podcasts?.map((podcast) => (
+              <li class="px-4 py-4 flex items-center justify-between sm:px-6 hover:bg-gray-50">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center justify-between">
+                    <p class="text-sm font-medium text-primary truncate">
+                      {podcast.title}
+                    </p>
+                    {podcast.category && (
+                      <div class="ml-2 flex-shrink-0 flex">
+                        <p class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-sport-100 text-sport-700">
+                          {podcast.category}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  <div class="mt-2 flex items-center text-sm text-gray-500">
+                    <svg class="flex-shrink-0 mr-1.5 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    <p>
+                      {new Date(podcast.published_at).toLocaleDateString('en-GB')}
+                    </p>
+                  </div>
+                </div>
+                <div class="ml-5 flex-shrink-0 flex items-center space-x-4">
+                  <a
+                    href={`/admin/podcasts/${podcast.id}/edit`}
+                    class="inline-flex items-center text-sm font-medium text-sport-700 hover:text-sport-900"
+                  >
+                    <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    Modifica
+                  </a>
+                  <button
+                    data-podcast-id={podcast.id}
+                    class="delete-button inline-flex items-center text-sm font-medium text-red-600 hover:text-red-900"
+                  >
+                    <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Rimuovi
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  </AdminLayout>
+</div>
+
+<script>
+  import { supabase } from '../../../lib/supabase';
+  
+  async function checkAuth() {
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    if (!session) {
+      window.location.href = '/login';
+      return;
+    }
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single();
+    
+    if (error || !(profile?.role === 'docente' || profile?.role === 'insegnante' || profile?.role === 'admin')) {
+      window.location.href = '/login';
+      return;
+    }
+
+    // If we get here, user is authenticated and authorized
+    document.getElementById('loading-screen')?.classList.add('hidden');
+    document.getElementById('admin-content')?.classList.remove('hidden');
+  }
+
+  // Run auth check immediately
+  checkAuth();
+
+  // Delete functionality
+  document.querySelectorAll('.delete-button').forEach((button) => {
+    button.addEventListener('click', async (e) => {
+      const podcastId = (e.target as HTMLElement).dataset.podcastId;
+      if (!podcastId || !confirm('Sei sicuro di voler rimuovere questo podcast?')) return;
+
+      try {
+        const response = await fetch(`/api/podcasts/${podcastId}`, {
+          method: 'DELETE',
+        });
+        
+        if (!response.ok) throw new Error('Si è verificato un errore durante la rimozione del podcast');
+        
+        const result = await response.json();
+        if (result.success) {
+          (e.target as HTMLElement).closest('li')?.remove();
+        }
+      } catch (error) {
+        console.error('Error:', error);
+        alert('Si è verificato un errore durante la rimozione del podcast');
+      }
+    });
+  });
+</script> 

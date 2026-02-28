@@ -1,0 +1,56 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import PodcastForm from '../../../components/PodcastForm';
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Loading...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden">
+  <AdminLayout title="New Podcast">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <h1 class="text-2xl font-semibold text-gray-900">Create New Podcast</h1>
+        <div class="mt-6">
+          <PodcastForm client:load />
+        </div>
+      </div>
+    </div>
+  </AdminLayout>
+</div>
+
+<script>
+  import { supabase } from '../../../lib/supabase';
+  
+  async function checkAuth() {
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    if (!session) {
+      window.location.href = '/login';
+      return;
+    }
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single();
+    
+    if (error || !(profile?.role === 'docente' || profile?.role === 'insegnante' || profile?.role === 'admin' || profile?.role === 'redattore' || profile?.role === 'giornalista' || profile?.role === 'direttore')) {
+      window.location.href = '/login';
+      return;
+    }
+
+    // If we get here, user is authenticated and authorized
+    document.getElementById('loading-screen')?.classList.add('hidden');
+    document.getElementById('admin-content')?.classList.remove('hidden');
+  }
+
+  // Run auth check immediately
+  checkAuth();
+</script> 

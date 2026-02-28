@@ -1,0 +1,659 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { supabase } from '../../../lib/supabase';
+
+// Set cache control headers
+Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+Astro.response.headers.set('Pragma', 'no-cache');
+Astro.response.headers.set('Expires', '0');
+Astro.response.headers.set('Surrogate-Control', 'no-store');
+
+// Check if user is admin
+const { data: { session } } = await supabase.auth.getSession();
+let isAdmin = false;
+let profiles: any[] = [];
+
+
+if (session) {
+  const { data: profile, error } = await supabase
+    .from('profiles')
+    .select('role')
+    .eq('id', session.user.id)
+    .single();
+  
+  isAdmin = profile?.role === 'admin';
+  console.log(profile?.role);
+  if (error || !(profile?.role === 'admin')) {
+    return Astro.redirect('/login');
+  }
+  
+  // If admin, fetch all users via the API endpoint
+  if (isAdmin) {
+    try {
+      console.log('Server-side: Fetching users with token length:', session.access_token.length);
+      const response = await fetch(`${Astro.url.origin}/api/users/list`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        profiles = data.users || [];
+        console.log(`Server-side: Successfully fetched ${profiles.length} user profiles`);
+      } else {
+        console.error('Server-side: Failed to fetch users', 
+          response.status, 
+          response.statusText,
+          await response.text().catch(() => 'Could not read response text')
+        );
+      }
+    } catch (error) {
+      console.error('Server-side: Error fetching users', error);
+    }
+  }
+}
+
+// Define available roles
+const roles = [
+  { id: 'admin', name: 'Amministratore', description: 'Accesso completo al sistema' },
+  { id: 'insegnante', name: 'Insegnante', description: 'Può gestire contenuti' },
+  { id: 'docente', name: 'Docente', description: 'Può creare contenuti' },
+  { id: 'studente', name: 'Studente', description: 'Accesso base' },
+];
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Loading...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden">
+  <AdminLayout title="Gestione Utenti">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <!-- Header -->
+        <div class="md:flex md:items-center md:justify-between mb-6">
+          <div class="flex-1 min-w-0">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
+              Gestione Utenti
+            </h2>
+          </div>
+          
+          <div class="mt-4 md:mt-0">
+            <button id="create-user-button" class="px-4 py-2 bg-primary text-white rounded hover:bg-primary-dark">
+              Crea Nuovo Utente
+            </button>
+          </div>
+        </div>
+        
+        <!-- Filters -->
+        <div class="bg-white shadow rounded-lg mb-6">
+          <div class="p-4 border-b border-gray-200">
+            <div class="flex flex-col md:flex-row gap-4">
+              <div class="flex-1">
+                <label for="search" class="sr-only">Search users</label>
+                <div class="relative rounded-md shadow-sm">
+                  <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  </div>
+                  <input
+                    type="search"
+                    name="search"
+                    id="search"
+                    class="focus:ring-primary focus:border-primary block w-full pl-10 sm:text-sm border-gray-300 rounded-md"
+                    placeholder="Cerca utenti..."
+                  />
+                </div>
+              </div>
+              <div class="w-full md:w-48">
+                <select
+                  id="role-filter"
+                  name="role-filter"
+                  class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md"
+                >
+                  <option value="all">Tutti i Ruoli</option>
+                  {roles.map(role => (
+                    <option value={role.id}>{role.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Users Table -->
+        <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+          <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+              <thead class="bg-gray-50">
+                <tr>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Utente
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Ruolo
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Email
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Permessi
+                  </th>
+                  <th scope="col" class="relative px-6 py-3">
+                    <span class="sr-only">Azioni</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="users-table-body" class="bg-white divide-y divide-gray-200">
+                {profiles?.map((profile) => (
+                  <tr data-user-id={profile.id} data-user-email={profile.email}>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                      <div class="flex items-center">
+                        <div class="flex-shrink-0 h-10 w-10">
+                          <div class="h-10 w-10 rounded-full bg-primary-200 flex items-center justify-center text-primary-800 font-bold">
+                            {profile.full_name ? profile.full_name.charAt(0).toUpperCase() : 'U'}
+                          </div>
+                        </div>
+                        <div class="ml-4">
+                          <div class="text-sm font-medium text-gray-900">
+                            {profile.full_name || "Utente Anonimo"}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                      <span class={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                        profile.role === 'admin' 
+                          ? 'bg-red-100 text-red-800' 
+                          : profile.role === 'insegnante' 
+                          ? 'bg-blue-100 text-blue-800'
+                          : profile.role === 'docente'
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-gray-100 text-gray-800'
+                      }`}>
+                        {profile.role || "studente"}
+                      </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {profile.email || "Nessuna email"}
+                    </td>
+                    <td class="px-6 py-4">
+                      <div class="flex flex-wrap gap-2">
+                        {(profile.permissions ? Object.keys(profile.permissions) : []).map(perm => 
+                          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                            {perm}
+                          </span>
+                        )}
+                        {(!profile.permissions || Object.keys(profile.permissions).length === 0) && 
+                          <span class="text-sm text-gray-500 italic">Nessun permesso</span>
+                        }
+                      </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      <button
+                        data-user-id={profile.id}
+                        data-username={profile.full_name || "User"}
+                        data-email={profile.email || ""}
+                        data-role={profile.role || "studente"}
+                        class="text-primary hover:text-primary-dark edit-user mr-4"
+                      >
+                        Modifica
+                      </button>
+                      <button
+                        data-user-id={profile.id}
+                        data-username={profile.full_name || "User"}
+                        class="text-red-600 hover:text-red-800 delete-user"
+                      >
+                        Elimina
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </AdminLayout>
+</div>
+
+<!-- Create/Edit User Modal -->
+<div id="user-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl overflow-hidden max-w-lg w-full mx-4">
+    <div class="px-6 py-4 bg-primary text-white">
+      <h3 class="text-lg font-medium" id="modal-title">Crea Nuovo Utente</h3>
+    </div>
+    <div class="px-6 py-4">
+      <form id="user-form" class="space-y-4">
+        <input type="hidden" id="user-id-input">
+        <input type="hidden" id="action-type" value="create">
+        
+        <div>
+          <label for="fullName" class="block text-sm font-medium text-gray-700">Nome Completo</label>
+          <input type="text" id="fullName" name="fullName" required 
+                 class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+        </div>
+        
+        <div>
+          <label for="email" class="block text-sm font-medium text-gray-700">Email</label>
+          <input type="email" id="email" name="email" required 
+                 class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+        </div>
+        
+        <div id="password-container">
+          <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+          <input type="password" id="password" name="password" minlength="6" required 
+                 class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+          <p class="mt-1 text-xs text-gray-500">Minimo 6 caratteri</p>
+        </div>
+        
+        <div>
+          <label for="role" class="block text-sm font-medium text-gray-700">Ruolo</label>
+          <select id="role" name="role" required
+                  class="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-primary focus:border-primary sm:text-sm">
+            {roles.map(role => (
+              <option value={role.id}>{role.name}</option>
+            ))}
+          </select>
+        </div>
+        
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-2">Permessi</label>
+          <div class="space-y-2 bg-gray-50 p-3 rounded-md">
+            <div class="flex items-center">
+              <input type="checkbox" id="write_articles" name="permissions" value="write_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+              <label for="write_articles" class="ml-2 block text-sm text-gray-900">Scrivi Articoli</label>
+            </div>
+            <div class="flex items-center">
+              <input type="checkbox" id="publish_articles" name="permissions" value="publish_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+              <label for="publish_articles" class="ml-2 block text-sm text-gray-900">Pubblica Articoli</label>
+            </div>
+            <div class="flex items-center">
+              <input type="checkbox" id="edit_all_articles" name="permissions" value="edit_all_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+              <label for="edit_all_articles" class="ml-2 block text-sm text-gray-900">Modifica Articoli</label>
+            </div>
+            <div class="flex items-center">
+              <input type="checkbox" id="read_all_articles" name="permissions" value="read_all_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+              <label for="read_all_articles" class="ml-2 block text-sm text-gray-900">Leggi Tutti gli Articoli</label>
+            </div>
+          </div>
+        </div>
+      </form>
+    </div>
+    <div class="px-6 py-4 bg-gray-50 flex justify-end space-x-3">
+      <button id="cancel-button" class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+        Annulla
+      </button>
+      <button id="save-user" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+        Salva
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div id="delete-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl overflow-hidden max-w-md w-full mx-4">
+    <div class="px-6 py-4 bg-red-600 text-white">
+      <h3 class="text-lg font-medium">Conferma Eliminazione</h3>
+    </div>
+    <div class="px-6 py-4">
+      <input type="hidden" id="delete-user-id">
+      <p class="text-sm text-gray-500">Sei sicuro di voler eliminare l'utente <span id="delete-username" class="font-semibold"></span>? Questa azione non può essere annullata.</p>
+    </div>
+    <div class="px-6 py-4 bg-gray-50 flex justify-end space-x-3">
+      <button id="cancel-delete" class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+        Annulla
+      </button>
+      <button id="confirm-delete" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+        Elimina
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+  import { supabase } from '../../../lib/supabase';
+
+
+  async function checkAuth() {
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    if (!session) {
+      window.location.href = '/login';
+      return;
+    }
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single();
+    
+    if (error || !(profile?.role === 'admin')) {
+      window.location.href = '/login';
+      return;
+    }
+
+    // If we get here, user is authenticated and authorized
+    document.getElementById('loading-screen')?.classList.add('hidden');
+    document.getElementById('admin-content')?.classList.remove('hidden');
+  }
+
+  // Run auth check immediately
+  checkAuth();
+  
+  // Define interface for permissions
+  interface UserPermissions {
+    [key: string]: boolean;
+  }
+  
+  // Define role permissions mapping with TypeScript interface
+  const rolePermissions: Record<string, UserPermissions> = {
+    admin: {
+      write_articles: true,
+      publish_articles: true,
+      edit_all_articles: true,
+      read_all_articles: true
+    },
+    insegnante: {
+      write_articles: true,
+      publish_articles: true,
+      edit_all_articles: true,
+      read_all_articles: true
+    },
+    docente: {
+      write_articles: true,
+      read_all_articles: true
+    },
+    studente: {
+      read_all_articles: true
+    }
+  };
+  
+  // Hide loading screen and show content when everything is loaded
+  document.addEventListener('DOMContentLoaded', async () => {
+    document.getElementById('loading-screen')?.classList.add('hidden');
+    document.getElementById('admin-content')?.classList.remove('hidden');
+    
+    // Verify session on page load
+    const { data: { session } } = await supabase.auth.getSession();
+    console.log('Client-side session check:', session ? 'Session found' : 'No session found');
+    
+    if (!session) {
+      console.error('No active session on page load');
+      alert('Sessione non valida. Effettua nuovamente il login.');
+      window.location.href = '/login?redirect=/admin/create-users';
+      return;
+    }
+  });
+  
+  // Elements
+  const userModal = document.getElementById('user-modal') as HTMLDivElement;
+  const modalTitle = document.getElementById('modal-title') as HTMLHeadingElement;
+  const userIdInput = document.getElementById('user-id-input') as HTMLInputElement;
+  const actionType = document.getElementById('action-type') as HTMLInputElement;
+  const userForm = document.getElementById('user-form') as HTMLFormElement;
+  const saveButton = document.getElementById('save-user') as HTMLButtonElement;
+  const cancelButton = document.getElementById('cancel-button') as HTMLButtonElement;
+  const createUserButton = document.getElementById('create-user-button') as HTMLButtonElement;
+  const passwordContainer = document.getElementById('password-container') as HTMLDivElement;
+  const roleSelect = document.getElementById('role') as HTMLSelectElement;
+  const permissionCheckboxes = document.querySelectorAll('input[name="permissions"]') as NodeListOf<HTMLInputElement>;
+  
+  const deleteModal = document.getElementById('delete-modal') as HTMLDivElement;
+  const deleteUserIdInput = document.getElementById('delete-user-id') as HTMLInputElement;
+  const deleteUsernameSpan = document.getElementById('delete-username') as HTMLSpanElement;
+  const confirmDeleteButton = document.getElementById('confirm-delete') as HTMLButtonElement;
+  const cancelDeleteButton = document.getElementById('cancel-delete') as HTMLButtonElement;
+  
+  // Event listeners
+  createUserButton?.addEventListener('click', openCreateUserModal);
+  saveButton?.addEventListener('click', saveUser);
+  cancelButton?.addEventListener('click', closeUserModal);
+  roleSelect?.addEventListener('change', updatePermissionsByRole);
+  confirmDeleteButton?.addEventListener('click', deleteUser);
+  cancelDeleteButton?.addEventListener('click', closeDeleteModal);
+  
+  // Attach event listeners to edit buttons
+  document.querySelectorAll('.edit-user').forEach(button => {
+    button.addEventListener('click', (e) => {
+      const target = e.currentTarget as HTMLButtonElement;
+      const userId = target.dataset.userId ?? '';
+      const username = target.dataset.username ?? '';
+      const email = target.dataset.email ?? '';
+      const role = target.dataset.role ?? '';
+      
+      openEditUserModal(userId, username, email, role);
+    });
+  });
+  
+  // Attach event listeners to delete buttons
+  document.querySelectorAll('.delete-user').forEach(button => {
+    button.addEventListener('click', (e) => {
+      const target = e.currentTarget as HTMLButtonElement;
+      const userId = target.dataset.userId ?? '';
+      const username = target.dataset.username ?? '';
+      
+      openDeleteModal(userId, username);
+    });
+  });
+  
+  function openCreateUserModal() {
+    // Reset form
+    userForm.reset();
+    userIdInput.value = '';
+    actionType.value = 'create';
+    modalTitle.textContent = 'Crea Nuovo Utente';
+    
+    // Show password field for new users
+    passwordContainer.style.display = 'block';
+    
+    // Set default role and permissions
+    roleSelect.value = 'studente';
+    updatePermissionsByRole();
+    
+    // Show modal
+    userModal.classList.remove('hidden');
+    userModal.classList.add('flex');
+  }
+  
+  async function openEditUserModal(userId: string, username: string, email: string, role: string) {
+    // Set form values
+    userIdInput.value = userId;
+    actionType.value = 'edit';
+    modalTitle.textContent = `Modifica Utente: ${username}`;
+    
+    // Hide password field for editing
+    passwordContainer.style.display = 'none';
+    
+    const fullNameInput = document.getElementById('fullName') as HTMLInputElement;
+    const emailInput = document.getElementById('email') as HTMLInputElement;
+    
+    fullNameInput.value = username;
+    emailInput.value = email;
+    roleSelect.value = role;
+    
+    // Get user permissions
+    const { data: user } = await supabase
+      .from('profiles')
+      .select('permissions')
+      .eq('id', userId)
+      .single();
+    
+    // Reset checkboxes
+    permissionCheckboxes.forEach(checkbox => {
+      checkbox.checked = false;
+    });
+    
+    // Set checkboxes based on user permissions
+    if (user?.permissions) {
+      permissionCheckboxes.forEach(checkbox => {
+        checkbox.checked = !!user.permissions[checkbox.value];
+      });
+    } else {
+      // Use default permissions for role
+      updatePermissionsByRole();
+    }
+    
+    // Show modal
+    userModal.classList.remove('hidden');
+    userModal.classList.add('flex');
+  }
+  
+  function closeUserModal() {
+    userModal.classList.remove('flex');
+    userModal.classList.add('hidden');
+  }
+  
+  function updatePermissionsByRole() {
+    const selectedRole = roleSelect.value;
+    const defaultPermissions = rolePermissions[selectedRole] || {};
+    
+    // Update checkboxes based on the selected role
+    permissionCheckboxes.forEach(checkbox => {
+      checkbox.checked = !!defaultPermissions[checkbox.value];
+    });
+  }
+  
+  async function saveUser() {
+    // Get form data
+    const userId = userIdInput.value;
+    const action = actionType.value;
+    const fullNameInput = document.getElementById('fullName') as HTMLInputElement;
+    const emailInput = document.getElementById('email') as HTMLInputElement;
+    const passwordInput = document.getElementById('password') as HTMLInputElement;
+    
+    const fullName = fullNameInput.value;
+    const email = emailInput.value;
+    const password = action === 'create' ? passwordInput.value : null;
+    const role = roleSelect.value;
+    
+    // Build permissions object
+    const permissions: UserPermissions = {};
+    permissionCheckboxes.forEach(checkbox => {
+      if (checkbox.checked) {
+        permissions[checkbox.value] = true;
+      }
+    });
+    
+    try {
+      // Disable button to prevent multiple submissions
+      saveButton.disabled = true;
+      saveButton.textContent = 'Salvataggio...';
+      
+      console.log('Getting current session...');
+      // Get the session for authorization - don't refresh to avoid cookie issues
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        console.error('No active session found');
+        alert('Sessione non valida. Effettua nuovamente il login.');
+        window.location.href = '/login?redirect=/admin/create-users';
+        return;
+      }
+      
+      // Success! Close modal and reload the page to show updated data
+      closeUserModal();
+      alert('Operazione completata con successo!');
+      window.location.reload();
+  
+    } catch (error) {
+      console.error('Error saving user:', error);
+      alert('Errore durante il salvataggio: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      saveButton.disabled = false;
+      saveButton.textContent = 'Salva';
+    }
+  }
+  
+  function openDeleteModal(userId: string, username: string) {
+    deleteUserIdInput.value = userId;
+    deleteUsernameSpan.textContent = username;
+    
+    deleteModal.classList.remove('hidden');
+    deleteModal.classList.add('flex');
+  }
+  
+  function closeDeleteModal() {
+    deleteModal.classList.remove('flex');
+    deleteModal.classList.add('hidden');
+  }
+  
+  async function deleteUser() {
+    const userId = deleteUserIdInput.value;
+    
+    try {
+      // Disable button
+      confirmDeleteButton.disabled = true;
+      confirmDeleteButton.textContent = 'Eliminazione...';
+      
+      console.log('Getting current session...');
+      // Get the session for authorization - don't refresh to avoid cookie issues
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        console.error('No active session found');
+        alert('Sessione non valida. Effettua nuovamente il login.');
+        window.location.href = '/login?redirect=/admin/create-users';
+        return;
+      }
+      
+      // Success! Close modal and reload the page
+      closeDeleteModal();
+      alert('Utente eliminato con successo!');
+      window.location.reload();
+  
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      alert('Errore durante l\'eliminazione: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      if (confirmDeleteButton) {
+        confirmDeleteButton.disabled = false;
+        confirmDeleteButton.textContent = 'Elimina';
+      }
+    }
+  }
+  
+  // Search and filtering functionality
+  const searchInput = document.getElementById('search') as HTMLInputElement;
+  const roleFilter = document.getElementById('role-filter') as HTMLSelectElement;
+  const tableRows = document.querySelectorAll('#users-table-body tr');
+  
+  searchInput?.addEventListener('input', filterTable);
+  roleFilter?.addEventListener('change', filterTable);
+  
+  function filterTable() {
+    const searchTerm = searchInput.value.toLowerCase();
+    const roleValue = roleFilter.value;
+    
+    tableRows.forEach(row => {
+      const username = row.querySelector('td:first-child')?.textContent?.toLowerCase() || '';
+      const email = row.querySelector('td:nth-child(3)')?.textContent?.toLowerCase() || '';
+      const role = row.querySelector('td:nth-child(2) span')?.textContent?.toLowerCase() || '';
+      
+      const matchesSearch = username.includes(searchTerm) || email.includes(searchTerm);
+      const matchesRole = roleValue === 'all' || role === roleValue;
+      
+      if (matchesSearch && matchesRole) {
+        row.classList.remove('hidden');
+      } else {
+        row.classList.add('hidden');
+      }
+    });
+  }
+</script> 

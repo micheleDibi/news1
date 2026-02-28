@@ -1,0 +1,1083 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { supabase } from '../../../lib/supabase';
+import type { Category, SecondaryCategory } from '../../../lib/supabase'; // Import SecondaryCategory type
+
+// Set cache control headers
+Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+Astro.response.headers.set('Pragma', 'no-cache');
+Astro.response.headers.set('Expires', '0');
+Astro.response.headers.set('Surrogate-Control', 'no-store');
+
+// Get all categories
+const { data: categories, error: fetchError } = await supabase
+  .from('categories')
+  .select('id, name, slug, color, order_id, keywords, description')
+  .order('name', { ascending: true });
+
+if (fetchError) {
+  console.error("Error fetching categories:", fetchError);
+  // Handle error appropriately, maybe show an error message
+}
+
+// Removed article count logic as we are switching to a table
+---
+
+<AdminLayout title="Gestione Categorie">
+  <!-- Loading screen -->
+  <div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+    <div class="text-center">
+      <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+      <p class="text-sport-600">Loading...</p>
+    </div>
+  </div>
+
+  <div id="admin-content" class="hidden">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <!-- Header -->
+        <div class="md:flex md:items-center md:justify-between mb-6">
+          <div class="flex-1 min-w-0">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
+              Gestione Categorie
+            </h2>
+          </div>
+          <div class="mt-4 flex md:mt-0 md:ml-4">
+            <button
+              id="add-category-button"
+              type="button"
+              class="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary"
+            >
+              Aggiungi Categoria
+            </button>
+          </div>
+        </div>
+
+        <!-- Categories Table -->
+        <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+          <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+              <thead class="bg-gray-50">
+                <tr>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Nome
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Slug
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Descrizione
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Colore
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Ordine
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    ID
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Keywords
+                  </th>
+                  <th scope="col" class="relative px-6 py-3">
+                    <span class="sr-only">Azioni</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="categories-table-body" class="bg-white divide-y divide-gray-200">
+                {categories?.map((category: Category) => (
+                  <tr data-category-id={category.id} data-category-slug={category.slug} data-category-name={category.name}>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                <div class="flex items-center">
+                        <div class="flex-shrink-0 h-6 w-6 rounded mr-3" style={{ backgroundColor: `var(--color-${category.color}, #ccc)` }}></div>
+                        <div class="text-sm font-medium text-gray-900">{category.name}</div>
+                    </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {category.slug}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {category.description ? (category.description.length > 50 ? category.description.substring(0, 50) + '...' : category.description) : 'N/A'}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {category.color}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {category.order_id ?? 'N/A'}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-xs text-gray-400">
+                      {category.id}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {(() => {
+                        let keywordsArray: string[] = [];
+                        const MAX_TAG_LENGTH = 15; // Max length for each tag preview
+
+                        if (typeof category.keywords === 'string') {
+                          try {
+                            const parsed = JSON.parse(category.keywords);
+                            if (Array.isArray(parsed)) {
+                              keywordsArray = parsed.map(String);
+                            }
+                          } catch (e) {
+                            /* ignore malformed JSON */
+                          }
+                        } else if (Array.isArray(category.keywords)) {
+                          keywordsArray = category.keywords.map(String);
+                        }
+
+                        if (keywordsArray.length === 0) return 'N/A';
+
+                        const processedKeywords = keywordsArray.slice(0, 2).map(kw => 
+                          kw.length > MAX_TAG_LENGTH ? kw.substring(0, MAX_TAG_LENGTH) + '...' : kw
+                        );
+
+                        let displayText = processedKeywords.join(', ');
+
+                        if (keywordsArray.length > 2) {
+                          displayText += ', ...';
+                        }
+                        return displayText;
+                      })()}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                      <button class="text-primary hover:text-primary-dark edit-button">Modifica</button>
+                      <button class="text-red-600 hover:text-red-800 delete-button">Elimina</button>
+                      <button class="text-green-600 hover:text-green-800 manage-secondary-button">Gestisci Sottocategorie</button>
+                    </td>
+                  </tr>
+                ))}
+                {(!categories || categories.length === 0) && (
+                  <tr>
+                    <td colspan="8" class="px-6 py-4 text-center text-sm text-gray-500">
+                      Nessuna categoria trovata.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add/Edit Category Modal -->
+  <div id="category-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl overflow-hidden max-w-lg w-full mx-4">
+        <form id="category-form">
+        <div class="px-6 py-4 bg-primary text-white">
+          <h3 class="text-lg font-medium" id="modal-title">Aggiungi Categoria</h3>
+        </div>
+        <div class="px-6 py-4 space-y-4 overflow-y-auto max-h-[calc(100vh-220px)]">
+          <input type="hidden" id="category-id-input" name="id">
+          <div>
+            <label for="category-name" class="block text-sm font-medium text-gray-700">Nome</label>
+            <input type="text" name="name" id="category-name" required class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+          </div>
+          <div>
+            <label for="category-slug" class="block text-sm font-medium text-gray-700">Slug</label>
+            <input type="text" name="slug" id="category-slug" required class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+             <p class="mt-1 text-xs text-gray-500">Lo slug viene usato negli URL (es. /mio-slug). Usare solo lettere minuscole, numeri e trattini.</p>
+          </div>
+          <div>
+            <label for="category-description" class="block text-sm font-medium text-gray-700">Descrizione</label>
+            <textarea name="description" id="category-description" rows="3" class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"></textarea>
+            <p class="mt-1 text-xs text-gray-500">Breve descrizione della categoria (opzionale).</p>
+          </div>
+          <div>
+            <label for="category-color-picker" class="block text-sm font-medium text-gray-700">Colore</label>
+            <input type="hidden" name="color" id="category-color-value" required>
+            <div id="category-color-picker" class="mt-2 grid grid-cols-5 gap-2">
+              <!-- Color swatches will be generated here by script -->
+            </div>
+            <p class="mt-1 text-xs text-gray-500">Seleziona un colore per la categoria.</p>
+          </div>
+          <div>
+            <label for="category-order-id" class="block text-sm font-medium text-gray-700">Ordine</label>
+            <input type="number" name="order_id" id="category-order-id" placeholder="Es. 10, 20, 999" class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+            <p class="mt-1 text-xs text-gray-500">Numero per ordinare le categorie (valori più bassi vengono prima). Lascia vuoto per mettere alla fine.</p>
+          </div>
+
+          {/* Keywords Input - Added */}
+          <div>
+            <label for="category-keywords-input" class="block text-sm font-medium text-gray-700">Keywords</label>
+            <div class="mt-1 flex gap-2">
+                <input type="text" id="category-keywords-input" class="flex-grow focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" placeholder="Aggiungi keyword e premi Invio">
+                <button type="button" id="add-keyword-button" class="px-3 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark">Aggiungi</button>
+            </div>
+            <div id="keywords-container" class="mt-2 flex flex-wrap gap-2 overflow-y-auto max-h-60">
+              {/* Keywords will be added here */}
+            </div>
+            <p class="mt-1 text-xs text-gray-500">Keywords per SEO e ricerca interna. Premi Invio o il bottone per aggiungere.</p>
+          </div>
+        </div>
+        <div class="px-6 py-4 bg-gray-50 flex justify-end space-x-3">
+          <button type="button" id="cancel-button" class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+            Annulla
+            </button>
+          <button type="submit" id="save-category-button" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+            Salva Categoria
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+</AdminLayout>
+
+<!-- Secondary Categories Modal -->
+<div id="secondary-category-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl overflow-hidden max-w-2xl w-full mx-4">
+    <form id="secondary-category-form">
+      <div class="px-6 py-4 bg-green-600 text-white">
+        <h3 class="text-lg font-medium" id="secondary-modal-title">Gestisci Sottocategorie per <span id="primary-category-name-placeholder"></span></h3>
+        <input type="hidden" id="current-primary-category-slug-input" name="primary_category_slug">
+        <input type="hidden" id="secondary-category-id-input" name="id">
+      </div>
+      <div class="px-6 py-4 space-y-4 overflow-y-auto max-h-[calc(100vh-300px)]">
+        <!-- List of existing secondary categories -->
+        <div class="space-y-2">
+            <h4 class="text-md font-semibold text-gray-700">Sottocategorie Esistenti:</h4>
+            <div id="existing-secondary-categories-list" class="border rounded-md p-2 min-h-[100px]">
+                <!-- Secondary categories will be listed here by script -->
+                <p class="text-sm text-gray-500">Nessuna sottocategoria trovata o caricamento...</p>
+            </div>
+        </div>
+        
+        <hr class="my-4"/>
+
+        <!-- Form to add/edit secondary category -->
+        <div>
+            <h4 class="text-md font-semibold text-gray-700 mb-2" id="secondary-form-action-title">Aggiungi Nuova Sottocategoria</h4>
+            <div>
+                <label for="secondary-category-name" class="block text-sm font-medium text-gray-700">Nome Sottocategoria</label>
+                <input type="text" name="name" id="secondary-category-name-input" required class="mt-1 focus:ring-green-500 focus:border-green-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" placeholder="Nome della sottocategoria">
+            </div>
+            <!-- Description can be added if needed -->
+            <!-- <label for="secondary-category-description" class="block text-sm font-medium text-gray-700 mt-2">Descrizione (Opzionale)</label>
+            <textarea name="description" id="secondary-category-description-input" rows="2" class="mt-1 focus:ring-green-500 focus:border-green-500 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"></textarea> -->
+        </div>
+
+      </div>
+      <div class="px-6 py-4 bg-gray-50 flex justify-end space-x-3">
+        <button type="button" id="cancel-secondary-button" class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400">
+          Chiudi
+        </button>
+        <button type="submit" id="save-secondary-category-button" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+          Salva Sottocategoria
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  import { supabase } from '../../../lib/supabase';
+  import type { Category, SecondaryCategory } from '../../../lib/supabase'; // Import SecondaryCategory type again for script scope
+
+  // --- Predefined Colors --- //
+  const availableColors = [
+    'ricerca', 'lavoro', 'universita', 'scuola', 'tecnologia',
+    'mondo', 'cultura', 'formazione', 'editoriali',
+    'sport-500', 'calcio', 'motori', 'tennis', 'bandi',
+    'red-500', 'blue-500', 'green-500'
+  ];
+  // --- End Predefined Colors --- //
+
+  // --- Map Color Names to Hex Values (from tailwind.config.mjs) --- //
+  const colorHexMap: { [key: string]: string } = {
+    'sport-500': '#00529F',
+    'calcio': '#4CAF50',
+    'motori': '#FF9800',
+    'tennis': '#2196F3',
+    'cultura': '#8E44AD',
+    'lavoro': '#3E4A61',
+    'bandi': '#795548',
+    'red-500': '#ef4444', 
+    'blue-500': '#3b82f6',
+    'green-500': '#22c55e',
+    'ricerca': '#137177',
+    'universita':'#2F7D31',
+    'scuola': '#F4B400',
+    'tecnologia':'#3A01A2',
+    'mondo': '#03A9F4',
+    'formazione':'#FB8C00',
+    'editoriali': '#616161'
+    // Add any other colors from availableColors here
+  };
+  // --- End Color Map --- //
+
+  const addCategoryButton = document.getElementById('add-category-button');
+  const categoryModal = document.getElementById('category-modal');
+  const categoryForm = document.getElementById('category-form') as HTMLFormElement;
+  const modalTitle = document.getElementById('modal-title');
+  const categoryIdInput = document.getElementById('category-id-input') as HTMLInputElement;
+  const categoryNameInput = document.getElementById('category-name') as HTMLInputElement;
+  const categorySlugInput = document.getElementById('category-slug') as HTMLInputElement;
+  const categoryColorValueInput = document.getElementById('category-color-value') as HTMLInputElement; // Hidden input for selected value
+  const categoryColorPicker = document.getElementById('category-color-picker'); // Container for swatches
+  const categoryOrderIdInput = document.getElementById('category-order-id') as HTMLInputElement; // Order ID input
+  const categoryDescriptionInput = document.getElementById('category-description') as HTMLTextAreaElement; // Added
+  const cancelButton = document.getElementById('cancel-button');
+  const categoriesTableBody = document.getElementById('categories-table-body');
+  const loadingScreen = document.getElementById('loading-screen');
+  const adminContent = document.getElementById('admin-content');
+
+  // Keywords Elements - Added
+  const keywordsInput = document.getElementById('category-keywords-input') as HTMLInputElement;
+  const keywordsContainer = document.getElementById('keywords-container') as HTMLDivElement;
+  const addKeywordButton = document.getElementById('add-keyword-button') as HTMLButtonElement;
+
+  // --- Secondary Category Modal Elements and Logic ---
+  const secondaryCategoryModal = document.getElementById('secondary-category-modal') as HTMLDivElement;
+  const secondaryCategoryForm = document.getElementById('secondary-category-form') as HTMLFormElement;
+  const cancelSecondaryButton = document.getElementById('cancel-secondary-button') as HTMLButtonElement;
+  const saveSecondaryCategoryButton = document.getElementById('save-secondary-category-button') as HTMLButtonElement;
+  const existingSecondaryCategoriesList = document.getElementById('existing-secondary-categories-list') as HTMLDivElement;
+  const currentPrimaryCategorySlugInput = document.getElementById('current-primary-category-slug-input') as HTMLInputElement;
+  const secondaryCategoryIdInput = document.getElementById('secondary-category-id-input') as HTMLInputElement;
+  const secondaryCategoryNameInput = document.getElementById('secondary-category-name-input') as HTMLInputElement;
+  const primaryCategoryNamePlaceholder = document.getElementById('primary-category-name-placeholder') as HTMLSpanElement;
+  const secondaryFormActionTitle = document.getElementById('secondary-form-action-title') as HTMLHeadElement;
+
+  let currentEditingSecondaryCategory: SecondaryCategory | null = null;
+
+  let isEditMode = false;
+
+  // --- Auth Check --- // Moved from bottom
+  async function checkAuth() {
+    loadingScreen?.classList.remove('hidden'); // Show loading initially
+    adminContent?.classList.add('hidden');
+
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session) {
+      console.error('Auth Error:', sessionError);
+      window.location.href = '/login';
+      return;
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single();
+    
+    if (profileError || !(profile?.role === 'admin' || profile?.role === 'direttore')) { // Adjusted roles if needed
+      console.error('Profile Error or insufficient role:', profileError, profile);
+      window.location.href = '/login'; // Or maybe a different "unauthorized" page
+      return;
+    }
+
+    // User is authorized, show content
+    loadingScreen?.classList.add('hidden');
+    adminContent?.classList.remove('hidden');
+  }
+  checkAuth(); // Run auth check immediately
+  // --- End Auth Check --- //
+
+
+  function openModal(category: Category | null = null) {
+    isEditMode = !!category;
+    categoryForm.reset();
+    resetColorPickerSelection(); // Deselect all swatches
+    clearKeywords(); // Clear existing keywords - Added
+    if (modalTitle) {
+      if (isEditMode && category) {
+        modalTitle.textContent = 'Modifica Categoria';
+        categoryIdInput.value = category.id;
+        categoryNameInput.value = category.name;
+        categorySlugInput.value = category.slug;
+        categoryColorValueInput.value = category.color || '';
+        categoryOrderIdInput.value = category.order_id?.toString() || '';
+        categoryDescriptionInput.value = category.description ?? ''; // Added
+        selectColorSwatch(category.color);
+        populateKeywords(category.keywords); // Populate keywords - Added
+      } else {
+        modalTitle.textContent = 'Aggiungi Categoria';
+        categoryIdInput.value = ''; // Clear ID for adding
+        categoryColorValueInput.value = ''; // Clear color value
+        categoryOrderIdInput.value = ''; // Clear order ID
+        categoryDescriptionInput.value = ''; // Added
+      }
+    }
+    categoryModal?.classList.remove('hidden');
+    categoryModal?.classList.add('flex'); // Use flex to center
+  }
+
+  function closeModal() {
+    categoryModal?.classList.add('hidden');
+    categoryModal?.classList.remove('flex');
+  }
+
+  // Generate slug from name
+  function generateSlug(name: string): string {
+    return name
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, '-')
+      .replace(/[àáâäãåāăą]/g, 'a')
+      .replace(/[èéêëēĕėęě]/g, 'e')
+      .replace(/[ìíîïīĭįǐ]/g, 'i')
+      .replace(/[òóôöõōŏő]/g, 'o')
+      .replace(/[ùúûüũūŭů]/g, 'u')
+      .replace(/[ýÿŷ]/g, 'y')
+      .replace(/ñ/g, 'n')
+      .replace(/ç/g, 'c')
+      .replace(/ß/g, 'ss')
+      .replace(/[^a-z0-9\-]+/g, '')
+      .replace(/^-+/, '')
+      .replace(/-+$/, '');
+  }
+
+  categoryNameInput?.addEventListener('input', () => {
+    if (!isEditMode || !categorySlugInput.value) { 
+       categorySlugInput.value = generateSlug(categoryNameInput.value);
+    }
+  });
+
+  categorySlugInput?.addEventListener('input', () => {
+    categorySlugInput.value = generateSlug(categorySlugInput.value);
+  });
+
+  // --- Color Picker Logic --- //
+  function renderColorSwatches() {
+      if (!categoryColorPicker) return;
+      categoryColorPicker.innerHTML = ''; // Clear existing swatches
+      availableColors.forEach(colorName => {
+          const swatch = document.createElement('div');
+          // Base styling for the swatch box
+          swatch.classList.add(
+              'h-8', 'w-8', 'rounded', 'border', 'border-gray-300',
+              'cursor-pointer', 'transition-all', 'duration-150'
+          );
+          swatch.dataset.color = colorName;
+          swatch.setAttribute('title', colorName); // Tooltip for the color name
+          
+          // Apply the background color directly using inline style
+          const hexColor = colorHexMap[colorName] || '#eee'; // Get hex from map, fallback to gray
+          swatch.style.backgroundColor = hexColor;
+
+          swatch.addEventListener('click', () => {
+              selectColorSwatch(colorName);
+              categoryColorValueInput.value = colorName;
+          });
+          categoryColorPicker.appendChild(swatch);
+      });
+  }
+
+  function selectColorSwatch(colorName: string | null | undefined) {
+      if (!categoryColorPicker || !colorName) return;
+      resetColorPickerSelection();
+      const selectedSwatch = categoryColorPicker.querySelector(`div[data-color="${colorName}"]`) as HTMLElement;
+      if (selectedSwatch) {
+          selectedSwatch.classList.add('ring-2', 'ring-offset-2', 'ring-primary');
+          categoryColorValueInput.value = colorName; // Ensure hidden input is set
+      }
+  }
+
+  function resetColorPickerSelection() {
+      if (!categoryColorPicker) return;
+      categoryColorPicker.querySelectorAll('div').forEach(swatch => {
+          swatch.classList.remove('ring-2', 'ring-offset-2', 'ring-primary');
+      });
+       // categoryColorValueInput.value = ''; // Don't clear value here, only on openModal/reset
+  }
+  // --- End Color Picker Logic --- //
+
+  // --- Keywords Logic - Added --- //
+  function renderKeyword(keyword: string) {
+    if (!keywordsContainer) return;
+    const keywordElement = document.createElement('div');
+    keywordElement.classList.add(
+      'inline-flex', 'items-center', 'px-2.5', 'py-1',
+      'rounded-full', 'text-sm', 'bg-blue-100', 'text-blue-800',
+      'border', 'border-blue-200'
+    );
+    keywordElement.dataset.keyword = keyword;
+
+    const textSpan = document.createElement('span');
+    textSpan.classList.add('mr-1');
+    textSpan.textContent = keyword;
+    keywordElement.appendChild(textSpan);
+
+    const removeButton = document.createElement('button');
+    removeButton.setAttribute('type', 'button');
+    removeButton.classList.add(
+      'h-4', 'w-4', 'rounded-full', 'flex', 'items-center',
+      'justify-center', 'hover:bg-blue-200'
+    );
+    removeButton.innerHTML = `<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>`;
+    removeButton.addEventListener('click', () => {
+      keywordElement.remove();
+    });
+    keywordElement.appendChild(removeButton);
+
+    keywordsContainer.appendChild(keywordElement);
+  }
+
+  function addKeywordFromInput() {
+    if (!keywordsInput || !keywordsContainer) return;
+    const newKeyword = keywordsInput.value.trim();
+    if (newKeyword) {
+        // Prevent duplicates
+        const existingKeywords = Array.from(keywordsContainer.querySelectorAll('div[data-keyword]'))
+                                     .map(el => (el as HTMLElement).dataset.keyword);
+        if (!existingKeywords.includes(newKeyword)) {
+            renderKeyword(newKeyword);
+        }
+        keywordsInput.value = ''; // Clear input
+    }
+  }
+
+  function populateKeywords(keywordsData: any) {
+      clearKeywords();
+      let keywordsArray: string[] = [];
+      if (typeof keywordsData === 'string') {
+          try {
+              keywordsArray = JSON.parse(keywordsData);
+              if (!Array.isArray(keywordsArray)) keywordsArray = []; // Ensure it's an array
+          } catch (e) {
+              console.warn('Keywords string is not valid JSON:', keywordsData);
+              keywordsArray = [];
+          }
+      } else if (Array.isArray(keywordsData)) {
+          keywordsArray = keywordsData.map(String); // Ensure all items are strings
+      }
+
+      keywordsArray.forEach(renderKeyword);
+  }
+
+  function clearKeywords() {
+      if (keywordsContainer) keywordsContainer.innerHTML = '';
+  }
+
+  function getKeywordsFromContainer(): string[] {
+      if (!keywordsContainer) return [];
+      return Array.from(keywordsContainer.querySelectorAll('div[data-keyword]'))
+                 .map(el => (el as HTMLElement).dataset.keyword || '')
+                 .filter(k => k); // Filter out empty strings
+  }
+
+  keywordsInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ',') {
+          e.preventDefault();
+          addKeywordFromInput();
+      }
+  });
+
+  addKeywordButton?.addEventListener('click', addKeywordFromInput);
+  // --- End Keywords Logic --- //
+
+  // Event Listeners
+  addCategoryButton?.addEventListener('click', () => openModal());
+  cancelButton?.addEventListener('click', closeModal);
+
+  categoryModal?.addEventListener('click', (event) => {
+    if (event.target === categoryModal) {
+      closeModal();
+    }
+  });
+
+  // Handle Edit and Delete button clicks (delegation)
+  categoriesTableBody?.addEventListener('click', async (event) => {
+    const target = event.target as HTMLElement;
+    const row = target.closest('tr');
+    if (!row) return;
+    const categoryId = row.dataset.categoryId;
+    if (!categoryId) return;
+
+    if (target.classList.contains('edit-button')) {
+       const { data: categoryToEdit, error } = await supabase
+        .from('categories')
+        .select('id, name, slug, color, order_id, keywords, description')
+        .eq('id', categoryId)
+        .single();
+
+      if (error) {
+        console.error('Error fetching category to edit:', error);
+        alert('Errore nel caricare la categoria per la modifica.');
+        return;
+      }
+      if (categoryToEdit) {
+        openModal(categoryToEdit as Category);
+      }
+    }
+
+    if (target.classList.contains('delete-button')) {
+      const categoryName = row.querySelector('td:first-child .text-sm')?.textContent || categoryId;
+      if (confirm(`Sei sicuro di voler eliminare la categoria "${categoryName}"? Questa azione non può essere annullata.`)) {
+         const { error } = await supabase
+          .from('categories')
+          .delete()
+          .match({ id: categoryId });
+
+        if (error) {
+          console.error('Error deleting category:', error);
+          alert(`Errore durante l'eliminazione della categoria: ${error.message}`);
+        } else {
+          // alert('Categoria eliminata con successo!'); // Optional: Less intrusive
+          row.remove();
+          await triggerCategoryRefresh(); // <<< CALL REFRESH API HERE
+          // Check if table is now empty
+          if (categoriesTableBody?.querySelectorAll('tr').length === 0) {
+            addEmptyStateRow();
+          }
+        }
+      }
+    }
+  });
+
+  // Function to trigger the category refresh API
+  async function triggerCategoryRefresh() {
+    console.log('Attempting to trigger category refresh via API...');
+    try {
+      // Get the current session token for authorization
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+          console.warn('No active session found, cannot refresh categories.');
+          return; 
+      }
+      
+      const response = await fetch('/api/refresh-categories', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}` // Pass the token
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Failed to trigger category refresh API:', response.status, errorData);
+        // Optionally alert the user, but maybe not necessary
+        // alert(`Errore nell'aggiornamento live delle categorie: ${errorData.error || response.statusText}`);
+      } else {
+        console.log('Category refresh API triggered successfully.');
+      }
+    } catch (error) {
+      console.error('Error calling category refresh API:', error);
+    }
+  }
+
+  // Handle Form Submission (Add/Edit)
+  categoryForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(categoryForm);
+    
+    // Use .get() for type safety, default to empty string
+    const categoryId = formData.get('id') as string | null; // Keep id as is
+    const categoryName = formData.get('name') as string || '';
+    let categorySlug = formData.get('slug') as string || '';
+    const categoryColor = categoryColorValueInput.value; // Get color from the hidden input
+    const orderIdString = formData.get('order_id') as string;
+    const categoryOrderId = orderIdString && !isNaN(parseInt(orderIdString)) ? parseInt(orderIdString) : null;
+    const categoryDescription = formData.get('description') as string || ''; // Added
+    const currentKeywords = getKeywordsFromContainer(); // Get keywords
+
+    // Ensure slug is valid and generated if empty
+    categorySlug = generateSlug(categorySlug || categoryName);
+    
+    if (!categoryName || !categorySlug || !categoryColor) {
+        alert("Per favore compila tutti i campi (Nome, Slug, Colore).");
+        return;
+    }
+
+    // Define the payload with explicit types where possible
+    const categoryPayload: { 
+        name: string;
+        slug: string;
+        color: string;
+        order_id: number | null;
+        keywords: string[];
+        description: string;
+    } = { 
+        name: categoryName,
+        slug: categorySlug,
+        color: categoryColor,
+        order_id: categoryOrderId,
+        keywords: currentKeywords,
+        description: categoryDescription,
+    };
+
+    let error: any = null; // Use any for Supabase error flexibility
+    let savedData: Category | null = null;
+    const saveButton = document.getElementById('save-category-button') as HTMLButtonElement;
+    saveButton.disabled = true;
+    saveButton.textContent = 'Salvataggio...';
+
+    try {
+      if (isEditMode && categoryId) {
+        // Update existing category
+        const { data, error: updateError } = await supabase
+          .from('categories')
+          .update(categoryPayload)
+          .eq('id', categoryId)
+          .select()
+          .single();
+         error = updateError;
+         savedData = data as Category;
+      } else {
+        // Add new category - Use slug as ID
+        // Explicitly add the ID to the payload for insertion
+        const payloadWithId = { ...categoryPayload, id: categorySlug }; 
+         const { data, error: insertError } = await supabase
+          .from('categories')
+          .insert(payloadWithId) // Use payloadWithId here
+          .select()
+          .single();
+        error = insertError;
+        savedData = data as Category;
+      }
+
+      if (error) {
+        console.error('Error saving category:', error);
+        // Provide more specific error for unique constraint violation
+        if (error.message.includes('duplicate key value violates unique constraint')) {
+            if (error.message.includes('_slug_key') || error.message.includes('categories_pkey')) {
+                 alert(`Errore: Lo slug "${categorySlug}" è già in uso. Scegli uno slug diverso.`);
+            } else {
+                alert(`Errore durante il salvataggio: ${error.message}`);
+            }
+        } else {
+            alert(`Errore durante il salvataggio della categoria: ${error.message}`);
+        }
+      } else if (savedData) {
+        // alert(`Categoria ${isEditMode ? 'aggiornata' : 'aggiunta'} con successo!`); // Optional
+        closeModal();
+        updateTableRow(savedData);
+        await triggerCategoryRefresh(); // <<< CALL REFRESH API HERE
+      }
+    } catch (err) {
+       console.error('Unexpected error saving category:', err);
+       alert('Si è verificato un errore inaspettato.');
+    } finally {
+        saveButton.disabled = false;
+        saveButton.textContent = 'Salva Categoria';
+    }
+  });
+
+  // Function to update or add a row in the table
+  function updateTableRow(category: Category) {
+    if (!categoriesTableBody) return;
+    // Ensure it's treated as a tbody element
+    const tableBody = categoriesTableBody as HTMLTableSectionElement; 
+    const existingRow = tableBody.querySelector(`tr[data-category-id="${category.id}"]`) as HTMLTableRowElement;
+
+    let displayKeywords: string;
+    let keywordsArray: string[] = [];
+    const MAX_TAG_LENGTH = 15; // Max length for each tag preview
+
+    if (typeof category.keywords === 'string') {
+      try {
+        const parsed = JSON.parse(category.keywords);
+        if (Array.isArray(parsed)) {
+          keywordsArray = parsed.map(String);
+        }
+      } catch (e) {
+        /* ignore malformed JSON */
+      }
+    } else if (Array.isArray(category.keywords)) {
+      keywordsArray = category.keywords.map(String);
+    }
+
+    if (keywordsArray.length === 0) {
+      displayKeywords = 'N/A';
+    } else {
+      const processedKeywords = keywordsArray.slice(0, 2).map(kw => 
+        kw.length > MAX_TAG_LENGTH ? kw.substring(0, MAX_TAG_LENGTH) + '...' : kw
+      );
+      displayKeywords = processedKeywords.join(', ');
+      if (keywordsArray.length > 2) {
+        displayKeywords += ', ...';
+      }
+    }
+
+    const categoryDescription = category.description ? (category.description.length > 50 ? category.description.substring(0, 50) + '...' : category.description) : 'N/A';
+
+    const rowHtml = `
+        <td class="px-6 py-4 whitespace-nowrap">
+          <div class="flex items-center">
+            <div class="flex-shrink-0 h-6 w-6 rounded mr-3" style="background-color: var(--color-${escapeHtml(category.color)}, #ccc);"></div>
+            <div class="text-sm font-medium text-gray-900">${escapeHtml(category.name)}</div>
+          </div>
+        </td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${escapeHtml(category.slug)}</td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${escapeHtml(categoryDescription)}</td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${escapeHtml(category.color)}</td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${category.order_id ?? 'N/A'}</td>
+        <td class="px-6 py-4 whitespace-nowrap text-xs text-gray-400">${escapeHtml(category.id)}</td>
+        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${escapeHtml(displayKeywords)}</td>
+        <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+          <button class="text-primary hover:text-primary-dark edit-button">Modifica</button>
+          <button class="text-red-600 hover:text-red-800 delete-button">Elimina</button>
+        </td>
+    `;
+
+    if (existingRow) {
+      existingRow.innerHTML = rowHtml;
+    } else {
+      // Add new row
+      const newRow = tableBody.insertRow(0); // Use the casted tableBody
+      newRow.dataset.categoryId = category.id;
+      newRow.innerHTML = rowHtml;
+    }
+
+    // Remove empty state if it exists and table now has rows
+    const emptyRow = tableBody.querySelector('td[colspan="8"]');
+    if (emptyRow && tableBody.querySelectorAll('tr').length > 1) { // Check > 1 because the new row is already added
+        emptyRow.closest('tr')?.remove();
+    }
+  }
+
+  // Function to add the empty state row
+  function addEmptyStateRow() {
+      if (!categoriesTableBody) return;
+      categoriesTableBody.innerHTML = `
+        <tr>
+            <td colspan="8" class="px-6 py-4 text-center text-sm text-gray-500">
+              Nessuna categoria trovata.
+            </td>
+        </tr>
+      `;
+  }
+
+  // Basic HTML escaping function
+  function escapeHtml(unsafe: string | null | undefined): string {
+    if (unsafe === null || typeof unsafe === 'undefined') return '';
+    return unsafe
+         .replace(/&/g, "&amp;")
+         .replace(/</g, "&lt;")
+         .replace(/>/g, "&gt;")
+         .replace(/"/g, "&quot;")
+         .replace(/'/g, "&#039;");
+ }
+
+ // Initialize color picker on load
+ document.addEventListener('DOMContentLoaded', renderColorSwatches);
+
+ function slugify(text: string): string {
+    return text.toString().toLowerCase()
+      .replace(/\s+/g, '-')           // Replace spaces with -
+      .replace(/[^\w\-]+/g, '')       // Remove all non-word chars
+      .replace(/\-\-+/g, '-')         // Replace multiple - with single -
+      .replace(/^-+/, '')             // Trim - from start of text
+      .replace(/-+$/, '');            // Trim - from end of text
+  }
+
+  async function fetchAndDisplaySecondaryCategories(primaryCategorySlug: string) {
+    existingSecondaryCategoriesList.innerHTML = '<p class="text-sm text-gray-500">Caricamento sottocategorie...</p>';
+    try {
+      const { data, error } = await supabase
+        .from('secondary_categories')
+        .select('*')
+        .eq('parent_category_slug', primaryCategorySlug)
+        .order('name', { ascending: true });
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        existingSecondaryCategoriesList.innerHTML = data.map(sc => `
+          <div class="flex justify-between items-center p-2 border-b last:border-b-0" data-sec-id="${sc.id}" data-sec-name="${sc.name}" data-sec-slug="${sc.slug}">
+            <span>${sc.name} (${sc.slug})</span>
+            <div class="space-x-2">
+              <button type="button" class="text-xs text-blue-500 hover:text-blue-700 edit-secondary-button">Modifica</button>
+              <button type="button" class="text-xs text-red-500 hover:text-red-700 delete-secondary-button">Elimina</button>
+            </div>
+          </div>
+        `).join('');
+
+        // Add event listeners for edit/delete secondary buttons
+        existingSecondaryCategoriesList.querySelectorAll('.edit-secondary-button').forEach(btn => {
+          btn.addEventListener('click', handleEditSecondaryCategory);
+        });
+        existingSecondaryCategoriesList.querySelectorAll('.delete-secondary-button').forEach(btn => {
+          btn.addEventListener('click', handleDeleteSecondaryCategory);
+        });
+      } else {
+        existingSecondaryCategoriesList.innerHTML = '<p class="text-sm text-gray-500">Nessuna sottocategoria trovata per questa categoria.</p>';
+      }
+    } catch (err) {
+      console.error('Error fetching secondary categories:', err);
+      existingSecondaryCategoriesList.innerHTML = '<p class="text-sm text-red-500">Errore nel caricamento delle sottocategorie.</p>';
+      alert('Errore nel caricamento delle sottocategorie.');
+    }
+  }
+
+  function openSecondaryCategoryModal(primaryCategorySlug: string, primaryCategoryName: string) {
+    currentPrimaryCategorySlugInput.value = primaryCategorySlug;
+    primaryCategoryNamePlaceholder.textContent = primaryCategoryName;
+    secondaryCategoryModal.classList.remove('hidden');
+    secondaryCategoryModal.classList.add('flex');
+    secondaryCategoryIdInput.value = ''; // Clear ID for new entry
+    secondaryCategoryNameInput.value = '';
+    secondaryFormActionTitle.textContent = 'Aggiungi Nuova Sottocategoria';
+    saveSecondaryCategoryButton.textContent = 'Salva Sottocategoria';
+    currentEditingSecondaryCategory = null;
+    fetchAndDisplaySecondaryCategories(primaryCategorySlug);
+  }
+
+  function closeSecondaryCategoryModal() {
+    secondaryCategoryModal.classList.add('hidden');
+    secondaryCategoryModal.classList.remove('flex');
+    secondaryCategoryForm.reset();
+    secondaryCategoryIdInput.value = '';
+    currentEditingSecondaryCategory = null;
+  }
+
+  cancelSecondaryButton.addEventListener('click', closeSecondaryCategoryModal);
+
+  document.querySelectorAll('.manage-secondary-button').forEach(button => {
+    button.addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest('tr');
+      const primarySlug = row?.dataset.categorySlug;
+      const primaryName = row?.dataset.categoryName;
+      if (primarySlug && primaryName) {
+        openSecondaryCategoryModal(primarySlug, primaryName);
+      } else {
+        console.error('Could not find primary category slug or name from row data.');
+        alert('Errore: Impossibile recuperare i dati della categoria principale.');
+      }
+    });
+  });
+
+
+
+  secondaryCategoryForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = secondaryCategoryNameInput.value.trim();
+    const parentSlug = currentPrimaryCategorySlugInput.value;
+    
+    if (!name || !parentSlug) {
+      alert('Il nome della sottocategoria e la categoria principale sono obbligatori.');
+      return;
+    }
+
+    const slug = slugify(name);
+    const secondaryCategoryData: Partial<SecondaryCategory> = {
+      name,
+      slug,
+      parent_category_slug: parentSlug,
+      // description: (document.getElementById('secondary-category-description-input') as HTMLTextAreaElement).value.trim(),
+    };
+
+    saveSecondaryCategoryButton.disabled = true;
+    saveSecondaryCategoryButton.textContent = currentEditingSecondaryCategory ? 'Salvataggio...' : 'Creazione...';
+
+    try {
+      let result;
+      if (currentEditingSecondaryCategory && currentEditingSecondaryCategory.id) {
+        // Update existing secondary category
+        const { data, error } = await supabase
+          .from('secondary_categories')
+          .update({ name, slug /*, description */ })
+          .eq('id', currentEditingSecondaryCategory.id)
+          .select()
+          .single();
+        if (error) throw error;
+        result = data;
+        alert('Sottocategoria aggiornata con successo!');
+      } else {
+        // Create new secondary category
+        const { data, error } = await supabase
+          .from('secondary_categories')
+          .insert(secondaryCategoryData)
+          .select()
+          .single(); // Use single() if you expect one row back
+        if (error) throw error;
+        result = data;
+        alert('Sottocategoria creata con successo!');
+      }
+      
+      if (result) {
+        console.log('Saved secondary category:', result);
+        fetchAndDisplaySecondaryCategories(parentSlug); // Refresh list
+        secondaryCategoryNameInput.value = ''; // Clear input for next entry
+        secondaryCategoryIdInput.value = '';
+        secondaryFormActionTitle.textContent = 'Aggiungi Nuova Sottocategoria';
+        saveSecondaryCategoryButton.textContent = 'Salva Sottocategoria';
+        currentEditingSecondaryCategory = null;
+      } else {
+        throw new Error('No data returned from Supabase operation');
+      }
+
+    } catch (err: any) {
+      console.error('Error saving secondary category:', err);
+      alert(`Errore nel salvataggio della sottocategoria: ${err.message || err}`);
+    } finally {
+      saveSecondaryCategoryButton.disabled = false;
+      saveSecondaryCategoryButton.textContent = currentEditingSecondaryCategory ? 'Salva Modifiche' : 'Salva Sottocategoria';
+    }
+  });
+
+  function handleEditSecondaryCategory(event: Event) {
+    const button = event.target as HTMLButtonElement;
+    const listItem = button.closest('[data-sec-id]');
+    if (!listItem) return;
+
+    const id = listItem.getAttribute('data-sec-id');
+    const name = listItem.getAttribute('data-sec-name');
+    // const slug = listItem.getAttribute('data-sec-slug'); // Slug is not directly edited by user for now
+
+    if (!id || !name) {
+        alert('Errore: dati della sottocategoria non trovati.');
+        return;
+    }
+    
+    currentEditingSecondaryCategory = {
+        id: parseInt(id, 10),
+        name: name,
+        slug: slugify(name), // Will be re-slugified on save if name changes
+        parent_category_slug: currentPrimaryCategorySlugInput.value,
+        // description: '', // Fetch if you have description field and want to edit it
+    };
+
+    secondaryCategoryIdInput.value = id;
+    secondaryCategoryNameInput.value = name;
+    // (document.getElementById('secondary-category-description-input') as HTMLTextAreaElement).value = currentEditingSecondaryCategory.description || '';
+    secondaryFormActionTitle.textContent = 'Modifica Sottocategoria';
+    saveSecondaryCategoryButton.textContent = 'Salva Modifiche';
+    secondaryCategoryNameInput.focus();
+  }
+
+  async function handleDeleteSecondaryCategory(event: Event) {
+    const button = event.target as HTMLButtonElement;
+    const listItem = button.closest('[data-sec-id]');
+    if (!listItem) return;
+
+    const id = listItem.getAttribute('data-sec-id');
+    const name = listItem.getAttribute('data-sec-name');
+
+    if (!id || !name) {
+        alert('Errore: dati della sottocategoria non trovati.');
+        return;
+    }
+
+    if (confirm(`Sei sicuro di voler eliminare la sottocategoria "${name}"? Questa azione non può essere annullata.`)) {
+        try {
+            const { error } = await supabase
+                .from('secondary_categories')
+                .delete()
+                .eq('id', id);
+            if (error) throw error;
+            alert('Sottocategoria eliminata con successo.');
+            fetchAndDisplaySecondaryCategories(currentPrimaryCategorySlugInput.value); // Refresh the list
+        } catch (err: any) {
+            console.error('Error deleting secondary category:', err);
+            alert(`Errore nell'eliminazione della sottocategoria: ${err.message || err}`);
+        }
+    }
+  }
+
+  // --- End Secondary Category Modal Logic ---
+
+</script> 
+
+<style>
+  /* Optional: Add styles if needed, e.g., for color previews */
+  /* .color-preview { width: 1.5rem; height: 1.5rem; border-radius: 0.25rem; } */
+</style> 

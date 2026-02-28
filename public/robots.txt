@@ -1,0 +1,31 @@
+# EduNews24 robots.txt
+User-agent: *
+Allow: /
+
+# Sitemaps
+Sitemap: https://edunews24.it/sitemap-index.xml
+Sitemap: https://edunews24.it/sitemap-articoli.xml
+Sitemap: https://edunews24.it/sitemap-pagine.xml
+Sitemap: https://edunews24.it/sitemap-news.xml
+Sitemap: https://edunews24.it/sitemap-bandi.xml
+Sitemap: https://edunews24.it/sitemap-iterpelli.xml
+Sitemap: https://edunews24.it/sitemap-categorie.xml
+
+# Disallow admin and private areas
+Disallow: /admin/
+Disallow: /private/
+Disallow: /api/
+Disallow: /cdn-cgi/
+
+# Crawl delay for heavy bots
+User-agent: AhrefsBot
+Crawl-delay: 10
+
+User-agent: SemrushBot
+Crawl-delay: 10 
+
+User-agent: msnbot
+Crawl-delay: 5
+
+User-agent: bingbot
+Crawl-delay: 5

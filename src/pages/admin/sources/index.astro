@@ -1,0 +1,406 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+// Remove unused import
+// Remove server-side fetch since we'll handle it client-side
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Caricamento...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden">
+  <AdminLayout title="Gestione Fonti">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <!-- Header -->
+        <div class="md:flex md:items-center md:justify-between mb-6">
+          <div class="flex-1 min-w-0">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
+              Fonti di Notizie
+            </h2>
+          </div>
+          <div class="mt-4 flex md:mt-0 md:ml-4">
+            <button
+              id="new-source-btn"
+              class="ml-3 inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary"
+            >
+              <svg class="-ml-1 mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+              Aggiungi Fonte
+            </button>
+          </div>
+        </div>
+
+        <!-- Sources List -->
+        <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+          <ul id="sources-list" class="divide-y divide-gray-200">
+            <li class="px-4 py-4 text-center text-gray-500">
+              Caricamento fonti...
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </AdminLayout>
+
+  <!-- Modal for Add/Edit Source -->
+  <div id="source-modal" class="fixed inset-0 z-50 overflow-auto bg-gray-800 bg-opacity-50 hidden">
+    <div class="relative p-8 bg-white w-full max-w-md m-auto rounded-lg shadow-lg mt-20" id="modal-content">
+      <h2 id="modal-title" class="text-xl font-semibold mb-4">Aggiungi Nuova Fonte</h2>
+      <form id="source-form" method="dialog">
+        <input type="hidden" id="source-id" name="source-id">
+        <div class="mb-4">
+          <label for="source-link" class="block text-sm font-medium text-gray-700">Link</label>
+          <input type="url" id="source-link" name="source-link" placeholder="https://example.com" required
+            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+        </div>
+        <div class="mb-4">
+          <label for="source-valid-prefix" class="block text-sm font-medium text-gray-700">Prefisso Valido (opzionale)</label>
+          <input type="text" id="source-valid-prefix" name="source-valid-prefix" placeholder="https://example.com"
+            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <p class="mt-1 text-sm text-gray-500">
+            Prefisso URL utilizzato per validare i link delle notizie. Se non specificato verrà usato il link.
+          </p>
+        </div>
+        <div class="flex justify-end mt-6">
+          <button type="button" id="cancel-source" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+            Annulla
+          </button>
+          <button id="save-source" type="submit" class="ml-3 px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+            Salva
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  import { supabase } from '../../../lib/supabase';
+  
+  // Modal elements with type annotations
+  let modal: HTMLElement | null = null;
+  let modalTitle: HTMLElement | null = null;
+  let sourceForm: HTMLFormElement | null = null;
+  let sourceIdInput: HTMLInputElement | null = null;
+  let sourceLinkInput: HTMLInputElement | null = null;
+  let sourceValidPrefixInput: HTMLInputElement | null = null;
+  
+  function toggleModal() {
+    console.log('toggleModal called, modal element:', modal);
+    if (modal) {
+      if (modal.classList.contains('hidden')) {
+        openModal();
+      } else {
+        closeModal();
+      }
+    }
+  }
+  
+  function openModal() {
+    console.log('Opening modal');
+    if (modal) {
+      modal.classList.remove('hidden');
+      document.body.style.overflow = 'hidden'; // Prevent scrolling
+    }
+  }
+  
+  function closeModal() {
+    console.log('Closing modal');
+    if (modal) {
+      modal.classList.add('hidden');
+      document.body.style.overflow = ''; // Re-enable scrolling
+      
+      // Reset the form after closing
+      if (sourceForm) {
+        sourceForm.reset();
+      }
+    }
+  }
+  
+  async function loadSources() {
+    try {
+      const { data: sources, error } = await supabase
+        .from('sources')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      console.log('Sources data:', sources);
+
+      if (error) {
+        console.error('Error loading sources:', error);
+        return;
+      }
+
+      const sourcesList = document.getElementById('sources-list');
+      if (!sourcesList) return;
+
+      if (!sources || sources.length === 0) {
+        sourcesList.innerHTML = `
+          <li class="px-4 py-4 text-center text-gray-500">
+            Nessuna fonte trovata. Aggiungi la tua prima fonte usando il pulsante qui sopra.
+          </li>
+        `;
+        return;
+      }
+
+      sourcesList.innerHTML = sources.map(source => `
+        <li class="flex items-center justify-between gap-x-6 py-5 px-4 border-b border-gray-100">
+          <div class="min-w-0">
+            <div class="flex items-start gap-x-3">
+              <p class="text-sm font-semibold leading-6 text-gray-900">${source.link}</p>
+            </div>
+            ${source.valid_prefix && source.valid_prefix !== source.link ? 
+              `<div class="mt-1 flex items-center gap-x-2 text-xs leading-5 text-gray-500">
+                <p>Prefisso valido: ${source.valid_prefix}</p>
+              </div>` : ''}
+          </div>
+          <div class="flex flex-none items-center gap-x-4">
+            <button
+              class="edit-button inline-flex items-center text-sm font-medium text-indigo-600 hover:text-indigo-900"
+              data-source-id="${source.id}"
+              data-source-link="${source.link}"
+              data-source-valid-prefix="${source.valid_prefix || ''}"
+            >
+              <svg class="mr-1.5 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              Modifica
+            </button>
+            <button
+              class="delete-button inline-flex items-center text-sm font-medium text-red-600 hover:text-red-900"
+              data-source-id="${source.id}"
+            >
+              <svg class="mr-1.5 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              Elimina
+            </button>
+          </div>
+        </li>
+      `).join('');
+
+      // Reattach event listeners after updating the DOM
+      attachEventListeners();
+    } catch (error) {
+      console.error('Error in loadSources:', error);
+    }
+  }
+
+  async function checkAuth() {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        window.location.href = '/login';
+        return;
+      }
+
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', session.user.id)
+        .single();
+      
+      if (error || !(profile?.role === 'docente' || profile?.role === 'insegnante' || profile?.role === 'admin')) {
+        window.location.href = '/login';
+        return;
+      }
+
+      document.getElementById('loading-screen')?.classList.add('hidden');
+      document.getElementById('admin-content')?.classList.remove('hidden');
+      
+      // Initialize modal elements
+      initializeModal();
+      
+      // Load sources after authentication
+      await loadSources();
+    } catch (error) {
+      console.error('Auth check error:', error);
+      window.location.href = '/login';
+    }
+  }
+  
+  function initializeModal() {
+    console.log('Initializing modal elements');
+    // Get modal elements
+    modal = document.getElementById('source-modal');
+    modalTitle = document.getElementById('modal-title');
+    sourceForm = document.getElementById('source-form') as HTMLFormElement;
+    sourceIdInput = document.getElementById('source-id') as HTMLInputElement;
+    sourceLinkInput = document.getElementById('source-link') as HTMLInputElement;
+    sourceValidPrefixInput = document.getElementById('source-valid-prefix') as HTMLInputElement;
+    
+    console.log('Modal element found:', !!modal);
+    console.log('Modal form found:', !!sourceForm);
+    
+    // Add new source button listener
+    const newSourceBtn = document.getElementById('new-source-btn');
+    if (newSourceBtn) {
+      console.log('Adding event listener to new source button');
+      newSourceBtn.addEventListener('click', () => {
+        if (modalTitle && sourceForm && sourceIdInput) {
+          modalTitle.textContent = 'Aggiungi Nuova Fonte';
+          sourceForm.reset();
+          sourceIdInput.value = '';
+          openModal();
+        }
+      });
+    }
+    
+    // Cancel button listener
+    const cancelBtn = document.getElementById('cancel-source');
+    if (cancelBtn) {
+      console.log('Adding event listener to cancel button');
+      cancelBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Cancel button clicked');
+        closeModal();
+      });
+    }
+    
+    // Save button direct click handler (backup for form submission)
+    const saveBtn = document.getElementById('save-source');
+    if (saveBtn) {
+      console.log('Adding direct click event listener to save button');
+      saveBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Save button clicked directly');
+        await saveSource();
+      });
+    }
+    
+    // Form submission
+    if (sourceForm) {
+      console.log('Adding event listener to form submission');
+      sourceForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Form submitted');
+        await saveSource();
+      });
+    }
+    
+    // Close modal when clicking outside
+    if (modal) {
+      console.log('Adding click event listener to modal background');
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+          console.log('Clicked outside modal content');
+          closeModal();
+        }
+      });
+      
+      // Prevent clicks within modal content from closing the modal
+      const modalContent = document.getElementById('modal-content');
+      if (modalContent) {
+        modalContent.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+      }
+    }
+    
+    // Add escape key listener to close modal
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) {
+        console.log('Escape key pressed, closing modal');
+        closeModal();
+      }
+    });
+  }
+  
+  // Extracted saving functionality to reuse it
+  async function saveSource() {
+    if (!sourceIdInput || !sourceLinkInput || !sourceValidPrefixInput) {
+      console.error('Form input elements not found');
+      return;
+    }
+    
+    const sourceId = sourceIdInput.value;
+    const link = sourceLinkInput.value;
+    const valid_prefix = sourceValidPrefixInput.value;
+    
+    console.log('Saving source:', { sourceId, link, valid_prefix });
+
+    try {
+      if (sourceId) {
+        // Update existing source
+        const { error } = await supabase
+          .from('sources')
+          .update({ link, valid_prefix })
+          .eq('id', sourceId);
+        
+        if (error) throw error;
+        console.log('Source updated successfully');
+      } else {
+        // Create new source
+        const { error } = await supabase
+          .from('sources')
+          .insert([{ link, valid_prefix }]);
+        
+        if (error) throw error;
+        console.log('Source created successfully');
+      }
+
+      closeModal();
+      await loadSources(); // Reload the sources list
+    } catch (error) {
+      console.error('Error saving source:', error);
+      alert('Failed to save source');
+    }
+  }
+
+  function attachEventListeners() {
+    // Edit buttons
+    document.querySelectorAll('.edit-button').forEach((button) => {
+      button.addEventListener('click', () => {
+        if (!modalTitle || !sourceForm || !sourceIdInput || !sourceLinkInput || !sourceValidPrefixInput) return;
+        
+        const sourceId = button.getAttribute('data-source-id');
+        const sourceLink = button.getAttribute('data-source-link');
+        const sourceValidPrefix = button.getAttribute('data-source-valid-prefix');
+        
+        modalTitle.textContent = 'Modifica Fonte';
+        sourceForm.reset();
+        sourceIdInput.value = sourceId || '';
+        sourceLinkInput.value = sourceLink || '';
+        sourceValidPrefixInput.value = sourceValidPrefix || '';
+        toggleModal();
+      });
+    });
+
+    // Delete functionality
+    document.querySelectorAll('.delete-button').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const sourceId = button.getAttribute('data-source-id');
+        if (!sourceId || !confirm('Sei sicuro di voler eliminare questa fonte?')) return;
+
+        try {
+          const { error } = await supabase
+            .from('sources')
+            .delete()
+            .eq('id', sourceId);
+          
+          if (error) throw error;
+          await loadSources(); // Reload the sources list
+        } catch (error) {
+          console.error('Error:', error);
+          alert('Failed to delete source');
+        }
+      });
+    });
+  }
+
+  // Start the auth check process when the page loads
+  document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM fully loaded, checking auth');
+    checkAuth();
+  });
+</script> 

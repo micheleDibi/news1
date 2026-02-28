@@ -1,0 +1,56 @@
+---
+import Layout from '../../../layouts/Layout.astro';
+
+const siteUrl = 'https://edunews24.it';
+const slug = Astro.params.slug || '';
+
+const search = new URL(Astro.request.url).searchParams;
+const file = search.get('src') || '';
+const thumb = search.get('thumb') || '';
+const title = search.get('title') || 'Video articolo';
+const description = search.get('desc') || 'Video dell’articolo';
+const uploadDate = new Date().toISOString();
+
+if (!slug || !file) {
+  // Parametri essenziali mancanti: 404 per evitare view page vuote
+  return new Response('Not found', { status: 404 });
+}
+
+const canonicalUrl = `${siteUrl}/video/article/${encodeURIComponent(slug)}?src=${encodeURIComponent(file)}${thumb ? `&thumb=${encodeURIComponent(thumb)}` : ''}${title ? `&title=${encodeURIComponent(title)}` : ''}${description ? `&desc=${encodeURIComponent(description)}` : ''}`;
+
+const structuredData = JSON.stringify(
+  {
+    '@context': 'https://schema.org',
+    '@type': 'VideoObject',
+    name: title,
+    description,
+    thumbnailUrl: thumb || undefined,
+    contentUrl: file,
+    embedUrl: canonicalUrl,
+    uploadDate,
+  },
+  null,
+  2
+);
+---
+
+<Layout title={title} description={description} canonicalUrl={canonicalUrl}>
+  <script type="application/ld+json" slot="head" set:html={structuredData} />
+  <main class="max-w-4xl mx-auto px-4 py-8 space-y-6">
+    <h1 class="text-3xl font-bold text-gray-900">{title}</h1>
+    <p class="text-lg text-gray-600">{description}</p>
+
+    <div class="overflow-hidden rounded-xl border border-gray-200 shadow-sm">
+      <video
+        src={file}
+        poster={thumb || undefined}
+        class="w-full h-auto"
+        controls
+        preload="metadata"
+        playsinline
+      >
+        Il tuo browser non supporta il tag video.
+      </video>
+    </div>
+  </main>
+</Layout>

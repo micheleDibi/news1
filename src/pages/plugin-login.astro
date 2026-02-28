@@ -1,0 +1,34 @@
+---
+import Layout from '../layouts/Layout.astro';
+import ApiRegistrationForm from '../components/ApiRegistrationForm';
+---
+
+<Layout title="Registrazione Accesso Plugin">
+  <main class="container mx-auto px-4 py-8">
+    <div class="max-w-4xl mx-auto">
+      <div class="text-center mb-8">
+        <h1 class="text-3xl font-bold mb-4 text-gray-900">Richiedi Accesso Plugin</h1>
+        <p class="text-lg text-gray-600 max-w-2xl mx-auto">
+          Ottieni accesso al nostro plugin per articoli per il tuo sito web o applicazione. 
+          Compila il modulo qui sotto e esamineremo la tua richiesta.
+        </p>
+      </div>
+      
+      <ApiRegistrationForm client:load />
+      
+      <!-- Status Check Section -->
+      <div class="mt-12 text-center bg-gray-50 border border-gray-200 rounded-lg p-8">
+        <h2 class="text-2xl font-bold text-gray-900 mb-4">Hai già inviato una richiesta?</h2>
+        <p class="text-lg text-gray-600 mb-6">
+          Verifica lo stato della tua richiesta di accesso al plugin.
+        </p>
+        <a 
+          href="/check-status" 
+          class="inline-block bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-lg transition duration-300 transform hover:scale-105 shadow-lg"
+        >
+          Verifica Stato Richiesta
+        </a>
+      </div>
+    </div>
+  </main>
+</Layout> 

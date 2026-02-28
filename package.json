@@ -1,0 +1,51 @@
+{
+  "name": "news-portal",
+  "type": "module",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "prebuild": "node scripts/copy-credentials.js",
+    "postbuild": "node scripts/copy-credentials-post-build.js",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/node": "^9.1.2",
+    "@astrojs/react": "^4.1.2",
+    "@astrojs/tailwind": "^5.1.0",
+    "@aws-sdk/client-s3": "^3.723.0",
+    "@google-cloud/text-to-speech": "^5.0.1",
+    "@splidejs/splide": "^4.1.4",
+    "@splidejs/splide-extension-auto-scroll": "^0.5.3",
+    "@supabase/supabase-js": "^2.39.8",
+    "@tailwindcss/forms": "^0.5.10",
+    "@tailwindcss/typography": "^0.5.16",
+    "@tinymce/tinymce-react": "^4.3.2",
+    "@tiptap/extension-image": "^2.11.7",
+    "@tiptap/extension-link": "^2.11.7",
+    "@tiptap/extension-placeholder": "^2.11.7",
+    "@tiptap/react": "^2.11.7",
+    "@tiptap/starter-kit": "^2.11.7",
+    "@vitejs/plugin-react": "^4.3.4",
+    "astro": "^5.3.0",
+    "bcryptjs": "^3.0.3",
+    "date-fns": "^3.3.1",
+    "nodemailer": "^7.0.10",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hook-form": "^7.51.0",
+    "rss-parser": "^3.13.0",
+    "tailwindcss": "^3.4.1",
+    "tippy.js": "^6.3.7",
+    "uuid": "^11.0.3"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^7.0.3",
+    "@types/react": "^18.2.37",
+    "@types/react-dom": "^18.2.15",
+    "@types/uuid": "^10.0.0"
+  }
+}

@@ -1,0 +1,354 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { format, parseISO, isValid } from 'date-fns';
+import { it } from 'date-fns/locale';
+import { createClient } from '@supabase/supabase-js';
+
+// Define the Interpello type
+interface Interpello {
+  id?: number;
+  interpello_name: string;
+  interpello_date: string;
+  interpello_description: string;
+  interpello_link: string;
+  city_name: string;
+  region_name: string;
+  created_at?: string;
+}
+
+// Function to generate URL-friendly slug from interpello data
+function generateInterpelloSlug(interpello: Interpello): string {
+  const parts = [
+    interpello.interpello_name,
+    interpello.city_name,
+    interpello.region_name,
+    interpello.id?.toString()
+  ].filter(Boolean); // Remove empty/null values
+  
+  return parts
+    .join('-')
+    .toLowerCase()
+    .replace(/[^a-z0-9\-]/g, '-') // Replace non-alphanumeric chars with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+}
+
+// Initialize Supabase client
+const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
+const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
+
+// Function to fetch interpelli data directly from Supabase
+async function loadInterpelliData(): Promise<Interpello[]> {
+  try {
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('Missing Supabase environment variables');
+      return [];
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    const { data, error } = await supabase
+      .from('interpelli')
+      .select('*')
+      .order('interpello_date', { ascending: false });
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return [];
+    }
+
+    return data || [];
+  } catch (error) {
+    console.error('Error fetching interpelli data:', error);
+    return [];
+  }
+}
+
+// Load the data
+const interpelliData: Interpello[] = await loadInterpelliData();
+
+// Helper function to format date for display (dd MMMM yyyy)
+const formatDate = (dateString: string): string => {
+  try {
+    const parsedDate = parseISO(dateString);
+    if (!isValid(parsedDate)) {
+       console.warn("Invalid date object after parsing:", dateString);
+       return "Data non valida";
+    }
+    return format(parsedDate, 'dd MMMM yyyy', { locale: it });
+  } catch (e) {
+    console.error("Error formatting date:", dateString, e);
+    return "Data non valida";
+  }
+};
+
+// Helper function to format date for data attributes (YYYY-MM-DD)
+const formatDateForDataAttr = (dateString: string): string => {
+   try {
+    const parsedDate = parseISO(dateString);
+    if (!isValid(parsedDate)) {
+      return "";
+    }
+    return format(parsedDate, 'yyyy-MM-dd');
+  } catch (e) {
+    return "";
+  }
+};
+
+// Get unique values for filters
+const uniqueRegions = [...new Set(interpelliData.map(i => i.region_name).filter(Boolean))].sort();
+
+// Group cities by region for better filtering
+const regionCityData: Record<string, string[]> = {};
+interpelliData.forEach(interpello => {
+  const region = interpello.region_name;
+  const city = interpello.city_name;
+  if (region && city) {
+    if (!regionCityData[region]) {
+      regionCityData[region] = [];
+    }
+    if (!regionCityData[region].includes(city)) {
+      regionCityData[region].push(city);
+    }
+  }
+});
+
+// Sort cities within each region
+for (const region in regionCityData) {
+  regionCityData[region].sort();
+}
+
+const sortedRegions = uniqueRegions.sort();
+const locationOptions = sortedRegions.map(region => {
+  const cities = regionCityData[region] || [];
+  return { region, cities }; 
+});
+
+const pageTitle = "Interpelli Scuola - EduNews24";
+const pageDescription = "Trova tutti gli interpelli per la scuola divisi per regione e città. Cerca opportunità di lavoro nella scuola pubblica italiana.";
+const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli insegnanti, opportunità scuola, lavoro pubblico scuola";
+---
+<Layout title={pageTitle} description={pageDescription} keywords={pageKeywords}>
+  <main class="bg-gray-50 py-12">
+    <div class="container mx-auto px-4 max-w-6xl">
+      <div class="mb-10 border-b pb-4">
+        <h1 class="text-3xl md:text-4xl font-bold text-primary">Interpelli Scuola</h1>
+        <p class="text-gray-600 mt-2">Trova opportunità di lavoro nella scuola pubblica italiana</p>
+      </div>
+
+      {/* Filter Controls */}
+      <div class="mb-8 p-4 bg-white rounded-md shadow-sm">
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 items-end">
+          {/* Search */}
+          <div class="lg:col-span-1">
+            <label for="search-filter" class="block text-sm font-medium text-gray-700 mb-1">Cerca</label>
+            <input type="text" id="search-filter" placeholder="Nome interpello, descrizione..." class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm">
+          </div>
+          
+          {/* Date Filter */}
+          <div class="lg:col-span-1">
+             <label for="date-filter" class="block text-sm font-medium text-gray-700 mb-1">Data Dopo Il</label>
+             <input type="date" id="date-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm">
+          </div>
+
+          {/* Location Filter (Region/City) */}
+          <div class="lg:col-span-1">
+            <label for="location-filter" class="block text-sm font-medium text-gray-700 mb-1">Località</label>
+            <select id="location-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
+              <option value="">Tutte le Località</option>
+              {locationOptions.map(({ region, cities }) => (
+                <optgroup label={region}>
+                  <option value={`REGION::${region}`}>{region} (Tutte le città)</option>
+                  {cities.map(city => (
+                    <option value={`CITY::${city}`}>{city}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+
+          {/* Reset Button */}
+           <div class="lg:col-span-1 flex items-end">
+             <button id="reset-filters" class="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+               Resetta
+             </button>
+           </div>
+        </div>
+      </div>
+      {/* End Filter Controls */}
+
+      {/* Results Count */}
+      <div class="mb-4">
+        <p id="results-count" class="text-sm text-gray-600">
+          Trovati <span id="visible-count">{interpelliData.length}</span> interpelli
+        </p>
+      </div>
+
+      <div id="interpelli-list" class="space-y-5">
+        {interpelliData.length === 0 ? (
+          <p id="no-results-message" class="text-center text-gray-500 text-lg py-10">Nessun interpello trovato al momento.</p>
+        ) : (
+          <>
+            {interpelliData.map((interpello: Interpello) => (
+              <article
+                class="interpello-item bg-white rounded-md border border-gray-200 overflow-hidden transition-all duration-200 hover:border-gray-300 hover:shadow-md"
+                data-name={interpello.interpello_name?.toLowerCase()}
+                data-description={interpello.interpello_description?.toLowerCase()}
+                data-date={formatDateForDataAttr(interpello.interpello_date)}
+                data-region={interpello.region_name?.toLowerCase()}
+                data-city={interpello.city_name?.toLowerCase()}
+              >
+                <a href={`/interpelli/${generateInterpelloSlug(interpello)}`} class="block hover:bg-gray-50/50">
+                  <div class="p-5">
+                    <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-4">
+                      <div class="flex-1">
+                        <h2 class="text-lg font-semibold text-gray-800 mb-2 hover:text-primary transition-colors">
+                          {interpello.interpello_name}
+                        </h2>
+                        <div class="flex flex-wrap items-center gap-2 text-sm text-gray-500 mb-3">
+                          {interpello.region_name && (
+                            <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
+                              📍 {interpello.region_name}
+                            </span>
+                          )}
+                          {interpello.city_name && (
+                            <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">
+                              🏙️ {interpello.city_name}
+                            </span>
+                          )}
+                          {interpello.interpello_date && (
+                            <span class="inline-flex items-center px-2 py-1 bg-gray-100 text-gray-800 rounded-md text-xs font-medium">
+                              📅 {formatDate(interpello.interpello_date)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {interpello.interpello_description && (
+                      <div class="mb-4">
+                        <p class="text-gray-700 text-sm leading-relaxed">
+                          {interpello.interpello_description}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </a>
+
+                <div class="p-5 pt-0 flex flex-col sm:flex-row sm:justify-end items-start sm:items-center gap-3 border-t border-gray-100">
+                  {interpello.interpello_link && (
+                    <a
+                      href={interpello.interpello_link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="inline-flex items-center px-4 py-2 border border-primary text-sm font-medium rounded text-primary bg-white hover:bg-primary/5 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-primary transition"
+                    >
+                      Vai all'Interpello
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                    </a>
+                  )}
+                </div>
+              </article>
+            ))}
+             {/* Message shown when no results match filters */}
+             <p id="no-filtered-results-message" class="text-center text-gray-500 text-lg py-10 hidden">Nessun interpello corrisponde ai filtri selezionati.</p>
+          </>
+        )}
+      </div>
+    </div>
+  </main>
+</Layout>
+
+<script is:inline>
+  const searchInput = document.getElementById('search-filter');
+  const dateInput = document.getElementById('date-filter');
+  const locationSelect = document.getElementById('location-filter');
+  const interpelliList = document.getElementById('interpelli-list');
+  const interpelloItems = interpelliList ? Array.from(interpelliList.querySelectorAll('.interpello-item')) : [];
+  const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
+  const resetButton = document.getElementById('reset-filters');
+  const visibleCountSpan = document.getElementById('visible-count');
+
+  function filterInterpelli() {
+    const searchTerm = searchInput.value.toLowerCase().trim();
+    const selectedDate = dateInput.value;
+    const selectedLocationValue = locationSelect.value;
+    let visibleCount = 0;
+
+    interpelloItems.forEach(item => {
+      const name = item.dataset.name || '';
+      const description = item.dataset.description || '';
+      const date = item.dataset.date || '';
+      const region = item.dataset.region || '';
+      const city = item.dataset.city || '';
+
+      // Text search in name and description
+      const textMatch = searchTerm === '' || 
+        name.includes(searchTerm) || 
+        description.includes(searchTerm);
+
+      // Date filter (show interpelli after selected date)
+      const dateMatch = !selectedDate || date >= selectedDate;
+
+      // Location filter
+      let locationMatch = false;
+      if (!selectedLocationValue) {
+        locationMatch = true;
+      } else if (selectedLocationValue.startsWith('REGION::')) {
+        const targetRegion = selectedLocationValue.substring(8).toLowerCase();
+        locationMatch = region === targetRegion;
+      } else if (selectedLocationValue.startsWith('CITY::')) {
+        const targetCity = selectedLocationValue.substring(6).toLowerCase();
+        locationMatch = city === targetCity;
+      }
+
+      // Show/hide item based on all filters
+      if (textMatch && dateMatch && locationMatch) {
+        item.style.display = '';
+        visibleCount++;
+      } else {
+        item.style.display = 'none';
+      }
+    });
+
+    // Update results count
+    if (visibleCountSpan) {
+      visibleCountSpan.textContent = visibleCount;
+    }
+
+    // Update no results message
+    if (noFilteredResultsMessage) {
+       noFilteredResultsMessage.style.display = visibleCount === 0 ? 'block' : 'none';
+    }
+  }
+
+  function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+      const later = () => {
+        clearTimeout(timeout);
+        func(...args);
+      };
+      clearTimeout(timeout);
+      timeout = setTimeout(later, wait);
+    };
+  }
+
+  const debouncedFilter = debounce(filterInterpelli, 250);
+
+  // Add event listeners
+  if (searchInput) searchInput.addEventListener('input', debouncedFilter);
+  if (dateInput) dateInput.addEventListener('change', filterInterpelli);
+  if (locationSelect) locationSelect.addEventListener('change', filterInterpelli);
+
+  if (resetButton) {
+    resetButton.addEventListener('click', () => {
+      searchInput.value = '';
+      dateInput.value = '';
+      locationSelect.value = '';
+      filterInterpelli();
+    });
+  }
+</script> 

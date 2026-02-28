@@ -1,0 +1,566 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import type { EUFundingData, EUFundingOpportunity } from '../../types/eu-funding';
+
+// Get the opportunity ID from the URL
+const { id } = Astro.params;
+
+// Load EU funding data
+let euData: EUFundingData | null = null;
+let opportunity: EUFundingOpportunity | null = null;
+
+try {
+  const fs = await import('fs/promises');
+  const path = await import('path');
+  const dataPath = path.join(process.cwd(), 'src', 'data', 'eu-funding-opportunities.json');
+  const rawData = await fs.readFile(dataPath, 'utf-8');
+  euData = JSON.parse(rawData);
+  
+  // Find the specific opportunity
+  const allOpportunities = [
+  ...(euData?.incentivi_gov_it || []),
+  ...(euData?.obiettivoeuropa_com || []),
+  ...(euData?.italiadomani_gov_it || [])
+];
+  
+  // Find opportunity by URL slug or title match
+  const searchId = id?.toLowerCase() || '';
+  console.log('Looking for opportunity with ID:', searchId);
+  console.log('Total opportunities available:', allOpportunities.length);
+  
+  opportunity = allOpportunities.find(opp => {
+    // Handle both standard EU funding format and Incentivi format
+    const title = opp.title || opp.titolo_base || opp.titolo_dettagliato || '';
+    const titleSlug = title.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+    
+    // More robust matching: check if the ID matches the generated slug
+    const generatedSlug = title.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+    const matches = generatedSlug === searchId || 
+           title.toLowerCase().includes(searchId.replace(/-/g, ' ')) ||
+           titleSlug.includes(searchId);
+    
+    if (matches) {
+      console.log('Found matching opportunity:', title);
+    }
+    
+    return matches;
+  }) || null;
+  
+  if (!opportunity) {
+    console.log('No opportunity found for ID:', searchId);
+    console.log('Available slugs:', allOpportunities.map(opp => (opp.title || opp.titolo_base || opp.titolo_dettagliato || '').replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()));
+  }
+  
+} catch (error) {
+  console.error('Error loading EU funding data:', error);
+}
+
+// If no opportunity found, redirect to main page
+if (!opportunity) {
+  return Astro.redirect('/eu-funding');
+}
+
+// Helper function to determine source type (unused for now)
+// function getSourceType(opp: any): string {
+//   if (opp.sezioni) return 'incentivi';
+//   if (opp.giorni_rimanenti !== undefined) return 'obiettivoeuropa';
+//   if (opp.area_geografica) return 'italiadomani';
+//   return 'incentivi_gov_it';
+// }
+---
+
+<Layout title={opportunity.title || opportunity.titolo_base || opportunity.titolo_dettagliato || 'Opportunità EU Funding'}>
+  <div class="container mx-auto px-4 py-8">
+    <!-- Navigation Header -->
+    <div class="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between">
+      <!-- Breadcrumb -->
+      <nav class="mb-4 sm:mb-0">
+        <ol class="flex items-center space-x-2 text-sm text-gray-500">
+          <li><a href="/" class="hover:text-gray-700">Home</a></li>
+          <li>/</li>
+          <li><a href="/eu-funding" class="hover:text-gray-700">EU Funding</a></li>
+          <li>/</li>
+          <li class="text-gray-900">{opportunity.title || opportunity.titolo_base || opportunity.titolo_dettagliato || 'Opportunità'}</li>
+        </ol>
+      </nav>
+      
+      <!-- Back Button -->
+      <a href="/eu-funding" 
+         class="inline-flex items-center px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+        ← Torna alla Lista
+      </a>
+    </div>
+
+    <!-- Opportunity Header -->
+    <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+      <div class="flex justify-between items-start mb-4">
+        <div class="flex-1">
+          <h1 class="text-3xl font-bold text-gray-900 mb-4">
+            {opportunity.title || opportunity.titolo_base || opportunity.titolo_dettagliato || 'No Title'}
+          </h1>
+          <div class="flex items-center space-x-4 text-sm text-gray-600 mb-4">
+            <span class="flex items-center">
+              <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              Pubblicato: {(() => {
+                try {
+                  if (!opportunity.published_date) return 'Data non specificata';
+                  
+                  let dateStr = opportunity.published_date;
+                  if (typeof dateStr === 'string') {
+                    // Handle Italian format like "11/04/22"
+                    if (dateStr.includes('/')) {
+                      const parts = dateStr.split('/');
+                      if (parts.length === 3) {
+                        const day = parts[0];
+                        const month = parts[1];
+                        const year = parts[2].length === 2 ? '20' + parts[2] : parts[2];
+                        return `${day}/${month}/${year}`;
+                      }
+                    }
+                    // Handle ISO format like "2018-09-21"
+                    if (dateStr.includes('-')) {
+                      const date = new Date(dateStr + 'T00:00:00Z');
+                      if (!isNaN(date.getTime())) {
+                        return date.toLocaleDateString('it-IT');
+                      }
+                    }
+                  }
+                  return 'Data non specificata';
+                } catch {
+                  return 'Data non specificata';
+                }
+              })()}
+            </span>
+          </div>
+        </div>
+        <div class="ml-4">
+          <span class={`inline-block px-3 py-1 rounded-full text-sm font-medium ${
+            opportunity.status === 1 ? 'bg-green-100 text-green-800' :
+            opportunity.status === 0 ? 'bg-red-100 text-red-800' :
+            opportunity.status === 'open' ? 'bg-green-100 text-green-800' :
+            opportunity.status === 'upcoming' ? 'bg-yellow-100 text-yellow-800' :
+            'bg-gray-100 text-gray-800'
+          }`}>
+            {opportunity.status === 1 ? 'Attivo' : 
+             opportunity.status === 0 ? 'Scaduto' : 
+             opportunity.status === 'open' ? 'Attivo' : 
+             opportunity.status === 'upcoming' ? 'In programma' : 
+             opportunity.status || 'Stato non specificato'}
+          </span>
+        </div>
+      </div>
+
+      <!-- Description -->
+      {(opportunity.description || opportunity.sezioni?.['Cos\'è']) && (
+        <div class="mb-6">
+          <h2 class="text-xl font-semibold text-gray-900 mb-3">Descrizione</h2>
+          <p class="text-gray-700 leading-relaxed">{opportunity.description || opportunity.sezioni?.['Cos\'è']}</p>
+        </div>
+      )}
+
+      <!-- Basic Details Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        <div class="bg-gray-50 p-4 rounded-lg">
+          <h3 class="text-lg font-semibold text-gray-900 mb-3">Informazioni Base</h3>
+          <dl class="space-y-2">
+            <div>
+              <dt class="text-sm font-medium text-gray-500">Categoria</dt>
+              <dd class="text-sm text-gray-900">{opportunity.category || opportunity.sezioni?.['SETTORE'] || 'Non specificato'}</dd>
+            </div>
+            {(opportunity.deadline || opportunity.data_chiusura) && (
+              <div>
+                <dt class="text-sm font-medium text-gray-500">Scadenza</dt>
+                <dd class="text-sm text-gray-900">{(() => {
+                  try {
+                    const deadlineDate = opportunity.deadline || opportunity.data_chiusura;
+                    if (!deadlineDate) return 'Data non specificata';
+                    
+                    let deadlineStr = deadlineDate;
+                    if (typeof deadlineStr === 'string') {
+                      // Handle Italian format like "16/10/2025"
+                      if (deadlineStr.includes('/')) {
+                        const parts = deadlineStr.split('/');
+                        if (parts.length === 3) {
+                          const day = parts[0];
+                          const month = parts[1];
+                          const year = parts[2];
+                          return `${day}/${month}/${year}`;
+                        }
+                      }
+                      // Handle text like "Fino ad esaurimento fondi"
+                      if (deadlineStr.toLowerCase().includes('esaurimento') || 
+                          deadlineStr.toLowerCase().includes('fondi') ||
+                          deadlineStr.toLowerCase().includes('risorse')) {
+                        return deadlineStr;
+                      }
+                    }
+                    return deadlineStr || 'Data non specificata';
+                  } catch {
+                    return 'Data non specificata';
+                  }
+                })()}</dd>
+              </div>
+            )}
+            <div>
+              <dt class="text-sm font-medium text-gray-500">Budget</dt>
+              <dd class="text-sm text-gray-900">
+                {(() => {
+                  // First check if there's a formatted budget from Obiettivo Europa
+                  if (opportunity.budget_formattato && opportunity.budget_formattato.trim() !== '') {
+                    return opportunity.budget_formattato;
+                  }
+                  
+                  // Then check if there's a budget string (from Incentivi or other sources)
+                  if (opportunity.budget && opportunity.budget.trim() !== '' && opportunity.budget !== '0') {
+                    return opportunity.budget;
+                  }
+                  
+                  // Then check if there's a numeric budget_totale
+                  if (opportunity.budget_totale && opportunity.budget_totale > 0) {
+                    const budgetValue = opportunity.budget_totale;
+                    return budgetValue >= 1000000 
+                      ? `€${(budgetValue / 1000000).toFixed(1)}M` 
+                      : `€${budgetValue.toLocaleString()}`;
+                  }
+                  
+                  // Check incentivi specific fields in sezioni
+                  if (opportunity.sezioni?.['SPESA AMMESSA'] && opportunity.sezioni['SPESA AMMESSA'].trim() !== '') {
+                    return opportunity.sezioni['SPESA AMMESSA'].replace(/\n/g, ' ').trim();
+                  }
+                  
+                  if (opportunity.sezioni?.['Stanziamento incentivo'] && opportunity.sezioni['Stanziamento incentivo'].trim() !== '') {
+                    return opportunity.sezioni['Stanziamento incentivo'].replace(/\n/g, ' ').trim();
+                  }
+                  
+                  // Check other potential budget fields
+                  if (opportunity.sezioni?.['Contributo massimo'] && opportunity.sezioni['Contributo massimo'].trim() !== '') {
+                    return opportunity.sezioni['Contributo massimo'].replace(/\n/g, ' ').trim();
+                  }
+                  
+                  if (opportunity.sezioni?.['Importo massimo'] && opportunity.sezioni['Importo massimo'].trim() !== '') {
+                    return opportunity.sezioni['Importo massimo'].replace(/\n/g, ' ').trim();
+                  }
+                  
+                  // Finally check if there's a numeric budget field
+                  if (opportunity.budget && !isNaN(parseInt(opportunity.budget)) && parseInt(opportunity.budget) > 0) {
+                    const budgetValue = parseInt(opportunity.budget);
+                    return budgetValue >= 1000000 
+                      ? `€${(budgetValue / 1000000).toFixed(1)}M` 
+                      : `€${budgetValue.toLocaleString()}`;
+                  }
+                  
+                  return 'Budget non specificato';
+                })()}
+              </dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="bg-gray-50 p-4 rounded-lg">
+          <h3 class="text-lg font-semibold text-gray-900 mb-3">Informazioni Aggiuntive</h3>
+          <dl class="space-y-2">
+            <div>
+              <dt class="text-sm font-medium text-gray-500">Ultimo Aggiornamento</dt>
+              <dd class="text-sm text-gray-900">{(() => {
+                try {
+                  if (!opportunity.scraped_at) return 'Data non specificata';
+                  const date = new Date(opportunity.scraped_at);
+                  return isNaN(date.getTime()) ? 'Data non specificata' : date.toLocaleString();
+                } catch {
+                  return 'Data non specificata';
+                }
+              })()}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-gray-500">URL Originale</dt>
+              <dd class="text-sm text-gray-900 break-all">
+                <a href={opportunity.url || opportunity.link_ufficiale} target="_blank" rel="noopener noreferrer" 
+                   class="text-blue-600 hover:text-blue-800 underline">
+                  {opportunity.url || opportunity.link_ufficiale}
+                </a>
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <!-- Incentivi-specific Information -->
+    {opportunity.sezioni && (
+      <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Dettagli Incentivo</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {opportunity.sezioni['REGIONI'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Regioni Applicabili</h3>
+              <p class="text-gray-700">{opportunity.sezioni['REGIONI']}</p>
+            </div>
+          )}
+          {opportunity.sezioni['A chi si rivolge'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Destinatari</h3>
+              <p class="text-gray-700">{opportunity.sezioni['A chi si rivolge']}</p>
+            </div>
+          )}
+          {opportunity.sezioni['Cosa prevede'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Cosa prevede</h3>
+              <p class="text-gray-700">{opportunity.sezioni['Cosa prevede']}</p>
+            </div>
+          )}
+          {opportunity.sezioni['Obiettivo - Finalità'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Obiettivo e Finalità</h3>
+              <p class="text-gray-700">{opportunity.sezioni['Obiettivo - Finalità']}</p>
+            </div>
+          )}
+          {opportunity.sezioni['SPESA AMMESSA'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Spesa Ammessa</h3>
+              <p class="text-gray-700">{opportunity.sezioni['SPESA AMMESSA']}</p>
+            </div>
+          )}
+          {opportunity.sezioni['Stanziamento incentivo'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Stanziamento Incentivo</h3>
+              <p class="text-gray-700">{opportunity.sezioni['Stanziamento incentivo']}</p>
+            </div>
+          )}
+          {opportunity.sezioni['Soggetto gestore'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Soggetto Gestore</h3>
+              <p class="text-gray-700">{opportunity.sezioni['Soggetto gestore']}</p>
+            </div>
+          )}
+          {opportunity.sezioni['Base normativa'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Base Normativa</h3>
+              <p class="text-gray-700">{opportunity.sezioni['Base normativa']}</p>
+            </div>
+          )}
+          {opportunity.sezioni['Sito di riferimento'] && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Sito di Riferimento</h3>
+              <p class="text-gray-700">{opportunity.sezioni['Sito di riferimento']}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    <!-- Italia Domani-specific Information -->
+    {opportunity.area_geografica && (
+      <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Dettagli Italia Domani</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {opportunity.area_geografica && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Area Geografica</h3>
+              <p class="text-gray-700">{opportunity.area_geografica}</p>
+            </div>
+          )}
+          {opportunity.settori && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Settori</h3>
+              <p class="text-gray-700">{opportunity.settori}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    <!-- Obiettivo Europa-specific Information -->
+    {opportunity.giorni_rimanenti !== undefined && (
+      <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Dettagli Bando Europeo</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {opportunity.giorni_rimanenti !== null && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Tempo Rimanente</h3>
+              <p class="text-gray-700">
+                {opportunity.giorni_rimanenti > 0 
+                  ? `${opportunity.giorni_rimanenti} giorni rimanenti` 
+                  : 'Scaduto'}
+              </p>
+            </div>
+          )}
+          {opportunity.budget_totale && opportunity.budget_totale > 0 && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Budget Totale</h3>
+              <p class="text-gray-700">
+                {opportunity.budget_formattato || `€${opportunity.budget_totale.toLocaleString()}`}
+              </p>
+            </div>
+          )}
+          {opportunity.settori && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Settori</h3>
+              <p class="text-gray-700">{opportunity.settori}</p>
+            </div>
+          )}
+          {opportunity.beneficiari && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Beneficiari</h3>
+              <p class="text-gray-700">{opportunity.beneficiari}</p>
+            </div>
+          )}
+          {opportunity.regioni && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Regioni</h3>
+              <p class="text-gray-700">{opportunity.regioni}</p>
+            </div>
+          )}
+          {opportunity.programmi && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Programmi</h3>
+              <p class="text-gray-700">{opportunity.programmi}</p>
+            </div>
+          )}
+          {opportunity.tipi_bando && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Tipi di Bando</h3>
+              <p class="text-gray-700">{opportunity.tipi_bando}</p>
+            </div>
+          )}
+          {opportunity.tipo_finanziamento && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Tipo di Finanziamento</h3>
+              <p class="text-gray-700">{opportunity.tipo_finanziamento}</p>
+            </div>
+          )}
+          {opportunity.codici_ateco && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Codici ATECO</h3>
+              <p class="text-gray-700">{opportunity.codici_ateco}</p>
+            </div>
+          )}
+          {opportunity.pnrr !== undefined && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">PNRR</h3>
+              <p class="text-gray-700">{opportunity.pnrr ? 'Sì' : 'No'}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    <!-- ItaliaDomani-specific Information -->
+    {opportunity.area_geografica && (
+      <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+        <h2 class="text-2xl font-bold text-gray-900 mb-6">Dettagli Italia Domani</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {opportunity.area_geografica && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Area Geografica</h3>
+              <p class="text-gray-700">{opportunity.area_geografica}</p>
+            </div>
+          )}
+          {opportunity.destinatari && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Destinatari</h3>
+              <p class="text-gray-700">{opportunity.destinatari}</p>
+            </div>
+          )}
+          {opportunity.tipologia && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Tipologia</h3>
+              <p class="text-gray-700">{opportunity.tipologia}</p>
+            </div>
+          )}
+          {opportunity.amministrazione_titolare && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Amministrazione Titolare</h3>
+              <p class="text-gray-700">{opportunity.amministrazione_titolare}</p>
+            </div>
+          )}
+          {opportunity.focus_pnrr && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Focus PNRR</h3>
+              <p class="text-gray-700">{opportunity.focus_pnrr}</p>
+            </div>
+          )}
+          {opportunity.descrizione_fondo_pnrr && (
+            <div class="bg-gray-50 p-4 rounded-lg">
+              <h3 class="text-lg font-semibold text-gray-900 mb-3">Descrizione Fondo PNRR</h3>
+              <p class="text-gray-700">{opportunity.descrizione_fondo_pnrr}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+
+    <!-- Action Buttons -->
+    <div class="mt-8 flex flex-col sm:flex-row gap-4">
+      <a 
+        href={opportunity.url || opportunity.link_ufficiale || '#'} 
+        target="_blank" 
+        rel="noopener noreferrer"
+        class="inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg transition-colors"
+      >
+        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+        </svg>
+        Vai alla Pubblicazione Originale
+      </a>
+      <a 
+        href="/eu-funding" 
+        class="inline-flex items-center justify-center bg-gray-600 hover:bg-gray-700 text-white font-medium py-3 px-6 rounded-lg transition-colors"
+      >
+        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+        </svg>
+        Torna alle Opportunità
+      </a>
+    </div>
+  </div>
+
+  <!-- Related Opportunities -->
+  {euData && (
+    <div class="bg-white rounded-lg shadow-md p-6 mt-8">
+      <h2 class="text-2xl font-bold text-gray-900 mb-6">Opportunità Correlate</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {euData.obiettivoeuropa_com.slice(0, 3).map((relatedOpp) => (
+          <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+            <h3 class="font-semibold text-gray-900 mb-2">
+              <a href={`/eu-funding/${relatedOpp.title?.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`} class="hover:text-blue-600">
+                {relatedOpp.title}
+              </a>
+            </h3>
+                         <p class="text-sm text-gray-600 mb-2">
+               {relatedOpp.budget && parseInt(relatedOpp.budget) > 0 ? `€${parseInt(relatedOpp.budget).toLocaleString()}` : 'Budget non specificato'}
+             </p>
+            <p class="text-xs text-gray-500">
+              {(() => {
+                try {
+                  const date = new Date(relatedOpp.published_date);
+                  return isNaN(date.getTime()) ? 'Data non specificata' : date.toLocaleDateString();
+                } catch {
+                  return 'Data non specificata';
+                }
+              })()}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )}
+</Layout>
+
+<style>
+  /* Ensure titles are displayed completely without truncation */
+  h1, h2, h3 {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+  }
+  
+  /* Remove any line clamping that might truncate text */
+  .line-clamp-2 {
+    display: block;
+    overflow: visible;
+    -webkit-line-clamp: unset;
+    -webkit-box-orient: unset;
+  }
+</style> 

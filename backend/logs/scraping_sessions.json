@@ -1,0 +1,182 @@
+{
+  "sessions": [
+    {
+      "id": "1_20250310203055",
+      "timestamp": "2025-03-10T20:30:55.701170+01:00",
+      "source_url": "https://www.ansa.it/sito/notizie/cultura/arte/arte.shtml",
+      "links": [
+        {
+          "url": "https://www.ansa.it/canale_legalita_scuola/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/sito/notizie/cultura/unlibroalgiorno/unlibroalgiorno.shtml",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/canale_legalita_scuola/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/sito/notizie/cultura/arte/2025/03/10/rivista-s.francesco-bohl-racconta-mostra-del-louvre-su-cimabue_d198bf5d-c4a9-4064-8cb4-69957d8db456.html",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/canale_legalita_scuola/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/canale_legalita_scuola/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/canale_legalita_scuola/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/canale_legalita_scuola/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/canale_legalita_scuola/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.ansa.it/canale_legalita_scuola/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        }
+      ],
+      "status": "completed",
+      "last_updated": "2025-03-10T20:31:06.959501+01:00"
+    },
+    {
+      "id": "2_20250310203925",
+      "timestamp": "2025-03-10T20:39:25.741901+01:00",
+      "source_url": "https://www.lapresse.it/tecnologia/",
+      "links": [
+        {
+          "url": "https://www.lapresse.it/tecnologia/2025/03/10/starlink-il-sistema-di-comunicazione-satellitare-da-42mila-terminali-di-musk/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/spazio/2025/03/07/lander-lunare-finisce-in-un-cratere-e-smette-di-funzionare/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/spazio/2025/03/07/spacex-la-navicella-starship-esplode-in-volo-le-immagini/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/spazio/2025/03/03/ricevitore-italiano-lugre-ha-captato-segnali-dalla-luna/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/spazio/2025/03/02/il-lander-blue-ghost-atterrato-sulla-luna-con-uno-strumento-italiano/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/2025/03/01/microsoft-outlook-down/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/2025/02/17/attacco-hacker-ddos/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/2025/02/12/ai-da-smart-city-a-sharing-da-jakala-confronto-su-innovazione-per-mobilita-ed-energia/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/2025/02/08/lastronauta-luca-parmitano-visita-il-sito-leonardo-di-campi-bisenzio/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        },
+        {
+          "url": "https://www.lapresse.it/tecnologia/2025/01/30/deepseek-bloccato-dal-garante-privacy-per-tutela-dati-degli-utenti/",
+          "selected": false,
+          "news_id": null,
+          "summarized": false,
+          "reconstructed": false,
+          "published": false
+        }
+      ],
+      "status": "completed",
+      "last_updated": "2025-03-10T20:39:36.592504+01:00"
+    }
+  ]
+}

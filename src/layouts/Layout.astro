@@ -1,0 +1,305 @@
+---
+import Header from '../components/Header.astro';
+import { supabase } from '../lib/supabase';
+
+interface Props {
+  title: string;
+  description?: string;
+  canonicalUrl?: string;
+  keywords?: string;
+}
+
+const { 
+  title, 
+  description = "EduNews24 - Il portale delle notizie scolastiche, universitarie e della ricerca in Italia", 
+  canonicalUrl,
+  keywords
+} = Astro.props;
+
+// Fetch latest articles for breaking news
+const { data: breakingNewsArticles } = await supabase
+  .from('articles')
+  .select('id, title, slug, category_slug')
+  .eq('isdraft', false)
+  .order('published_at', { ascending: false })
+  .limit(3);
+
+// Get current URL for canonical link
+const currentUrl = Astro.url.pathname;
+const siteUrl = "https://edunews24.it";
+const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
+---
+
+<!doctype html>
+<html lang="it">
+  <head>
+    <!-- Basic Meta Tags -->
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content={description.replace(/"/g, '&quot;')} />
+    {keywords && <meta name="keywords" content={keywords.replace(/"/g, '&quot;')} />}
+    <meta name="author" content="EduNews24" />
+    <meta name="msvalidate.01" content="4941256B9C3CAD614EE85E23F2053749" />
+    <meta name="facebook-domain-verification" content="q6kx042o2rngwqeemuxv2bod9xdsub" />
+    
+    <!-- Robots and Indexing -->
+    <meta name="robots" content="index, follow" />
+    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
+    <meta name="bingbot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
+    <meta name="yandex-verification" content="963c8f839c31d2f5" />
+    
+    <!-- Canonical URL -->
+    <link rel="canonical" href={fullUrl} />
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico" />
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={fullUrl} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:locale" content="it_IT" />
+    <meta property="og:site_name" content="EduNews24" />
+    
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Funnel+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
+    
+    <!-- Structured Data / JSON-LD -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "NewsMediaOrganization",
+        "name": "EduNews24",
+        "url": "https://edunews24.it",
+        "logo": "https://edunews24.it/logo.png",
+        "sameAs": [
+          "https://www.facebook.com/EduNews24",
+          "https://twitter.com/EduNews24",
+          "https://www.instagram.com/edunews_24/"
+        ],
+        "description": "Il portale delle notizie scolastiche, universitarie e della ricerca in Italia"
+      }
+    </script>
+    
+    <!-- Additional head content -->
+    <slot name="head" />
+    
+    <title>{title}</title>
+
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-NL6L8V4P3Z"></script>
+    <script is:inline>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+    
+      // Set default consent state - Deny analytics storage by default
+      gtag('consent', 'default', {
+        'analytics_storage': 'denied'
+        // Add other storage types if needed, e.g., 'functionality_storage', 'personalization_storage'
+      });
+      
+      gtag('config', 'G-NL6L8V4P3Z');
+    </script>
+
+    <!-- Microsoft Clarity -->
+    <script type="text/javascript">
+        (function(c,l,a,r,i,t,y){
+            c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+            t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+            y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+        })(window, document, "clarity", "script", "rc7m2gnv62");
+    </script>
+  </head>
+  <body class="bg-gray-100 font-funnel">
+    <Header />
+    <slot />
+    
+    <!-- Breaking News Section (replacing Ad Section) -->
+    <div class="bg-breaking text-white py-2 relative overflow-hidden border-y border-gray-200">
+      <div class="container mx-auto px-4">
+        <div class="flex items-center">
+          <span class="font-bold text-sm px-3 py-1 bg-white text-primary mr-4">ULTIMA ORA</span>
+          <div class="breaking-news-ticker overflow-hidden flex-1" id="breaking-news">
+            <div class="flex whitespace-nowrap animate-ticker">
+              {breakingNewsArticles?.map(article => (
+                <a 
+                  href={`/${article.category_slug}/${article.slug}`}
+                  class="inline-block px-8 hover:text-breaking-light transition-colors duration-200"
+                >
+                  {article.title}
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="bg-[#11315c] text-white">
+      <div class="container mx-auto px-4 py-8">
+        <!-- Motto centered with responsive text -->
+        <div class="text-center mb-8">
+          <p class="text-lg sm:text-xl md:text-2xl lg:text-3xl font-medium max-w-4xl mx-auto leading-relaxed">
+            EduNews24 - Il portale online gratuito con tante notizie culturali provenienti dal mondo della scuola, dell'università, della ricerca scientifica e della tecnologia. Focus sui bandi di concorso, selezione del personale ed interpelli, con ricerca gratuita.
+          </p>
+        </div>
+        
+        <!-- Separator after motto -->
+        <div class="border-t border-gray-700 mb-8"></div>
+        
+        <!-- Two column layout -->
+        <div class="grid md:grid-cols-2 gap-8 relative">
+          <!-- Left column -->
+          <div class="text-sm text-gray-300 space-y-3">
+            <p class="text-base text-white font-medium">
+              Redazione EduNews24.it
+            </p>
+            <p>
+              Universo S.r.l. ©2022-{new Date().getFullYear()}. Tutti i diritti riservati.
+            </p>
+            <p>
+              P.IVA. 03930330794, Via del Tritone 132, 00187 Roma
+            </p>
+            <p>
+              Depositata al Tribunale di Lamezia Terme(CZ) - Prot.llo 189/2025 in data 3 Marzo 2025.
+            </p>
+            <p>
+              Iscrizione ROC Pratica n° 1436921 - Direttore Responsabile: Dott. Torchia Antonello | <a href="/privacy" class="text-white underline hover:text-gray-200">Privacy</a> | <a href="/chi-siamo" class="text-white underline hover:text-gray-200">Chi Siamo</a> | <a href="/termini-di-servizio" class="text-white underline hover:text-gray-200">Termini di Servizio</a>
+            </p>
+          </div>
+
+          <!-- Vertical separator between columns -->
+          <div class="hidden md:block absolute left-1/2 top-0 bottom-0 w-px bg-gray-700"></div>
+
+          <!-- Right column -->
+          <div class="text-sm md:text-right">
+            <div class="mb-8">
+              <p class="text-white font-medium">Universo S.r.l.</p>
+              <p class="text-gray-300">Redazione EduNews24.it</p>
+              <p class="text-gray-300">Email: redazione@edunews24.it</p>
+            </div>
+
+            <!-- Social Media Icons -->
+            <div class="flex md:justify-end gap-4">
+              <a href="#" class="text-gray-300 hover:text-white transition-colors">
+                <span class="sr-only">Facebook</span>
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+                </svg>
+              </a>
+              <a href="#" class="text-gray-300 hover:text-white transition-colors">
+                <span class="sr-only">Twitter</span>
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M23.953 4.57a10 10 0 01-2.825.775 4.958 4.958 0 002.163-2.723c-.951.555-2.005.959-3.127 1.184a4.92 4.92 0 00-8.384 4.482C7.69 8.095 4.067 6.13 1.64 3.162a4.822 4.822 0 00-.666 2.475c0 1.71.87 3.213 2.188 4.096a4.904 4.904 0 01-2.228-.616v.06a4.923 4.923 0 003.946 4.827 4.996 4.996 0 01-2.212.085 4.936 4.936 0 004.604 3.417 9.867 9.867 0 01-6.102 2.105c-.39 0-.779-.023-1.17-.067a13.995 13.995 0 007.557 2.209c9.053 0 13.998-7.496 13.998-13.985 0-.21 0-.42-.015-.63A9.935 9.935 0 0024 4.59z"/>
+                </svg>
+              </a>
+              <a href="https://www.instagram.com/edunews_24/" class="text-gray-300 hover:text-white transition-colors" target="_blank" rel="noopener noreferrer">
+                <span class="sr-only">Instagram</span>
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+                </svg>
+              </a>
+              <a href="#" class="text-gray-300 hover:text-white transition-colors">
+                <span class="sr-only">YouTube</span>
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </footer>
+
+    <style>
+      .breaking-news-ticker {
+        mask-image: linear-gradient(
+          to right,
+          transparent,
+          black 10%,
+          black 90%,
+          transparent
+        );
+      }
+
+      @keyframes ticker {
+        0% { transform: translateX(0); }
+        100% { transform: translateX(-100%); }
+      }
+
+      .animate-ticker {
+        animation: ticker 30s linear infinite;
+      }
+
+      .breaking-news-ticker:hover .animate-ticker {
+        animation-play-state: paused;
+      }
+    </style>
+
+    <script>
+      // Duplicate breaking news items for seamless scrolling
+      document.addEventListener('DOMContentLoaded', function() {
+        const ticker = document.querySelector('.animate-ticker');
+        if (ticker) {
+          // Clone the items and append them to create seamless loop
+          const items = ticker.innerHTML;
+          ticker.innerHTML = items + items;
+        }
+      });
+    </script>
+
+    <!-- Cookie Consent Banner -->
+    <div id="cookieConsentBanner" class="fixed bottom-0 left-0 right-0 bg-gray-800 text-white p-4 text-sm z-50 hidden">
+      <div class="container mx-auto flex flex-col md:flex-row justify-between items-center">
+        <p class="mb-4 md:mb-0 md:mr-4">
+          Questo sito utilizza cookie tecnici e, previo tuo consenso, cookie di profilazione (compresi quelli di terze parti, ad esempio Google) per offrirti una migliore esperienza di navigazione e per scopi statistici. 
+          <a href="/privacy" class="underline hover:text-gray-300">Leggi la nostra Privacy Policy</a> per saperne di più o per negare il consenso.
+        </p>
+        <div class="flex space-x-2 shrink-0">
+          <button id="rejectCookieConsent" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">
+            Rifiuta
+          </button>
+          <button id="acceptCookieConsent" class="bg-primary hover:bg-primary-dark text-white font-bold py-2 px-4 rounded">
+            Accetta
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script is:inline>
+      document.addEventListener('DOMContentLoaded', function() {
+        const banner = document.getElementById('cookieConsentBanner');
+        const acceptButton = document.getElementById('acceptCookieConsent');
+        const rejectButton = document.getElementById('rejectCookieConsent');
+
+        const consentStatus = localStorage.getItem('cookieConsentStatus');
+
+        if (!consentStatus) { // Only show banner if no choice has been made
+          banner.classList.remove('hidden');
+        }
+
+        acceptButton.addEventListener('click', function() {
+          localStorage.setItem('cookieConsentStatus', 'accepted');
+          gtag('consent', 'update', {
+            'analytics_storage': 'granted'
+          });
+          banner.classList.add('hidden');
+        });
+
+        rejectButton.addEventListener('click', function() {
+          localStorage.setItem('cookieConsentStatus', 'rejected');
+          banner.classList.add('hidden');
+        });
+      });
+    </script>
+  </body>
+</html>

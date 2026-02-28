@@ -1,0 +1,116 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { supabase } from '../../lib/supabase';
+import type { Podcast } from '../../lib/supabase';
+
+// Get featured podcasts
+const { data: featuredPodcasts } = await supabase
+  .from('podcasts')
+  .select('*')
+  .eq('featured', true)
+  .order('published_at', { ascending: false })
+  .limit(3);
+
+// Get latest podcasts
+const { data: latestPodcasts } = await supabase
+  .from('podcasts')
+  .select('*')
+  .order('published_at', { ascending: false })
+  .limit(12);
+---
+
+<Layout title="Podcasts - EduNews24">
+  <main class="container mx-auto px-4 py-8">
+    <!-- Featured Podcasts -->
+    <section class="mb-12">
+      <h1 class="text-3xl font-bold mb-8">I Nostri Podcast</h1>
+      
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {featuredPodcasts?.map((podcast: Podcast) => (
+          <a 
+            href={`/podcasts/${podcast.id}`}
+            class="group bg-white rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-shadow"
+          >
+            <div class="relative aspect-video">
+              <img 
+                src={podcast.image_url || `https://picsum.photos/seed/${podcast.id}/800/600`}
+                alt={podcast.title}
+                class="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-300"
+              />
+              {podcast.duration && (
+                <div class="absolute top-3 right-3 bg-black/50 backdrop-blur-sm text-white px-2 py-0.5 text-xs rounded-full">
+                  {Math.floor(podcast.duration / 60)} min
+                </div>
+              )}
+            </div>
+            <div class="p-4">
+              <h2 class="text-xl font-bold text-gray-900 group-hover:text-sport-500 transition-colors mb-2">
+                {podcast.title}
+              </h2>
+              <p class="text-gray-600 line-clamp-2 mb-4">
+                {podcast.description}
+              </p>
+              <div class="flex items-center gap-2 text-sm text-gray-500">
+                <time datetime={podcast.published_at}>
+                  {new Date(podcast.published_at).toLocaleDateString('it-IT', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                  })}
+                </time>
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                </svg>
+              </div>
+            </div>
+          </a>
+        ))}
+      </div>
+    </section>
+
+    <!-- Latest Podcasts -->
+    <section>
+      <h2 class="text-2xl font-bold mb-6">Ultimi Podcast</h2>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {latestPodcasts?.map((podcast: Podcast) => (
+          <a 
+            href={`/podcasts/${podcast.id}`}
+            class="group bg-white rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-shadow"
+          >
+            <div class="relative aspect-video">
+              <img 
+                src={podcast.image_url || `https://picsum.photos/seed/${podcast.id}/800/600`}
+                alt={podcast.title}
+                class="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-300"
+              />
+              {podcast.duration && (
+                <div class="absolute top-2 right-2 bg-black/50 backdrop-blur-sm text-white px-2 py-0.5 text-xs rounded-full">
+                  {Math.floor(podcast.duration / 60)} min
+                </div>
+              )}
+            </div>
+            <div class="p-4">
+              <h3 class="font-bold text-gray-900 group-hover:text-sport-500 transition-colors mb-2 line-clamp-2">
+                {podcast.title}
+              </h3>
+              <p class="text-sm text-gray-600 line-clamp-2 mb-3">
+                {podcast.description}
+              </p>
+              <div class="flex items-center gap-2 text-xs text-gray-500">
+                <time datetime={podcast.published_at}>
+                  {new Date(podcast.published_at).toLocaleDateString('it-IT', {
+                    month: 'short',
+                    day: 'numeric'
+                  })}
+                </time>
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                </svg>
+              </div>
+            </div>
+          </a>
+        ))}
+      </div>
+    </section>
+  </main>
+</Layout> 

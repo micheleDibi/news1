@@ -1,0 +1,228 @@
+---
+export const prerender = false;
+
+import Layout from '../../layouts/Layout.astro';
+import { supabase } from '../../lib/supabase';
+import CategorySidebar from '../../components/CategorySidebar.astro';
+
+// Function to generate slug from name (same logic as individual profile page)
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[àáâäãåāăą]/g, 'a')
+    .replace(/[èéêëēĕėęě]/g, 'e')
+    .replace(/[ìíîïīĭįǐ]/g, 'i')
+    .replace(/[òóôöõōŏő]/g, 'o')
+    .replace(/[ùúûüũūŭů]/g, 'u')
+    .replace(/[ýÿŷ]/g, 'y')
+    .replace(/ñ/g, 'n')
+    .replace(/ç/g, 'c')
+    .replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9\-]+/g, '')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
+}
+
+// Get all displayable profiles
+const { data: profiles, error: profilesError } = await supabase
+  .from('profiles')
+  .select('id, full_name, public_name, description, profile_pic_link')
+  .eq('is_displayable', true)
+  .order('public_name', { ascending: true });
+
+if (profilesError) {
+  console.error('Error fetching profiles:', profilesError);
+}
+
+// Get article counts for each journalist
+const profilesWithArticleCounts = await Promise.all(
+  (profiles || []).map(async (profile) => {
+    const { count } = await supabase
+      .from('articles')
+      .select('*', { count: 'exact', head: true })
+      .eq('creator', profile.full_name)
+      .eq('isdraft', false);
+    
+    return {
+      ...profile,
+      articleCount: count || 0,
+      slug: generateSlug(profile.full_name)
+    };
+  })
+);
+---
+
+<Layout 
+  title="Il Nostro Team - EduNews24"
+  description="Conosci i giornalisti e gli esperti che compongono il team di EduNews24. Professionisti appassionati di educazione, formazione e cultura."
+  canonicalUrl="https://edunews24.it/team"
+>
+  <main class="bg-gray-50 min-h-screen py-8">
+    <div class="container mx-auto px-4">
+      <div class="flex flex-col lg:flex-row gap-8">
+        <!-- Main Content -->
+        <div class="flex-1 space-y-8">
+          <!-- Breadcrumb Navigation -->
+          <nav class="flex text-sm text-gray-600" aria-label="Breadcrumb">
+            <ol class="inline-flex items-center space-x-1 md:space-x-3">
+              <li class="inline-flex items-center">
+                <a href="/" class="inline-flex items-center hover:text-sport-500">
+                  <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"></path>
+                  </svg>
+                  Home
+                </a>
+              </li>
+              <li aria-current="page">
+                <div class="flex items-center">
+                  <svg class="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                  </svg>
+                  <span class="ml-1 text-gray-500">Team</span>
+                </div>
+              </li>
+            </ol>
+          </nav>
+
+          <!-- Team Content -->
+          <article class="bg-white rounded-lg shadow-sm overflow-hidden">
+            <div class="p-6 md:p-8">
+              <!-- Page Header -->
+              <div class="text-center mb-12">
+                <h1 class="text-3xl md:text-4xl font-bold text-gray-900 mb-6">
+                  Il Nostro Team
+                </h1>
+                <p class="text-xl text-gray-600 leading-relaxed max-w-3xl mx-auto">
+                  Incontra i giornalisti e gli esperti che rendono possibile EduNews24. 
+                  Professionisti appassionati di educazione, formazione e cultura, 
+                  impegnati a portarti le notizie più rilevanti del settore.
+                </p>
+              </div>
+
+              {/* Team Members Grid */}
+              {profilesWithArticleCounts && profilesWithArticleCounts.length > 0 ? (
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                  {profilesWithArticleCounts.map(profile => (
+                    <div class="bg-gray-50 rounded-lg p-6 hover:shadow-md transition-shadow border border-gray-200">
+                      <a href={`/team/${profile.slug}`} class="block">
+                        <!-- Profile Picture -->
+                        <div class="flex justify-center mb-4">
+                          {profile.profile_pic_link ? (
+                            <img 
+                              src={profile.profile_pic_link} 
+                              alt={profile.public_name}
+                              class="w-20 h-20 rounded-full object-cover border-3 border-gray-300 shadow-md"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div class="w-20 h-20 rounded-full bg-gradient-to-br from-sport-400 to-sport-600 flex items-center justify-center shadow-md">
+                              <span class="text-white text-lg font-bold">
+                                {profile.full_name.split(' ').map((n: string) => n[0]).join('').substring(0, 2)}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <!-- Profile Info -->
+                        <div class="text-center">
+                          <h3 class="text-xl font-bold text-gray-900 mb-2 hover:text-sport-600 transition-colors">
+                            {profile.public_name}
+                          </h3>
+                          <p class="text-sport-600 font-medium mb-3">
+                            Giornalista EduNews24
+                          </p>
+                          
+                          {/* Description Preview */}
+                          {profile.description && (
+                            <p class="text-gray-600 text-sm line-clamp-3 mb-4">
+                              {profile.description.substring(0, 120)}
+                              {profile.description.length > 120 ? '...' : ''}
+                            </p>
+                          )}
+
+                          {/* Article Count */}
+                          <div class="flex items-center justify-center gap-2 text-sm text-gray-500">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            <span>
+                              {profile.articleCount} {profile.articleCount === 1 ? 'articolo pubblicato' : 'articoli pubblicati'}
+                            </span>
+                          </div>
+                        </div>
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div class="text-center py-12">
+                  <div class="text-gray-400 mb-4">
+                    <svg class="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
+                    </svg>
+                  </div>
+                  <h3 class="text-lg font-semibold text-gray-900 mb-2">Il team sta crescendo</h3>
+                  <p class="text-gray-600 mb-6">
+                    I profili del nostro team saranno presto disponibili.
+                  </p>
+                  <a 
+                    href="/collaborazione"
+                    class="inline-flex items-center gap-2 px-6 py-3 bg-sport-500 text-white rounded-full hover:bg-sport-600 transition-colors"
+                  >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a2 2 0 01-2-2v-6a2 2 0 012-2h8z"></path>
+                    </svg>
+                    Unisciti al team
+                  </a>
+                </div>
+              )}
+
+              {/* Call to Action */}
+              {profilesWithArticleCounts && profilesWithArticleCounts.length > 0 && (
+                <div class="mt-12 text-center py-8 bg-sport-50 rounded-lg">
+                  <h2 class="text-2xl font-bold text-gray-900 mb-4">
+                    Vuoi far parte del nostro team?
+                  </h2>
+                  <p class="text-gray-600 mb-6 max-w-2xl mx-auto">
+                    EduNews24 è sempre alla ricerca di giornalisti appassionati e competenti. 
+                    Scopri le opportunità di collaborazione e unisciti a noi.
+                  </p>
+                  <a 
+                    href="/collaborazione"
+                    class="inline-flex items-center gap-2 px-6 py-3 bg-sport-500 text-white rounded-full hover:bg-sport-600 transition-colors"
+                  >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a2 2 0 01-2-2v-6a2 2 0 012-2h8z"></path>
+                    </svg>
+                    Collabora con noi
+                  </a>
+                </div>
+              )}
+            </div>
+          </article>
+
+          <!-- Mobile Sidebar -->
+          <div class="lg:hidden">
+            <CategorySidebar source="team:index" isMobile={true} />
+          </div>
+        </div>
+
+        <!-- Desktop Sidebar -->
+        <div class="hidden lg:block lg:w-80">
+          <CategorySidebar source="team:index" />
+        </div>
+      </div>
+    </div>
+  </main>
+</Layout>
+
+<style>
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+</style> 

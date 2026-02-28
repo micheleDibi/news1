@@ -1,0 +1,77 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+
+// Set cache control headers
+Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+Astro.response.headers.set('Pragma', 'no-cache');
+Astro.response.headers.set('Expires', '0');
+Astro.response.headers.set('Surrogate-Control', 'no-store');
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Loading...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden">
+  <AdminLayout title="News Automation">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <h1 class="text-2xl font-semibold text-gray-900">News Automation</h1>
+        <p class="mt-2 text-sm text-gray-600">
+          Manage news sources, scrape content, and generate articles automatically.
+        </p>
+      </div>
+      
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8 mt-8">
+        <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <!-- Pipeline Logs Card -->
+          <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="px-4 py-5 sm:p-6">
+              <div class="flex items-center">
+                <div class="flex-shrink-0 bg-indigo-500 rounded-md p-3">
+                  <svg class="h-6 w-6 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                  <dt class="text-lg font-medium text-gray-900 truncate">Pipeline Logs</dt>
+                  <dd class="flex items-baseline">
+                    <div class="text-sm text-gray-600">
+                      View detailed logs of the news scraping and publishing pipeline
+                    </div>
+                  </dd>
+                </div>
+              </div>
+            </div>
+            <div class="bg-gray-50 px-4 py-4 sm:px-6">
+              <div class="text-sm">
+                <a href="/admin/logs" class="font-medium text-indigo-600 hover:text-indigo-500">
+                  View logs <span aria-hidden="true">&rarr;</span>
+                </a>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Add more cards here for other functionality -->
+          
+        </div>
+      </div>
+    </div>
+  </AdminLayout>
+</div>
+
+<script>
+  // Hide loading screen when content is loaded
+  window.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+      document.getElementById('loading-screen')?.classList.add('hidden');
+      document.getElementById('admin-content')?.classList.remove('hidden');
+    }, 500);
+  });
+</script> 

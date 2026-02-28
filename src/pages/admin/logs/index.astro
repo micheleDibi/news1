@@ -1,0 +1,970 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+
+// Set cache control headers
+Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+Astro.response.headers.set('Pragma', 'no-cache');
+Astro.response.headers.set('Expires', '0');
+Astro.response.headers.set('Surrogate-Control', 'no-store');
+---
+
+<!-- Simple loading indicator -->
+<div id="loading-indicator" class="fixed inset-0 bg-white bg-opacity-80 z-50 flex items-center justify-center">
+  <div class="animate-spin h-8 w-8 border-4 border-indigo-500 border-t-transparent rounded-full"></div>
+</div>
+
+  <AdminLayout title="Log Pipeline News">
+  <div class="max-w-7xl mx-auto px-4 py-6">
+    <h1 class="text-2xl font-medium text-gray-900 mb-6">Log Pipeline News</h1>
+    
+    <!-- Date filters only -->
+    <div class="bg-gray-50 p-4 rounded mb-6 flex flex-wrap gap-4">
+      <div class="flex-1 min-w-[200px]">
+        <input type="date" id="date-from" placeholder="Data Iniziale" class="w-full border-gray-300 rounded" aria-label="Data Iniziale">
+          </div>
+          
+      <div class="flex-1 min-w-[200px]">
+        <input type="date" id="date-to" placeholder="Data Finale" class="w-full border-gray-300 rounded" aria-label="Data Finale">
+          </div>
+          
+      <div class="flex space-x-2">
+        <button id="apply-filters" class="bg-indigo-600 text-white px-4 py-2 rounded text-sm">
+          Applica
+            </button>
+        <button id="reset-filters" class="border border-gray-300 px-4 py-2 rounded text-sm">
+              Reimposta
+            </button>
+          </div>
+        </div>
+        
+    <!-- Log entries table -->
+    <div class="overflow-x-auto">
+      <table id="pipeline-table" class="min-w-full bg-white">
+        <thead class="bg-gray-50 text-left">
+          <tr>
+            <th class="py-3 px-4 text-sm font-medium text-gray-500">Ora</th>
+            <th class="py-3 px-4 text-sm font-medium text-gray-500">Stato</th>
+            <th class="py-3 px-4 text-sm font-medium text-gray-500">Acquisiti</th>
+            <th class="py-3 px-4 text-sm font-medium text-gray-500">Selezionati</th>
+            <th class="py-3 px-4 text-sm font-medium text-gray-500">Riassunti</th>
+            <th class="py-3 px-4 text-sm font-medium text-gray-500">Pubblicati</th>
+            <th class="py-3 px-4 text-sm font-medium text-gray-500">Azioni</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200">
+          <tr>
+            <td colspan="7" class="py-10 text-center text-gray-500">Caricamento log...</td>
+          </tr>
+        </tbody>
+      </table>
+        </div>
+        
+    <!-- Simple modal for viewing details -->
+    <div id="details-modal" class="fixed inset-0 bg-black bg-opacity-50 z-40 hidden flex items-center justify-center">
+      <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] flex flex-col">
+        <div class="p-4 border-b flex justify-between items-center">
+          <h2 class="text-lg font-medium" id="modal-title">Dettagli Pipeline</h2>
+          <button id="close-modal" class="text-gray-500 hover:text-gray-700">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+        
+        <div class="overflow-y-auto p-4 flex-1" id="modal-content">
+                <!-- Content will be populated by JavaScript -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </AdminLayout>
+
+<script>
+  // Type definitions
+  interface LogEntry {
+    timestamp: string;
+    process: string;
+    status: string;
+    pipeline_id?: string;
+    error?: string;
+    sources?: string[];
+    unique_ids?: string[];
+    summarized_ids?: string[];
+    published_count?: number;
+    
+    // New fields for comprehensive log structure
+    scraping?: {
+      timestamp: string;
+      process?: string;
+      status: string;
+      sources?: string[];
+      scraped_links?: string[];
+      total_links?: number;
+      success_count?: number;
+    };
+    
+    selected_links?: {
+      timestamp: string;
+      process: string;
+      status: string;
+      total_links?: number;
+      urls_to_check?: string[];
+      unique_news_ids?: string[];
+      unique_count?: number;
+    };
+    
+    summarization?: {
+      timestamp: string;
+      process: string;
+      status: string;
+      summarized_news_ids?: string[];
+      summarized_news?: SummarizedNews[];
+      summarized_urls?: string[];
+      url_to_id_map?: Record<string, string>;
+    };
+    
+    reconstruction?: {
+      timestamp: string;
+      process: string;
+      status: string;
+      news_ids?: string[];
+      reconstructed_articles?: ReconstructedArticle[];
+      success_count?: number;
+    };
+    
+    publishing?: {
+      timestamp: string;
+      process: string;
+      status: string;
+      news_ids?: string[];
+      published_articles?: PublishedArticle[];
+      published_count?: number;
+    };
+    
+    // Legacy fields
+    total_links?: number;
+    scraped_links?: string[];
+    summarized_news?: SummarizedNews[];
+    summarized_news_ids?: string[];
+    summarized_urls?: string[];
+    url_to_id_map?: Record<string, string>;
+    unique_count?: number;
+    unique_news_ids?: string[];
+    reconstructed_articles?: ReconstructedArticle[];
+  }
+
+  interface SummarizedNews {
+    title?: string;
+    context?: string;
+    location?: string;
+    date?: string;
+    language?: string;
+    facts?: string[];
+  }
+
+  interface ReconstructedArticle {
+    news_id: string;
+    status: string;
+    error?: string;
+    article?: {
+      title?: string;
+      proposed_title?: string;
+      proposed_subtitle?: string;
+      content?: string;
+      proposed_content?: string;
+    };
+  }
+
+  interface PublishedArticle {
+    news_id: string;
+    status: string;
+    message?: string;
+    wp_id?: string;
+    wp_url?: string;
+    error?: string;
+  }
+
+  interface PipelineData {
+    pipeline: LogEntry;
+    processes: LogEntry[];
+    relationships: {
+      urlToNewsId: Map<string, string>;
+      idToDetails: Map<string, {
+        type: string;
+        data: any;
+      }>;
+    };
+  }
+
+  // Format date for display
+  const formatDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('it-IT', { 
+      month: 'short', 
+      day: 'numeric',
+      hour: 'numeric', 
+      minute: 'numeric'
+    }).format(date);
+  };
+  
+  // Format full date for detail view
+  const formatFullDate = (dateString: string): string => {
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('it-IT', { 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric', 
+      hour: 'numeric', 
+      minute: 'numeric',
+      second: 'numeric'
+    }).format(date);
+  };
+  
+  // Get status badge HTML
+  const formatStatus = (status: string): string => {
+    const colors: { [key: string]: string } = {
+      completed: 'bg-green-100 text-green-800',
+      failed: 'bg-red-100 text-red-800',
+      error: 'bg-red-100 text-red-800',
+      'no-news': 'bg-blue-100 text-blue-800',
+      started: 'bg-yellow-100 text-yellow-800'
+    };
+    
+    const statusTranslations: { [key: string]: string } = {
+      'completed': 'completato',
+      'failed': 'fallito',
+      'error': 'errore',
+      'no-news': 'nessuna notizia',
+      'started': 'iniziato'
+    };
+    
+    const colorClass = colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-800';
+    const translatedStatus = statusTranslations[status] || status;
+    
+    return `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colorClass}">
+      ${translatedStatus}
+    </span>`;
+  };
+  
+  // Function to fetch and display logs
+  const fetchLogs = async (): Promise<void> => {
+    // Show loading indicator
+    document.getElementById('loading-indicator')?.classList.remove('hidden');
+    
+    const dateFrom = (document.getElementById('date-from') as HTMLInputElement).value;
+    const dateTo = (document.getElementById('date-to') as HTMLInputElement).value;
+    
+    // Build query
+    let queryString = '?limit=100';
+    if (dateFrom) queryString += `&startDate=${dateFrom}`;
+    if (dateTo) queryString += `&endDate=${dateTo}T23:59:59.999Z`;
+    
+    try {
+      const response = await fetch(`/api/logs${queryString}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const tableBody = document.querySelector('#pipeline-table tbody');
+      
+      if (!tableBody) return;
+      
+      // Filter for pipeline logs (these now contain all information)
+      const pipelineLogs = data.logs.filter((log: LogEntry) => log.process === 'pipeline');
+      
+      // Create a map to store all comprehensive pipeline logs
+      const pipelines = new Map<string, PipelineData>();
+      
+      // Process each pipeline log (now a comprehensive entry)
+      pipelineLogs.forEach((pipeline: LogEntry) => {
+        if (pipeline.pipeline_id) {
+          const pipelineData: PipelineData = {
+            pipeline: pipeline,
+            processes: [],
+            relationships: {
+              urlToNewsId: new Map<string, string>(),
+              idToDetails: new Map<string, {
+                type: string;
+                data: any;
+              }>()
+            }
+          };
+          
+          // Extract processes from the comprehensive log
+          if (pipeline.scraping) {
+            // Add process property if it doesn't exist
+            const scrapingProcess = { ...pipeline.scraping, process: 'scraping' };
+            pipelineData.processes.push(scrapingProcess);
+          }
+          if (pipeline.selected_links) pipelineData.processes.push(pipeline.selected_links);
+          if (pipeline.summarization) pipelineData.processes.push(pipeline.summarization);
+          if (pipeline.reconstruction) pipelineData.processes.push(pipeline.reconstruction);
+          if (pipeline.publishing) pipelineData.processes.push(pipeline.publishing);
+          
+          // Build relationships from the url_to_id_map
+          if (pipeline.summarization?.url_to_id_map) {
+            for (const [url, id] of Object.entries(pipeline.summarization.url_to_id_map)) {
+              pipelineData.relationships.urlToNewsId.set(url, id);
+            }
+            
+            // Store summary details if available
+            if (pipeline.summarization?.summarized_news && pipeline.summarization?.summarized_news_ids) {
+              pipeline.summarization.summarized_news.forEach((summary, index) => {
+                if (index < (pipeline.summarization?.summarized_news_ids?.length || 0)) {
+                  pipelineData.relationships.idToDetails.set(pipeline.summarization!.summarized_news_ids![index], {
+                    type: 'summary',
+                    data: summary
+                  });
+                }
+              });
+            }
+          }
+          
+          // Store reconstruction details
+          if (pipeline.reconstruction?.reconstructed_articles) {
+            pipeline.reconstruction.reconstructed_articles.forEach(article => {
+              if (article.news_id && article.article) {
+                pipelineData.relationships.idToDetails.set(article.news_id, {
+                  type: 'reconstruction',
+                  data: article
+                });
+              }
+            });
+          }
+          
+          pipelines.set(pipeline.pipeline_id, pipelineData);
+        }
+      });
+      
+      // Render table
+      tableBody.innerHTML = '';
+      
+      if (pipelines.size === 0) {
+        tableBody.innerHTML = `
+          <tr>
+            <td colspan="7" class="py-8 text-center text-gray-500">Nessun log trovato con i filtri attuali.</td>
+          </tr>
+        `;
+      } else {
+        // Sort pipelines by date (newest first)
+        const sortedPipelines = [...pipelines.values()].sort((a, b) => {
+          return new Date(b.pipeline.timestamp).getTime() - new Date(a.pipeline.timestamp).getTime();
+        });
+        
+        sortedPipelines.forEach(pipelineData => {
+          const { pipeline } = pipelineData;
+          
+          const row = document.createElement('tr');
+          row.className = 'hover:bg-gray-50';
+          
+          // Get process data from the comprehensive log entry
+          const scrapingProcess = pipeline.scraping;
+          const selectedLinksProcess = pipeline.selected_links;
+          const summarizationProcess = pipeline.summarization;
+          const publishingProcess = pipeline.publishing;
+          
+          row.innerHTML = `
+            <td class="py-3 px-4 text-sm">${formatDate(pipeline.timestamp)}</td>
+            <td class="py-3 px-4">${formatStatus(pipeline.status)}</td>
+            <td class="py-3 px-4 text-sm">${scrapingProcess?.total_links || 0}</td>
+            <td class="py-3 px-4 text-sm">${selectedLinksProcess?.unique_count || pipeline.unique_ids?.length || 0}</td>
+            <td class="py-3 px-4 text-sm">${summarizationProcess?.summarized_news_ids?.length || pipeline.summarized_ids?.length || 0}</td>
+            <td class="py-3 px-4 text-sm">${publishingProcess?.published_count || pipeline.published_count || 0}</td>
+            <td class="py-3 px-4">
+              <button class="text-indigo-600 hover:text-indigo-900 text-sm view-details" data-pipeline-id="${pipeline.pipeline_id}">
+                Details
+              </button>
+            </td>
+          `;
+          
+          tableBody.appendChild(row);
+          
+          // Add event listener for the details button
+          const detailsButton = row.querySelector('.view-details');
+          if (detailsButton) {
+            detailsButton.addEventListener('click', () => {
+              showPipelineDetails(pipelineData);
+            });
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Errore durante il caricamento dei log:', error);
+      const tableBody = document.querySelector('#pipeline-table tbody');
+      if (tableBody) {
+        tableBody.innerHTML = `
+          <tr>
+            <td colspan="7" class="py-8 text-center text-red-500">Errore durante il caricamento dei log: ${error instanceof Error ? error.message : 'Errore sconosciuto'}</td>
+          </tr>
+        `;
+      }
+    } finally {
+      // Hide loading indicator
+      document.getElementById('loading-indicator')?.classList.add('hidden');
+    }
+  };
+  
+  // Function to show pipeline details in the modal
+  const showPipelineDetails = (pipelineData: PipelineData): void => {
+    const { pipeline } = pipelineData;
+    const modalTitle = document.getElementById('modal-title');
+    const modalContent = document.getElementById('modal-content');
+    const modal = document.getElementById('details-modal');
+    
+    if (!modalTitle || !modalContent || !modal) return;
+    
+    // Update modal title
+    modalTitle.textContent = `Pipeline: ${formatDate(pipeline.timestamp)}`;
+    
+    // Clear and prepare content
+    modalContent.innerHTML = '';
+    
+    // Pipeline header info
+    const pipelineInfo = document.createElement('div');
+    pipelineInfo.className = 'mb-6';
+    pipelineInfo.innerHTML = `
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <div class="text-sm text-gray-500">ID</div>
+          <div class="font-mono text-sm">${pipeline.pipeline_id}</div>
+        </div>
+        <div>
+          <div class="text-sm text-gray-500">Started</div>
+          <div>${formatFullDate(pipeline.timestamp)}</div>
+        </div>
+        <div>
+          <div class="text-sm text-gray-500">Status</div>
+          <div>${formatStatus(pipeline.status)}</div>
+        </div>
+        ${pipeline.error ? `
+          <div>
+            <div class="text-sm text-gray-500">Error</div>
+            <div class="text-red-600 text-sm">${pipeline.error}</div>
+          </div>
+        ` : ''}
+      </div>
+      
+      ${pipeline.sources && pipeline.sources.length ? `
+        <div class="mt-4">
+          <div class="text-sm text-gray-500">Sources</div>
+          <div class="mt-1 text-sm">${pipeline.sources.join(', ')}</div>
+        </div>
+      ` : ''}
+    `;
+    modalContent.appendChild(pipelineInfo);
+    
+    // Find processes from the comprehensive log
+    const scrapingProcess = pipeline.scraping;
+    const selectedLinksProcess = pipeline.selected_links;
+    const summarizationProcess = pipeline.summarization;
+    const reconstructionProcess = pipeline.reconstruction;
+    const publishingProcess = pipeline.publishing;
+    
+    // Create step sections with detailed information
+    
+    // 1 & 2. Link Selection Flow - Create a unified view of scraped and selected links
+    if (scrapingProcess?.scraped_links && selectedLinksProcess) {
+      const scrapedLinks = scrapingProcess.scraped_links || [];
+      const uniqueIds = selectedLinksProcess.unique_news_ids || pipeline.unique_ids || [];
+      
+      // Build a map of selected URLs (could be IDs or actual URLs)
+      const selectedUrlMap = new Map<string, boolean>();
+      
+      uniqueIds.forEach(id => {
+        selectedUrlMap.set(id, true);
+        // Check relationships to see if this ID maps to a URL
+        for (const [url, mappedId] of pipelineData.relationships.urlToNewsId.entries()) {
+          if (mappedId === id || url === id) {
+            selectedUrlMap.set(url, true);
+          }
+        }
+      });
+      
+      // Create the section
+      const linkSelectionSection = document.createElement('div');
+      linkSelectionSection.className = 'mb-8 pb-6 border-b border-gray-200';
+      
+      const selectedCount = uniqueIds.length;
+      const totalCount = scrapedLinks.length;
+      const filteredCount = totalCount - selectedCount;
+      const selectedPercentage = totalCount > 0 ? Math.round((selectedCount / totalCount) * 100) : 0;
+      const filteredPercentage = totalCount > 0 ? Math.round((filteredCount / totalCount) * 100) : 0;
+      
+      linkSelectionSection.innerHTML = `
+        <div class="flex items-center gap-3 mb-3">
+          <div class="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-800 font-bold">1</div>
+          <h3 class="text-lg font-medium">Selezione Link</h3>
+          <span class="px-2 text-sm border rounded border-gray-300">${totalCount} acquisiti</span>
+          <span class="px-2 text-sm border rounded border-green-300 bg-green-50">${selectedCount} selezionati</span>
+          <div class="ml-auto">${formatStatus(selectedLinksProcess.status)}</div>
+        </div>
+        
+        <div class="mt-3 flex flex-col lg:flex-row gap-4">
+          <!-- Link selection statistics -->
+          <div class="lg:w-1/3">
+            <div class="bg-gray-50 p-4 rounded border border-gray-200">
+              <div class="flex items-center gap-2">
+                <div class="w-3 h-3 rounded-full bg-gray-400"></div>
+                <span class="font-medium">Tutti i Link: ${totalCount}</span>
+              </div>
+              <div class="mt-2 flex items-center gap-2">
+                <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                <span class="font-medium">Selezionati: ${selectedCount}</span>
+                <span class="text-sm text-gray-500">(${selectedPercentage}%)</span>
+              </div>
+              <div class="mt-2 flex items-center gap-2">
+                <div class="w-3 h-3 rounded-full bg-red-500"></div>
+                <span class="font-medium">Filtrati: ${filteredCount}</span>
+                <span class="text-sm text-gray-500">(${filteredPercentage}%)</span>
+              </div>
+              
+              <div class="mt-4 h-4 bg-gray-200 rounded-full overflow-hidden">
+                <div class="h-full bg-green-500" style="width: ${selectedPercentage}%"></div>
+              </div>
+              
+              <div class="mt-4 text-sm text-gray-600">
+                <p>I link vengono filtrati in base a criteri di duplicazione, rilevanza e qualità.</p>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Link list -->
+          <div class="lg:w-2/3 bg-gray-50 p-3 rounded border border-gray-200">
+            <div class="flex gap-2 mb-3">
+              <button class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 filter-button active" data-filter="all">Tutti i Link</button>
+              <button class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 filter-button" data-filter="selected">Solo Selezionati</button>
+              <button class="text-xs px-2 py-1 rounded bg-gray-200 hover:bg-gray-300 filter-button" data-filter="filtered">Solo Filtrati</button>
+            </div>
+            
+            <div class="links-container max-h-96 overflow-y-auto">
+              <ul class="list-disc pl-5 space-y-1 links-list">
+                ${scrapedLinks.map((link: string) => {
+                  const isSelected = selectedUrlMap.has(link);
+                  return `
+                    <li class="text-sm flex items-start gap-2 py-1 link-item ${isSelected ? 'selected' : 'filtered'}">
+                      <span class="mt-1 w-2 h-2 rounded-full ${isSelected ? 'bg-green-500' : 'bg-red-500'}"></span>
+                      <div class="flex-1 truncate">
+                        <a href="${link}" target="_blank" class="text-blue-600 hover:underline break-all">${link}</a>
+                      </div>
+                      <span class="whitespace-nowrap text-xs px-1.5 py-0.5 rounded ${isSelected ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+                        ${isSelected ? 'Selected' : 'Filtered'}
+                      </span>
+                    </li>
+                  `;
+                }).join('')}
+              </ul>
+            </div>
+          </div>
+        </div>
+      `;
+      
+      modalContent.appendChild(linkSelectionSection);
+      
+      // Add event listener for the filter buttons
+      setTimeout(() => {
+        const filterButtons = linkSelectionSection.querySelectorAll('.filter-button');
+        const linkItems = linkSelectionSection.querySelectorAll('.link-item');
+        
+        filterButtons.forEach((button) => {
+          button.addEventListener('click', () => {
+            // Update active state
+            filterButtons.forEach(btn => btn.classList.remove('active', 'bg-indigo-100', 'text-indigo-800'));
+            button.classList.add('active', 'bg-indigo-100', 'text-indigo-800');
+            
+            // Apply filter
+            const filterElement = button as HTMLElement;
+            const filter = filterElement.dataset.filter;
+            
+            linkItems.forEach(item => {
+              if (filter === 'all') {
+                item.classList.remove('hidden');
+              } else if (filter === 'selected' && item.classList.contains('selected')) {
+                item.classList.remove('hidden');
+              } else if (filter === 'filtered' && item.classList.contains('filtered')) {
+                item.classList.remove('hidden');
+              } else {
+                item.classList.add('hidden');
+              }
+            });
+          });
+        });
+      }, 100);
+    }
+    // If we only have scraping or only have selected links, fall back to the individual displays
+    else if (scrapingProcess && scrapingProcess.scraped_links && scrapingProcess.scraped_links.length > 0) {
+      const scrapingSection = document.createElement('div');
+      scrapingSection.className = 'mb-8 pb-6 border-b border-gray-200';
+      
+      const totalLinks = scrapingProcess.total_links || scrapingProcess.scraped_links.length;
+      
+      scrapingSection.innerHTML = `
+        <div class="flex items-center gap-3 mb-3">
+          <div class="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-800 font-bold">1</div>
+          <h3 class="text-lg font-medium">Scraped Links (${totalLinks})</h3>
+          <div class="ml-auto">${formatStatus(scrapingProcess.status)}</div>
+        </div>
+        
+        <div class="mt-3 bg-gray-50 p-4 rounded max-h-64 overflow-y-auto">
+          <ul class="list-disc pl-5 space-y-1">
+            ${scrapingProcess.scraped_links.map((link: string) => `
+              <li class="text-sm">
+                <a href="${link}" target="_blank" class="text-blue-600 hover:underline">${link}</a>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+      `;
+      modalContent.appendChild(scrapingSection);
+    }
+    else if (selectedLinksProcess) {
+      const selectedLinksSection = document.createElement('div');
+      selectedLinksSection.className = 'mb-8 pb-6 border-b border-gray-200';
+      
+      const uniqueIds = selectedLinksProcess.unique_news_ids || pipeline.unique_ids || [];
+      const uniqueCount = selectedLinksProcess.unique_count || uniqueIds.length;
+      
+      selectedLinksSection.innerHTML = `
+        <div class="flex items-center gap-3 mb-3">
+          <div class="flex items-center justify-center w-8 h-8 rounded-full bg-green-100 text-green-800 font-bold">2</div>
+          <h3 class="text-lg font-medium">Selected Links (${uniqueCount})</h3>
+          <div class="ml-auto">${formatStatus(selectedLinksProcess.status)}</div>
+        </div>
+        
+        ${uniqueIds.length > 0 ? `
+          <div class="mt-3 bg-gray-50 p-4 rounded max-h-64 overflow-y-auto">
+            <ul class="list-disc pl-5 space-y-1">
+              ${uniqueIds.map((id: string) => {
+                // Find the original URL if available
+                let url = id;
+                for (const [origUrl, mappedId] of pipelineData.relationships.urlToNewsId.entries()) {
+                  if (mappedId === id || origUrl === id) {
+                    url = origUrl;
+                    break;
+                  }
+                }
+                return `
+                  <li class="text-sm">
+                    <a href="${url}" target="_blank" class="text-blue-600 hover:underline">${url}</a>
+                  </li>
+                `;
+              }).join('')}
+            </ul>
+          </div>
+        ` : `<div class="text-sm text-gray-500">No selected links found.</div>`}
+      `;
+      modalContent.appendChild(selectedLinksSection);
+    }
+    
+    // 3. Summarization
+    if (summarizationProcess) {
+      const summarizationSection = document.createElement('div');
+      summarizationSection.className = 'mb-8 pb-6 border-b border-gray-200';
+      
+      const summaries = summarizationProcess.summarized_news || [];
+      const summaryIds = summarizationProcess.summarized_news_ids || [];
+      
+      summarizationSection.innerHTML = `
+        <div class="flex items-center gap-3 mb-3">
+          <div class="flex items-center justify-center w-8 h-8 rounded-full bg-purple-100 text-purple-800 font-bold">3</div>
+          <h3 class="text-lg font-medium">Summarized Articles (${summaryIds.length})</h3>
+          <div class="ml-auto">${formatStatus(summarizationProcess.status)}</div>
+        </div>
+      `;
+      
+      if (summaries.length > 0) {
+        const summariesContainer = document.createElement('div');
+        summariesContainer.className = 'mt-3 space-y-3';
+        
+        summaries.forEach((summary: SummarizedNews, index: number) => {
+          const id = index < summaryIds.length ? summaryIds[index] : 'unknown';
+          
+          const summaryCard = document.createElement('div');
+          summaryCard.className = 'bg-gray-50 p-3 rounded border border-gray-200';
+          
+          // Find the original URL if available
+          let sourceUrl = '';
+          for (const [url, mappedId] of pipelineData.relationships.urlToNewsId.entries()) {
+            if (mappedId === id) {
+              sourceUrl = url;
+              break;
+            }
+          }
+          
+          summaryCard.innerHTML = `
+            <div class="flex justify-between items-start">
+              <h4 class="font-medium text-base">${summary.title || 'Senza titolo'}</h4>
+              <span class="text-xs text-gray-500">ID: ${id}</span>
+            </div>
+            
+            ${sourceUrl ? `
+              <div class="mt-2 text-xs">
+                <span class="text-gray-500">Fonte:</span>
+                <a href="${sourceUrl}" target="_blank" class="text-blue-600 hover:underline">${sourceUrl}</a>
+              </div>
+            ` : ''}
+            
+            ${summary.context ? `
+              <div class="mt-2">
+                <div class="text-xs text-gray-500">Contesto:</div>
+                <p class="text-sm mt-1">${summary.context}</p>
+              </div>
+            ` : ''}
+            
+            ${summary.facts && summary.facts.length ? `
+              <div class="mt-2">
+                <div class="text-xs text-gray-500">Fatti:</div>
+                <ul class="list-disc pl-5 text-sm mt-1">
+                  ${summary.facts.map((fact: string) => `<li>${fact}</li>`).join('')}
+                </ul>
+              </div>
+            ` : ''}
+          `;
+          
+          summariesContainer.appendChild(summaryCard);
+        });
+        
+        summarizationSection.appendChild(summariesContainer);
+      } else {
+        summarizationSection.innerHTML += `<div class="text-sm text-gray-500">No summaries found.</div>`;
+      }
+      
+      modalContent.appendChild(summarizationSection);
+    }
+    
+    // 4. Reconstruction
+    if (reconstructionProcess) {
+      const reconstructionSection = document.createElement('div');
+      reconstructionSection.className = 'mb-8 pb-6 border-b border-gray-200';
+      
+      const articles = reconstructionProcess.reconstructed_articles || [];
+      
+      reconstructionSection.innerHTML = `
+        <div class="flex items-center gap-3 mb-3">
+          <div class="flex items-center justify-center w-8 h-8 rounded-full bg-indigo-100 text-indigo-800 font-bold">4</div>
+          <h3 class="text-lg font-medium">Articoli Ricostruiti (${articles.length})</h3>
+          <div class="ml-auto">${formatStatus(reconstructionProcess.status)}</div>
+        </div>
+      `;
+      
+      if (articles.length > 0) {
+        const articlesContainer = document.createElement('div');
+        articlesContainer.className = 'mt-3 space-y-3';
+        
+        articles.forEach((article: ReconstructedArticle) => {
+          const articleCard = document.createElement('div');
+          articleCard.className = 'bg-gray-50 p-3 rounded border border-gray-200';
+          
+          // Get associated summary
+          const summaryData = pipelineData.relationships.idToDetails.get(article.news_id);
+          const summary = summaryData?.type === 'summary' ? summaryData.data as SummarizedNews : null;
+          
+          // Find the original URL if available
+          let sourceUrl = '';
+          for (const [url, mappedId] of pipelineData.relationships.urlToNewsId.entries()) {
+            if (mappedId === article.news_id) {
+              sourceUrl = url;
+              break;
+            }
+          }
+          
+          articleCard.innerHTML = `
+            <div class="flex justify-between items-start">
+              <h4 class="font-medium text-base">
+                ${article.article?.proposed_title || article.article?.title || (summary?.title || 'Senza titolo')}
+              </h4>
+              <div class="flex items-center">
+                <span class="text-xs text-gray-500 mr-2">ID: ${article.news_id}</span>
+                ${formatStatus(article.status)}
+              </div>
+            </div>
+            
+            ${sourceUrl ? `
+              <div class="mt-2 text-xs">
+                <span class="text-gray-500">Fonte:</span>
+                <a href="${sourceUrl}" target="_blank" class="text-blue-600 hover:underline">${sourceUrl}</a>
+              </div>
+            ` : ''}
+            
+            ${article.article?.proposed_subtitle ? `
+              <div class="mt-2">
+                <div class="text-xs text-gray-500">Sottotitolo:</div>
+                <p class="text-sm font-medium mt-1">${article.article.proposed_subtitle}</p>
+              </div>
+            ` : ''}
+            
+            <div class="mt-2 flex items-center gap-2">
+              <button class="text-xs text-blue-600 hover:text-blue-800 toggle-content" data-id="${article.news_id}">
+                Mostra contenuto
+              </button>
+              ${article.error ? `
+                <span class="text-xs text-red-600">Errore: ${article.error}</span>
+              ` : ''}
+            </div>
+            
+            <div id="article-content-${article.news_id}" class="mt-2 hidden">
+              <div class="bg-white p-3 border border-gray-200 rounded max-h-96 overflow-y-auto">
+                <div class="prose prose-sm max-w-none whitespace-pre-line">
+                  ${article.article?.proposed_content || article.article?.content || 'Nessun contenuto disponibile'}
+                </div>
+              </div>
+            </div>
+          `;
+          
+          articlesContainer.appendChild(articleCard);
+        });
+        
+        reconstructionSection.appendChild(articlesContainer);
+      } else {
+        reconstructionSection.innerHTML += `<div class="text-sm text-gray-500">Nessun articolo ricostruito trovato.</div>`;
+      }
+      
+      modalContent.appendChild(reconstructionSection);
+    }
+    
+    // 5. Publishing
+    if (publishingProcess) {
+      const publishingSection = document.createElement('div');
+      publishingSection.className = 'mb-8';
+      
+      const publishedArticles = publishingProcess.published_articles || [];
+      const publishedCount = publishingProcess.published_count || publishedArticles.length;
+      
+      publishingSection.innerHTML = `
+        <div class="flex items-center gap-3 mb-3">
+          <div class="flex items-center justify-center w-8 h-8 rounded-full bg-pink-100 text-pink-800 font-bold">5</div>
+          <h3 class="text-lg font-medium">Articoli Pubblicati (${publishedCount})</h3>
+          <div class="ml-auto">${formatStatus(publishingProcess.status)}</div>
+        </div>
+      `;
+      
+      if (publishedArticles.length > 0) {
+        const articlesContainer = document.createElement('div');
+        articlesContainer.className = 'mt-3 space-y-3';
+        
+        publishedArticles.forEach((article: PublishedArticle) => {
+          const articleCard = document.createElement('div');
+          articleCard.className = 'bg-gray-50 p-3 rounded border border-gray-200';
+          
+          // Get reconstruction info if it exists
+          const reconstructedArticle = reconstructionProcess?.reconstructed_articles?.find(
+            (a: ReconstructedArticle) => a.news_id === article.news_id
+          );
+          
+          // Get associated summary if it exists
+          const summaryData = pipelineData.relationships.idToDetails.get(article.news_id);
+          const summary = summaryData?.type === 'summary' ? summaryData.data as SummarizedNews : null;
+          
+          articleCard.innerHTML = `
+            <div class="flex justify-between items-start">
+              <h4 class="font-medium text-base">
+                ${reconstructedArticle?.article?.proposed_title || 
+                  reconstructedArticle?.article?.title || 
+                  (summary?.title || `Articolo ID: ${article.news_id}`)}
+              </h4>
+              <div>
+                ${formatStatus(article.status)}
+              </div>
+            </div>
+            
+            ${article.wp_id ? `
+              <div class="mt-2 text-sm">
+                <span class="text-gray-500">ID WordPress:</span>
+                <span class="font-mono">${article.wp_id}</span>
+              </div>
+            ` : ''}
+            
+            ${article.wp_url ? `
+              <div class="mt-2">
+                <a href="${article.wp_url}" target="_blank" class="text-sm text-blue-600 hover:underline flex items-center gap-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                  Visualizza articolo pubblicato
+                </a>
+              </div>
+            ` : ''}
+            
+            ${article.message ? `
+              <div class="mt-2 text-sm text-gray-700">
+                <span class="text-gray-500">Messaggio:</span>
+                ${article.message}
+              </div>
+            ` : ''}
+            
+            ${article.error ? `
+              <div class="mt-2 p-2 bg-red-50 rounded border border-red-200">
+                <span class="text-sm text-red-600">Errore: ${article.error}</span>
+              </div>
+            ` : ''}
+          `;
+          
+          articlesContainer.appendChild(articleCard);
+        });
+        
+        publishingSection.appendChild(articlesContainer);
+      } else {
+        publishingSection.innerHTML += `<div class="text-sm text-gray-500">Nessun articolo pubblicato trovato.</div>`;
+      }
+      
+      modalContent.appendChild(publishingSection);
+    }
+    
+    // Add event listeners for toggling article content
+    setTimeout(() => {
+      const toggleButtons = modalContent.querySelectorAll('.toggle-content');
+      toggleButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const buttonElement = button as HTMLElement;
+          const id = buttonElement.dataset.id;
+          if (!id) return;
+          
+          const contentDiv = document.getElementById(`article-content-${id}`);
+          if (contentDiv) {
+            const isHidden = contentDiv.classList.contains('hidden');
+            contentDiv.classList.toggle('hidden', !isHidden);
+            buttonElement.textContent = isHidden ? 'Nascondi contenuto' : 'Mostra contenuto';
+          }
+        });
+      });
+    }, 100);
+    
+    // Show modal
+    modal.classList.remove('hidden');
+  };
+  
+  // Initialize page
+  document.addEventListener('DOMContentLoaded', () => {
+    // Fetch logs initially
+    fetchLogs();
+    
+    // Set up event listeners
+    document.getElementById('apply-filters')?.addEventListener('click', fetchLogs);
+    
+    document.getElementById('reset-filters')?.addEventListener('click', () => {
+        const dateFrom = document.getElementById('date-from') as HTMLInputElement;
+        const dateTo = document.getElementById('date-to') as HTMLInputElement;
+        
+      dateFrom.value = '';
+      dateTo.value = '';
+        
+        fetchLogs();
+      });
+    
+    // Modal close button
+    document.getElementById('close-modal')?.addEventListener('click', () => {
+      document.getElementById('details-modal')?.classList.add('hidden');
+    });
+    
+    // Close modal when clicking outside
+    document.getElementById('details-modal')?.addEventListener('click', (e) => {
+      if (e.target === document.getElementById('details-modal')) {
+        document.getElementById('details-modal')?.classList.add('hidden');
+      }
+    });
+  });
+</script>
+

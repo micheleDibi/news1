@@ -1,0 +1,469 @@
+---
+export const prerender = false;
+
+import Layout from '../../../layouts/Layout.astro';
+import { supabase } from '../../../lib/supabase';
+import { format } from 'date-fns';
+import CategorySidebar from '../../../components/CategorySidebar.astro';
+import { generateItemListStructuredData, generateBreadcrumbStructuredData } from '../../../lib/seo';
+
+// Page size and pagination helpers (same as category page)
+const PER_PAGE = 21;
+const pageParam = Number(Astro.url.searchParams.get('page') || '1');
+const page = pageParam < 1 ? 1 : Math.floor(pageParam);
+const from = (page - 1) * PER_PAGE;
+const to = from + PER_PAGE - 1;
+
+const { slug } = Astro.params;
+
+// Function to generate slug from name (same logic as profile pages)
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[àáâäãåāăą]/g, 'a')
+    .replace(/[èéêëēĕėęě]/g, 'e')
+    .replace(/[ìíîïīĭįǐ]/g, 'i')
+    .replace(/[òóôöõōŏő]/g, 'o')
+    .replace(/[ùúûüũūŭů]/g, 'u')
+    .replace(/[ýÿŷ]/g, 'y')
+    .replace(/ñ/g, 'n')
+    .replace(/ç/g, 'c')
+    .replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9\-]+/g, '')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
+}
+
+// Get all displayable profiles and find the one matching our slug
+const { data: profiles, error: profilesError } = await supabase
+  .from('profiles')
+  .select('id, full_name, description, profile_pic_link')
+  .eq('is_displayable', true);
+
+if (profilesError) {
+  console.error('Error fetching profiles:', profilesError);
+  return Astro.redirect('/404');
+}
+
+// Find the profile that matches our slug
+const profile = profiles?.find(p => generateSlug(p.full_name) === slug);
+
+if (!profile) {
+  console.error('Profile not found for slug:', slug);
+  return Astro.redirect('/404');
+}
+
+// Get paginated articles by this author
+const { data: articles, error: articlesError, count: totalCount } = await supabase
+  .from('articles')
+  .select('*', { count: 'exact' })
+  .eq('creator', profile.full_name)
+  .eq('isdraft', false)
+  .order('published_at', { ascending: false })
+  .range(from, to);
+
+if (articlesError) {
+  console.error('Error fetching articles:', articlesError);
+}
+
+const totalPages = Math.max(1, Math.ceil((totalCount ?? 0) / PER_PAGE));
+if (page > totalPages && totalPages > 1) {
+  return Astro.redirect(`/team/${slug}/articles`);
+}
+
+// Pagination logic (same as category page)
+const DOTS = '...';
+const range = (start: number, end: number) => {
+  let length = end - start + 1;
+  return Array.from({ length }, (_, idx) => idx + start);
+};
+
+const getPaginationItems = (currentPage: number, totalPages: number, siblingCount = 1): (string | number)[] => {
+  const totalPageNumbers = siblingCount + 5;
+
+  if (totalPageNumbers >= totalPages) {
+    return range(1, totalPages);
+  }
+
+  const leftSiblingIndex = Math.max(currentPage - siblingCount, 1);
+  const rightSiblingIndex = Math.min(currentPage + siblingCount, totalPages);
+
+  const shouldShowLeftDots = leftSiblingIndex > 2;
+  const shouldShowRightDots = rightSiblingIndex < totalPages - 2;
+
+  const firstPageIndex = 1;
+  const lastPageIndex = totalPages;
+
+  if (!shouldShowLeftDots && shouldShowRightDots) {
+    let leftItemCount = 3 + 2 * siblingCount;
+    let leftRangeArr = range(1, leftItemCount);
+    return [...leftRangeArr, DOTS, totalPages];
+  }
+
+  if (shouldShowLeftDots && !shouldShowRightDots) {
+    let rightItemCount = 3 + 2 * siblingCount;
+    let rightRangeArr = range(totalPages - rightItemCount + 1, totalPages);
+    return [firstPageIndex, DOTS, ...rightRangeArr];
+  }
+
+  if (shouldShowLeftDots && shouldShowRightDots) {
+    let middleRangeArr = range(leftSiblingIndex, rightSiblingIndex);
+    return [firstPageIndex, DOTS, ...middleRangeArr, DOTS, lastPageIndex];
+  }
+  
+  return range(1, totalPages);
+};
+
+const pageItems = totalPages > 1 ? getPaginationItems(page, totalPages, 1) : [1];
+
+// Transform articles for display (same logic as category page)
+const transformedArticles = (articles || []).map(article => {
+  return {
+    title: article.title,
+    image: article.image_url,
+    category: article.category, 
+    date: format(new Date(article.published_at), 'dd/MM/yyyy'),
+    excerpt: article.excerpt,
+    href: `/${article.category_slug}/${article.slug}`,
+    borderColor: 'border-sport-500',
+    bgColor: 'bg-sport-500',
+    textColor: 'text-sport-500',
+  };
+});
+
+// Split articles into featured and regular (same as category page)
+const featuredArticle = transformedArticles[0];
+const secondaryArticles = transformedArticles.slice(1, 3);
+const regularArticles = transformedArticles.slice(3);
+
+// SEO and structured data
+const pageUrl = `https://edunews24.it/team/${slug}/articles`;
+const canonicalUrl = page === 1 ? pageUrl : `${pageUrl}?page=${page}`;
+
+const itemListStructuredData = generateItemListStructuredData(
+  transformedArticles,
+  `Articoli di ${profile.full_name}`,
+  pageUrl
+);
+
+const breadcrumbData = {
+  category: `Articoli di ${profile.full_name}`,
+  category_slug: `team/${slug}/articles`
+};
+const breadcrumbStructuredData = generateBreadcrumbStructuredData(breadcrumbData);
+---
+
+<Layout 
+  title={`Articoli di ${profile.full_name} - EduNews24`}
+  description={`Tutti gli articoli pubblicati da ${profile.full_name} su EduNews24. Scopri i contenuti e le analisi del nostro giornalista.`}
+  canonicalUrl={canonicalUrl}
+>
+  <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />
+  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
+
+  <main class="bg-gray-50 min-h-screen py-8">
+    <div class="container mx-auto px-4">
+      <div class="flex flex-col lg:flex-row gap-8">
+        <!-- Main Content -->
+        <div class="flex-1 border-r border-gray-200 pr-4">
+          <!-- Breadcrumb Navigation -->
+          <nav class="flex text-sm text-gray-600 mb-6" aria-label="Breadcrumb">
+            <ol class="inline-flex items-center space-x-1 md:space-x-3">
+              <li class="inline-flex items-center">
+                <a href="/" class="inline-flex items-center hover:text-sport-500">
+                  <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"></path>
+                  </svg>
+                  Home
+                </a>
+              </li>
+              <li>
+                <div class="flex items-center">
+                  <svg class="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                  </svg>
+                  <a href="/team" class="ml-1 hover:text-sport-500">Team</a>
+                </div>
+              </li>
+              <li>
+                <div class="flex items-center">
+                  <svg class="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                  </svg>
+                  <a href={`/team/${slug}`} class="ml-1 hover:text-sport-500">{profile.full_name}</a>
+                </div>
+              </li>
+              <li aria-current="page">
+                <div class="flex items-center">
+                  <svg class="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                  </svg>
+                  <span class="ml-1 text-gray-500">Articoli</span>
+                </div>
+              </li>
+            </ol>
+          </nav>
+
+          <!-- Page Header -->
+          <div class="flex items-center gap-4 mb-6">
+            <!-- Author Avatar -->
+            <div class="flex-shrink-0">
+              {profile.profile_pic_link ? (
+                <img 
+                  src={profile.profile_pic_link} 
+                  alt={profile.full_name}
+                  class="w-16 h-16 rounded-full object-cover border-2 border-gray-300"
+                />
+              ) : (
+                <div class="w-16 h-16 rounded-full bg-gradient-to-br from-sport-400 to-sport-600 flex items-center justify-center">
+                  <span class="text-white text-lg font-bold">
+                    {profile.full_name.split(' ').map((n: string) => n[0]).join('').substring(0, 2)}
+                  </span>
+                </div>
+              )}
+            </div>
+            
+            <!-- Header Info -->
+            <div>
+              <h1 class="text-3xl font-bold text-gray-900">Articoli di {profile.full_name}</h1>
+              <p class="text-gray-600 mt-1">
+                {totalCount === 0 ? 'Nessun articolo trovato' : 
+                 totalCount === 1 ? '1 articolo pubblicato' : 
+                 `${totalCount} articoli pubblicati`}
+              </p>
+            </div>
+          </div>
+
+          {transformedArticles.length === 0 ? (
+            <div class="text-center py-12 bg-white rounded-lg shadow-sm">
+              <div class="text-gray-400 mb-4">
+                <svg class="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                </svg>
+              </div>
+              <h2 class="text-2xl text-gray-600 mb-2">Nessun articolo trovato</h2>
+              <p class="text-gray-500">{profile.full_name} non ha ancora pubblicato articoli.</p>
+              <a 
+                href={`/team/${slug}`}
+                class="inline-block mt-4 px-6 py-2 bg-sport-500 text-white rounded-full hover:bg-sport-600 transition-colors"
+              >
+                Torna al profilo
+              </a>
+            </div>
+          ) : (
+            <div class="space-y-8">
+              <!-- Featured Article - Mobile -->
+              {featuredArticle && (
+                <article class={`md:hidden bg-white rounded-lg shadow-sm overflow-hidden border-l-4 ${featuredArticle.borderColor} hover:shadow-md transition-shadow`}>
+                  <a href={featuredArticle.href} class="block">
+                    <div class="relative">
+                      <img 
+                        src={featuredArticle.image} 
+                        alt={featuredArticle.title}
+                        class="w-full h-48 object-cover"
+                      />
+                    </div>
+                    <div class="p-4">
+                      <span class={`${featuredArticle.textColor} text-sm font-semibold`}>
+                        {featuredArticle.category}
+                      </span>
+                      <h3 class="font-bold text-gray-900 mt-2 line-clamp-2 hover:text-sport-500 transition-colors">
+                        {featuredArticle.title}
+                      </h3>
+                    </div>
+                  </a>
+                </article>
+              )}
+
+              <!-- Featured Article - Desktop -->
+              {featuredArticle && (
+                <article class={`hidden md:block bg-white rounded-lg shadow-sm overflow-hidden border-t-4 ${featuredArticle.borderColor} hover:shadow-md transition-shadow`}>
+                  <a href={featuredArticle.href} class="block">
+                    <div class="relative h-96">
+                      <img 
+                        src={featuredArticle.image} 
+                        alt={featuredArticle.title}
+                        class="w-full h-full object-cover"
+                      />
+                      <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                        <div class="absolute bottom-0 left-0 right-0 p-6">
+                          <span class={`inline-block ${featuredArticle.bgColor} text-white px-3 py-1 text-sm font-semibold rounded-sm mb-3`}>
+                            {featuredArticle.category}
+                          </span>
+                          <h2 class="text-3xl font-bold text-white mb-3">
+                            {featuredArticle.title}
+                          </h2>
+                          <p class="text-gray-200 text-lg mb-2">
+                            {featuredArticle.excerpt}
+                          </p>
+                          <time class="text-sm text-white/80">
+                            {featuredArticle.date}
+                          </time>
+                        </div>
+                      </div>
+                    </div>
+                  </a>
+                </article>
+              )}
+
+              <!-- Secondary Articles -->
+              {secondaryArticles.length > 0 && (
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {secondaryArticles.map(article => (
+                    <article class={`bg-white rounded-lg shadow-sm overflow-hidden border-t-4 ${article.borderColor} hover:shadow-md transition-shadow`}>
+                      <a href={article.href} class="block">
+                        <div class="relative h-64">
+                          <img 
+                            src={article.image} 
+                            alt={article.title}
+                            class="w-full h-full object-cover"
+                          />
+                          <div class="absolute top-3 left-3">
+                            <span class={`inline-block ${article.bgColor} text-white px-2 py-1 text-xs font-semibold rounded-sm`}>
+                              {article.category}
+                            </span>
+                          </div>
+                        </div>
+                        <div class="p-4">
+                          <h3 class="text-xl font-bold text-gray-900 mb-2 line-clamp-2">
+                            {article.title}
+                          </h3>
+                          <p class="text-gray-600 text-sm mb-3 line-clamp-3">
+                            {article.excerpt}
+                          </p>
+                          <time class="text-sm text-gray-500">{article.date}</time>
+                        </div>
+                      </a>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              <!-- Regular Articles Grid -->
+              {regularArticles.length > 0 && (
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {regularArticles.map(article => (
+                    <article class={`bg-white rounded-lg shadow-sm overflow-hidden border-t-4 ${article.borderColor} hover:shadow-md transition-shadow`}>
+                      <a href={article.href} class="block">
+                        <div class="relative h-48">
+                          <img 
+                            src={article.image} 
+                            alt={article.title}
+                            class="w-full h-full object-cover"
+                          />
+                          <div class="absolute top-3 left-3">
+                            <span class={`inline-block ${article.bgColor} text-white px-2 py-1 text-xs font-semibold rounded-sm`}>
+                              {article.category}
+                            </span>
+                          </div>
+                        </div>
+                        <div class="p-4">
+                          <h3 class="text-lg font-bold text-gray-900 mb-2 line-clamp-2">
+                            {article.title}
+                          </h3>
+                          <time class="text-sm text-gray-500">{article.date}</time>
+                        </div>
+                      </a>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <!-- Sidebar -->
+        <div class="lg:w-80 pt-8">
+          <CategorySidebar source={`profile:${profile.id}`} />
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Pagination -->
+  {totalPages > 1 && (
+    <nav class="mt-10 mb-8 flex justify-center items-center gap-2 flex-wrap">
+      <!-- First Page -->
+      {page > 1 && (
+        <a
+          href={`/team/${slug}/articles?page=1`}
+          class="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 text-sm"
+          aria-label="Prima pagina"
+        >
+          «
+        </a>
+      )}
+
+      <!-- Previous -->
+      {page > 1 && (
+        <a
+          href={`/team/${slug}/articles?page=${page - 1}`}
+          class="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 text-sm"
+          aria-label="Pagina precedente"
+        >
+          ‹
+        </a>
+      )}
+
+      <!-- Page numbers -->
+      {pageItems.map(item => (
+        typeof item === 'number' ? (
+          <a
+            href={`/team/${slug}/articles?page=${item}`}
+            class={`px-3 py-1 rounded text-sm
+              ${item === page
+                ? 'bg-primary text-white pointer-events-none'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}
+            `}
+            aria-current={item === page ? "page" : undefined}
+          >
+            {item}
+          </a>
+        ) : (
+          <span class="px-3 py-1 text-sm text-gray-500">{DOTS}</span>
+        )
+      ))}
+
+      <!-- Next -->
+      {page < totalPages && (
+        <a
+          href={`/team/${slug}/articles?page=${page + 1}`}
+          class="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 text-sm"
+          aria-label="Pagina successiva"
+        >
+          ›
+        </a>
+      )}
+
+      <!-- Last Page -->
+      {page < totalPages && (
+        <a
+          href={`/team/${slug}/articles?page=${totalPages}`}
+          class="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 text-sm"
+          aria-label="Ultima pagina"
+        >
+          »
+        </a>
+      )}
+    </nav>
+  )}
+
+</Layout>
+
+<style>
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+</style> 

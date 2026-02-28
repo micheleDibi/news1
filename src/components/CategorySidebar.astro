@@ -1,0 +1,319 @@
+---
+import LatestNews from './LatestNews.astro';
+//import { filenameToIsoDate, secondsToIsoDuration } from '../lib/utils'
+import { randomVideos } from '../lib/randomVideos';
+import Articles from '@/pages/team/[slug]/articles.astro';
+
+interface Props {
+  source?: string;
+  isMobile?: boolean;
+  videoUrl?: string;
+  thumbnailUrl?: string;
+  videoPageUrl?: string;
+  articleTitle?: string;
+}
+
+const { source = 'home', isMobile = false, videoUrl = '',thumbnailUrl = '', videoPageUrl = '',  articleTitle='' } = Astro.props as Props;
+
+/*const videoFiles = [
+  "WhatsApp Video 2025-06-30 at 13.20.45.mp4",
+  "WhatsApp Video 2025-06-30 at 13.20.47.mp4",
+  "WhatsApp Video 2025-06-30 at 13.20.48.mp4",
+  "WhatsApp Video 2025-06-30 at 13.20.49 (1).mp4",
+  "WhatsApp Video 2025-06-30 at 13.20.50.mp4",
+];*/
+
+/*const videoMeta: Record<string, {uploadDate: string; durationSeconds: number;thumbnail: string}> =
+  Object.fromEntries(
+    videoFiles.map(fileName=>[
+      fileName,
+      {
+        uploadDate: filenameToIsoDate(fileName) || "2025-06-30T00:00:00Z",
+        durationSeconds:10,
+        thumbnail:  `/random-chisiamo/${fileName.replace(".mp4",".png")}`
+      }
+    ])
+  );*/
+
+
+
+/*const randomVideoFile = videoFiles[Math.floor(Math.random() * videoFiles.length)];
+const encodedVideoFile = encodeURIComponent(randomVideoFile);
+const videoPath = `/random-chisiamo/${encodedVideoFile}`;*/
+
+//const meta=videoMeta[randomVideoFile];
+//const durationIso= meta ? secondsToIsoDuration(meta.durationSeconds) : undefined;
+//const encodedThumb= encodedVideoFile.replace('.mp4','.png');
+//const thumbUrl = `https://edunews24.it/random-chisiamo/${encodedThumb}`;
+
+const encodedList = randomVideos.map(encodeURIComponent);
+const randomVideoFile = encodedList[Math.floor(Math.random() * encodedList.length)];
+const videoPath = `/random-chisiamo/${randomVideoFile}`;
+const thumbPath = `/random-chisiamo/${randomVideoFile.replace(/\.mp4/i, '.png')}`;
+const pageSlug = randomVideoFile.replace(/\.mp4$/i, '');
+
+
+
+/*const videoStructuredData = meta ? JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "VideoObject",
+  "name": "Chi siamo - EduNews24",
+  "description": "Scopri la missione e la visione del nostro sito di notizie indipendente. Dal 2024 offriamo informazione di qualità, approfondimenti e analisi sui temi che contano, con l'obiettivo di tenere la nostra comunità sempre informata e aggiornata.",
+  "contentUrl":`https://edunews24.it${videoPath}`,
+  "uploadDate": meta.uploadDate,
+  "duration": durationIso,
+  "thumbnailUrl":thumbUrl
+}) : '';*/
+
+
+/*const apiVideoStructuredData = JSON.stringify ({
+  "@context": "https://schema.org",
+  "@type": "VideoObject",
+  "name": "Come Ricevere le Nostre Notizie in Tempo Reale",
+  "description": "Installa il nostro plugin WordPress ufficiale per ricevere notizie in tempo reale. Guida completa all'installazione, configurazione e attivazione del componente nel tuo dashboard.",
+  "contentUrl": "https://edunews24.it/video-api.mp4",
+  "uploadDate": "2025-06-30T00:00:00Z",
+  "duration": "PT10S",
+  "thumbnailUrl": "https://edunews24.it/video-api.png"
+});*/
+
+---
+
+<aside class="sidebar space-y-8">
+  {/* Article-specific video - show above latest news */}
+  {!isMobile && videoUrl && (
+    <div class="py-6 px-4 bg-white rounded-xl border border-gray-200 shadow-sm">
+      <p class="text-xs font-semibold uppercase tracking-wide text-gray-500">
+        Il video dell’articolo
+      </p>
+      {/*<div class="mt-3 rounded-lg overflow-hidden">
+        <video
+          src={videoUrl}
+          class="w-full rounded-lg shadow-md"
+          controls
+          playsinline
+          preload="metadata"
+        >
+          Your browser does not support the video tag.
+        </video>
+      </div>*/}
+      <div class="related-video mt-3 rounded-lg overflow-hidden">
+        <a href={videoPageUrl}>
+          <video src={videoUrl} controls aria-label={articleTitle}></video>
+        </a>
+
+      </div>
+
+
+
+      {/*videoPageUrl && (
+        <div class="mt-3 text-sm">
+          <a href={videoPageUrl} class="text-sport-600 font-semibold underline hover:text-sport-700">
+            Apri pagina video dedicata
+          </a>
+        </div>
+      )*/}
+    </div>
+  )}
+
+
+  <!--{isMobile && videoUrl && (
+    <a
+      href={videoUrl}
+      target="_blank"
+      rel="noreferrer"
+      class="block py-6 px-4 bg-white rounded-xl border border-gray-200 shadow-sm text-sport-600 font-semibold underline"
+    >
+      Clicca qui per guardare il video
+    </a>
+  )}-->
+
+  {isMobile && videoUrl && (
+    <a href={videoUrl} target="_blank" rel="noreferrer" class="block py-6 px-4 bg-white rounded-xl border border-gray-200 shadow-sm text-sport-600 font-semibold underline">
+    {thumbnailUrl ?(
+      <div class="relative">
+        <img 
+          src={thumbnailUrl}
+          alt="Video cover"
+          class="w-full h-auto object-contain rounded-lg border border-gray-200"
+          loading="lazy"
+        />
+        <span class="absolute inset-0 flex items-center justify-center">
+          <span class="inline-flex items-center justify-center w-14 h-14 bg-black/60 text-white rounded-full">▶</span>
+        </span>
+      </div>
+    ) :(
+    <span class="text-sport-600 font-semibold underline">Clicca qui per guardare il video</span>
+    )}
+    </a>
+  )}
+
+
+
+  <!-- Latest News Section - Only show when not mobile -->
+  {!isMobile && <LatestNews />}
+
+  <!-- Random "Chi Siamo" Video -->
+  {!isMobile && source?.startsWith('article:') && (
+    <div class= "related-video py-6 px-4 bg-white rounded-xl border border-gray-200 shadow-sm" >
+        <a href="/chi-siamo" class="block group cursor-pointer">
+            <video 
+                src={videoPath}
+                poster={thumbPath}
+                class="w-full rounded-lg shadow-md transition-transform duration-300 group-hover:scale-105"
+                muted
+                autoplay
+                loop
+                playsinline
+                title="Scopri di più su chi siamo"
+                controls
+                aria-label="Video Chi siamo: scopri di più su EduNews24"
+            >
+                Your browser does not support the video tag.
+            </video>
+            
+
+            {/*{videoStructuredData && (
+              <script type="application/ld+json" set:html={videoStructuredData} />
+            )}*/}
+            
+        </a>
+        <div class="mt-2 text-xs text-gray-400">
+            <a
+            href={`/video/${pageSlug}`}
+            class="underline hover:text-gray-700"
+            >
+            Apri pagina video
+            </a>
+            </div>
+    </div>
+  )}
+
+  <!-- Logo and Streaming Section - Show on home page, article pages, and category pages -->
+  {!isMobile && (source === 'home' || source?.startsWith('article:') || source === 'category') && (
+    <div class="py-8 px-4 bg-gradient-to-br from-sport-100 to-white rounded-xl border border-sport-100 shadow-sm">
+      <div class="flex flex-col items-center text-center space-y-6">
+
+        
+
+        <!-- Logo Section -->
+        <a href="/" class="group">
+          <svg width="272" height="53" viewBox="0 0 209 41" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- EDU part -->
+            <g class="animate-logo-entrance-left">
+              <rect width="85.7172" height="38.335" transform="matrix(1 0 -0.13191 0.991262 5.05679 3)" fill="#064C99"/>
+              <path d="M20.1533 23.9583L19.4479 27.7939H31.0279L30.1706 32.4558H12.9806L16.8438 11.448H33.7338L32.8928 16.0214H21.6128L20.978 19.4735H30.878L30.0533 23.9583H20.1533ZM37.088 11.448H46.088C49.408 11.448 51.7716 12.3529 53.1788 14.1625C54.586 15.9722 54.9785 18.5686 54.3564 21.9519C53.7451 25.2762 52.4394 27.8628 50.4394 29.7118C48.443 31.5411 45.8448 32.4558 42.6448 32.4558H33.2248L37.088 11.448ZM39.6866 27.8235H42.5366C45.9566 27.8235 48.0265 25.8663 48.7464 21.9519C49.1189 19.9259 48.9539 18.4309 48.2511 17.4671C47.572 16.4836 46.2924 15.9918 44.4124 15.9918H41.8624L39.6866 27.8235ZM64.3984 33.1344C61.4584 33.1344 59.3232 32.4558 57.9928 31.0985C56.6624 29.7413 56.2305 27.7939 56.6971 25.2565L59.2364 11.448H64.8464L62.3017 25.286C61.8929 27.5087 62.8786 28.6201 65.2586 28.6201C67.6186 28.6201 69.0029 27.5087 69.4117 25.286L71.9564 11.448H77.5664L75.0271 25.2565C74.5569 27.8136 73.407 29.7708 71.5774 31.128C69.7514 32.4656 67.3584 33.1344 64.3984 33.1344Z" fill="white"/>
+            </g>
+            <!-- NEWS24 part -->
+            <g class="animate-logo-entrance-right">
+              <rect x="0.901028" y="0.99509" width="124.417" height="28.148" transform="matrix(1 0 -0.0989724 0.99509 82.0823 7.00489)" fill="white" stroke="#064C99" stroke-width="2"/>
+              <path d="M109.202 22.9167L110.226 14.7003H113.906L112.144 28.8308H108.404L104.484 20.6542L103.464 28.8308H99.7638L101.526 14.7003H105.226L109.202 22.9167ZM119.1 23.1151L118.778 25.6951H126.498L126.107 28.8308H114.647L116.409 14.7003H127.669L127.285 17.7765H119.765L119.476 20.0985H126.076L125.7 23.1151H119.1ZM142.25 20.9122L144.605 14.7003H148.345L142.443 28.8308H138.843L138.069 19.8008L135.123 28.8308H131.443L129.065 14.7003H132.845L133.65 20.9122L133.892 24.2662L134.89 20.9122L137.005 14.7003H140.445L141.05 20.9122L141.2 24.2067L142.25 20.9122ZM153.944 29.2873C152.037 29.2873 150.591 28.8573 149.605 27.9973C148.62 27.1241 148.188 25.887 148.308 24.286H152.008C151.933 25.6356 152.729 26.3104 154.395 26.3104C155.849 26.3104 156.634 25.8407 156.751 24.9013C156.797 24.5308 156.699 24.2464 156.457 24.0479C156.231 23.8362 155.82 23.651 155.227 23.4922L152.508 22.8373C150.126 22.2683 149.067 20.9254 149.331 18.8085C149.493 17.5119 150.099 16.4468 151.15 15.6133C152.2 14.7797 153.665 14.3629 155.545 14.3629C157.345 14.3629 158.703 14.7599 159.617 15.5537C160.533 16.3343 160.941 17.4457 160.841 18.8879H157.221C157.2 17.7765 156.516 17.2208 155.169 17.2208C154.582 17.2208 154.101 17.3399 153.724 17.578C153.363 17.803 153.158 18.1073 153.111 18.491C153.036 19.0863 153.438 19.4965 154.317 19.7214L157.153 20.3962C159.715 21.018 160.859 22.4337 160.583 24.6433C160.402 26.0987 159.72 27.2365 158.537 28.0568C157.355 28.8771 155.824 29.2873 153.944 29.2873ZM178.666 28.8308H167.386C167.542 27.5739 167.947 26.5221 168.599 25.6753C169.248 24.855 170.361 23.9487 171.938 22.9564L174.332 21.4083C174.939 21.0247 175.378 20.6608 175.648 20.3168C175.931 19.9728 176.099 19.5825 176.154 19.1459C176.225 18.577 176.107 18.1337 175.8 17.8162C175.494 17.4854 175.041 17.32 174.441 17.32C173.081 17.32 172.303 18.1073 172.107 19.6817L172.07 19.9794H168.69L168.744 19.5428C168.947 17.9154 169.586 16.6453 170.66 15.7323C171.733 14.8194 173.15 14.3629 174.91 14.3629C176.59 14.3629 177.873 14.7665 178.759 15.5736C179.657 16.3939 180.018 17.5119 179.841 18.9276C179.727 19.8405 179.385 20.6608 178.814 21.3885C178.257 22.1162 177.417 22.8108 176.294 23.4724L173.641 25.0204C173.136 25.3247 172.851 25.5827 172.784 25.7944H179.044L178.666 28.8308ZM192.971 14.6805L191.929 23.0357L194.014 22.996L193.665 25.7944L191.572 25.7348L191.183 28.8507H187.703L188.092 25.7348L181.505 25.7944L181.906 22.5793L189.331 14.6805H192.971ZM184.669 23.0357H188.429L188.988 18.5505H188.928L184.669 23.0357Z" fill="#064C99"/>
+            </g>
+          </svg>
+        </a>
+
+        <!-- API Video Section -->
+        <div class="related-video">
+          <a href="/richiesta-accesso-plugin" class="block group cursor-pointer">
+            <video 
+              src="/video-api.mp4" 
+              class="w-full max-w-xs rounded-lg shadow-md transition-transform duration-300 group-hover:scale-105"
+              muted
+              autoplay
+              loop
+              playsinline
+            >
+              Your browser does not support the video tag.
+            </video>
+            {/*{apiVideoStructuredData && (
+              <script type="application/ld+json" set:html={apiVideoStructuredData} />
+            )}*/}
+
+          </a>
+      </div>
+        <div class="mt-3 text-xs text-gray-500">
+            <a href="/video/plugin-api" class="underline hover:text-gray-700">
+              Guarda il video del plugin API
+          </a>
+        </div>
+
+        <!-- Social Icons -->
+        <div class="flex items-center gap-4 pt-4">
+          <a href="#" class="text-gray-400 transition-colors duration-300 hover:text-[#1877F2]">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+            </svg>
+          </a>
+          <a href="#" class="text-gray-400 transition-colors duration-300 hover:text-black">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M23.953 4.57a10 10 0 01-2.825.775 4.958 4.958 0 002.163-2.723c-.951.555-2.005.959-3.127 1.184a4.92 4.92 0 00-8.384 4.482C7.69 8.095 4.067 6.13 1.64 3.162a4.822 4.822 0 00-.666 2.475c0 1.71.87 3.213 2.188 4.096a4.904 4.904 0 01-2.228-.616v.06a4.923 4.923 0 003.946 4.827 4.996 4.996 0 01-2.212.085 4.936 4.936 0 004.604 3.417 9.867 9.867 0 01-6.102 2.105c-.39 0-.779-.023-1.17-.067a13.995 13.995 0 007.557 2.209c9.053 0 13.998-7.496 13.998-13.985 0-.21 0-.42-.015-.63A9.935 9.935 0 0024 4.59z"/>
+            </svg>
+          </a>
+          <a href="#" class="text-gray-400 transition-colors duration-300 hover:text-[#E4405F]">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+            </svg>
+          </a>
+        </div>
+      </div>
+    </div>
+  )}
+</aside>
+
+<style>
+  @keyframes logo-entrance-left {
+    0% {
+      opacity: 0;
+      transform: translateX(-100px) rotateY(180deg) scale(0.8);
+      transform-origin: center;
+    }
+    40% {
+      opacity: 1;
+      transform: translateX(10px) rotateY(-20deg) scale(1.1);
+    }
+    60% {
+      transform: translateX(-5px) rotateY(10deg) scale(0.95);
+    }
+    80% {
+      transform: translateX(0) rotateY(-5deg) scale(1.02);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) rotateY(0) scale(1);
+    }
+  }
+
+  @keyframes logo-entrance-right {
+    0%, 30% {
+      opacity: 0;
+      transform: translateX(100px) rotateX(180deg) scale(0.8);
+      transform-origin: center;
+    }
+    60% {
+      opacity: 1;
+      transform: translateX(-10px) rotateX(-20deg) scale(1.1);
+    }
+    75% {
+      transform: translateX(5px) rotateX(10deg) scale(0.95);
+    }
+    90% {
+      transform: translateX(0) rotateX(-5deg) scale(1.02);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) rotateX(0) scale(1);
+    }
+  }
+
+  .animate-logo-entrance-left {
+    opacity: 0;
+    animation: logo-entrance-left 1.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    perspective: 1000px;
+  }
+
+  .animate-logo-entrance-right {
+    opacity: 0;
+    animation: logo-entrance-right 2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    perspective: 1000px;
+  }
+</style>

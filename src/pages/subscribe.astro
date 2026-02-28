@@ -1,0 +1,116 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Abbonati - NewsPortal">
+  <main class="container mx-auto px-4 py-12">
+    <div class="max-w-4xl mx-auto">
+      <h1 class="text-4xl font-bold mb-8 text-center">Abbonati a NewsPortal</h1>
+      
+      <div class="grid md:grid-cols-3 gap-8 mb-12">
+        <!-- Basic Plan -->
+        <div class="bg-white rounded-lg shadow-lg p-6">
+          <h2 class="text-2xl font-bold mb-4">Base</h2>
+          <p class="text-3xl font-bold mb-6">€4.99<span class="text-sm text-gray-500">/mese</span></p>
+          <ul class="space-y-3 mb-8">
+            <li class="flex items-center">
+              <svg class="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+              Accesso a tutti gli articoli
+            </li>
+            <li class="flex items-center">
+              <svg class="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+              Newsletter settimanale
+            </li>
+          </ul>
+          <button class="w-full bg-primary text-white py-2 rounded-md hover:bg-red-700">
+            Scegli Base
+          </button>
+        </div>
+
+        <!-- Premium Plan -->
+        <div class="bg-white rounded-lg shadow-lg p-6 border-2 border-primary relative">
+          <div class="absolute top-0 right-0 bg-primary text-white px-3 py-1 rounded-bl-lg text-sm">
+            Popolare
+          </div>
+          <h2 class="text-2xl font-bold mb-4">Premium</h2>
+          <p class="text-3xl font-bold mb-6">€9.99<span class="text-sm text-gray-500">/mese</span></p>
+          <ul class="space-y-3 mb-8">
+            <li class="flex items-center">
+              <svg class="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+              Tutto del piano Base
+            </li>
+            <li class="flex items-center">
+              <svg class="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+              Contenuti esclusivi
+            </li>
+            <li class="flex items-center">
+              <svg class="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+              Accesso anticipato
+            </li>
+          </ul>
+          <button class="w-full bg-primary text-white py-2 rounded-md hover:bg-red-700">
+            Scegli Premium
+          </button>
+        </div>
+
+        <!-- Pro Plan -->
+        <div class="bg-white rounded-lg shadow-lg p-6">
+          <h2 class="text-2xl font-bold mb-4">Pro</h2>
+          <p class="text-3xl font-bold mb-6">€14.99<span class="text-sm text-gray-500">/mese</span></p>
+          <ul class="space-y-3 mb-8">
+            <li class="flex items-center">
+              <svg class="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+              Tutto del piano Premium
+            </li>
+            <li class="flex items-center">
+              <svg class="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+              Nessuna pubblicità
+            </li>
+            <li class="flex items-center">
+              <svg class="w-5 h-5 text-green-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+              </svg>
+              Supporto prioritario
+            </li>
+          </ul>
+          <button class="w-full bg-primary text-white py-2 rounded-md hover:bg-red-700">
+            Scegli Pro
+          </button>
+        </div>
+      </div>
+
+      <!-- FAQ Section -->
+      <div class="mt-16">
+        <h2 class="text-3xl font-bold mb-8 text-center">Domande Frequenti</h2>
+        <div class="space-y-4">
+          <div class="bg-white rounded-lg p-6">
+            <h3 class="font-bold mb-2">Come funziona l'abbonamento?</h3>
+            <p class="text-gray-600">L'abbonamento si rinnova automaticamente ogni mese. Puoi disdire in qualsiasi momento.</p>
+          </div>
+          <div class="bg-white rounded-lg p-6">
+            <h3 class="font-bold mb-2">Posso cambiare piano?</h3>
+            <p class="text-gray-600">Sì, puoi passare a un piano diverso in qualsiasi momento. La differenza verrà calcolata automaticamente.</p>
+          </div>
+          <div class="bg-white rounded-lg p-6">
+            <h3 class="font-bold mb-2">Come posso disdire?</h3>
+            <p class="text-gray-600">Puoi disdire l'abbonamento dal tuo profilo in qualsiasi momento. Non ci sono vincoli o penali.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</Layout> 

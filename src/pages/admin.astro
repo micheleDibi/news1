@@ -1,0 +1,748 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../layouts/AdminLayout.astro';
+import { supabase } from '../lib/supabase';
+import { categories } from '../lib/categories';
+
+// Set cache control headers
+Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+Astro.response.headers.set('Pragma', 'no-cache');
+Astro.response.headers.set('Expires', '0');
+Astro.response.headers.set('Surrogate-Control', 'no-store');
+
+// Get the current user's session
+const { data: { session } } = await supabase.auth.getSession();
+
+// Get user's profile with permissions
+const { data: profile } = await supabase
+  .from('profiles')
+  .select('*')
+  .eq('id', session?.user?.id)
+  .single();
+
+// Get the current page from URL params
+const page = new URL(Astro.request.url).searchParams.get('page');
+let currentPage = page ? parseInt(page) : 1;
+
+// Calculate the range for pagination
+const itemsPerPage = 15;
+const start = (currentPage - 1) * itemsPerPage;
+const end = start + itemsPerPage - 1;
+
+// Initialize the query - order by ID descending as it's always incrementing and reliable
+let articlesQuery = supabase
+  .from('articles')
+  .select('*', { count: 'exact' })
+  .order('id', { ascending: false });
+
+// Add pagination
+articlesQuery = articlesQuery.range(start, end);
+
+// Execute the query
+const { data: articles, count } = await articlesQuery;
+
+const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Caricamento...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden">
+  <AdminLayout title="Dashboard">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <!-- Header -->
+        <div class="md:flex md:items-center md:justify-between mb-6">
+          <div class="flex-1 min-w-0">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
+              Dashboard
+            </h2>
+          </div>
+        </div>
+
+        <!-- Loading message for articles -->
+        <div id="articles-loading" class="bg-white shadow rounded-lg p-4 mb-6">
+          <div class="flex items-center justify-center">
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-sport-500 mr-3"></div>
+            <p class="text-gray-600">Verifica degli articoli in corso...</p>
+          </div>
+        </div>
+
+        <div class="bg-gradient-to-br from-sport-50 to-white shadow-lg rounded-lg mb-6">
+          <div class="p-6 border-b border-sport-100">
+            <h2 class="text-xl font-semibold text-sport-800 mb-4 flex items-center">
+              <svg class="h-6 w-6 mr-2 text-sport-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              Ricerca e Filtri
+            </h2>
+            <div class="space-y-6">
+              <!-- Search Input -->
+              <div class="col-span-1 md:col-span-3 mb-4">
+                <label for="search" class="block text-sm font-medium text-sport-700 mb-1">Cerca Articoli</label>
+                <div class="relative rounded-md shadow-sm">
+                  <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <svg class="h-5 w-5 text-sport-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  </div>
+                  <input
+                    type="search"
+                    name="search"
+                    id="search"
+                    class="focus:ring-sport-500 focus:border-sport-500 block w-full pl-12 pr-4 py-3 text-base border-sport-300 rounded-lg shadow-sm bg-white hover:border-sport-400 transition-colors"
+                    placeholder="Cerca articoli per titolo, contenuto o parole chiave..."
+                  />
+                </div>
+              </div>
+
+              <!-- Filters Grid -->
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <!-- Category Filter -->
+                <div>
+                  <label for="category" class="block text-sm font-medium text-sport-700 mb-1">Categoria</label>
+                  <select
+                    id="category"
+                    name="category"
+                    class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
+                  >
+                    <option value="all">Tutte le Categorie</option>
+                    {categories.map(category => (
+                      <option value={category.name}>{category.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <!-- Status Filter -->
+                <div>
+                  <label for="status" class="block text-sm font-medium text-sport-700 mb-1">Stato</label>
+                  <select
+                    id="status"
+                    name="status"
+                    class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
+                  >
+                    <option value="all">Tutti gli Stati</option>
+                    <option value="published">Pubblicato</option>
+                    <option value="draft">Bozza</option>
+                  </select>
+                </div>
+
+                <!-- Creator Filter -->
+                <div>
+                  <label for="creator" class="block text-sm font-medium text-sport-700 mb-1">Autore</label>
+                  <select
+                    id="creator"
+                    name="creator"
+                    class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
+                  >
+                    <option value="all">Tutti gli Autori</option>
+                    <!-- Will be populated dynamically with JavaScript -->
+                  </select>
+                </div>
+
+                <!-- Date Range -->
+                <div class="md:col-span-1">
+                  <label class="block text-sm font-medium text-sport-700 mb-1">Intervallo Date</label>
+                  <div class="grid grid-cols-2 gap-2">
+                    <input
+                      type="date"
+                      id="date-from"
+                      name="date-from"
+                      class="block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
+                    />
+                    <input
+                      type="date"
+                      id="date-to"
+                      name="date-to"
+                      class="block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <!-- Action Buttons -->
+              <div class="flex justify-end space-x-4 pt-4 border-t border-sport-200">
+                <button
+                  id="reset-filters"
+                  class="inline-flex items-center px-4 py-2 border border-sport-300 shadow-sm text-sm font-medium rounded-md text-sport-700 bg-white hover:bg-sport-50 hover:border-sport-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sport-500 transition-colors"
+                >
+                  <svg class="mr-2 h-5 w-5 text-sport-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Reimposta Filtri
+                </button>
+                <button
+                  id="search-button"
+                  class="inline-flex items-center px-6 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-sport-500 hover:bg-sport-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sport-500 transition-colors"
+                >
+                  <svg class="mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  Cerca
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white shadow overflow-hidden sm:rounded-md">
+          <ul class="divide-y divide-gray-200" id="articles-list">
+            {articles?.map((article) => (
+              <li class="px-4 py-4 flex items-center justify-between sm:px-6 hover:bg-gray-50">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center justify-between">
+                    <p class="text-sm font-medium text-primary truncate">
+                      {article.title}
+                    </p>
+                    <div class="ml-2 flex-shrink-0 flex">
+                      <p class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-sport-100 text-sport-700">
+                        {article.category}
+                      </p>
+                    </div>
+                  </div>
+                  <div class="mt-2 flex items-center text-sm text-gray-500">
+                    <svg class="flex-shrink-0 mr-1.5 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    {(() => {
+                      const isDraft = article.isdraft;
+                      const hasPublished = !!article.published_at;
+                      const dateValue = (isDraft || !hasPublished) ? article.created_at : article.published_at;
+                      const label = (isDraft || !hasPublished) ? 'salvato in bozza il' : 'pubblicato il';
+                      const formatted = dateValue ? new Date(dateValue).toLocaleDateString('it-IT') : '-';
+                      return <p>{label} {formatted}</p>;
+                    })()}
+                    {article.creator && (
+                      <span class="ml-4 inline-flex items-center">
+                        <svg class="flex-shrink-0 mr-1.5 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                        <span>{article.creator}</span>
+                      </span>
+                    )}
+                    {article.source && article.source !== 'NULL' && (
+                      <a 
+                        href={article.source}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="ml-4 inline-flex items-center px-2.5 py-0.5 rounded-md bg-sport-100 text-sport-700 hover:bg-sport-200 transition-colors group relative"
+                        title={article.source}
+                      >
+                        <svg class="mr-1.5 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                        {(() => {
+                          try {
+                            const url = new URL(article.source);
+                            const pathParts = url.pathname.split('/').filter(Boolean);
+                            return `${url.hostname}${pathParts.length > 0 ? '/' + pathParts.slice(0, Math.min(3, pathParts.length)).join('/') : ''}`;
+                          } catch (e) {
+                            return 'Fonte originale';
+                          }
+                        })()}
+                        <span class="absolute left-0 -bottom-8 bg-gray-900 text-white text-xs rounded py-1 px-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-10 max-w-xs overflow-hidden text-ellipsis">
+                          {article.source}
+                        </span>
+                      </a>
+                    )}
+                  </div>
+                </div>
+                <div class="ml-5 flex-shrink-0 flex items-center space-x-4">
+                  <a
+                    href={`/admin/articles/${article.id}/edit`}
+                    class="inline-flex items-center text-sm font-medium text-sport-700 hover:text-sport-900"
+                  >
+                    <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    Modifica
+                  </a>
+                  <button
+                    data-article-id={article.id}
+                    class="delete-button inline-flex items-center text-sm font-medium text-red-600 hover:text-red-900"
+                  >
+                    <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Elimina
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div class="mt-6 flex items-center justify-between">
+          <button
+            id="prev-page"
+            class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={currentPage === 1}
+          >
+            <svg class="mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+            </svg>
+            Precedente
+          </button>
+          <span class="text-sm text-gray-700" data-total-pages={totalPages} data-current-page={currentPage}>
+            Pagina <span class="font-medium">{currentPage}</span> di <span class="font-medium">{totalPages}</span>
+          </span>
+          <button
+            id="next-page"
+            class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={currentPage === totalPages}
+          >
+            Successiva
+            <svg class="ml-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </AdminLayout>
+</div>
+
+<script>
+  import { supabase } from '../lib/supabase';
+  
+  let currentPage = Number(new URLSearchParams(window.location.search).get('page')) || 1;
+  let totalPages = Number(document.querySelector('[data-total-pages]')?.getAttribute('data-total-pages')) || 1;
+  const itemsPerPage = 15;
+
+  // Get all filter elements
+  const searchInput = document.getElementById('search') as HTMLInputElement;
+  const statusSelect = document.getElementById('status') as HTMLSelectElement;
+  const categorySelect = document.getElementById('category') as HTMLSelectElement;
+  const creatorSelect = document.getElementById('creator') as HTMLSelectElement;
+  const dateFromInput = document.getElementById('date-from') as HTMLInputElement;
+  const dateToInput = document.getElementById('date-to') as HTMLInputElement;
+  const articlesList = document.getElementById('articles-list');
+  const loadingScreen = document.getElementById('loading-screen');
+  const adminContent = document.getElementById('admin-content');
+  const articlesLoading = document.getElementById('articles-loading');
+
+  async function checkAuth() {
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    if (!session) {
+      window.location.href = '/login';
+      return;
+    }
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('role, permissions, full_name')
+      .eq('id', session.user.id)
+      .single();
+    
+    if (error || !(profile?.role === 'docente' || profile?.role === 'insegnante' || profile?.role === 'admin' || profile?.role === 'redattore' || profile?.role === 'giornalista' || profile?.role === 'direttore')) {
+      window.location.href = '/login';
+      return;
+    }
+
+    // Update loading message based on permissions
+    if (articlesLoading) {
+      if (profile?.permissions?.read_all_articles) {
+        articlesLoading.innerHTML = `
+          <div class="flex items-center justify-center text-green-600">
+            <svg class="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            <p>Visualizzazione di tutti gli articoli attiva</p>
+          </div>
+        `;
+      } else {
+        articlesLoading.innerHTML = `
+          <div class="flex items-center justify-center text-blue-600">
+            <svg class="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            <p>Visualizzazione limitata ai tuoi articoli</p>
+          </div>
+        `;
+      }
+    }
+
+    // If we get here, user is authenticated and authorized
+    loadingScreen?.classList.add('hidden');
+    adminContent?.classList.remove('hidden');
+
+    // Initialize the page
+    await fetchUniqueCreators();
+    await fetchAndRenderArticles(currentPage);
+  }
+
+  // Fetch unique creators for the dropdown
+  async function fetchUniqueCreators() {
+    //try {
+      //const { data, error } = await supabase
+        //.from('articles')
+        //.select('creator')
+        //.not('creator', 'is', null);
+      
+      //if (error) throw error;
+      
+      // Extract unique creators
+      //const uniqueCreators = [...new Set(data.map(item => item.creator))].sort();
+      
+      // Populate the dropdown
+      //if (creatorSelect) {
+        //uniqueCreators.forEach(creator => {
+          //const option = document.createElement('option');
+          //option.value = creator;
+          //option.textContent = creator;
+          //creatorSelect.appendChild(option);
+        //});
+      //}
+    //} catch (error) {
+      //console.error('Error fetching creators:', error);
+    //}
+
+      try {
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles')
+        .select('full_name, role')
+        .in('role', ['giornalista', 'redattore', 'direttore'])
+        .not('full_name', 'is', null);
+
+      if (profilesError) throw profilesError;
+
+      const { data: articles, error: articlesError } = await supabase
+        .from('articles')
+        .select('creator')
+        .not('creator', 'is', null);
+
+      if (articlesError) throw articlesError;
+
+      const profili = profiles?.map(p => p.full_name) ?? [];
+      const autoriArticoli = articles?.map(a => a.creator) ?? [];
+      const tuttiIGiornalisti = [...new Set([...profili, ...autoriArticoli])].sort();
+
+      if (creatorSelect) {
+        tuttiIGiornalisti.forEach(nome => {
+          const option = document.createElement('option');
+          option.value = nome;
+          option.textContent = nome;
+          creatorSelect.appendChild(option);
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching creators:', error);
+    }
+  }
+
+  function getFilters() {
+    return {
+      searchTerm: searchInput?.value.toLowerCase() || '',
+      status: statusSelect?.value || 'all',
+      category: categorySelect?.value || 'all',
+      creator: creatorSelect?.value || 'all',
+      dateFrom: dateFromInput?.value || '',
+      dateTo: dateToInput?.value || ''
+    };
+  }
+
+  async function fetchAndRenderArticles(page = 1) {
+    try {
+      const filters = getFilters();
+      const start = (page - 1) * itemsPerPage;
+      const end = start + itemsPerPage - 1;
+
+      // Get current user's permissions
+      const { data: { session } } = await supabase.auth.getSession();
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('permissions, full_name')
+        .eq('id', session?.user?.id)
+        .single();
+
+      // Build base query with count - order by ID descending as it's always incrementing and reliable
+      let query = supabase
+        .from('articles')
+        .select('*', { count: 'exact' })
+        .order('id', { ascending: false });
+
+      // If user doesn't have read_all_articles permission, only show their articles
+      if (!profile?.permissions?.read_all_articles) {
+        query = query.eq('creator', profile?.full_name);
+      }
+
+      // Apply filters
+      if (filters.searchTerm) {
+        query = query.ilike('title', `%${filters.searchTerm}%`);
+      }
+      if (filters.category !== 'all') {
+        query = query.eq('category', filters.category);
+      }
+      if (filters.status !== 'all') {
+        query = query.eq('isdraft', filters.status === 'draft');
+      }
+      if (filters.creator !== 'all') {
+        query = query.eq('creator', filters.creator);
+      }
+      if (filters.dateFrom) {
+        query = query.gte('published_at', `${filters.dateFrom}T00:00:00`);
+      }
+      if (filters.dateTo) {
+        query = query.lte('published_at', `${filters.dateTo}T23:59:59`);
+      }
+
+      // Apply pagination
+      const { data: articles, count, error } = await query.range(start, end);
+      if (error) throw error;
+
+      // Update loading message based on permissions
+      if (articlesLoading) {
+        articlesLoading.innerHTML = `
+          <div class="flex items-center justify-center text-blue-600">
+            <svg class="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            <p>${profile?.permissions?.read_all_articles ? 'Visualizzazione di tutti gli articoli attiva' : 'Visualizzazione limitata ai tuoi articoli'}</p>
+          </div>
+        `;
+      }
+
+      // Update pagination state
+      totalPages = Math.ceil((count ?? 0) / itemsPerPage);
+      currentPage = page;
+
+      // Update URL
+      const url = new URL(window.location.href);
+      url.searchParams.set('page', page.toString());
+      window.history.pushState({}, '', url);
+
+      // Render articles
+      if (!articlesList) return;
+      articlesList.innerHTML = (articles || [])
+        .map(article => {
+          const isDraft = article.isdraft;
+          const hasPublished = !!article.published_at;
+          const dateValue = (isDraft || !hasPublished) ? article.created_at : article.published_at;
+          const formattedDate = dateValue ? new Date(dateValue).toLocaleDateString('it-IT') : '-';
+          const statusLabel = (isDraft || !hasPublished) ? 'salvato in bozza il' : 'pubblicato il';
+          const creatorHtml = article.creator 
+            ? `<span class="ml-4 inline-flex items-center">
+                <svg class="flex-shrink-0 mr-1.5 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <span>${article.creator}</span>
+              </span>` 
+            : '';
+          
+          const sourceHtml = article.source && article.source !== 'NULL'
+            ? `<a 
+                href="${article.source}"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="ml-4 inline-flex items-center px-2.5 py-0.5 rounded-md bg-sport-100 text-sport-700 hover:bg-sport-200 transition-colors group relative"
+                title="${article.source}"
+              >
+                <svg class="mr-1.5 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+                ${(() => {
+                  try {
+                    const url = new URL(article.source);
+                    const pathParts = url.pathname.split('/').filter(Boolean);
+                    return `${url.hostname}${pathParts.length > 0 ? '/' + pathParts.slice(0, Math.min(3, pathParts.length)).join('/') : ''}`;
+                  } catch (e) {
+                    return 'Fonte originale';
+                  }
+                })()}
+                <span class="absolute left-0 -bottom-8 bg-gray-900 text-white text-xs rounded py-1 px-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-10 max-w-xs overflow-hidden text-ellipsis">
+                  ${article.source}
+                </span>
+              </a>` 
+            : '';
+          
+          return `
+            <li class="px-4 py-4 flex items-center justify-between sm:px-6 hover:bg-gray-50">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center justify-between">
+                  <p class="text-sm font-medium text-primary truncate">
+                    ${article.title}
+                  </p>
+                  <div class="ml-2 flex-shrink-0 flex">
+                    <p class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-sport-100 text-sport-700">
+                      ${article.category}
+                    </p>
+                  </div>
+                </div>
+                <div class="mt-2 flex items-center text-sm text-gray-500">
+                  <svg class="flex-shrink-0 mr-1.5 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  <p>
+                    ${statusLabel} ${formattedDate}
+                  </p>
+                  ${creatorHtml}
+                  ${sourceHtml}
+                </div>
+              </div>
+              <div class="ml-5 flex-shrink-0 flex items-center space-x-4">
+                <a
+                  href="/admin/articles/${article.id}/edit"
+                  class="inline-flex items-center text-sm font-medium text-sport-700 hover:text-sport-900"
+                >
+                  <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  Modifica
+                </a>
+                <button
+                  data-article-id="${article.id}"
+                  class="delete-button inline-flex items-center text-sm font-medium text-red-600 hover:text-red-900"
+                >
+                  <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Elimina
+                </button>
+              </div>
+            </li>
+          `;
+        }).join('');
+
+      // Update pagination UI
+      updatePaginationUI();
+      
+      // Reinitialize delete buttons
+      setupDeleteButtons();
+
+    } catch (error) {
+      console.error('Error fetching articles:', error);
+    }
+  }
+
+  function updatePaginationUI() {
+    const paginationEl = document.querySelector('[data-current-page]');
+    if (!paginationEl) return;
+
+    // Update data attributes
+    paginationEl.setAttribute('data-current-page', currentPage.toString());
+    paginationEl.setAttribute('data-total-pages', totalPages.toString());
+
+    // Get both spans separately and update them
+    const spans = paginationEl.querySelectorAll('.font-medium');
+    if (spans.length === 2) {
+      const [currentSpan, totalSpan] = spans;
+      currentSpan.textContent = currentPage.toString();
+      totalSpan.textContent = totalPages.toString();
+    }
+
+    // Update button states
+    const prevButton = document.getElementById('prev-page') as HTMLButtonElement;
+    const nextButton = document.getElementById('next-page') as HTMLButtonElement;
+    
+    if (prevButton) {
+      prevButton.disabled = currentPage === 1;
+      prevButton.classList.toggle('opacity-50', currentPage === 1);
+      prevButton.classList.toggle('cursor-not-allowed', currentPage === 1);
+    }
+    
+    if (nextButton) {
+      nextButton.disabled = currentPage === totalPages;
+      nextButton.classList.toggle('opacity-50', currentPage === totalPages);
+      nextButton.classList.toggle('cursor-not-allowed', currentPage === totalPages);
+    }
+  }
+
+  // Event Listeners
+  document.addEventListener('DOMContentLoaded', () => {
+
+    console.log('DOM loaded, setting up listeners');
+    // Pagination buttons
+    const prevButton = document.getElementById('prev-page');
+    const nextButton = document.getElementById('next-page');
+
+    prevButton?.addEventListener('click', () => {
+      if (currentPage > 1) {
+        fetchAndRenderArticles(currentPage - 1);
+      }
+    });
+
+    nextButton?.addEventListener('click', () => {
+      if (currentPage < totalPages) {
+        fetchAndRenderArticles(currentPage + 1);
+      }
+    });
+
+    // Search button click handler - only way to trigger search
+    document.getElementById('search-button')?.addEventListener('click', () => {
+      currentPage = 1;
+      fetchAndRenderArticles(1);
+    });
+
+    // Reset filters
+    document.getElementById('reset-filters')?.addEventListener('click', () => {
+      if (searchInput) searchInput.value = '';
+      if (categorySelect) categorySelect.value = 'all';
+      if (statusSelect) statusSelect.value = 'all';
+      if (creatorSelect) creatorSelect.value = 'all';
+      if (dateFromInput) dateFromInput.value = '';
+      if (dateToInput) dateToInput.value = '';
+      
+      fetchAndRenderArticles(1);
+    });
+
+    // Initialize delete buttons
+    setupDeleteButtons();
+  });
+
+  // Add this function to handle delete button setup and click events
+  function setupDeleteButtons() {
+    const deleteButtons = document.querySelectorAll('.delete-button');
+    
+    deleteButtons.forEach(button => {
+      button.addEventListener('click', async (e) => {
+        const target = e.currentTarget as HTMLButtonElement;
+        const articleId = target.dataset.articleId;
+        
+        if (!articleId) return;
+        
+        if (confirm('Sei sicuro di voler eliminare questo articolo?')) {
+          try {
+            // Use POST instead of DELETE to avoid server restrictions
+            const response = await fetch(`/api/articles/delete`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ id: articleId })
+            });
+
+            let result;
+            try {
+              result = await response.json();
+            } catch (error) {
+              console.error('Error parsing response:', error);
+              throw new Error('Invalid response from server');
+            }
+
+            if (!response.ok) {
+              throw new Error(result.error || 'Failed to delete article');
+            }
+
+            // Refresh the current page of articles
+            await fetchAndRenderArticles(currentPage);
+          } catch (error) {
+            console.error('Errore durante l\'eliminazione:', error);
+            alert('Impossibile eliminare l\'articolo. Errore: ' + (error instanceof Error ? error.message : 'Sconosciuto'));
+          }
+        }
+      });
+    });
+  }
+
+  // Initialize the page
+  document.addEventListener('DOMContentLoaded', () => {
+    checkAuth();
+  });
+</script> 

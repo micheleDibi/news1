@@ -1,0 +1,345 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { format, parseISO, isValid } from 'date-fns';
+import { it } from 'date-fns/locale';
+import { createClient } from '@supabase/supabase-js';
+import { marked } from 'marked';
+
+const { slug } = Astro.params;
+
+// Define the Interpello type
+interface Interpello {
+  id: number;
+  interpello_name: string;
+  interpello_date: string;
+  interpello_description: string;
+  interpello_link: string;
+  city_name: string;
+  region_name: string;
+  article_content?: string;
+  article_title?: string;
+  article_subtitle?: string;
+  created_at?: string;
+}
+
+// Function to generate URL-friendly slug from interpello data
+function generateInterpelloSlug(interpello: Interpello): string {
+  const parts = [
+    interpello.interpello_name,
+    interpello.city_name,
+    interpello.region_name,
+    interpello.id?.toString()
+  ].filter(Boolean); // Remove empty/null values
+  
+  return parts
+    .join('-')
+    .toLowerCase()
+    .replace(/[^a-z0-9\-]/g, '-') // Replace non-alphanumeric chars with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+}
+
+// Initialize Supabase client
+const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
+const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
+
+async function loadInterpelliData(): Promise<Interpello[]> {
+  try {
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('Missing Supabase environment variables');
+      return [];
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    const { data, error } = await supabase
+      .from('interpelli')
+      .select('*')
+      .order('interpello_date', { ascending: false });
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return [];
+    }
+
+    return data || [];
+  } catch (error) {
+    console.error('Error fetching interpelli data:', error);
+    return [];
+  }
+}
+
+const interpelliData: Interpello[] = await loadInterpelliData();
+const interpello = interpelliData.find(i => generateInterpelloSlug(i) === slug);
+
+// Utility function to strip HTML tags and clean text for meta descriptions
+const stripHtmlTags = (html: string): string => {
+  if (!html) return '';
+  // Remove HTML tags
+  const withoutTags = html.replace(/<[^>]*>/g, '');
+  // Replace multiple whitespace/newlines with single space
+  const cleaned = withoutTags.replace(/\s+/g, ' ').trim();
+  return cleaned;
+};
+
+// Utility function to create a safe meta description
+const createSafeDescription = (text: string, maxLength: number = 160): string => {
+  const cleaned = stripHtmlTags(text);
+  if (cleaned.length <= maxLength) return cleaned;
+  return cleaned.substring(0, maxLength - 3) + '...';
+};
+
+// Helper function to format date (same as in interpelli.astro for consistency)
+const formatDate = (dateString: string): string => {
+  try {
+    const parsedDate = parseISO(dateString);
+    if (!isValid(parsedDate)) return "Data non valida";
+    return format(parsedDate, 'dd MMMM yyyy', { locale: it });
+  } catch (e) {
+    return "Data non valida";
+  }
+};
+
+// Convert markdown to HTML if article_content exists
+const articleHtml = interpello?.article_content 
+  ? marked(interpello.article_content)
+  : null;
+
+// Define keywords - combining relevant fields
+const keywords = [
+  interpello?.interpello_name,
+  interpello?.region_name,
+  interpello?.city_name,
+  interpello?.interpello_description,
+  'interpello',
+  'scuola',
+  'supplenza',
+  'insegnanti',
+  'MAD'
+]
+.filter(kw => kw) // Remove null/undefined/empty strings
+.map(kw => stripHtmlTags(kw!).toLowerCase()) // Clean HTML and convert to lowercase
+.join(', ');
+
+const pageTitle = interpello 
+  ? (interpello.article_title || `${interpello.interpello_name} - Interpello Scuola - EduNews24`)
+  : 'Interpello non Trovato - EduNews24';
+
+const pageDescription = interpello?.article_subtitle 
+  ? createSafeDescription(interpello.article_subtitle, 160)
+  : interpello?.interpello_description 
+    ? createSafeDescription(interpello.interpello_description, 160)
+    : 'Dettagli dell\'interpello scolastico.';
+
+// Generate structured data for the interpello
+const structuredData = interpello ? JSON.stringify(
+  Object.fromEntries(
+    Object.entries({
+      "@context": "https://schema.org",
+      "@type": "JobPosting",
+      title: interpello.article_title || interpello.interpello_name,
+      description: interpello.article_subtitle || interpello.interpello_description,
+      datePosted: interpello.interpello_date?.split('T')[0],
+      identifier: slug,
+      sameAs: interpello.interpello_link,
+      url: Astro.url?.href,
+      employmentType: "Supplenza",
+      hiringOrganization: {
+        "@type": "Organization",
+        name: "Scuola Italiana"
+      },
+      jobLocation: {
+        "@type": "Place",
+        address: {
+          "@type": "PostalAddress",
+          addressLocality: interpello.city_name,
+          addressRegion: interpello.region_name,
+          addressCountry: "IT"
+        }
+      }
+    }).filter(([_, value]) => value !== undefined && value !== null && value !== '')
+  )
+) : '';
+---
+
+<Layout title={pageTitle} description={pageDescription} keywords={keywords}>
+  {interpello && <script type="application/ld+json" set:html={structuredData} slot="head" />}
+  
+  <main class="bg-gray-50 py-12">
+    <div class="container mx-auto px-4 max-w-4xl">
+      {interpello ? (
+        <article class="bg-white rounded-lg shadow-md overflow-hidden p-6 md:p-8">
+          {/* Header Section */}
+          <div class="border-b pb-5 mb-6">
+            <h1 class="text-2xl md:text-3xl font-bold text-primary mb-2">
+              {interpello.article_title || interpello.interpello_name}
+            </h1>
+            {interpello.article_subtitle && (
+              <p class="text-lg text-gray-600 italic mb-3">{interpello.article_subtitle}</p>
+            )}
+            <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
+              {interpello.region_name && (
+                <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
+                  📍 {interpello.region_name}
+                </span>
+              )}
+              {interpello.city_name && (
+                <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">
+                  🏙️ {interpello.city_name}
+                </span>
+              )}
+            </div>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+              {interpello.interpello_date && (
+                <span>Pubblicato il: <span class="font-medium text-gray-700">{formatDate(interpello.interpello_date)}</span></span>
+              )}
+            </div>
+          </div>
+
+          {/* Details Grid - Original Info */}
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mb-6 text-sm bg-gray-50 p-4 rounded-md">
+            <div class="md:col-span-2"><strong class="block text-gray-500 text-xs uppercase">Istituto</strong><p>{interpello.interpello_name}</p></div>
+            {interpello.interpello_description && (
+              <div class="md:col-span-2"><strong class="block text-gray-500 text-xs uppercase">Descrizione</strong><p>{interpello.interpello_description}</p></div>
+            )}
+          </div>
+
+          {/* Article Content Section - Main Content */}
+          {articleHtml ? (
+            <div class="prose prose-sm lg:prose-base max-w-none text-gray-700 border-t pt-6">
+              <div set:html={articleHtml} />
+            </div>
+          ) : (
+            <div class="border-t pt-6">
+              <p class="text-gray-600">L'articolo dettagliato per questo interpello sarà disponibile a breve.</p>
+            </div>
+          )}
+
+          {/* Link Section */}
+          {interpello.interpello_link && (
+            <div class="mt-8 pt-6 border-t border-gray-200 text-center">
+              <a
+                href={interpello.interpello_link}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex items-center px-6 py-2.5 border border-primary text-base font-medium rounded-md text-primary bg-white hover:bg-primary/10 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition duration-150 ease-in-out"
+              >
+                Vai all'Interpello Ufficiale
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+              </a>
+              <div class="mt-4">
+                <a href="/interpelli" class="text-sm text-gray-600 hover:text-primary transition">
+                  ← Torna alla lista degli interpelli
+                </a>
+              </div>
+            </div>
+          )}
+
+        </article>
+      ) : (
+        <div class="text-center py-20">
+          <h1 class="text-2xl font-semibold text-gray-700 mb-4">Interpello non Trovato</h1>
+          <p class="text-gray-500 mb-6">L'interpello che stai cercando non è disponibile o lo slug non è corretto.</p>
+          <a href="/interpelli" class="text-primary hover:underline">Torna alla lista degli interpelli</a>
+        </div>
+      )}
+    </div>
+  </main>
+</Layout>
+
+<style is:global>
+/* Prose styles for the article content */
+.prose :where(p):not(:where([class~="not-prose"] *)) {
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+.prose :where(h1):not(:where([class~="not-prose"] *)) {
+  font-size: 2em;
+  font-weight: 700;
+  margin-top: 0.8em;
+  margin-bottom: 0.4em;
+  color: #1a202c;
+  line-height: 1.2;
+}
+
+.prose :where(h2):not(:where([class~="not-prose"] *)) {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  color: #2d3748;
+  line-height: 1.3;
+}
+
+.prose :where(h3):not(:where([class~="not-prose"] *)) {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin-top: 1em;
+  margin-bottom: 0.4em;
+  color: #2d3748;
+}
+
+.prose a {
+  color: #0056b3;
+  text-decoration: underline;
+}
+
+.prose a:hover {
+  color: #003d80;
+}
+
+.prose strong {
+  font-weight: 600;
+  color: #333;
+}
+
+.prose em {
+  font-style: italic;
+  color: #4a5568;
+}
+
+.prose ul, .prose ol {
+  margin-top: 1em;
+  margin-bottom: 1em;
+  padding-left: 1.5em;
+}
+
+.prose li {
+  margin-top: 0.3em;
+  margin-bottom: 0.3em;
+}
+
+.prose blockquote {
+  border-left: 4px solid #cbd5e0;
+  padding-left: 1em;
+  margin: 1.5em 0;
+  font-style: italic;
+  color: #4a5568;
+}
+
+.prose code {
+  background-color: #f7fafc;
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: 'Courier New', monospace;
+}
+
+.prose pre {
+  background-color: #2d3748;
+  color: #e2e8f0;
+  padding: 1em;
+  border-radius: 5px;
+  overflow-x: auto;
+  margin: 1.5em 0;
+}
+
+.prose pre code {
+  background-color: transparent;
+  padding: 0;
+  color: inherit;
+}
+</style>

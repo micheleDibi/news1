@@ -1,0 +1,148 @@
+---
+interface Props {
+  title: string;
+  color: string;
+  featured: {
+    main: {
+      title: string;
+      image: string;
+      excerpt: string;
+      date: string;
+    };
+    secondary: {
+      title: string;
+      image: string;
+      date: string;
+    }[];
+  };
+}
+
+const { title, color, featured } = Astro.props;
+---
+
+<section>
+  <!-- Scrollable Categories -->
+  <div class="w-full overflow-x-auto whitespace-nowrap bg-gray-100 py-2">
+    <div class="inline-flex gap-3 px-4">
+      <button class="category-btn bg-sport-500 text-white">
+        Tutte
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Scuola
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Università
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Ricerca
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Formazione
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Tecnologia
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Sport
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Arte
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Musica
+      </button>
+      <button class="category-btn bg-white text-gray-700">
+        Editoriali
+      </button>
+    </div>
+  </div>
+
+  <!-- Content Container -->
+  <div class="container mx-auto px-4 md:px-6 lg:px-8 mt-6">
+    <h1 class={`text-2xl md:text-3xl font-bold mb-4 md:mb-6 pb-2 border-b-4 border-${color} inline-block`}>
+      {title}
+    </h1>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6">
+      <!-- Main Featured Article -->
+      <div class="lg:col-span-8">
+        <article class="bg-white rounded-lg shadow-sm overflow-hidden">
+          <a href="#" class="block group">
+            <div class="relative">
+              <img 
+                src={featured.main.image} 
+                alt={featured.main.title}
+                class="w-full aspect-[16/9] object-cover group-hover:scale-105 transition-transform duration-300"
+              />
+              <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                <div class="absolute bottom-0 left-0 right-0 p-4 md:p-6">
+                  <h2 class="text-xl md:text-2xl font-bold text-white mb-2 group-hover:text-sport-100 transition-colors line-clamp-2">
+                    {featured.main.title}
+                  </h2>
+                  <p class="text-gray-200 text-sm md:text-base mb-2 line-clamp-2 hidden sm:block">
+                    {featured.main.excerpt}
+                  </p>
+                  <time class="text-xs md:text-sm text-white/80">
+                    {featured.main.date}
+                  </time>
+                </div>
+              </div>
+            </div>
+          </a>
+        </article>
+      </div>
+
+      <!-- Secondary Featured Articles -->
+      <div class="lg:col-span-4">
+        <div class="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-1 gap-4 md:gap-6">
+          {featured.secondary.map(article => (
+            <article class="bg-white rounded-lg shadow-sm overflow-hidden">
+              <a href="#" class="block group">
+                <div class="relative">
+                  <img 
+                    src={article.image} 
+                    alt={article.title}
+                    class="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
+                  <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                    <div class="absolute bottom-0 left-0 right-0 p-3 md:p-4">
+                      <h3 class="text-base md:text-lg font-semibold text-white group-hover:text-sport-100 transition-colors line-clamp-2">
+                        {article.title}
+                      </h3>
+                      <time class="text-xs md:text-sm text-white/80 mt-1 block">
+                        {article.date}
+                      </time>
+                    </div>
+                  </div>
+                </div>
+              </a>
+            </article>
+          ))}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .category-btn {
+    white-space: nowrap;
+    padding: 0.5rem 1rem;
+    border-radius: 9999px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  }
+
+  .category-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  }
+
+  .category-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  }
+</style> 

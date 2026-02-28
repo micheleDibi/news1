@@ -1,0 +1,292 @@
+---
+export const prerender = false;
+
+import Layout from '../../layouts/Layout.astro';
+import { supabase } from '../../lib/supabase';
+import CategorySidebar from '../../components/CategorySidebar.astro';
+
+const { slug } = Astro.params;
+
+// Function to generate slug from name (same logic we'd use in admin)
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[àáâäãåāăą]/g, 'a')
+    .replace(/[èéêëēĕėęě]/g, 'e')
+    .replace(/[ìíîïīĭįǐ]/g, 'i')
+    .replace(/[òóôöõōŏő]/g, 'o')
+    .replace(/[ùúûüũūŭů]/g, 'u')
+    .replace(/[ýÿŷ]/g, 'y')
+    .replace(/ñ/g, 'n')
+    .replace(/ç/g, 'c')
+    .replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9\-]+/g, '')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
+}
+
+// Get all displayable profiles and find the one matching our slug
+const { data: profiles, error: profilesError } = await supabase
+  .from('profiles')
+  .select('id, full_name, public_name, description, profile_pic_link, email')
+  .eq('is_displayable', true);
+
+if (profilesError) {
+  console.error('Error fetching profiles:', profilesError);
+  return Astro.redirect('/404');
+}
+
+// Find the profile that matches our slug
+const profile = profiles?.find(p => generateSlug(p.full_name) === slug);
+
+if (!profile) {
+  console.error('Profile not found for slug:', slug);
+  return Astro.redirect('/404');
+}
+
+// Get recent articles by this author if they have any
+const { data: authorArticles, error: articlesError } = await supabase
+  .from('articles')
+  .select('id, title, excerpt, slug, category_slug, category, published_at, image_url')
+  .eq('creator', profile.full_name)
+  .eq('isdraft', false)
+  .order('published_at', { ascending: false })
+  .limit(6);
+
+if (articlesError) {
+  console.error('Error fetching author articles:', articlesError);
+}
+
+// Function to process inline markdown (same as article page)
+function processInlineMarkdown(text: string): string {
+  let processedText = text;
+
+  // Links first
+  processedText = processedText.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline">${linkText}</a>`;
+  });
+
+  // Bold
+  processedText = processedText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+  // Italic
+  processedText = processedText.replace(/(?<![\w])_([^_]+)_(?![\w])/g, '<em>$1</em>');
+
+  return processedText;
+}
+
+// Process description with markdown if it exists
+const formattedDescription = profile.description 
+  ? profile.description.split('\n').map((paragraph: string) => 
+      paragraph.trim() ? `<p class="text-gray-700 leading-relaxed mb-4">${processInlineMarkdown(paragraph.trim())}</p>` : ''
+    ).join('')
+  : '';
+---
+
+<Layout 
+  title={`${profile.public_name} - Team EduNews24`}
+  description={profile.description ? `Scopri di più su ${profile.public_name}, membro del team di EduNews24. ${profile.description.substring(0, 150)}...` : `Conosci ${profile.public_name}, membro del team di EduNews24.`}
+  canonicalUrl={`https://edunews24.it/team/${slug}`}
+>
+  <main class="bg-gray-50 min-h-screen py-8">
+    <div class="container mx-auto px-4">
+      <div class="flex flex-col lg:flex-row gap-8">
+        <!-- Main Content -->
+        <div class="flex-1 space-y-8">
+          <!-- Breadcrumb Navigation -->
+          <nav class="flex text-sm text-gray-600" aria-label="Breadcrumb">
+            <ol class="inline-flex items-center space-x-1 md:space-x-3">
+              <li class="inline-flex items-center">
+                <a href="/" class="inline-flex items-center hover:text-sport-500">
+                  <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"></path>
+                  </svg>
+                  Home
+                </a>
+              </li>
+              <li>
+                <div class="flex items-center">
+                  <svg class="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                  </svg>
+                  <a href="/team" class="ml-1 hover:text-sport-500">Team</a>
+                </div>
+              </li>
+              <li aria-current="page">
+                <div class="flex items-center">
+                  <svg class="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                  </svg>
+                  <span class="ml-1 text-gray-500 truncate max-w-xs">{profile.public_name}</span>
+                </div>
+              </li>
+            </ol>
+          </nav>
+
+          <!-- Profile Content -->
+          <article class="bg-white rounded-lg shadow-sm overflow-hidden">
+            <div class="p-6 md:p-8">
+              <!-- Profile Header -->
+              <div class="flex flex-col md:flex-row items-start md:items-center gap-6 mb-8">
+                <!-- Profile Picture -->
+                <div class="flex-shrink-0">
+                  {profile.profile_pic_link ? (
+                    <img 
+                      src={profile.profile_pic_link} 
+                      alt={profile.public_name}
+                      class="w-24 h-24 md:w-32 md:h-32 rounded-full object-cover border-4 border-gray-200 shadow-lg"
+                      loading="eager"
+                    />
+                  ) : (
+                    <div class="w-24 h-24 md:w-32 md:h-32 rounded-full bg-gradient-to-br from-sport-400 to-sport-600 flex items-center justify-center shadow-lg">
+                                             <span class="text-white text-2xl md:text-3xl font-bold">
+                         {profile.full_name.split(' ').map((n: string) => n[0]).join('').substring(0, 2)}
+                       </span>
+                    </div>
+                  )}
+                </div>
+
+                <!-- Profile Info -->
+                <div class="flex-1">
+                  <h1 class="text-3xl md:text-4xl font-bold text-gray-900 mb-2">
+                    {profile.public_name}
+                  </h1>
+                  <p class="text-xl text-sport-600 font-medium mb-4">
+                    Giornalista EduNews24
+                  </p>
+                  
+
+                </div>
+              </div>
+
+              <!-- Profile Description -->
+              {formattedDescription && (
+                <div class="mb-8">
+                  <h2 class="text-2xl font-bold text-gray-900 mb-4">Chi sono</h2>
+                  <div class="prose max-w-none" set:html={formattedDescription} />
+                </div>
+              )}
+
+              <!-- Articles by Author -->
+              {authorArticles && authorArticles.length > 0 && (
+                <div class="mt-12">
+                  <h2 class="text-2xl font-bold text-gray-900 mb-6">Articoli di {profile.public_name}</h2>
+                  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {authorArticles.map(article => (
+                      <article class="bg-white rounded-lg overflow-hidden border border-gray-200 hover:shadow-md transition-shadow">
+                        <a href={`/${article.category_slug}/${article.slug}`} class="block">
+                          {article.image_url && (
+                            <img 
+                              src={article.image_url} 
+                              alt={article.title}
+                              class="w-full h-48 object-cover"
+                              loading="lazy"
+                            />
+                          )}
+                          <div class="p-4">
+                            <div class="flex items-center gap-2 mb-2">
+                              <span class="inline-block bg-sport-100 text-sport-800 px-2 py-1 text-xs font-medium rounded">
+                                {article.category}
+                              </span>
+                              <time class="text-xs text-gray-500">
+                                {new Date(article.published_at).toLocaleDateString('it-IT')}
+                              </time>
+                            </div>
+                            <h3 class="font-bold text-gray-900 line-clamp-2 hover:text-sport-500 transition-colors mb-2">
+                              {article.title}
+                            </h3>
+                            {article.excerpt && (
+                              <p class="text-sm text-gray-600 line-clamp-3">
+                                {article.excerpt}
+                              </p>
+                            )}
+                          </div>
+                        </a>
+                      </article>
+                    ))}
+                  </div>
+                  
+                  {authorArticles.length === 6 && (
+                    <div class="text-center mt-6">
+                      <p class="text-gray-600">
+                        <a href={`/team/${slug}/articles`} class="text-sport-600 hover:text-sport-700 font-medium">
+                          Vedi tutti gli articoli di {profile.public_name} →
+                        </a>
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(!authorArticles || authorArticles.length === 0) && (
+                <div class="mt-12 text-center py-8">
+                  <div class="text-gray-400 mb-4">
+                    <svg class="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                  </div>
+                  <h3 class="text-lg font-semibold text-gray-900 mb-2">Nessun articolo pubblicato</h3>
+                  <p class="text-gray-600">
+                    {profile.public_name} non ha ancora pubblicato articoli su EduNews24.
+                  </p>
+                </div>
+              )}
+            </div>
+          </article>
+
+          <!-- Mobile Sidebar -->
+          <div class="lg:hidden">
+            <CategorySidebar source={`profile:${profile.id}`} isMobile={true} />
+          </div>
+        </div>
+
+        <!-- Desktop Sidebar -->
+        <div class="hidden lg:block lg:w-80">
+          <CategorySidebar source={`profile:${profile.id}`} />
+        </div>
+      </div>
+    </div>
+  </main>
+</Layout>
+
+<style>
+  .prose :global(p) {
+    margin-bottom: 1.5rem;
+    line-height: 1.75;
+  }
+  
+  .prose :global(strong) {
+    color: #1a1a1a;
+    font-weight: 600;
+  }
+  
+  .prose :global(em) {
+    font-style: italic;
+    color: #4a5568;
+  }
+
+  .prose :global(a) {
+    color: #2563eb;
+    text-decoration: underline;
+  }
+
+  .prose :global(a:hover) {
+    color: #1d4ed8;
+  }
+
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+</style> 

@@ -1,0 +1,87 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="404 - Page Not Found">
+  <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
+    <div class="max-w-max mx-auto text-center">
+      <main>
+        <div class="sm:flex items-center justify-center">
+          <!-- 404 Number -->
+          <div class="sm:mr-10">
+            <div class="text-sport-500 text-8xl sm:text-9xl font-bold tracking-tight">
+              404
+            </div>
+          </div>
+          
+          <!-- Divider for desktop -->
+          <div class="hidden sm:block h-44 w-px bg-gray-200 mx-8"></div>
+          
+          <!-- Content -->
+          <div class="mt-4 sm:mt-0 sm:text-left">
+            <p class="text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">
+              Pagina non trovata
+            </p>
+            <p class="mt-2 text-lg text-gray-600">
+              Ci dispiace, non riusciamo a trovare la pagina che stai cercando.
+            </p>
+            <div class="mt-6 flex space-x-4 justify-center sm:justify-start">
+              <a
+                href="/"
+                class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary"
+              >
+                Torna alla home
+              </a>
+              <button
+                onclick="history.back()"
+                class="inline-flex items-center px-4 py-2 border border-gray-300 text-base font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sport-500 transition-colors"
+              >
+                Torna indietro
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sport-themed illustration -->
+        <div class="mt-10 max-w-xl mx-auto">
+          <svg class="w-full h-auto text-sport-400" viewBox="0 0 800 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Soccer ball -->
+            <circle cx="400" cy="200" r="80" fill="currentColor"/>
+            <path d="M400 140 L440 180 L400 220 L360 180 Z" fill="white"/>
+            <circle cx="400" cy="200" r="75" stroke="white" stroke-width="2" fill="none"/>
+            
+            <!-- Decorative lines -->
+            <path d="M100 200 C 250 100, 550 300, 700 200" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 12"/>
+            <path d="M100 180 C 250 80, 550 280, 700 180" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 10"/>
+            <path d="M100 220 C 250 120, 550 320, 700 220" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 10"/>
+          </svg>
+        </div>
+
+        <!-- Additional help text -->
+        <div class="mt-10">
+          <p class="text-base text-gray-500">
+            Se pensi che questo sia un errore, per favore{' '}
+            <a href="/contact" class="text-sport-600 hover:text-sport-500 font-medium">
+              contattaci
+            </a>
+            .
+          </p>
+        </div>
+      </main>
+    </div>
+  </div>
+</Layout>
+
+<style>
+  /* Optional: Add some animation to the soccer ball */
+  @keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+  }
+
+  svg circle:first-of-type {
+    animation: bounce 2s ease-in-out infinite;
+    transform-origin: center;
+    transform-box: fill-box;
+  }
+</style> 

@@ -1,0 +1,530 @@
+---
+// Removed Supabase import and fetching logic from here
+
+interface Props {
+  title?: string;
+}
+
+const { title = 'Admin Dashboard' } = Astro.props;
+const currentPath = Astro.url.pathname;
+
+// Removed isAdmin variable and related logic
+
+---
+
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  </head>
+  <body>
+    <div class="min-h-screen bg-gray-100">
+      <!-- Mobile menu button -->
+      <div class="lg:hidden">
+        <div class="flex items-center justify-between p-4 bg-white shadow-sm border-b border-gray-200">
+          <div class="flex items-center">
+            <a href="/" class="group">
+              <svg width="120" height="24" viewBox="0 0 209 41" fill="none" xmlns="http://www.w3.org/2000/svg" class="sm:hidden">
+                <!-- Mobile logo - smaller version -->
+                <g class="animate-logo-entrance-left">
+                  <rect width="85.7172" height="38.335" transform="matrix(1 0 -0.13191 0.991262 5.05679 3)" fill="#064C99"/>
+                  <path d="M20.1533 23.9583L19.4479 27.7939H31.0279L30.1706 32.4558H12.9806L16.8438 11.448H33.7338L32.8928 16.0214H21.6128L20.978 19.4735H30.878L30.0533 23.9583H20.1533ZM37.088 11.448H46.088C49.408 11.448 51.7716 12.3529 53.1788 14.1625C54.586 15.9722 54.9785 18.5686 54.3564 21.9519C53.7451 25.2762 52.4394 27.8628 50.4394 29.7118C48.443 31.5411 45.8448 32.4558 42.6448 32.4558H33.2248L37.088 11.448ZM39.6866 27.8235H42.5366C45.9566 27.8235 48.0265 25.8663 48.7464 21.9519C49.1189 19.9259 48.9539 18.4309 48.2511 17.4671C47.572 16.4836 46.2924 15.9918 44.4124 15.9918H41.8624L39.6866 27.8235ZM64.3984 33.1344C61.4584 33.1344 59.3232 32.4558 57.9928 31.0985C56.6624 29.7413 56.2305 27.7939 56.6971 25.2565L59.2364 11.448H64.8464L62.3017 25.286C61.8929 27.5087 62.8786 28.6201 65.2586 28.6201C67.6186 28.6201 69.0029 27.5087 69.4117 25.286L71.9564 11.448H77.5664L75.0271 25.2565C74.5569 27.8136 73.407 29.7708 71.5774 31.128C69.7514 32.4656 67.3584 33.1344 64.3984 33.1344Z" fill="white"/>
+                </g>
+                <g class="animate-logo-entrance-right">
+                  <rect x="0.901028" y="0.99509" width="124.417" height="28.148" transform="matrix(1 0 -0.0989724 0.99509 82.0823 7.00489)" fill="white" stroke="#064C99" stroke-width="2"/>
+                  <path d="M109.202 22.9167L110.226 14.7003H113.906L112.144 28.8308H108.404L104.484 20.6542L103.464 28.8308H99.7638L101.526 14.7003H105.226L109.202 22.9167ZM119.1 23.1151L118.778 25.6951H126.498L126.107 28.8308H114.647L116.409 14.7003H127.669L127.285 17.7765H119.765L119.476 20.0985H126.076L125.7 23.1151H119.1ZM142.25 20.9122L144.605 14.7003H148.345L142.443 28.8308H138.843L138.069 19.8008L135.123 28.8308H131.443L129.065 14.7003H132.845L133.65 20.9122L133.892 24.2662L134.89 20.9122L137.005 14.7003H140.445L141.05 20.9122L141.2 24.2067L142.25 20.9122ZM153.944 29.2873C152.037 29.2873 150.591 28.8573 149.605 27.9973C148.62 27.1241 148.188 25.887 148.308 24.286H152.008C151.933 25.6356 152.729 26.3104 154.395 26.3104C155.849 26.3104 156.634 25.8407 156.751 24.9013C156.797 24.5308 156.699 24.2464 156.457 24.0479C156.231 23.8362 155.82 23.651 155.227 23.4922L152.508 22.8373C150.126 22.2683 149.067 20.9254 149.331 18.8085C149.493 17.5119 150.099 16.4468 151.15 15.6133C152.2 14.7797 153.665 14.3629 155.545 14.3629C157.345 14.3629 158.703 14.7599 159.617 15.5537C160.533 16.3343 160.941 17.4457 160.841 18.8879H157.221C157.2 17.7765 156.516 17.2208 155.169 17.2208C154.582 17.2208 154.101 17.3399 153.724 17.578C153.363 17.803 153.158 18.1073 153.111 18.491C153.036 19.0863 153.438 19.4965 154.317 19.7214L157.153 20.3962C159.715 21.018 160.859 22.4337 160.583 24.6433C160.402 26.0987 159.72 27.2365 158.537 28.0568C157.355 28.8771 155.824 29.2873 153.944 29.2873ZM178.666 28.8308H167.386C167.542 27.5739 167.947 26.5221 168.599 25.6753C169.248 24.855 170.361 23.9487 171.938 22.9564L174.332 21.4083C174.939 21.0247 175.378 20.6608 175.648 20.3168C175.931 19.9728 176.099 19.5825 176.154 19.1459C176.225 18.577 176.107 18.1337 175.8 17.8162C175.494 17.4854 175.041 17.32 174.441 17.32C173.081 17.32 172.303 18.1073 172.107 19.6817L172.07 19.9794H168.69L168.744 19.5428C168.947 17.9154 169.586 16.6453 170.66 15.7323C171.733 14.8194 173.15 14.3629 174.91 14.3629C176.59 14.3629 177.873 14.7665 178.759 15.5736C179.657 16.3939 180.018 17.5119 179.841 18.9276C179.727 19.8405 179.385 20.6608 178.814 21.3885C178.257 22.1162 177.417 22.8108 176.294 23.4724L173.641 25.0204C173.136 25.3247 172.851 25.5827 172.784 25.7944H179.044L178.666 28.8308ZM192.971 14.6805L191.929 23.0357L194.014 22.996L193.665 25.7944L191.572 25.7348L191.183 28.8507H187.703L188.092 25.7348L181.505 25.7944L181.906 22.5793L189.331 14.6805H192.971ZM184.669 23.0357H188.429L188.988 18.5505H188.928L184.669 23.0357Z" fill="#064C99"/>
+                </g>
+              </svg>
+              <!-- Tablet+ logo -->
+              <svg width="150" height="29" viewBox="0 0 209 41" fill="none" xmlns="http://www.w3.org/2000/svg" class="hidden sm:block lg:hidden">
+                <g class="animate-logo-entrance-left">
+                  <rect width="85.7172" height="38.335" transform="matrix(1 0 -0.13191 0.991262 5.05679 3)" fill="#064C99"/>
+                  <path d="M20.1533 23.9583L19.4479 27.7939H31.0279L30.1706 32.4558H12.9806L16.8438 11.448H33.7338L32.8928 16.0214H21.6128L20.978 19.4735H30.878L30.0533 23.9583H20.1533ZM37.088 11.448H46.088C49.408 11.448 51.7716 12.3529 53.1788 14.1625C54.586 15.9722 54.9785 18.5686 54.3564 21.9519C53.7451 25.2762 52.4394 27.8628 50.4394 29.7118C48.443 31.5411 45.8448 32.4558 42.6448 32.4558H33.2248L37.088 11.448ZM39.6866 27.8235H42.5366C45.9566 27.8235 48.0265 25.8663 48.7464 21.9519C49.1189 19.9259 48.9539 18.4309 48.2511 17.4671C47.572 16.4836 46.2924 15.9918 44.4124 15.9918H41.8624L39.6866 27.8235ZM64.3984 33.1344C61.4584 33.1344 59.3232 32.4558 57.9928 31.0985C56.6624 29.7413 56.2305 27.7939 56.6971 25.2565L59.2364 11.448H64.8464L62.3017 25.286C61.8929 27.5087 62.8786 28.6201 65.2586 28.6201C67.6186 28.6201 69.0029 27.5087 69.4117 25.286L71.9564 11.448H77.5664L75.0271 25.2565C74.5569 27.8136 73.407 29.7708 71.5774 31.128C69.7514 32.4656 67.3584 33.1344 64.3984 33.1344Z" fill="white"/>
+                </g>
+                <g class="animate-logo-entrance-right">
+                  <rect x="0.901028" y="0.99509" width="124.417" height="28.148" transform="matrix(1 0 -0.0989724 0.99509 82.0823 7.00489)" fill="white" stroke="#064C99" stroke-width="2"/>
+                  <path d="M109.202 22.9167L110.226 14.7003H113.906L112.144 28.8308H108.404L104.484 20.6542L103.464 28.8308H99.7638L101.526 14.7003H105.226L109.202 22.9167ZM119.1 23.1151L118.778 25.6951H126.498L126.107 28.8308H114.647L116.409 14.7003H127.669L127.285 17.7765H119.765L119.476 20.0985H126.076L125.7 23.1151H119.1ZM142.25 20.9122L144.605 14.7003H148.345L142.443 28.8308H138.843L138.069 19.8008L135.123 28.8308H131.443L129.065 14.7003H132.845L133.65 20.9122L133.892 24.2662L134.89 20.9122L137.005 14.7003H140.445L141.05 20.9122L141.2 24.2067L142.25 20.9122ZM153.944 29.2873C152.037 29.2873 150.591 28.8573 149.605 27.9973C148.62 27.1241 148.188 25.887 148.308 24.286H152.008C151.933 25.6356 152.729 26.3104 154.395 26.3104C155.849 26.3104 156.634 25.8407 156.751 24.9013C156.797 24.5308 156.699 24.2464 156.457 24.0479C156.231 23.8362 155.82 23.651 155.227 23.4922L152.508 22.8373C150.126 22.2683 149.067 20.9254 149.331 18.8085C149.493 17.5119 150.099 16.4468 151.15 15.6133C152.2 14.7797 153.665 14.3629 155.545 14.3629C157.345 14.3629 158.703 14.7599 159.617 15.5537C160.533 16.3343 160.941 17.4457 160.841 18.8879H157.221C157.2 17.7765 156.516 17.2208 155.169 17.2208C154.582 17.2208 154.101 17.3399 153.724 17.578C153.363 17.803 153.158 18.1073 153.111 18.491C153.036 19.0863 153.438 19.4965 154.317 19.7214L157.153 20.3962C159.715 21.018 160.859 22.4337 160.583 24.6433C160.402 26.0987 159.72 27.2365 158.537 28.0568C157.355 28.8771 155.824 29.2873 153.944 29.2873ZM178.666 28.8308H167.386C167.542 27.5739 167.947 26.5221 168.599 25.6753C169.248 24.855 170.361 23.9487 171.938 22.9564L174.332 21.4083C174.939 21.0247 175.378 20.6608 175.648 20.3168C175.931 19.9728 176.099 19.5825 176.154 19.1459C176.225 18.577 176.107 18.1337 175.8 17.8162C175.494 17.4854 175.041 17.32 174.441 17.32C173.081 17.32 172.303 18.1073 172.107 19.6817L172.07 19.9794H168.69L168.744 19.5428C168.947 17.9154 169.586 16.6453 170.66 15.7323C171.733 14.8194 173.15 14.3629 174.91 14.3629C176.59 14.3629 177.873 14.7665 178.759 15.5736C179.657 16.3939 180.018 17.5119 179.841 18.9276C179.727 19.8405 179.385 20.6608 178.814 21.3885C178.257 22.1162 177.417 22.8108 176.294 23.4724L173.641 25.0204C173.136 25.3247 172.851 25.5827 172.784 25.7944H179.044L178.666 28.8308ZM192.971 14.6805L191.929 23.0357L194.014 22.996L193.665 25.7944L191.572 25.7348L191.183 28.8507H187.703L188.092 25.7348L181.505 25.7944L181.906 22.5793L189.331 14.6805H192.971ZM184.669 23.0357H188.429L188.988 18.5505H188.928L184.669 23.0357Z" fill="#064C99"/>
+                </g>
+              </svg>
+            </a>
+          </div>
+          <button 
+            id="mobile-menu-button"
+            type="button" 
+            class="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary"
+            aria-controls="mobile-menu" 
+            aria-expanded="false"
+          >
+            <span class="sr-only">Open main menu</span>
+            <!-- Hamburger icon -->
+            <svg class="h-6 w-6 block" id="hamburger-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+            <!-- Close icon -->
+            <svg class="h-6 w-6 hidden" id="close-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        
+        <!-- Mobile menu panel -->
+        <div class="hidden" id="mobile-menu">
+          <div class="px-2 pt-2 pb-3 space-y-1 bg-white shadow-lg border-b border-gray-200">
+            <a 
+              href="/admin/articles/new" 
+              class="block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                Nuovo Articolo
+              </div>
+            </a>
+            
+            <!-- Mobile admin links - hidden by default -->
+            <a
+              id="mobile-logs-link" 
+              href="/admin/news-automation"
+              class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                </svg>
+                Logs Notizie
+              </div>
+            </a>
+
+            <a
+              id="mobile-api-requests-link"
+              href="/admin/plugin-requests"
+              class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                Plugin Requests
+              </div>
+            </a>
+
+            <a
+              id="mobile-users-link"
+              href="/admin/permissions"
+              class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                Gestione Utenti
+              </div>
+            </a>
+
+            <a
+              id="mobile-categories-link"
+              href="/admin/categories"
+              class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                </svg>
+                Gestione Categorie
+              </div>
+            </a>
+
+            <a
+              id="mobile-sources-link"
+              href="/admin/sources"
+              class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
+                </svg>
+                Fonti
+              </div>
+            </a>
+
+       
+          </div>
+        </div>
+      </div>
+
+      <!-- Desktop Navigation -->
+      <nav class="hidden lg:block bg-white shadow-sm border-b border-gray-200">
+        <div class="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
+          <div class="flex justify-between h-16">
+            <div class="flex">
+              <div class="flex-shrink-0 flex items-center">
+                <a href="/" class="group">
+                  <svg width="180" height="35" viewBox="0 0 209 41" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <!-- EDU part -->
+                    <g class="animate-logo-entrance-left">
+                      <rect width="85.7172" height="38.335" transform="matrix(1 0 -0.13191 0.991262 5.05679 3)" fill="#064C99"/>
+                      <path d="M20.1533 23.9583L19.4479 27.7939H31.0279L30.1706 32.4558H12.9806L16.8438 11.448H33.7338L32.8928 16.0214H21.6128L20.978 19.4735H30.878L30.0533 23.9583H20.1533ZM37.088 11.448H46.088C49.408 11.448 51.7716 12.3529 53.1788 14.1625C54.586 15.9722 54.9785 18.5686 54.3564 21.9519C53.7451 25.2762 52.4394 27.8628 50.4394 29.7118C48.443 31.5411 45.8448 32.4558 42.6448 32.4558H33.2248L37.088 11.448ZM39.6866 27.8235H42.5366C45.9566 27.8235 48.0265 25.8663 48.7464 21.9519C49.1189 19.9259 48.9539 18.4309 48.2511 17.4671C47.572 16.4836 46.2924 15.9918 44.4124 15.9918H41.8624L39.6866 27.8235ZM64.3984 33.1344C61.4584 33.1344 59.3232 32.4558 57.9928 31.0985C56.6624 29.7413 56.2305 27.7939 56.6971 25.2565L59.2364 11.448H64.8464L62.3017 25.286C61.8929 27.5087 62.8786 28.6201 65.2586 28.6201C67.6186 28.6201 69.0029 27.5087 69.4117 25.286L71.9564 11.448H77.5664L75.0271 25.2565C74.5569 27.8136 73.407 29.7708 71.5774 31.128C69.7514 32.4656 67.3584 33.1344 64.3984 33.1344Z" fill="white"/>
+                    </g>
+                    <!-- NEWS24 part -->
+                    <g class="animate-logo-entrance-right">
+                      <rect x="0.901028" y="0.99509" width="124.417" height="28.148" transform="matrix(1 0 -0.0989724 0.99509 82.0823 7.00489)" fill="white" stroke="#064C99" stroke-width="2"/>
+                      <path d="M109.202 22.9167L110.226 14.7003H113.906L112.144 28.8308H108.404L104.484 20.6542L103.464 28.8308H99.7638L101.526 14.7003H105.226L109.202 22.9167ZM119.1 23.1151L118.778 25.6951H126.498L126.107 28.8308H114.647L116.409 14.7003H127.669L127.285 17.7765H119.765L119.476 20.0985H126.076L125.7 23.1151H119.1ZM142.25 20.9122L144.605 14.7003H148.345L142.443 28.8308H138.843L138.069 19.8008L135.123 28.8308H131.443L129.065 14.7003H132.845L133.65 20.9122L133.892 24.2662L134.89 20.9122L137.005 14.7003H140.445L141.05 20.9122L141.2 24.2067L142.25 20.9122ZM153.944 29.2873C152.037 29.2873 150.591 28.8573 149.605 27.9973C148.62 27.1241 148.188 25.887 148.308 24.286H152.008C151.933 25.6356 152.729 26.3104 154.395 26.3104C155.849 26.3104 156.634 25.8407 156.751 24.9013C156.797 24.5308 156.699 24.2464 156.457 24.0479C156.231 23.8362 155.82 23.651 155.227 23.4922L152.508 22.8373C150.126 22.2683 149.067 20.9254 149.331 18.8085C149.493 17.5119 150.099 16.4468 151.15 15.6133C152.2 14.7797 153.665 14.3629 155.545 14.3629C157.345 14.3629 158.703 14.7599 159.617 15.5537C160.533 16.3343 160.941 17.4457 160.841 18.8879H157.221C157.2 17.7765 156.516 17.2208 155.169 17.2208C154.582 17.2208 154.101 17.3399 153.724 17.578C153.363 17.803 153.158 18.1073 153.111 18.491C153.036 19.0863 153.438 19.4965 154.317 19.7214L157.153 20.3962C159.715 21.018 160.859 22.4337 160.583 24.6433C160.402 26.0987 159.72 27.2365 158.537 28.0568C157.355 28.8771 155.824 29.2873 153.944 29.2873ZM178.666 28.8308H167.386C167.542 27.5739 167.947 26.5221 168.599 25.6753C169.248 24.855 170.361 23.9487 171.938 22.9564L174.332 21.4083C174.939 21.0247 175.378 20.6608 175.648 20.3168C175.931 19.9728 176.099 19.5825 176.154 19.1459C176.225 18.577 176.107 18.1337 175.8 17.8162C175.494 17.4854 175.041 17.32 174.441 17.32C173.081 17.32 172.303 18.1073 172.107 19.6817L172.07 19.9794H168.69L168.744 19.5428C168.947 17.9154 169.586 16.6453 170.66 15.7323C171.733 14.8194 173.15 14.3629 174.91 14.3629C176.59 14.3629 177.873 14.7665 178.759 15.5736C179.657 16.3939 180.018 17.5119 179.841 18.9276C179.727 19.8405 179.385 20.6608 178.814 21.3885C178.257 22.1162 177.417 22.8108 176.294 23.4724L173.641 25.0204C173.136 25.3247 172.851 25.5827 172.784 25.7944H179.044L178.666 28.8308ZM192.971 14.6805L191.929 23.0357L194.014 22.996L193.665 25.7944L191.572 25.7348L191.183 28.8507H187.703L188.092 25.7348L181.505 25.7944L181.906 22.5793L189.331 14.6805H192.971ZM184.669 23.0357H188.429L188.988 18.5505H188.928L184.669 23.0357Z" fill="#064C99"/>
+                    </g>
+                  </svg>
+                </a>
+              </div>
+            </div>
+            <div class="flex items-center space-x-2 xl:space-x-4">
+              <div id="user-profile-nav-anchor"></div>
+              <a 
+                href="/admin/articles/new" 
+                class="inline-flex items-center px-3 xl:px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary hover:bg-sport-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sport-500"
+              >
+                <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                <span class="hidden xl:inline">Nuovo Articolo</span>
+                <span class="xl:hidden">Nuovo</span>
+              </a>
+              
+              {/* Desktop admin links - hidden by default */}
+              <a
+                id="logs-link" 
+                href="/admin/news-automation"
+                class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-md hidden"
+              >
+                <svg class="text-gray-400 group-hover:text-gray-500 mr-2 xl:mr-3 h-5 xl:h-6 w-5 xl:w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                </svg>
+                <span class="hidden xl:inline">Logs Notizie</span>
+                <span class="xl:hidden">Logs</span>
+              </a>
+
+              <a
+                id="api-requests-link"
+                href="/admin/plugin-requests"
+                class={`${currentPath.includes('/admin/plugin-requests') ? 'bg-primary text-white' : 'text-gray-800 hover:bg-gray-100'} group flex items-center px-2 py-2 text-sm font-medium rounded-md hidden`}
+              >
+                <svg class={`${currentPath.includes('/admin/plugin-requests') ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'} mr-2 xl:mr-3 flex-shrink-0 h-5 xl:h-6 w-5 xl:w-6`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                <span class="hidden xl:inline">Plugin Requests</span>
+                <span class="xl:hidden">Plugin</span>
+              </a>
+
+              <a
+                id="users-link"
+                href="/admin/permissions"
+                class={`${currentPath.includes('/admin/permissions') || currentPath.includes('/admin/create-users') ? 'bg-primary text-white' : 'text-gray-800 hover:bg-gray-100'} group flex items-center px-2 py-2 text-sm font-medium rounded-md hidden`}
+              >
+                <svg class={`${currentPath.includes('/admin/permissions') || currentPath.includes('/admin/create-users') ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'} mr-2 xl:mr-3 flex-shrink-0 h-5 xl:h-6 w-5 xl:w-6`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                <span class="hidden xl:inline">Gestione Utenti</span>
+                <span class="xl:hidden">Utenti</span>
+              </a>
+
+              <a
+                id="categories-link"
+                href="/admin/categories"
+                class={`${currentPath.includes('/admin/categories') ? 'bg-primary text-white' : 'text-gray-800 hover:bg-gray-100'} group flex items-center px-2 py-2 text-sm font-medium rounded-md hidden`}
+              >
+                <svg class={`${currentPath.includes('/admin/categories') ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'} mr-2 xl:mr-3 flex-shrink-0 h-5 xl:h-6 w-5 xl:w-6`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                </svg>
+                <span class="hidden xl:inline">Gestione Categorie</span>
+                <span class="xl:hidden">Categorie</span>
+              </a>
+
+              <a
+                id="sources-link"
+                href="/admin/sources"
+                class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-md hidden"
+              >
+                <svg class="text-gray-400 group-hover:text-gray-500 mr-2 xl:mr-3 h-5 xl:h-6 w-5 xl:w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
+                </svg>
+                <span class="hidden xl:inline">Fonti</span>
+                <span class="xl:hidden">Fonti</span>
+              </a>
+
+             
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <!-- Main content -->
+      <main class="flex-1 relative pb-8 z-0">
+        <slot />
+      </main>
+    </div>
+
+    {/* Client-side script to show admin links and handle mobile menu */}
+    <script>
+      import { supabase } from '../lib/supabase';
+
+      // Mobile menu toggle functionality
+      const mobileMenuButton = document.getElementById('mobile-menu-button');
+      const mobileMenu = document.getElementById('mobile-menu');
+      const hamburgerIcon = document.getElementById('hamburger-icon');
+      const closeIcon = document.getElementById('close-icon');
+
+      if (mobileMenuButton && mobileMenu) {
+        mobileMenuButton.addEventListener('click', () => {
+          const isOpen = !mobileMenu.classList.contains('hidden');
+          
+          if (isOpen) {
+            // Close menu
+            mobileMenu.classList.add('hidden');
+            hamburgerIcon?.classList.remove('hidden');
+            closeIcon?.classList.add('hidden');
+            mobileMenuButton.setAttribute('aria-expanded', 'false');
+          } else {
+            // Open menu
+            mobileMenu.classList.remove('hidden');
+            hamburgerIcon?.classList.add('hidden');
+            closeIcon?.classList.remove('hidden');
+            mobileMenuButton.setAttribute('aria-expanded', 'true');
+          }
+        });
+      }
+
+      async function checkAdminAndShowLinks() {
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session) {
+          try {
+            const { data: profile, error } = await supabase
+              .from('profiles')
+              .select('role, full_name, profile_pic_link')
+              .eq('id', session.user.id)
+              .single();
+            
+            if (error) {
+              console.error('Error fetching profile:', error);
+              return;
+            }
+
+            if (profile && profile.role === 'admin') {
+              // Desktop links
+              const logsLink = document.getElementById('logs-link');
+              const apiRequestsLink = document.getElementById('api-requests-link');
+              const usersLink = document.getElementById('users-link');
+              const sourcesLink = document.getElementById('sources-link');
+              const categoriesLink = document.getElementById('categories-link');
+              const profilesLink = document.getElementById('profiles-link');
+              
+              // Mobile links
+              const mobileLogsLink = document.getElementById('mobile-logs-link');
+              const mobileApiRequestsLink = document.getElementById('mobile-api-requests-link');
+              const mobileUsersLink = document.getElementById('mobile-users-link');
+              const mobileSourcesLink = document.getElementById('mobile-sources-link');
+              const mobileCategoriesLink = document.getElementById('mobile-categories-link');
+              const mobileProfilesLink = document.getElementById('mobile-profiles-link');
+              
+              // Show desktop links
+              if (logsLink) logsLink.classList.remove('hidden');
+              if (apiRequestsLink) apiRequestsLink.classList.remove('hidden');
+              if (usersLink) usersLink.classList.remove('hidden');
+              if (sourcesLink) sourcesLink.classList.remove('hidden');
+              if (categoriesLink) categoriesLink.classList.remove('hidden');
+              if (profilesLink) profilesLink.classList.remove('hidden');
+              
+              // Show mobile links
+              if (mobileLogsLink) mobileLogsLink.classList.remove('hidden');
+              if (mobileApiRequestsLink) mobileApiRequestsLink.classList.remove('hidden');
+              if (mobileUsersLink) mobileUsersLink.classList.remove('hidden');
+              if (mobileSourcesLink) mobileSourcesLink.classList.remove('hidden');
+              if (mobileCategoriesLink) mobileCategoriesLink.classList.remove('hidden');
+              if (mobileProfilesLink) mobileProfilesLink.classList.remove('hidden');
+            } else if (profile) {
+              // Not admin: hide Profili link, show user profile nav item
+              const profilesLink = document.getElementById('profiles-link');
+              const mobileProfilesLink = document.getElementById('mobile-profiles-link');
+              if (profilesLink) profilesLink.style.display = 'none';
+              if (mobileProfilesLink) mobileProfilesLink.style.display = 'none';
+              // Insert user nav item if not present
+              if (!document.getElementById('user-profile-nav')) {
+                const anchor = document.getElementById('user-profile-nav-anchor');
+                if (anchor) {
+                  const userNav = document.createElement('div');
+                  userNav.id = 'user-profile-nav';
+                  userNav.className = 'relative group';
+                  userNav.innerHTML = `
+                    <button class="flex items-center px-2 py-2 text-sm font-medium rounded-md text-gray-800 hover:bg-gray-100 focus:outline-none" id="user-profile-btn">
+                      ${profile.profile_pic_link ? `<img src="${profile.profile_pic_link}" class="w-7 h-7 rounded-full mr-2 object-cover border border-gray-300" alt="Profile" />` : `<span class="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center mr-2 text-gray-500 font-bold">${profile.full_name ? profile.full_name.charAt(0).toUpperCase() : '?'}</span>`}
+                      <span>${profile.full_name || 'Profilo'}</span>
+                      <svg class="w-4 h-4 ml-1 text-gray-400 group-hover:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    <div class="hidden absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-md shadow-lg z-50 group-hover:block" id="user-profile-dropdown">
+                      <a id="user-profile-edit-link" class="block px-4 py-2 text-gray-700 hover:bg-gray-100">Modifica Profilo</a>
+                    </div>
+                  `;
+                  anchor.appendChild(userNav);
+                  // Dropdown toggle
+                  const btn = userNav.querySelector('#user-profile-btn');
+                  const dropdown = userNav.querySelector('#user-profile-dropdown');
+                  if (btn && dropdown) {
+                    btn.addEventListener('click', (e) => {
+                      e.stopPropagation();
+                      dropdown.classList.toggle('hidden');
+                    });
+                    document.addEventListener('click', () => dropdown.classList.add('hidden'));
+                  }
+                  // Set the edit link to the user's profile page with their id
+                  const editLink = userNav.querySelector('#user-profile-edit-link');
+                  if (editLink && session && session.user && session.user.id) {
+                    editLink.setAttribute('href', `/admin/profiles/${session.user.id}`);
+                  }
+                }
+              }
+              // Mobile nav: add user profile item
+              if (!document.getElementById('mobile-user-profile-nav')) {
+                const mobileMenu = document.getElementById('mobile-menu');
+                if (mobileMenu) {
+                  const userNav = document.createElement('div');
+                  userNav.id = 'mobile-user-profile-nav';
+                  userNav.className = 'relative group px-3 py-2';
+                  userNav.innerHTML = `
+                    <button class="flex items-center w-full text-left text-base font-medium text-gray-700 hover:text-gray-900 focus:outline-none" id="mobile-user-profile-btn">
+                      ${profile.profile_pic_link ? `<img src="${profile.profile_pic_link}" class="w-7 h-7 rounded-full mr-2 object-cover border border-gray-300" alt="Profile" />` : `<span class="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center mr-2 text-gray-500 font-bold">${profile.full_name ? profile.full_name.charAt(0).toUpperCase() : '?'}</span>`}
+                      <span>${profile.full_name || 'Profilo'}</span>
+                      <svg class="w-4 h-4 ml-1 text-gray-400 group-hover:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+                    </button>
+                    <div class="hidden absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-md shadow-lg z-50 group-hover:block" id="mobile-user-profile-dropdown">
+                      <a id="mobile-user-profile-edit-link" class="block px-4 py-2 text-gray-700 hover:bg-gray-100">Modifica Profilo</a>
+                    </div>
+                  `;
+                  mobileMenu.appendChild(userNav);
+                  // Dropdown toggle
+                  const btn = userNav.querySelector('#mobile-user-profile-btn');
+                  const dropdown = userNav.querySelector('#mobile-user-profile-dropdown');
+                  if (btn && dropdown) {
+                    btn.addEventListener('click', (e) => {
+                      e.stopPropagation();
+                      dropdown.classList.toggle('hidden');
+                    });
+                    document.addEventListener('click', () => dropdown.classList.add('hidden'));
+                  }
+                  // Set the edit link to the user's profile page with their id
+                  const mobileEditLink = userNav.querySelector('#mobile-user-profile-edit-link');
+                  if (mobileEditLink && session && session.user && session.user.id) {
+                    mobileEditLink.setAttribute('href', `/admin/profiles/${session.user.id}`);
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Error checking admin status:', e);
+          }
+        }
+      }
+
+      // Run on initial load
+      checkAdminAndShowLinks();
+
+      // Optional: Re-run if auth state changes (e.g., user logs in/out on the same page)
+      supabase.auth.onAuthStateChange((_event, _session) => {
+         // Clear previous state first
+         const logsLink = document.getElementById('logs-link');
+         const apiRequestsLink = document.getElementById('api-requests-link');
+         const usersLink = document.getElementById('users-link');
+         const sourcesLink = document.getElementById('sources-link');
+         const categoriesLink = document.getElementById('categories-link');
+         const profilesLink = document.getElementById('profiles-link');
+         const mobileLogsLink = document.getElementById('mobile-logs-link');
+         const mobileApiRequestsLink = document.getElementById('mobile-api-requests-link');
+         const mobileUsersLink = document.getElementById('mobile-users-link');
+         const mobileSourcesLink = document.getElementById('mobile-sources-link');
+         const mobileCategoriesLink = document.getElementById('mobile-categories-link');
+         const mobileProfilesLink = document.getElementById('mobile-profiles-link');
+         
+         // Hide all links first
+         if (logsLink) logsLink.classList.add('hidden');
+         if (apiRequestsLink) apiRequestsLink.classList.add('hidden');
+         if (usersLink) usersLink.classList.add('hidden');
+         if (sourcesLink) sourcesLink.classList.add('hidden');
+         if (categoriesLink) categoriesLink.classList.add('hidden');
+         if (profilesLink) profilesLink.classList.add('hidden');
+         if (mobileLogsLink) mobileLogsLink.classList.add('hidden');
+         if (mobileApiRequestsLink) mobileApiRequestsLink.classList.add('hidden');
+         if (mobileUsersLink) mobileUsersLink.classList.add('hidden');
+         if (mobileSourcesLink) mobileSourcesLink.classList.add('hidden');
+         if (mobileCategoriesLink) mobileCategoriesLink.classList.add('hidden');
+         if (mobileProfilesLink) mobileProfilesLink.classList.add('hidden');
+         
+         // Remove user navs if present
+         const userNav = document.getElementById('user-profile-nav');
+         if (userNav) userNav.remove();
+         const mobileUserNav = document.getElementById('mobile-user-profile-nav');
+         if (mobileUserNav) mobileUserNav.remove();
+         
+         // Check again
+         checkAdminAndShowLinks();
+      });
+    </script>
+  </body>
+</html>
+
+<style>
+  @keyframes logo-entrance-left {
+    0% {
+      opacity: 0;
+      transform: translateX(-100px) rotateY(180deg) scale(0.8);
+      transform-origin: center;
+    }
+    40% {
+      opacity: 1;
+      transform: translateX(10px) rotateY(-20deg) scale(1.1);
+    }
+    60% {
+      transform: translateX(-5px) rotateY(10deg) scale(0.95);
+    }
+    80% {
+      transform: translateX(0) rotateY(-5deg) scale(1.02);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) rotateY(0) scale(1);
+    }
+  }
+
+  @keyframes logo-entrance-right {
+    0%, 30% {
+      opacity: 0;
+      transform: translateX(100px) rotateX(180deg) scale(0.8);
+      transform-origin: center;
+    }
+    60% {
+      opacity: 1;
+      transform: translateX(-10px) rotateX(-20deg) scale(1.1);
+    }
+    75% {
+      transform: translateX(5px) rotateX(10deg) scale(0.95);
+    }
+    90% {
+      transform: translateX(0) rotateX(-5deg) scale(1.02);
+    }
+    100% {
+      opacity: 1;
+      transform: translateX(0) rotateX(0) scale(1);
+    }
+  }
+
+  .animate-logo-entrance-left {
+    opacity: 0;
+    animation: logo-entrance-left 1.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    perspective: 1000px;
+  }
+
+  .animate-logo-entrance-right {
+    opacity: 0;
+    animation: logo-entrance-right 2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    perspective: 1000px;
+  }
+</style> 

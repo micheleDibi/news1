@@ -1,0 +1,89 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { randomVideos } from '../../lib/randomVideos';
+
+const siteUrl='https://edunews24.it';
+
+const slugParam= Astro.params.slug ?? '';
+if (!slugParam){
+    return new Response ('Not found',{status: 404});
+}
+
+const decodedName= decodeURIComponent(slugParam);
+
+// Normalizza: accetta slug con o senza .mp4, ma confronta sempre senza estensione
+const normalizedSlug = decodedName.replace(/\.mp4$/i, '');
+// Se viene richiesta la pagina con .mp4, restituisci 404 (route solo senza estensione)
+if (/\.mp4$/i.test(decodedName)) {
+  return new Response('Not found', { status: 404 });
+}
+const allowed = new Set(randomVideos.map(v => v.replace(/\.mp4$/i, '')));
+if (!allowed.has(normalizedSlug)) {
+  return new Response('Not found', { status: 404 });
+}
+
+// File sempre con estensione, pagina senza estensione
+const fileName= normalizedSlug.endsWith('.mp4') ? normalizedSlug : `${normalizedSlug}.mp4`;
+const safeSlug= encodeURIComponent(normalizedSlug); //per garantire URL encoded
+
+const videoPath=`/random-chisiamo/${encodeURIComponent(fileName)}`;
+const thumbPath= `/random-chisiamo/${encodeURIComponent(fileName.replace(/\.mp4/i,'.png'))}`;
+const canonicalUrl=`${siteUrl}/video/${safeSlug}`;
+
+const title = "Chi siamo - EduNews24";
+const description ='Scopri chi siamo: la nostra missione e visione in questo breve video di presentazione.';
+
+const structuredData = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'VideoObject',
+    name: title,
+    description: description,
+    thumbnailUrl: `${siteUrl}${thumbPath}`,
+    contentUrl: `${siteUrl}${videoPath}`, //file
+    embedUrl: canonicalUrl, //pagina
+    uploadDate: '2025-06-30T00:00:00Z',
+    duration: 'PT10S',
+}, null,2);
+
+---
+
+
+<Layout title={title} description={description} canonicalUrl={canonicalUrl}>
+    <script type="application/ld+json" slot="head" set:html={structuredData} />
+  
+    <main class="max-w-4xl mx-auto px-4 py-10 space-y-10">
+      <section class="space-y-4">
+        <h1 class="text-3xl font-bold text-gray-900">{title}</h1>
+        <p class="text-lg text-gray-600">{description}</p>
+      </section>
+  
+      <section class="space-y-4">
+        <div class="overflow-hidden rounded-2xl border border-gray-200 shadow-sm max-w-lg mx-auto">
+          <video
+            src={videoPath}
+            poster={thumbPath}
+            class="w-full h-auto"
+            controls
+            preload="metadata"
+            playsinline
+          >
+            Il tuo browser non supporta il tag video.
+          </video>
+        </div>
+        <div class="flex items-center gap-4 text-sm text-gray-500">
+          <span>Pubblicato: 30 giugno 2025</span>
+          <span aria-hidden="true">•</span>
+          <span>Durata: 10 secondi</span>
+        </div>
+      </section>
+  
+      <!--<section class="space-y-3 text-gray-700 leading-relaxed">
+        <h2 class="text-xl font-semibold text-gray-900">Perché guardarlo</h2>
+        <ul class="list-disc list-inside space-y-1">
+          <li>Conosci la missione e i valori di EduNews24.</li>
+          <li>Scopri cosa offre il team e come lavoriamo.</li>
+          <li>Breve panoramica per nuovi visitatori.</li>
+        </ul>
+      </section>-->
+    </main>
+  </Layout>

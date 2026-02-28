@@ -1,0 +1,343 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import type { EUFundingData, EUFundingSource } from '../../../types/eu-funding';
+
+// Load EU funding data
+let euData: EUFundingData | null = null;
+try {
+  const dataPath = new URL('../../../data/eu-funding-opportunities.json', import.meta.url);
+  euData = await fetch(dataPath).then(res => res.json());
+} catch (error) {
+  console.log('No EU funding data found');
+}
+
+// Define sources configuration
+const sources: EUFundingSource[] = [
+  {
+    name: 'incentivi_gov_it',
+    display_name: 'Incentivi.gov.it',
+    url: 'https://www.incentivi.gov.it/it/catalogo',
+    type: 'api',
+    status: 'active',
+    opportunities_count: euData?.incentivi_gov_it?.length || 0
+  },
+
+  {
+    name: 'obiettivoeuropa_com',
+    display_name: 'Obiettivo Europa',
+    url: 'https://www.obiettivoeuropa.com/api/call/',
+    type: 'api',
+    status: 'active',
+    opportunities_count: euData?.obiettivoeuropa_com?.length || 0
+  },
+  {
+    name: 'italiadomani_gov_it',
+    display_name: 'Italia Domani',
+    url: 'https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/',
+    type: 'scraping',
+    status: 'active',
+    opportunities_count: euData?.italiadomani_gov_it?.length || 0
+  }
+];
+---
+
+<AdminLayout title="EU Funding Management">
+  <div class="container mx-auto px-4 py-8">
+    <div class="mb-8">
+      <h1 class="text-3xl font-bold text-gray-900 mb-4">
+        EU Funding Opportunities Management
+      </h1>
+      <p class="text-gray-600">
+        Monitor and manage EU funding opportunities scraping from multiple sources.
+      </p>
+    </div>
+
+    <!-- Summary Stats -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex items-center">
+          <div class="p-2 bg-blue-100 rounded-lg">
+            <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <div class="ml-4">
+            <p class="text-sm font-medium text-gray-500">Total Opportunities</p>
+            <p class="text-2xl font-bold text-gray-900">{euData?.summary?.total_opportunities || 0}</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex items-center">
+          <div class="p-2 bg-green-100 rounded-lg">
+            <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          </div>
+          <div class="ml-4">
+            <p class="text-sm font-medium text-gray-500">Active Sources</p>
+            <p class="text-2xl font-bold text-gray-900">{sources.filter(s => s.status === 'active').length}</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex items-center">
+          <div class="p-2 bg-purple-100 rounded-lg">
+            <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div class="ml-4">
+            <p class="text-sm font-medium text-gray-500">Last Updated</p>
+            <p class="text-sm font-bold text-gray-900">
+                              {euData?.summary?.last_updated ? (() => {
+                  try {
+                    const date = new Date(euData.summary.last_updated);
+                    return isNaN(date.getTime()) ? 'Data non specificata' : date.toLocaleString();
+                  } catch {
+                    return 'Data non specificata';
+                  }
+                })() : 'Mai'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex items-center">
+          <div class="p-2 bg-orange-100 rounded-lg">
+            <svg class="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </div>
+          <div class="ml-4">
+            <p class="text-sm font-medium text-gray-500">Schedule</p>
+            <p class="text-sm font-bold text-gray-900">Every 6 hours</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ItaliaDomani Refresh Component -->
+    <div id="italiadomani-refresh-container" class="mb-8">
+      <!-- React component will be mounted here -->
+    </div>
+
+    <!-- Sources Management -->
+    <div class="bg-white rounded-lg shadow mb-8">
+      <div class="px-6 py-4 border-b border-gray-200">
+        <h2 class="text-xl font-semibold text-gray-900">Data Sources</h2>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Opportunities</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Scraped</th>
+              <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+            </tr>
+          </thead>
+          <tbody class="bg-white divide-y divide-gray-200">
+            {sources.map((source) => (
+              <tr>
+                <td class="px-6 py-4 whitespace-nowrap">
+                  <div>
+                    <div class="text-sm font-medium text-gray-900">{source.display_name}</div>
+                    <div class="text-sm text-gray-500">{source.url}</div>
+                  </div>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                  <span class={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                    source.type === 'api' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'
+                  }`}>
+                    {source.type.toUpperCase()}
+                  </span>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                  <span class={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                    source.status === 'active' ? 'bg-green-100 text-green-800' :
+                    source.status === 'error' ? 'bg-red-100 text-red-800' :
+                    'bg-gray-100 text-gray-800'
+                  }`}>
+                    {source.status}
+                  </span>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                  {source.opportunities_count}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  {source.last_scraped ? (() => {
+                  try {
+                    const date = new Date(source.last_scraped);
+                    return isNaN(date.getTime()) ? 'Data non specificata' : date.toLocaleString();
+                  } catch {
+                    return 'Data non specificata';
+                  }
+                })() : 'Mai'}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                  <button class="text-blue-600 hover:text-blue-900 mr-3" onclick={`testSource('${source.name}')`}>
+                    Test
+                  </button>
+                  <button class="text-green-600 hover:text-green-900" onclick={`scrapeSource('${source.name}')`}>
+                    Scrape
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="bg-white rounded-lg shadow p-6">
+      <h2 class="text-xl font-semibold text-gray-900 mb-4">Actions</h2>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <button id="refreshAllBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md transition-colors">
+          Refresh All Sources
+        </button>
+        <button id="testAllBtn" class="bg-yellow-600 hover:bg-yellow-700 text-white font-medium py-2 px-4 rounded-md transition-colors">
+          Test All Sources
+        </button>
+        <button id="viewLogsBtn" class="bg-gray-600 hover:bg-gray-700 text-white font-medium py-2 px-4 rounded-md transition-colors">
+          View Logs
+        </button>
+      </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="bg-white rounded-lg shadow mt-8">
+      <div class="px-6 py-4 border-b border-gray-200">
+        <h2 class="text-xl font-semibold text-gray-900">Recent Activity</h2>
+      </div>
+      <div class="p-6">
+        <div class="space-y-4">
+          <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+            <div>
+              <p class="text-sm font-medium text-gray-900">EU Funding Scraper Started</p>
+              <p class="text-xs text-gray-500">2 hours ago</p>
+            </div>
+            <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
+              Success
+            </span>
+          </div>
+          <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+            <div>
+              <p class="text-sm font-medium text-gray-900">EC Europa Portal Updated</p>
+              <p class="text-xs text-gray-500">4 hours ago</p>
+            </div>
+            <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
+              Success
+            </span>
+          </div>
+          <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+            <div>
+              <p class="text-sm font-medium text-gray-900">Incentivi.gov.it Error</p>
+              <p class="text-xs text-gray-500">6 hours ago</p>
+            </div>
+            <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">
+              Error
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</AdminLayout>
+
+<script>
+  // Mount ItaliaDomani Refresh Component
+  import ItaliaDomaniRefresh from '../../../components/ItaliaDomaniRefresh.tsx';
+  
+  // Action buttons functionality
+  const refreshAllBtn = document.getElementById('refreshAllBtn') as HTMLButtonElement;
+  const testAllBtn = document.getElementById('testAllBtn') as HTMLButtonElement;
+  const viewLogsBtn = document.getElementById('viewLogsBtn') as HTMLButtonElement;
+
+  refreshAllBtn?.addEventListener('click', async () => {
+    refreshAllBtn.disabled = true;
+    refreshAllBtn.textContent = 'Refreshing...';
+    
+    try {
+      const response = await fetch('/api/eu-funding/refresh', { method: 'POST' });
+      if (response.ok) {
+        alert('Successfully refreshed all EU funding sources');
+        window.location.reload();
+      } else {
+        alert('Failed to refresh sources');
+      }
+    } catch (error) {
+      alert('Error refreshing sources');
+    } finally {
+      refreshAllBtn.disabled = false;
+      refreshAllBtn.textContent = 'Refresh All Sources';
+    }
+  });
+
+  testAllBtn?.addEventListener('click', async () => {
+    testAllBtn.disabled = true;
+    testAllBtn.textContent = 'Testing...';
+    
+    try {
+      // Test each source individually
+      const sources = ['incentivi_gov_it', 'obiettivoeuropa_com', 'italiadomani_gov_it'];
+      const results = [];
+      
+      for (const source of sources) {
+        try {
+          const response = await fetch(`/api/eu-funding/test/${source}`);
+          const result = await response.json();
+          results.push({ source, success: response.ok, message: result.message });
+        } catch (error) {
+          results.push({ source, success: false, message: 'Connection error' });
+        }
+      }
+      
+      const successCount = results.filter(r => r.success).length;
+      alert(`Test completed: ${successCount}/${sources.length} sources working`);
+      
+    } catch (error) {
+      alert('Error testing sources');
+    } finally {
+      testAllBtn.disabled = false;
+      testAllBtn.textContent = 'Test All Sources';
+    }
+  });
+
+  viewLogsBtn?.addEventListener('click', () => {
+    window.open('/admin/logs', '_blank');
+  });
+
+  // Individual source actions
+  (window as any).testSource = async (sourceName: string) => {
+    try {
+      const response = await fetch(`/api/eu-funding/test/${sourceName}`);
+      const result = await response.json();
+      alert(`${sourceName}: ${result.message}`);
+    } catch (error) {
+      alert(`Error testing ${sourceName}`);
+    }
+  };
+
+  (window as any).scrapeSource = async (sourceName: string) => {
+    try {
+      const response = await fetch('/api/eu-funding/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sources: [sourceName] })
+      });
+      const result = await response.json();
+      alert(`${sourceName}: ${result.message}`);
+      window.location.reload();
+    } catch (error) {
+      alert(`Error scraping ${sourceName}`);
+    }
+  };
+</script> 

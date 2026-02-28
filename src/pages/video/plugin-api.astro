@@ -1,0 +1,100 @@
+---
+import Layout from '../../layouts/Layout.astro';
+
+const siteUrl = 'https://edunews24.it';
+const canonicalUrl = `${siteUrl}/video/plugin-api`;
+
+const title = 'Come ricevere le nostre notizie in tempo reale';
+const description =
+  'Guida rapida per installare il plugin WordPress ufficiale di EduNews24 e ricevere le notizie in tempo reale, con configurazione e attivazione passo passo.';
+
+const video = {
+  src: '/video-api.mp4',
+  poster: '/video-api.png',
+  contentUrl: `${siteUrl}/video-api.mp4`,
+  thumbnailUrl: `${siteUrl}/video-api.png`,
+  embedUrl: `${siteUrl}/video/plugin-api`,
+  uploadDate: '2025-06-30T00:00:00Z',
+  duration: 'PT10S',
+};
+
+const structuredData = JSON.stringify(
+  {
+    '@context': 'https://schema.org',
+    '@type': 'VideoObject',
+    name: 'Come Ricevere le Nostre Notizie in Tempo Reale',
+    description:
+      'Installa il nostro plugin WordPress ufficiale per ricevere notizie in tempo reale. Guida completa all’installazione, configurazione e attivazione.',
+    thumbnailUrl: video.thumbnailUrl,
+    contentUrl: video.contentUrl,
+    embedUrl: video.embedUrl,
+    uploadDate: video.uploadDate,
+    duration: video.duration,
+    /*publisher: {
+      '@type': 'Organization',
+      name: 'EduNews24',
+      logo: {
+        '@type': 'ImageObject',
+        url: `${siteUrl}/logo.png`,
+        width: 600,
+        height: 60,
+      },
+    },*/
+  },
+  null,
+  2
+);
+---
+
+<Layout title={title} description={description} canonicalUrl={canonicalUrl}>
+  <script type="application/ld+json" slot="head" set:html={structuredData} />
+
+  <main class="max-w-4xl mx-auto px-4 py-10 space-y-10">
+    <section class="space-y-4">
+      <h1 class="text-3xl font-bold text-gray-900">{title}</h1>
+      <p class="text-lg text-gray-600">{description}</p>
+    </section>
+    <div class="flex items-center gap-4 text-sm text-gray-500">
+      <span>Pubblicato: 30 giugno 2025</span>
+      <span aria-hidden="true">•</span>
+      <span>Durata: 10 secondi</span>
+    </div>
+
+    <section class="space-y-4">
+      <div class="overflow-hidden rounded-2xl border border-gray-200 shadow-sm max-w-lg mx-auto">
+        <video
+          src={video.src}
+          poster={video.poster}
+          class="w-full h-auto"
+          controls
+          preload="metadata"
+          playsinline
+        >
+          Il tuo browser non supporta il tag video.
+        </video>
+      </div>
+      <!-- <div class="flex items-center gap-4 text-sm text-gray-500">
+        <span>Pubblicato: 30 giugno 2025</span>
+        <span aria-hidden="true">•</span>
+        <span>Durata: 10 secondi</span>
+      </div>-->
+      <div class="flex justify-center">
+        <a
+          href="/richiesta-accesso-plugin"
+          class="inline-flex items-center px-5 py-3 rounded-lg bg-blue-600 text-white font-semibold shadow hover:bg-blue-700 transition"
+        >
+          Scarica il plugin WordPress
+        </a>
+      </div>
+    </section>
+
+    <!-- <section class="space-y-3 text-gray-700 leading-relaxed">
+      <h2 class="text-xl font-semibold text-gray-900">Cosa impari in questo video</h2>
+      <ul class="list-disc list-inside space-y-1">
+        <li>Dove trovare e installare il plugin ufficiale EduNews24.</li>
+        <li>Come configurare le credenziali e attivare le notifiche in tempo reale.</li>
+        <li>Consigli per mantenere il sito performante e aggiornato.</li>
+      </ul>
+    </section> -->
+  </main>
+</Layout>

@@ -1,0 +1,457 @@
+---
+export const prerender = false;
+
+import Layout from '../layouts/Layout.astro';
+import CategorySidebar from '../components/CategorySidebar.astro';
+import { supabase } from '../lib/supabase';
+import { format, subHours } from 'date-fns';
+import { categories } from '../lib/categories';
+import { getArticleUrl } from '../lib/utils';
+// Import SEO functions
+import { generateItemListStructuredData, generateBreadcrumbStructuredData } from '../lib/seo';
+
+// DEBUG: Log categories received in index.astro
+console.log('Categories in index.astro:', JSON.stringify(categories));
+
+// Define Ultim'Ora category
+const ultimOraCategory = {
+  name: "Ultim'Ora",
+  slug: "ultim-ora",
+  color: "red-500", // Distinct color
+  // Add other properties if needed by your components, matching the Category type
+  id: 'ultim-ora-virtual-id', 
+  keywords: 'ultim ora, breaking news, notizie urgenti',
+  description: 'Le notizie dell\'ultim\'ora dal mondo della scuola e dell\'educazione.'
+};
+
+// Get Ultim'Ora articles (last 48 hours)
+const fortyEightHoursAgo = subHours(new Date(), 48).toISOString();
+const { data: ultimOraArticlesData } = await supabase
+  .from('articles')
+  .select('*')
+  .eq('isdraft', false)
+  .gte('published_at', fortyEightHoursAgo) // Greater than or equal to 48 hours ago
+  .order('published_at', { ascending: false })
+  .limit(5);
+
+const ultimOraArticles = ultimOraArticlesData?.map(article => {
+  const originalCategory = categories.find(c => c.slug === article.category_slug);
+  let baseColor = 'gray-500'; // Default base color
+  let displayCategoryName = ultimOraCategory.name; // Default to "Ultim'Ora" for display name
+
+  if (originalCategory) {
+    displayCategoryName = originalCategory.name; // Use the original category's name
+    if (originalCategory.color) {
+      baseColor = originalCategory.color; // Use original category's color if available
+    }
+  }
+  // If originalCategory is not found, or found but has no color, baseColor remains 'gray-500'.
+
+  return {
+    ...article, // Spread existing article properties
+    title: article.title,
+    image: article.image_url,
+    category: displayCategoryName, // Display the original category's name
+    date: format(new Date(article.published_at), 'yyyy-MM-dd'),
+    excerpt: article.excerpt,
+    href: getArticleUrl(article), // Relies on article.category_slug and article.slug
+    borderColor: `border-${baseColor}`,
+    bgColor: `bg-${baseColor}`,
+    textColor: `text-${baseColor}`,
+  };
+}) || [];
+
+// Get latest articles
+const { data: latestArticles } = await supabase
+  .from('articles')
+  .select('*')
+  .eq('isdraft', false)
+  .order('published_at', { ascending: false })
+  .limit(5);
+
+// Transform articles to match the new card design
+const transformedNews = latestArticles?.map(article => ({
+  title: article.title,
+  image: article.image_url,
+  category: article.category,
+  date: format(new Date(article.published_at), 'yyyy-MM-dd'),
+  excerpt: article.excerpt,
+  href: getArticleUrl(article),
+  borderColor: `border-${categories.find(c => c.name === article.category)?.color || 'sport-500'}`
+})) || [];
+
+// Get articles for each category
+const categoryArticles = await Promise.all(
+  categories.map(async (category) => {
+    // Set limit based on category name
+    const limit = ["Primo piano", "Editoriali", "Scuola"].includes(category.name) ? 5 : 3;
+    
+    const { data } = await supabase
+      .from('articles')
+      .select('*')
+      .eq('category', category.name)
+      .eq('isdraft', false)
+      .order('published_at', { ascending: false })
+      .limit(limit);
+    return {
+      category,
+      articles: data || []
+    };
+  })
+);
+
+// Split categories into main and special sections
+const mainCategories = categoryArticles.filter(({ category }) => 
+  !["Mondo", "Formazione", "Editoriali"].includes(category.name)
+);
+
+// Get Editoriali category data
+const editorialiCategory = categoryArticles.find(({ category }) => category.name === "Editoriali");
+
+// --- Generate Structured Data ---
+const pageUrl = "https://edunews24.it/";
+
+// Generate ItemList for the "Primo Piano" articles
+const itemListStructuredData = generateItemListStructuredData(
+  transformedNews,
+  "Articoli in primo piano - EduNews24",
+  pageUrl
+);
+
+// Generate Breadcrumbs (just "Home")
+// Passing an empty object ensures only the base "Home" item is included
+const breadcrumbStructuredData = generateBreadcrumbStructuredData({});
+// --- End Structured Data ---
+
+---
+
+<Layout 
+  title="EduNews24 - Il portale delle notizie scolastiche"
+  description="eduNews24 - Il portale online gratuito con tante notizie culturali provenienti dal mondo della scuola, dell'università, della ricerca scientifica e della tecnologia. Focus sui bandi di concorso, selezione del personale ed interpelli, con ricerca gratuita."
+  keywords="edunews24, scuola, notizie scuola, università, concorsi, formazione, miur, ministero istruzione, ricerca scientifica, tecnologia, bandi di selezione, ricerca personale, bandi di concorso"
+  canonicalUrl={pageUrl}
+>
+  {/* Inject Structured Data */}
+  <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />
+  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
+
+  {/* Meta Pixel Code */}
+  <script slot="head" is:inline>
+    !function(f,b,e,v,n,t,s)
+    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+    n.queue=[];t=b.createElement(e);t.async=!0;
+    t.src=v;s=b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t,s)}(window, document,'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+    fbq('init', '1981909175673146');
+    fbq('track', 'PageView');
+  </script>
+  <noscript slot="head"><img height="1" width="1" style="display:none"
+  src="https://www.facebook.com/tr?id=1981909175673146&ev=PageView&noscript=1"
+  /></noscript>
+  {/* End Meta Pixel Code */}
+
+  <main class="bg-white pb-4">
+    <div class="container mx-auto px-4">
+      <div class="flex flex-col lg:flex-row gap-8">
+        <!-- Main Content -->
+        <div class="flex-1 border-gray-200">
+          <!-- Banner Section -->
+          <section class="py-8">
+            <a href="scuola/pcto-con-edunews24it-percorsi-formativi-innovativi-per-le-scuole-italiane" class="block">
+              <img 
+                src="/Banner.jpeg" 
+                alt="L'informazione"
+                class="w-full h-auto rounded-lg shadow-md hover:shadow-xl transition-shadow duration-300"
+              />
+            </a>
+          </section>
+
+          <!-- Ultim'Ora Section -->
+          {ultimOraArticles && ultimOraArticles.length > 0 && (
+            <section class="py-8">
+              <div class="flex justify-between items-center mb-6">
+                <div class="flex items-center gap-4">
+                  <h2 class="text-2xl font-bold text-red-600">{ultimOraCategory.name}</h2>
+                  <div class={`h-1 w-24 bg-${ultimOraCategory.color}`}></div>
+                </div>
+                <a 
+                  href={`/${ultimOraCategory.slug}`}
+                  class={`text-${ultimOraCategory.color} hover:text-red-700 font-medium`}
+                >
+                  Vedi tutto →
+                </a>
+              </div>
+              <div class="grid grid-cols-12 gap-6">
+                {/* Layout similar to Primo Piano: 2 medium, then 3 small */}
+                {ultimOraArticles.slice(0, 2).map(news => (
+                  <article class={`col-span-12 md:col-span-6 rounded-lg shadow-sm overflow-hidden border-t-4 ${news.borderColor} hover:shadow-md transition-shadow`}>
+                    <a href={news.href} class="block">
+                      <div class="relative h-52">
+                        <img 
+                          src={news.image} 
+                          alt={news.title}
+                          class="w-full h-full object-cover"
+                        />
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                          <div class="absolute bottom-0 left-0 right-0 p-6">
+                            <span class={`inline-block ${news.bgColor} text-white px-3 py-1 text-sm font-semibold rounded-sm mb-3`}>
+                              {news.category}
+                            </span>
+                            <h3 class="text-xl font-bold text-white mb-2 group-hover:text-red-100">
+                              {news.title}
+                            </h3>
+                          </div>
+                        </div>
+                      </div>
+                    </a>
+                  </article>
+                ))}
+                {ultimOraArticles.slice(2, 5).map(news => (
+                  <article class={`col-span-12 md:col-span-4 rounded-lg shadow-sm overflow-hidden border-t-4 ${news.borderColor} hover:shadow-md transition-shadow`}>
+                    <a href={news.href} class="block group">
+                      <div class="relative">
+                        <img 
+                          src={news.image} 
+                          alt={news.title}
+                          class="w-full h-44 object-cover"
+                        />
+                        <div class="absolute top-4 left-4">
+                          <span class={`inline-block ${news.bgColor} text-white px-2 py-1 text-xs font-semibold rounded-sm`}>
+                            {news.category}
+                          </span>
+                        </div>
+                      </div>
+                      <div class="p-4">
+                        <h3 class="text-lg font-bold text-gray-900 mb-2 line-clamp-2 group-hover:${news.textColor} transition-colors">
+                          {news.title}
+                        </h3>
+                      </div>
+                    </a>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <!-- Editoriali Section (Moved here to be right after Primo Piano) -->
+          {editorialiCategory && editorialiCategory.articles.length > 0 && (
+            <section class="py-8 border-t border-gray-200">
+              <div class="flex justify-between items-center mb-6">
+                <div class="flex items-center gap-4">
+                  <h2 class="text-2xl font-bold">{editorialiCategory.category.name}</h2>
+                  <div class={`h-1 w-24 bg-${editorialiCategory.category.color}`}></div>
+                </div>
+                <a 
+                  href={`/${editorialiCategory.category.slug}`}
+                  class={`text-${editorialiCategory.category.color} hover:text-sport-700 font-medium`}
+                >
+                  Vedi tutto →
+                </a>
+              </div>
+
+              <div class="grid grid-cols-12 gap-6">
+                {/* First Row - Two Medium Articles */}
+                {editorialiCategory.articles.slice(0, 2).map(article => (
+                  <article class={`col-span-12 md:col-span-6 rounded-lg shadow-sm overflow-hidden border-t-4 border-${editorialiCategory.category.color} hover:shadow-md transition-shadow`}>
+                    <a href={getArticleUrl(article)} class="block">
+                      <div class="relative h-52">
+                        <img 
+                          src={article.image_url} 
+                          alt={article.title}
+                          class="w-full h-full object-cover"
+                        />
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                          <div class="absolute bottom-0 left-0 right-0 p-6">
+                            <span class={`inline-block bg-${editorialiCategory.category.color} text-white px-3 py-1 text-sm font-semibold rounded-sm mb-3`}>
+                              {article.category}
+                            </span>
+                            <h3 class="text-xl font-bold text-white mb-2 group-hover:text-sport-100">
+                              {article.title}
+                            </h3>
+                          </div>
+                        </div>
+                      </div>
+                    </a>
+                  </article>
+                ))}
+
+                {/* Second Row - Three Equal Articles */}
+                {editorialiCategory.articles.slice(2, 5).map(article => (
+                  <article class={`col-span-12 md:col-span-4 rounded-lg shadow-sm overflow-hidden border-t-4 border-${editorialiCategory.category.color} hover:shadow-md transition-shadow`}>
+                    <a href={getArticleUrl(article)} class="block group">
+                      <div class="relative">
+                        <img 
+                          src={article.image_url} 
+                          alt={article.title}
+                          class="w-full h-44 object-cover"
+                        />
+                        <div class="absolute top-4 left-4">
+                          <span class={`inline-block bg-${editorialiCategory.category.color} text-white px-2 py-1 text-xs font-semibold rounded-sm`}>
+                            {article.category}
+                          </span>
+                        </div>
+                      </div>
+                      <div class="p-4">
+                        <h3 class="text-lg font-bold text-gray-900 mb-2 line-clamp-2 group-hover:text-${editorialiCategory.category.color} transition-colors">
+                          {article.title}
+                        </h3>
+                      </div>
+                    </a>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <!-- Regular Category Sections -->
+          {mainCategories.map(({ category, articles }) => articles.length > 0 && (
+            <section class="py-8 border-t border-gray-200">
+              <div class="flex justify-between items-center mb-6">
+                <div class="flex items-center gap-4">
+                  <h2 class="text-2xl font-bold flex items-center gap-3">
+                    <span class={`inline-block bg-${category.color} text-white px-4 py-2 text-lg font-semibold rounded-sm`}>
+                      {category.name}
+                    </span>
+                  </h2>
+                  <div class={`h-1 w-24 bg-${category.color}`}></div>
+                </div>
+                <a 
+                  href={`/${category.slug}`}
+                  class={`text-${category.color} hover:text-sport-700 font-medium`}
+                >
+                  Vedi tutto →
+                </a>
+              </div>
+
+              {/* For Scuola category, use a layout similar to Primo piano (3+2) */}
+              {category.name === "Scuola" ? (
+                <div class="grid grid-cols-12 gap-6">
+                  {/* First Row - Two Medium Articles */}
+                  {articles.slice(0, 2).map(article => (
+                    <article class={`col-span-12 md:col-span-6 rounded-lg shadow-sm overflow-hidden border-t-4 border-${category.color} hover:shadow-md transition-shadow`}>
+                      <a href={getArticleUrl(article)} class="block">
+                        <div class="relative h-52">
+                          <img 
+                            src={article.image_url} 
+                            alt={article.title}
+                            class="w-full h-full object-cover"
+                          />
+                          <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                            <div class="absolute bottom-0 left-0 right-0 p-6">
+                              <span class={`inline-block bg-${category.color} text-white px-3 py-1 text-sm font-semibold rounded-sm mb-3`}>
+                                {article.category}
+                              </span>
+                              <h3 class="text-xl font-bold text-white mb-2 group-hover:text-sport-100">
+                                {article.title}
+                              </h3>
+                            </div>
+                          </div>
+                        </div>
+                      </a>
+                    </article>
+                  ))}
+
+                  {/* Second Row - Three Equal Articles */}
+                  {articles.slice(2, 5).map(article => (
+                    <article class={`col-span-12 md:col-span-4 rounded-lg shadow-sm overflow-hidden border-t-4 border-${category.color} hover:shadow-md transition-shadow`}>
+                      <a href={getArticleUrl(article)} class="block group">
+                        <div class="relative">
+                          <img 
+                            src={article.image_url} 
+                            alt={article.title}
+                            class="w-full h-44 object-cover"
+                          />
+                          <div class="absolute top-4 left-4">
+                            <span class={`inline-block bg-${category.color} text-white px-2 py-1 text-xs font-semibold rounded-sm`}>
+                              {article.category}
+                            </span>
+                          </div>
+                        </div>
+                        <div class="p-4">
+                          <h3 class="text-lg font-bold text-gray-900 mb-2 line-clamp-2 group-hover:text-${category.color} transition-colors">
+                            {article.title}
+                          </h3>
+                        </div>
+                      </a>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div class="grid grid-cols-12 gap-6">
+                  {/* Main Article */}
+                  {articles[0] && (
+                    <article class={`col-span-12 md:col-span-8 rounded-lg shadow-sm overflow-hidden border-t-4 border-${category.color} hover:shadow-md transition-shadow`}>
+                      <a href={getArticleUrl(articles[0])} class="block">
+                        <div class="relative h-96">
+                          <img 
+                            src={articles[0].image_url} 
+                            alt={articles[0].title}
+                            class="w-full h-full object-cover"
+                          />
+                          <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+                            <div class="absolute bottom-0 left-0 right-0 p-6">
+                              <h3 class="text-2xl font-bold text-white mb-2">
+                                {articles[0].title}
+                              </h3>
+                              <p class="text-gray-200 line-clamp-2 mb-2">
+                                {articles[0].excerpt}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </a>
+                    </article>
+                  )}
+
+                  {/* Secondary Articles Column */}
+                  <div class="col-span-12 md:col-span-4 space-y-6">
+                    {articles.slice(1, 3).map(article => (
+                      <article class={`bg-white rounded-lg shadow-sm overflow-hidden border-l-4 border-${category.color} hover:shadow-md transition-shadow`}>
+                        <a href={getArticleUrl(article)} class="flex">
+                          <div class="relative w-1/3">
+                            <img 
+                              src={article.image_url} 
+                              alt={article.title}
+                              class="w-full h-full object-cover"
+                            />
+                          </div>
+                          <div class="flex-1 p-4">
+                            <span class={`text-${category.color} text-sm font-semibold`}>
+                              {article.category}
+                            </span>
+                            <h3 class="font-bold text-gray-900 mb-2 line-clamp-2 hover:text-${category.color} transition-colors">
+                              {article.title}
+                            </h3>
+                          </div>
+                        </a>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          ))}
+
+          <!-- Collaboration Banner -->
+          <section class="py-8 border-t border-gray-200">
+            <a href="/collaborazione" class="block">
+              <img 
+                src="/BannerHome.png" 
+                alt="Vuoi Entrare nel Mondo del Giornalismo? Scopri Come"
+                class="w-full h-auto rounded-lg shadow-md hover:shadow-xl transition-shadow duration-300"
+              />
+            </a>
+          </section>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="hidden lg:block lg:w-80">
+          <CategorySidebar source="home" />
+        </div>
+      </div>
+    </div>
+  </main>
+</Layout>

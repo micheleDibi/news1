@@ -1,0 +1,809 @@
+---
+import Layout from '../../layouts/Layout.astro';
+
+// Import the EU funding data dynamically from the unified backend file
+import euFundingData from '../../data/eu-funding-opportunities.json';
+
+// Get all opportunities from all sources
+const allOpportunities = [
+  ...(euFundingData.incentivi_gov_it || []),
+  ...(euFundingData.obiettivoeuropa_com || []),
+  ...(euFundingData.italiadomani_gov_it || [])
+];
+
+// Get all unique categories and organize them
+const allCategories = [...new Set(allOpportunities.map(opp => opp.category).filter(Boolean))];
+
+// Get categories that exist in our data
+const existingCategories = allCategories;
+
+// Calculate summary stats dynamically - only count open opportunities
+const openOpportunities = allOpportunities.filter(opp => opp.status === 1);
+const totalOpportunities = openOpportunities.length;
+const uniqueCategories = existingCategories.length;
+const lastUpdated = new Date().toISOString();
+
+// Pass data to client-side script with all 4 sources
+const initialData = {
+  incentivi_gov_it: euFundingData.incentivi_gov_it || [],
+
+  obiettivoeuropa_com: euFundingData.obiettivoeuropa_com || [],
+  italiadomani_gov_it: euFundingData.italiadomani_gov_it || []
+};
+---
+
+<Layout title="Opportunità di Finanziamento UE - Solo Bandi Aperti">
+  <div class="container mx-auto px-4 py-8">
+    <div class="mb-8">
+      <h1 class="text-4xl font-bold text-gray-900 mb-4">
+        Opportunità di Finanziamento UE - Solo Bandi Aperti
+      </h1>
+      <p class="text-lg text-gray-600 mb-6">
+        Scopri opportunità di finanziamento, sovvenzioni e bandi aperti dell'Unione Europea da multiple fonti.
+      </p>
+      
+      <!-- Summary Stats -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        <div class="bg-blue-50 p-4 rounded-lg">
+          <div class="text-2xl font-bold text-blue-600">{totalOpportunities}</div>
+          <div class="text-sm text-blue-800">Opportunità Aperte</div>
+        </div>
+        <div class="bg-green-50 p-4 rounded-lg">
+          <div class="text-2xl font-bold text-green-600">{uniqueCategories}</div>
+          <div class="text-sm text-green-800">Categorie</div>
+        </div>
+        <div class="bg-orange-50 p-4 rounded-lg">
+          <div class="text-2xl font-bold text-orange-600">
+            {new Date(lastUpdated).toLocaleDateString('it-IT')}
+          </div>
+          <div class="text-sm text-orange-800">Ultimo Aggiornamento</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-semibold">Filtri</h2>
+        <div id="activeFiltersIndicator" class="text-xs text-gray-500 hidden">
+          <span class="inline-flex items-center px-2 py-1 rounded-full bg-blue-100 text-blue-800">
+            <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-.293.707L12 11.414V15a1 1 0 01-.293.707l-2 2A1 1 0 018 17v-5.586L3.293 6.707A1 1 0 013 6V3z" clip-rule="evenodd"></path>
+            </svg>
+            Filtri Attivi
+          </span>
+        </div>
+      </div>
+      
+      <!-- Search Bar -->
+      <div class="mb-6">
+        <label class="block text-sm font-medium text-gray-700 mb-2">Cerca per Titolo o Descrizione</label>
+        <div class="relative">
+          <input 
+            type="text" 
+            id="searchFilter" 
+            placeholder="Inserisci il titolo o parte del titolo da cercare..."
+            class="w-full border border-gray-300 rounded-md px-3 py-2 pl-10 pr-20 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+          <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+            </svg>
+          </div>
+          <button 
+            id="clearSearch" 
+            class="absolute inset-y-0 right-0 px-3 text-gray-400 hover:text-gray-600 focus:outline-none"
+            title="Cancella ricerca"
+          >
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+        <p class="text-xs text-gray-500 mt-1">La ricerca funziona su titolo e descrizione dei bandi</p>
+      </div>
+      
+      <!-- Source Filters -->
+      <div class="mb-6">
+        <label class="block text-sm font-medium text-gray-700 mb-2">Filtra per Fonte</label>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="flex items-center p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+            <input type="checkbox" id="sourceIncentivi" value="incentivi_gov_it" class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" checked>
+            <label for="sourceIncentivi" class="ml-2 text-sm text-gray-700 cursor-pointer">Incentivi.gov.it</label>
+          </div>
+          <div class="flex items-center p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+            <input type="checkbox" id="sourceObiettivoEuropa" value="obiettivoeuropa_com" class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" checked>
+            <label for="sourceObiettivoEuropa" class="ml-2 text-sm text-gray-700 cursor-pointer">Obiettivo Europa</label>
+          </div>
+          <div class="flex items-center p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+            <input type="checkbox" id="sourceItaliaDomani" value="italiadomani_gov_it" class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded" checked>
+            <label for="sourceItaliaDomani" class="ml-2 text-sm text-gray-700 cursor-pointer">Italia Domani</label>
+          </div>
+        </div>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button id="selectAllSources" class="px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200 transition-colors">Seleziona Tutti</button>
+          <button id="deselectAllSources" class="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors">Deseleziona Tutti</button>
+          <button id="clearAllFilters" class="px-3 py-1 text-xs bg-red-100 text-red-700 rounded-md hover:bg-red-200 transition-colors">Cancella Tutti i Filtri</button>
+        </div>
+      </div>
+      
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-2">Categoria</label>
+          <select id="categoryFilter" class="w-full border border-gray-300 rounded-md px-3 py-2">
+            <option value="">Tutte le Categorie</option>
+            {existingCategories.map(category => (
+              <option value={category}>{category}</option>
+            ))}
+          </select>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Results Count and Source Summary -->
+    <div class="mb-6">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between">
+        <p id="resultsCount" class="text-gray-600 mb-2 md:mb-0">{totalOpportunities} opportunità aperte trovate</p>
+        
+        <!-- Source Summary -->
+        <div class="flex flex-wrap gap-2 text-sm">
+          <div class="flex items-center space-x-1">
+            <span class="w-3 h-3 bg-blue-500 rounded-full"></span>
+            <span class="text-gray-600">Incentivi.gov.it: <span id="countIncentivi" class="font-medium">{euFundingData.incentivi_gov_it?.length || 0}</span></span>
+          </div>
+          <div class="flex items-center space-x-1">
+            <span class="w-3 h-3 bg-green-500 rounded-full"></span>
+            <span class="text-gray-600">Obiettivo Europa: <span id="countObiettivoEuropa" class="font-medium">{euFundingData.obiettivoeuropa_com?.length || 0}</span></span>
+          </div>
+          <div class="flex items-center space-x-1">
+            <span class="w-3 h-3 bg-purple-500 rounded-full"></span>
+            <span class="text-gray-600">Italia Domani: <span id="countItaliaDomani" class="font-medium">{euFundingData.italiadomani_gov_it?.length || 0}</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Opportunities List -->
+    <div id="opportunitiesContainer" class="space-y-6">
+      <!-- Opportunities will be loaded here by JavaScript -->
+    </div>
+    
+    <!-- Pagination -->
+    <div id="paginationContainer" class="flex justify-center items-center space-x-2 mt-8">
+      <!-- Pagination will be rendered here by JavaScript -->
+    </div>
+  </div>
+</Layout>
+
+            <style>
+              /* Ensure titles are displayed completely without truncation */
+              h3 a {
+                word-wrap: break-word;
+                overflow-wrap: break-word;
+                hyphens: auto;
+                line-height: 1.4;
+              }
+              
+              .line-clamp-3 {
+                display: -webkit-box;
+                -webkit-line-clamp: 3;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+              }
+              
+              .opportunity-card {
+                transition: opacity 0.3s ease;
+              }
+              
+              .opportunity-card.hidden {
+                display: none;
+              }
+            </style>
+            
+<script define:vars={{ initialData }}>
+  // Global variables
+              let allOpportunities = [];
+              let filteredOpportunities = [];
+              let currentPage = 1;
+  const itemsPerPage = 20; // 20 opportunities per page
+              
+
+              
+              // Function to update counters
+              function updateCounters() {
+                const resultsCount = document.getElementById('resultsCount');
+                if (resultsCount) {
+                  const searchFilter = document.getElementById('searchFilter');
+                  const searchTerm = searchFilter ? searchFilter.value.trim() : '';
+                  
+                  if (filteredOpportunities.length === allOpportunities.length && !searchTerm) {
+                    resultsCount.textContent = `${allOpportunities.length} opportunità trovate`;
+                  } else {
+                    let countText = `${filteredOpportunities.length} di ${allOpportunities.length} opportunità trovate`;
+                    if (searchTerm) {
+                      countText += ` per "${searchTerm}"`;
+                    }
+                    resultsCount.textContent = countText;
+                  }
+                }
+                
+                // Update source counts
+                const countIncentivi = document.getElementById('countIncentivi');
+                const countObiettivoEuropa = document.getElementById('countObiettivoEuropa');
+                const countItaliaDomani = document.getElementById('countItaliaDomani');
+                
+                if (countIncentivi) {
+                  const incentiviCount = filteredOpportunities.filter(opp => opp.source === 'incentivi_gov_it').length;
+                  countIncentivi.textContent = incentiviCount;
+                }
+                
+                if (countObiettivoEuropa) {
+                  const obiettivoEuropaCount = filteredOpportunities.filter(opp => opp.source === 'obiettivoeuropa_com').length;
+                  countObiettivoEuropa.textContent = obiettivoEuropaCount;
+                }
+                
+                if (countItaliaDomani) {
+                  const italiadomaniCount = filteredOpportunities.filter(opp => opp.source === 'italiadomani_gov_it').length;
+                  countItaliaDomani.textContent = italiadomaniCount;
+                }
+              }
+              
+              // Function to filter opportunities
+              function filterOpportunities() {
+                const searchFilter = document.getElementById('searchFilter');
+                const categoryFilter = document.getElementById('categoryFilter');
+                
+                // Source filter checkboxes
+                const sourceIncentivi = document.getElementById('sourceIncentivi');
+                const sourceObiettivoEuropa = document.getElementById('sourceObiettivoEuropa');
+                const sourceItaliaDomani = document.getElementById('sourceItaliaDomani');
+                
+                const searchTerm = searchFilter ? searchFilter.value.toLowerCase().trim() : '';
+                const selectedCategory = categoryFilter ? categoryFilter.value : '';
+                
+                // Get selected sources (checked = include, unchecked = exclude)
+                const selectedSources = [];
+                if (sourceIncentivi && sourceIncentivi.checked) selectedSources.push('incentivi_gov_it');
+                if (sourceObiettivoEuropa && sourceObiettivoEuropa.checked) selectedSources.push('obiettivoeuropa_com');
+                if (sourceItaliaDomani && sourceItaliaDomani.checked) selectedSources.push('italiadomani_gov_it');
+                
+                console.log('Selected sources:', selectedSources);
+                console.log('Total opportunities before filtering:', allOpportunities.length);
+                
+                filteredOpportunities = allOpportunities.filter(opportunity => {
+                  // Only show open bandis (status = 1)
+                  if (opportunity.status !== 1) {
+                    return false;
+                  }
+                  
+                  const titleMatch = !searchTerm || 
+                    (opportunity.title && opportunity.title.toLowerCase().includes(searchTerm)) ||
+                    (opportunity.description && opportunity.description.toLowerCase().includes(searchTerm));
+                  const categoryMatch = !selectedCategory || opportunity.category === selectedCategory;
+                  
+                  // Source match - check if opportunity source is in selected sources
+                  const opportunitySource = opportunity.source;
+                  
+                  // If no sources are selected, show all (this shouldn't happen with default checked state)
+                  // If sources are selected, only show opportunities from those sources
+                  const sourceMatch = selectedSources.length === 0 || selectedSources.includes(opportunitySource);
+                  
+                  // Debug logging for first few opportunities
+                  if (allOpportunities.indexOf(opportunity) < 3) {
+                    console.log('Filtering opportunity:', {
+                      title: opportunity.title,
+                      source: opportunitySource,
+                      selectedSources: selectedSources,
+                      sourceMatch: sourceMatch,
+                      titleMatch: titleMatch,
+                      categoryMatch: categoryMatch,
+                      finalResult: titleMatch && categoryMatch && sourceMatch
+                    });
+                  }
+                  
+                  return titleMatch && categoryMatch && sourceMatch;
+                });
+                
+                console.log('Filtered opportunities:', filteredOpportunities.length);
+                                console.log('Source breakdown:', {
+                  incentivi: filteredOpportunities.filter(opp => opp.source === 'incentivi_gov_it').length,
+                  obiettivoeuropa: filteredOpportunities.filter(opp => opp.source === 'obiettivoeuropa_com').length,
+                  italiadomani: filteredOpportunities.filter(opp => opp.source === 'italiadomani_gov_it').length
+                });
+                
+                currentPage = 1;
+                updateCounters();
+                renderOpportunities();
+                updateActiveFiltersIndicator();
+              }
+              
+              // Function to update active filters indicator
+              function updateActiveFiltersIndicator() {
+                const indicator = document.getElementById('activeFiltersIndicator');
+                if (!indicator) return;
+                
+                const searchFilter = document.getElementById('searchFilter');
+                const categoryFilter = document.getElementById('categoryFilter');
+                const sourceIncentivi = document.getElementById('sourceIncentivi');
+                const sourceObiettivoEuropa = document.getElementById('sourceObiettivoEuropa');
+                const sourceItaliaDomani = document.getElementById('sourceItaliaDomani');
+                
+                const hasSearchFilter = searchFilter && searchFilter.value.trim() !== '';
+                const hasCategoryFilter = categoryFilter && categoryFilter.value !== '';
+                const hasSourceFilter = (sourceIncentivi && !sourceIncentivi.checked) || 
+                                     (sourceObiettivoEuropa && !sourceObiettivoEuropa.checked) || 
+                                     (sourceItaliaDomani && !sourceItaliaDomani.checked);
+                
+                if (hasSearchFilter || hasCategoryFilter || hasSourceFilter) {
+                  indicator.classList.remove('hidden');
+                } else {
+                  indicator.classList.add('hidden');
+                }
+              }
+              
+              // Function to render opportunities for current page
+              function renderOpportunities() {
+                const startIndex = (currentPage - 1) * itemsPerPage;
+                const endIndex = startIndex + itemsPerPage;
+                const opportunitiesToShow = filteredOpportunities.slice(startIndex, endIndex);
+                
+                const container = document.getElementById('opportunitiesContainer');
+                if (!container) return;
+                
+                container.innerHTML = '';
+                
+    if (opportunitiesToShow.length === 0) {
+      container.innerHTML = `
+        <div class="text-center py-8">
+          <p class="text-gray-500 text-lg">Nessuna opportunità trovata con i criteri selezionati.</p>
+        </div>
+      `;
+      renderPagination();
+      return;
+    }
+    
+    opportunitiesToShow.forEach((opportunity) => {
+                  const card = document.createElement('div');
+                  card.className = 'opportunity-card bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow';
+                  
+                  // Highlight search terms if search is active
+                  const searchFilter = document.getElementById('searchFilter');
+                  const searchTerm = searchFilter ? searchFilter.value.toLowerCase().trim() : '';
+                  let displayTitle = opportunity.title || '';
+                  let displayDescription = opportunity.description || '';
+                  
+                  if (searchTerm) {
+                    const highlightTerm = (text, term) => {
+                      if (!text) return '';
+                      const regex = new RegExp(`(${term})`, 'gi');
+                      return text.replace(regex, '<mark class="bg-yellow-200 px-1 rounded">$1</mark>');
+                    };
+                    displayTitle = highlightTerm(displayTitle, searchTerm);
+                    displayDescription = highlightTerm(displayDescription, searchTerm);
+                  }
+                  
+      // Enhanced budget display logic to handle all budget field types
+      let budgetText = 'Budget non specificato';
+      
+      // First check if there's a formatted budget from Obiettivo Europa
+      if (opportunity.budget_formattato && opportunity.budget_formattato.trim() !== '') {
+        budgetText = opportunity.budget_formattato;
+      }
+      // Then check if there's a budget string (from Incentivi or other sources)
+      else if (opportunity.budget && opportunity.budget.trim() !== '' && opportunity.budget !== '0') {
+        budgetText = opportunity.budget;
+      }
+      // Then check if there's a numeric budget_totale
+      else if (opportunity.budget_totale && opportunity.budget_totale > 0) {
+        const budgetValue = opportunity.budget_totale;
+        budgetText = budgetValue >= 1000000 ? 
+          `€${(budgetValue / 1000000).toFixed(1)}M` : 
+          `€${budgetValue.toLocaleString()}`;
+      }
+      // Finally check if there's a numeric budget field
+      else if (opportunity.budget && !isNaN(parseInt(opportunity.budget)) && parseInt(opportunity.budget) > 0) {
+        const budgetValue = parseInt(opportunity.budget);
+        budgetText = budgetValue >= 1000000 ? 
+          `€${(budgetValue / 1000000).toFixed(1)}M` : 
+          `€${budgetValue.toLocaleString()}`;
+      }
+                  
+                  card.innerHTML = `
+                    <div class="flex justify-between items-start mb-4">
+                      <div class="flex-1">
+                        <h3 class="text-xl font-semibold text-gray-900 mb-2">
+                          <a href="/eu-funding/${encodeURIComponent((opportunity.title || opportunity.titolo_base || opportunity.titolo_dettagliato || '').replace(/[^a-zA-Z0-9]/g, '-').toLowerCase())}" 
+                              class="hover:text-blue-600 transition-colors">
+                             ${displayTitle || 'No Title'}
+                          </a>
+                        </h3>
+                        <p class="text-gray-600 mb-3 line-clamp-3">${displayDescription ? (displayDescription.length > 200 ? displayDescription.substring(0, 200) + '...' : displayDescription) : opportunity.sezioni?.['Cos\'è'] || 'No description available'}</p>
+                      </div>
+                      <div class="ml-4 text-right">
+                        <span class="inline-block px-2 py-1 rounded-full text-xs font-medium ${opportunity.status === 1 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+                          ${opportunity.status === 1 ? '🟢 Aperto' : '🔴 Chiuso'}
+                        </span>
+                        ${(() => {
+                          if (opportunity.giorni_rimanenti !== undefined && opportunity.giorni_rimanenti !== null) {
+                            const giorni = opportunity.giorni_rimanenti;
+                            if (giorni <= 7) {
+                              return '<span class="inline-block px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 ml-2">⚠️ Urgente</span>';
+                            } else if (giorni <= 30) {
+                              return '<span class="inline-block px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800 ml-2">⚠️ Scade presto</span>';
+                            }
+                          }
+                          return '';
+                        })()}
+                      </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm text-gray-600">
+                      <div>
+                        <span class="font-medium">Categoria:</span> ${opportunity.category || 'N/A'}
+                      </div>
+                      <div>
+                        <span class="font-medium">Pubblicato:</span> ${(() => {
+                          try {
+                            if (!opportunity.published_date) return 'Data non specificata';
+                            // Handle different date formats
+                            let dateStr = opportunity.published_date;
+                            if (typeof dateStr === 'string') {
+                              // Handle Italian format like "11/04/22"
+                              if (dateStr.includes('/')) {
+                                const parts = dateStr.split('/');
+                                if (parts.length === 3) {
+                                  const day = parts[0];
+                                  const month = parts[1];
+                                  const year = parts[2].length === 2 ? '20' + parts[2] : parts[2];
+                                  return `${day}/${month}/${year}`;
+                                }
+                              }
+                              // Handle ISO format like "2018-09-21"
+                              if (dateStr.includes('-')) {
+                                const date = new Date(dateStr + 'T00:00:00Z');
+                                if (!isNaN(date.getTime())) {
+                                  return date.toLocaleDateString('it-IT');
+                                }
+                              }
+                            }
+                            return 'Data non specificata';
+                          } catch {
+                            return 'Data non specificata';
+                          }
+                        })()}
+                      </div>
+                      <div>
+                        <span class="font-medium">Scadenza:</span> ${(() => {
+                          try {
+                            if (!opportunity.deadline) return 'Data non specificata';
+                            let deadlineStr = opportunity.deadline;
+                            if (typeof deadlineStr === 'string') {
+                              // Handle Italian format like "16/10/2025"
+                              if (deadlineStr.includes('/')) {
+                                const parts = deadlineStr.split('/');
+                                if (parts.length === 3) {
+                                  const day = parts[0];
+                                  const month = parts[1];
+                                  const year = parts[2];
+                                  return `${day}/${month}/${year}`;
+                                }
+                              }
+                              // Handle text like "Fino ad esaurimento fondi"
+                              if (deadlineStr.toLowerCase().includes('esaurimento') || 
+                                  deadlineStr.toLowerCase().includes('fondi') ||
+                                  deadlineStr.toLowerCase().includes('risorse')) {
+                                return deadlineStr;
+                              }
+                            }
+                            return deadlineStr || 'Data non specificata';
+                          } catch {
+                            return 'Data non specificata';
+                          }
+                        })()}
+                      </div>
+                    </div>
+                    
+                    <!-- Budget Row -->
+                    <div class="mt-3 text-sm">
+                      <span class="font-medium text-gray-700">Budget:</span> ${budgetText}
+                    </div>
+                    
+                    <!-- Source-specific Information Row -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm text-gray-600 mt-3">
+                      <!-- Giorni Rimanenti (for Obiettivo Europa) -->
+                      ${(() => {
+                        if (opportunity.giorni_rimanenti !== undefined && opportunity.giorni_rimanenti !== null) {
+                          const giorni = opportunity.giorni_rimanenti;
+                          let statusClass = 'text-green-600';
+                          let statusText = `${giorni} giorni rimanenti`;
+                          
+                          if (giorni <= 7) {
+                            statusClass = 'text-red-600 font-semibold';
+                            statusText = `⚠️ ${giorni} giorni rimanenti!`;
+                          } else if (giorni <= 30) {
+                            statusClass = 'text-orange-600 font-semibold';
+                            statusText = `⚠️ ${giorni} giorni rimanenti`;
+                          }
+                          
+                          return `<div><span class="font-medium">Scadenza:</span> <span class="${statusClass}">${statusText}</span></div>`;
+                        }
+                        return '';
+                      })()}
+                      
+                      <!-- Incentivi specific fields -->
+                      ${(() => {
+                        if (opportunity.sezioni && opportunity.sezioni['Chi può partecipare']) {
+                          const partecipanti = opportunity.sezioni['Chi può partecipare'];
+                          if (partecipanti && partecipanti.length > 0) {
+                            const shortText = partecipanti.length > 60 ? partecipanti.substring(0, 60) + '...' : partecipanti;
+                            return `<div><span class="font-medium">Partecipanti:</span> ${shortText}</div>`;
+                          }
+                        }
+                        return '';
+                      })()}
+                      
+
+                    </div>
+                    
+                    <div class="mt-3 flex items-center justify-between">
+                      <div class="text-xs text-gray-500">
+                        <span class="font-medium">Fonte:</span> 
+                        ${(() => {
+                          const source = opportunity.source;
+                          
+                          const sourceConfig = {
+                            'incentivi_gov_it': { bg: 'bg-blue-100', text: 'text-blue-800', name: 'Incentivi.gov.it' },
+                            'obiettivoeuropa_com': { bg: 'bg-green-100', text: 'text-green-800', name: 'Obiettivo Europa' },
+                            'italiadomani_gov_it': { bg: 'bg-purple-100', text: 'text-purple-800', name: 'Italia Domani' },
+                            'unknown': { bg: 'bg-gray-100', text: 'text-gray-800', name: 'N/A' }
+                          };
+                          
+                          const config = sourceConfig[source] || sourceConfig['unknown'];
+                          
+                          return `<span class="inline-block px-2 py-1 rounded-full text-xs font-medium ${config.bg} ${config.text}">${config.name}</span>`;
+                        })()}
+                      </div>
+                      
+                      <!-- View Details Button -->
+                      <a href="/eu-funding/${encodeURIComponent((opportunity.title || opportunity.titolo_base || opportunity.titolo_dettagliato || '').replace(/[^a-zA-Z0-9]/g, '-').toLowerCase())}" 
+                         class="inline-flex items-center px-3 py-1 text-xs font-medium text-blue-700 bg-blue-100 rounded-md hover:bg-blue-200 transition-colors">
+                        📋 Dettagli
+                      </a>
+                    </div>
+                  `;
+                  
+                  container.appendChild(card);
+                });
+                
+                renderPagination();
+              }
+              
+              // Function to render pagination
+              function renderPagination() {
+                const totalPages = Math.ceil(filteredOpportunities.length / itemsPerPage);
+                const paginationContainer = document.getElementById('paginationContainer');
+                if (!paginationContainer) return;
+                
+                paginationContainer.innerHTML = '';
+                
+                if (totalPages <= 1) {
+                  paginationContainer.style.display = 'none';
+                  return;
+                }
+                
+                paginationContainer.style.display = 'flex';
+                
+                // Previous button
+                const prevButton = document.createElement('button');
+                prevButton.className = `px-3 py-2 mx-1 rounded-md ${currentPage === 1 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`;
+    prevButton.textContent = 'Precedente';
+                prevButton.disabled = currentPage === 1;
+                prevButton.onclick = () => {
+                  if (currentPage > 1) {
+                    currentPage--;
+                    renderOpportunities();
+                  }
+                };
+                paginationContainer.appendChild(prevButton);
+    
+    // Page numbers with smart pagination
+    const maxVisiblePages = 7;
+    let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+    let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+    
+    if (endPage - startPage + 1 < maxVisiblePages) {
+      startPage = Math.max(1, endPage - maxVisiblePages + 1);
+    }
+    
+    // First page
+    if (startPage > 1) {
+      const firstButton = document.createElement('button');
+      firstButton.className = 'px-3 py-2 mx-1 rounded-md bg-gray-200 text-gray-700 hover:bg-gray-300';
+      firstButton.textContent = '1';
+      firstButton.onclick = () => {
+        currentPage = 1;
+        renderOpportunities();
+      };
+      paginationContainer.appendChild(firstButton);
+      
+      if (startPage > 2) {
+        const ellipsis = document.createElement('span');
+        ellipsis.className = 'px-3 py-2 mx-1';
+        ellipsis.textContent = '...';
+        paginationContainer.appendChild(ellipsis);
+      }
+    }
+                
+                // Page numbers
+    for (let i = startPage; i <= endPage; i++) {
+                  const pageButton = document.createElement('button');
+                  pageButton.className = `px-3 py-2 mx-1 rounded-md ${currentPage === i ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`;
+      pageButton.textContent = i.toString();
+                  pageButton.onclick = () => {
+                    currentPage = i;
+                    renderOpportunities();
+                  };
+                  paginationContainer.appendChild(pageButton);
+                }
+    
+    // Last page
+    if (endPage < totalPages) {
+      if (endPage < totalPages - 1) {
+        const ellipsis = document.createElement('span');
+        ellipsis.className = 'px-3 py-2 mx-1';
+        ellipsis.textContent = '...';
+        paginationContainer.appendChild(ellipsis);
+      }
+      
+      const lastButton = document.createElement('button');
+      lastButton.className = 'px-3 py-2 mx-1 rounded-md bg-gray-200 text-gray-700 hover:bg-gray-300';
+      lastButton.textContent = totalPages.toString();
+      lastButton.onclick = () => {
+        currentPage = totalPages;
+        renderOpportunities();
+      };
+      paginationContainer.appendChild(lastButton);
+                }
+                
+                // Next button
+                const nextButton = document.createElement('button');
+                nextButton.className = `px-3 py-2 mx-1 rounded-md ${currentPage === totalPages ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`;
+    nextButton.textContent = 'Successivo';
+                nextButton.disabled = currentPage === totalPages;
+                nextButton.onclick = () => {
+                  if (currentPage < totalPages) {
+                    currentPage++;
+                    renderOpportunities();
+                  }
+                };
+                paginationContainer.appendChild(nextButton);
+              }
+              
+  
+              
+              // Initialize on page load
+              document.addEventListener('DOMContentLoaded', function() {
+                // Load initial data from the server-side data with proper source assignment
+                allOpportunities = [];
+                
+                // Add incentivi.gov.it opportunities with source (only open bandis)
+                if (initialData.incentivi_gov_it && Array.isArray(initialData.incentivi_gov_it)) {
+                  initialData.incentivi_gov_it.forEach(opp => {
+                    // Only include open bandis (status = 1)
+                    if (opp.status === 1) {
+                      allOpportunities.push({
+                        ...opp,
+                        source: 'incentivi_gov_it'
+                      });
+                    }
+                  });
+                }
+                
+                // Add obiettivoeuropa.com opportunities with source (only open bandis)
+                if (initialData.obiettivoeuropa_com && Array.isArray(initialData.obiettivoeuropa_com)) {
+                  initialData.obiettivoeuropa_com.forEach(opp => {
+                    // Only include open bandis (status = 1)
+                    if (opp.status === 1) {
+                      allOpportunities.push({
+                        ...opp,
+                        source: 'obiettivoeuropa_com'
+                      });
+                    }
+                  });
+                }
+                
+                // Add italiadomani.gov.it opportunities with source (only open bandis)
+                if (initialData.italiadomani_gov_it && Array.isArray(initialData.italiadomani_gov_it)) {
+                  initialData.italiadomani_gov_it.forEach(opp => {
+                    // Only include open bandis (status = 1)
+                    if (opp.status === 1) {
+                      allOpportunities.push({
+                        ...opp,
+                        source: 'italiadomani_gov_it'
+                      });
+                    }
+                  });
+                }
+                
+                filteredOpportunities = [...allOpportunities];
+                currentPage = 1;
+                
+                // Update counters
+                updateCounters();
+                renderOpportunities();
+    
+                    // Add event listeners for filters
+                const searchFilter = document.getElementById('searchFilter');
+                const categoryFilter = document.getElementById('categoryFilter');
+                
+                // Source filter checkboxes
+                const sourceIncentivi = document.getElementById('sourceIncentivi');
+                const sourceObiettivoEuropa = document.getElementById('sourceObiettivoEuropa');
+                const sourceItaliaDomani = document.getElementById('sourceItaliaDomani');
+                
+                // Select/Deselect all buttons
+                const selectAllSources = document.getElementById('selectAllSources');
+                const deselectAllSources = document.getElementById('deselectAllSources');
+                
+                if (searchFilter) searchFilter.addEventListener('input', filterOpportunities);
+                if (categoryFilter) categoryFilter.addEventListener('change', filterOpportunities);
+                
+                // Source filter event listeners
+                if (sourceIncentivi) sourceIncentivi.addEventListener('change', filterOpportunities);
+                if (sourceObiettivoEuropa) sourceObiettivoEuropa.addEventListener('change', filterOpportunities);
+                if (sourceItaliaDomani) sourceItaliaDomani.addEventListener('change', filterOpportunities);
+                
+                // Select/Deselect all functionality
+                if (selectAllSources) {
+                  selectAllSources.addEventListener('click', function() {
+                    if (sourceIncentivi) sourceIncentivi.checked = true;
+                    if (sourceObiettivoEuropa) sourceObiettivoEuropa.checked = true;
+                    if (sourceItaliaDomani) sourceItaliaDomani.checked = true;
+                    filterOpportunities();
+                  });
+                }
+                
+                if (deselectAllSources) {
+                  deselectAllSources.addEventListener('click', function() {
+                    if (sourceIncentivi) sourceIncentivi.checked = false;
+                    if (sourceObiettivoEuropa) sourceObiettivoEuropa.checked = false;
+                    if (sourceItaliaDomani) sourceItaliaDomani.checked = false;
+                    filterOpportunities();
+                  });
+                }
+                
+                // Clear all filters functionality
+                const clearAllFilters = document.getElementById('clearAllFilters');
+                if (clearAllFilters) {
+                  clearAllFilters.addEventListener('click', function() {
+                    // Reset search
+                    if (searchFilter) searchFilter.value = '';
+                    
+                    // Reset category
+                    if (categoryFilter) categoryFilter.value = '';
+                    
+                    // Select all sources
+                    if (sourceIncentivi) sourceIncentivi.checked = true;
+                    if (sourceObiettivoEuropa) sourceObiettivoEuropa.checked = true;
+                    if (sourceItaliaDomani) sourceItaliaDomani.checked = true;
+                    
+                    filterOpportunities();
+                  });
+                }
+                
+                // Add clear search functionality
+                const clearSearch = document.getElementById('clearSearch');
+                if (clearSearch) {
+                  clearSearch.addEventListener('click', function() {
+                    if (searchFilter) {
+                      searchFilter.value = '';
+                      filterOpportunities();
+                    }
+                  });
+                }
+                
+                console.log(`Loaded ${allOpportunities.length} opportunities from data file`);
+                console.log('Source filtering enabled');
+              });
+            </script> 

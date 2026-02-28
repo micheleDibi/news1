@@ -1,0 +1,573 @@
+---
+export const prerender = false;
+
+import Layout from '../../layouts/Layout.astro';
+import { supabase } from '../../lib/supabase';
+import CategorySidebar from '../../components/CategorySidebar.astro';
+import ContactForm from '../../components/ContactForm';
+import { categories } from '../../lib/categories';
+import { generateArticleStructuredData, generateBreadcrumbStructuredData } from '../../lib/seo';
+import type { SecondaryCategory, Article } from '../../lib/supabase'; // Import SecondaryCategory type
+import ContactForm from '../../components/ContactForm.tsx';
+import { slugify } from '../../lib/utils';
+
+const { category, slug } = Astro.params;
+
+// Get article by slug and category
+const { data: article, error: articleError } = await supabase
+  .from('articles')
+  .select('*, secondary_category_slugs') // Explicitly select secondary_category_slugs
+  .eq('category_slug', category)
+  .eq('slug', slug)
+  .eq('isdraft', false)
+  .single();
+
+if (articleError || !article) {
+  console.error('Error fetching article or article not found:', articleError);
+  return Astro.redirect('/404');
+}
+
+const categoryData = categories.find(c => c.slug === category);
+
+// Fetch secondary category details and related articles in parallel
+const [secondaryCategoriesDetails, relatedArticles, creatorProfile] = await Promise.all([
+  (async (): Promise<SecondaryCategory[]> => {
+    if (article.secondary_category_slugs && article.secondary_category_slugs.length > 0) {
+      const { data: secCatsData, error: secCatsError } = await supabase
+        .from('secondary_categories')
+        .select('id, name, slug, parent_category_slug')
+        .in('slug', article.secondary_category_slugs)
+        .eq('parent_category_slug', article.category_slug);
+
+      if (secCatsError) {
+        console.error("Error fetching secondary category details:", secCatsError);
+        return [];
+      }
+      return secCatsData || [];
+    }
+    return [];
+  })(),
+  (async (): Promise<Article[]> => {
+    const { data, error } = await supabase
+      .from('articles')
+      .select('*')
+      .eq('category', article.category)
+      .eq('isdraft', false)
+      .neq('id', article.id)
+      .order('published_at', { ascending: false })
+      .limit(3);
+    
+    if (error) {
+      console.error("Error fetching related articles:", error);
+      return [];
+    }
+    return data || [];
+  })(),
+  (async () => {
+    if (!article.creator) return null;
+    // Try by id first
+    let { data } = await supabase
+      .from('profiles')
+      .select('public_name, full_name,profile_pic_link')
+      .eq('id', article.creator)
+      .single();
+    if (!data) {
+      // Fallback: try by full_name (article.creator contains the full_name)
+      const { data: nameData } = await supabase
+        .from('profiles')
+        .select('public_name, full_name,profile_pic_link')
+        .eq('full_name', article.creator)
+        .single();
+      data = nameData;
+    }
+    return data || null;
+  })()
+]);
+
+const isEditorialTeam = creatorProfile?.public_name === 'Redazione EduNews24';
+const authorSlug = creatorProfile?.full_name && !isEditorialTeam
+  ? slugify(creatorProfile.full_name)
+  : null;
+const authorHref = isEditorialTeam ? '/team' : (authorSlug ? `/team/${authorSlug}` : '/team');
+
+// Build a dedicated video view URL for videomaker uploads (if present)
+const videoThumb = (article as any).thumbnail_url?.trim?.() || (article as any).image_url?.trim?.() || '';
+const videoPageUrl = article.video_url
+  ? `/video/videomaker-${encodeURIComponent(article.slug)}`
+  : '';
+
+
+// Generate structured data for the article
+const structuredData = generateArticleStructuredData(article);
+const breadcrumbStructuredData = generateBreadcrumbStructuredData(article);
+
+// Function to process inline markdown (bold, italic, links)
+function processInlineMarkdown(text: string): string {
+  let processedText = text;
+
+  // Links first — distingui ancore (#), link interni (/) e link esterni
+  processedText = processedText.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => {
+    if (url.startsWith('#')) {
+      return `<a href="${url}" class="text-primary hover:underline">${linkText}</a>`;
+    } else if (url.startsWith('/')) {
+      return `<a href="${url}" class="text-primary hover:underline">${linkText}</a>`;
+    }
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-primary hover:underline">${linkText}</a>`;
+  });
+
+  // Bold
+  processedText = processedText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+  // Italic (handle word boundaries)
+  processedText = processedText.replace(/(?<![\w])_([^_]+)_(?![\w])/g, '<em>$1</em>');
+
+  return processedText;
+}
+
+// Helper: extract {#id} from heading text, or generate slug automatically
+function extractHeadingId(text: string): { cleanText: string; id: string } {
+  const anchorMatch = text.match(/\s*\{#([^}]+)\}\s*$/);
+  if (anchorMatch) {
+    return {
+      cleanText: text.replace(anchorMatch[0], '').trim(),
+      id: anchorMatch[1]
+    };
+  }
+  const id = text.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .trim();
+  return { cleanText: text, id };
+}
+
+// NEW Line-by-line Markdown Processing Logic
+let htmlBlocks: string[] = [];
+const lines = article.content.split('\n');
+let inUl = false;
+let inOl = false;
+let currentListItems: string[] = [];
+
+lines.forEach((line: string) => {
+  const trimmedLine = line.trim();
+
+  // List items
+  const ulMatch = trimmedLine.match(/^[-*]\s+(.*)/);
+  const olMatch = trimmedLine.match(/^(\d+)\.\s+(.*)/);
+
+  if (ulMatch) {
+    if (inOl) { // Close previous OL
+      htmlBlocks.push(`<ol class="list-decimal list-inside my-4 pl-4 space-y-1">${currentListItems.join('\n')}</ol>`);
+      currentListItems = [];
+      inOl = false;
+    }
+    inUl = true;
+    currentListItems.push(`<li>${processInlineMarkdown(ulMatch[1])}</li>`);
+  } else if (olMatch) {
+    if (inUl) { // Close previous UL
+      htmlBlocks.push(`<ul class="list-disc list-inside my-4 pl-4 space-y-1">${currentListItems.join('\n')}</ul>`);
+      currentListItems = [];
+      inUl = false;
+    }
+    inOl = true;
+    currentListItems.push(`<li>${processInlineMarkdown(olMatch[2])}</li>`);
+  } else {
+    // End of lists?
+    if (inUl) {
+       htmlBlocks.push(`<ul class="list-disc list-inside my-4 pl-4 space-y-1">${currentListItems.join('\n')}</ul>`);
+       currentListItems = [];
+       inUl = false;
+    }
+    if (inOl) {
+      htmlBlocks.push(`<ol class="list-decimal list-inside my-4 pl-4 space-y-1">${currentListItems.join('\n')}</ol>`);
+      currentListItems = [];
+      inOl = false;
+    }
+
+    // Process other block elements
+    if (trimmedLine) {
+      if (trimmedLine.startsWith('### ')) {
+         const { cleanText, id } = extractHeadingId(trimmedLine.substring(4));
+         htmlBlocks.push(`<h4 id="${id}" class="text-lg font-semibold text-gray-900 mt-5 mb-2">${cleanText}</h4>`);
+      } else if (trimmedLine.startsWith('## ')) {
+         const { cleanText, id } = extractHeadingId(trimmedLine.substring(3));
+         htmlBlocks.push(`<h3 id="${id}" class="text-xl font-bold text-gray-900 mt-6 mb-3">${cleanText}</h3>`);
+      } else if (trimmedLine.startsWith('# ')) {
+         const { cleanText, id } = extractHeadingId(trimmedLine.substring(2));
+         htmlBlocks.push(`<h2 id="${id}" class="text-2xl font-bold text-gray-900 mt-8 mb-4">${cleanText}</h2>`);
+      } else {
+        // Images
+        const imageRegex = /^!\[(.*?)\]\((.*?)\)(?:\s*\|\s*(.*?))?$/;
+        const imageMatch = trimmedLine.match(imageRegex);
+        if (imageMatch) {
+          const [, alt, src, caption] = imageMatch;
+          htmlBlocks.push(`<figure class="my-8">
+            <img src="${src}" alt="${alt || 'Article image'}" class="w-full rounded-lg shadow-md" loading="lazy" />
+            ${caption ? `<figcaption class="text-center text-sm text-gray-500 mt-2">${caption.trim()}</figcaption>` : ''}
+          </figure>`);
+        } else {
+          // Regular paragraph
+          htmlBlocks.push(`<p class="text-gray-700 leading-relaxed mb-4">${processInlineMarkdown(trimmedLine)}</p>`);
+        }
+      }
+    } else if (htmlBlocks.length > 0 && !htmlBlocks[htmlBlocks.length - 1].endsWith('</figure>')) {
+       // Add potential vertical space between blocks if line is empty, but not after figures
+       // htmlBlocks.push('<br class="block my-2">'); // Optional: adjust spacing
+    }
+  }
+});
+
+// Close any lists open at the very end
+if (inUl) {
+  htmlBlocks.push(`<ul class="list-disc list-inside my-4 pl-4 space-y-1">${currentListItems.join('\n')}</ul>`);
+}
+if (inOl) {
+  htmlBlocks.push(`<ol class="list-decimal list-inside my-4 pl-4 space-y-1">${currentListItems.join('\n')}</ol>`);
+}
+
+const formattedContent = htmlBlocks.join('\n');
+
+// Helper function to generate srcset URLs
+// IMPORTANT: This assumes your backend /api/upload.ts will be modified
+// to create and store these image variants with the -<width>w.webp suffix.
+const generateSrcset = (baseUrl: string, widths: number[]): string => {
+  if (!baseUrl || !baseUrl.includes('.webp')) return baseUrl; // Return original if not webp or no base
+  const base = baseUrl.substring(0, baseUrl.lastIndexOf('.webp'));
+  const srcsetEntries = widths.map(width => `${base}-${width}w.webp ${width}w`);
+  return srcsetEntries.join(', ');
+};
+
+const imageSrcset = article.image_url ? generateSrcset(article.image_url, [320, 480, 640, 768, 1024, 1280]) : '';
+
+// Define image dimensions (e.g., for 16:9 aspect ratio for the largest common size)
+// Adjust these to the typical aspect ratio of your LCP images.
+const imageWidth = 1280;
+const imageHeight = 720;
+---
+
+<Layout 
+  title={`${article.title} - EduNews24`}
+  description={`${article.excerpt} Leggi di più.`}
+  canonicalUrl={`https://edunews24.it/${article.category_slug}/${article.slug}`}
+>
+  <!-- Add structured data for this specific article -->
+  <script type="application/ld+json" set:html={structuredData} slot="head" />
+  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
+  
+  <!-- Link to AMP version -->
+  <link rel="amphtml" href={`https://edunews24.it/amp/${article.category_slug}/${article.slug}`} slot="head" />
+  
+  <meta name="keywords" content={article.tags && article.tags.length > 0 ? article.tags.join(', ') : "intelligenza artificiale, scuola, studenti, educazione, tecnologia"} slot="head" />
+  
+  {/* Preload the LCP image (main src) */}
+  {article.image_url && <link rel="preload" as="image" href={article.image_url} fetchpriority="high" slot="head" />}
+
+  <main class="bg-gray-50 min-h-screen py-8">
+    <div class="container mx-auto px-4">
+      <div class="flex flex-col lg:flex-row gap-8">
+        <!-- Main Content -->
+        <div class="flex-1 space-y-8">
+          <!-- Breadcrumb Navigation -->
+          <nav class="flex text-sm text-gray-600" aria-label="Breadcrumb">
+            <ol class="inline-flex items-center space-x-1 md:space-x-3">
+              <li class="inline-flex items-center">
+                <a href="/" class="inline-flex items-center hover:text-sport-500">
+                  <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"></path>
+                  </svg>
+                  Home
+                </a>
+              </li>
+              <li>
+                <div class="flex items-center">
+                  <svg class="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                  </svg>
+                  <a href={`/${article.category_slug}`} class="ml-1 hover:text-sport-500">{article.category}</a>
+                </div>
+              </li>
+              <li aria-current="page" class="min-w-0">
+                <div class="flex items-center min-w-0">
+                  <svg class="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path>
+                  </svg>
+                  <span class="ml-1 text-gray-500 truncate max-w-[45vw] sm:max-w-xs overflow-hidden text-ellipsis">{article.title}</span>
+                </div>
+              </li>
+            </ol>
+          </nav>
+
+          <article class="bg-white rounded-lg shadow-sm overflow-hidden">
+            {article.image_url && (
+              <img
+                src={article.image_url}
+                alt={article.title}
+                class="w-full h-64 md:h-96 object-cover"
+                fetchpriority="high"
+                loading="eager"
+                width={imageWidth}
+                height={imageHeight}
+                srcset={imageSrcset}
+                sizes="(min-width: 1024px) calc(100vw - 20rem - 4rem), (min-width: 768px) calc(100vw - 2rem), 50vw"
+              />
+            )}
+
+        
+
+            <div class="p-6 md:p-8">
+              <!-- Article Header -->
+              <div class="flex items-center gap-4 mb-6">
+                <a 
+                  href={`/category/${categoryData?.slug}`}
+                  class={`inline-block bg-${categoryData?.color || 'sport-500'} text-white px-3 py-1 text-sm font-semibold rounded-sm hover:opacity-90 transition-opacity`}
+                >
+                  {article.category}
+                </a>
+                {/* Display Secondary Categories */}
+                {secondaryCategoriesDetails.length > 0 && (
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-gray-400 text-sm">/</span>
+                    {secondaryCategoriesDetails.map(sc => (
+                      <a 
+                        href={`/category/${sc.parent_category_slug}?secondary_filter=${sc.slug}`}
+                        class={`inline-block bg-gray-200 text-gray-700 px-2 py-0.5 text-xs font-medium rounded-sm hover:bg-gray-300 transition-colors`}
+                        title={`Vedi articoli in ${article.category} > ${sc.name}`}
+                      >
+                        {sc.name}
+                      </a>
+                    ))}
+                  </div>
+                )}
+                <time class="text-gray-500 ml-auto"> {/* Added ml-auto to push time to the right if secondary cats wrap */}
+                  {new Date(article.published_at).toLocaleDateString('en-GB')}
+                </time>
+              </div>
+
+              <!-- Article Title and Excerpt -->
+              <div class="mb-8">
+                <h1 class="text-3xl md:text-4xl font-bold text-gray-900 mb-6 leading-tight">
+                  {article.title.replace(/\s*\{#[^}]+\}\s*$/, '')}
+                </h1>
+                
+                {article.audio_url && (
+                  <div class="flex items-center gap-4 mb-6">
+                    <button
+                      id="show-audio-player"
+                      class="inline-flex items-center gap-2 px-4 py-2 bg-sport-500 text-white rounded-full hover:bg-sport-600 transition-colors"
+                    >
+                      Ascolta
+                    </button>
+                    <span class="text-sm text-gray-500">
+                      Disponibile in formato audio
+                    </span>
+                  </div>
+                  <div id="audio-player-container" class="hidden mb-6">
+                    {/* The AudioPlayer will be injected here by script */}
+                  </div>
+                )}
+
+                <p class="text-xl text-gray-600 leading-relaxed mb-8 border-l-4 border-sport-500 pl-4 py-2 bg-gray-50">
+                  {article.excerpt}
+                </p>
+              </div>
+
+              <!-- Article Content -->
+              <div class="article-content" set:html={formattedContent} />
+
+              <!-- Published Date -->
+              <div class="text-right mt-8">
+                <p class="text-sm text-gray-500 italic">
+                  Pubblicato il: {new Date(article.published_at).toLocaleString('it-IT', { day: 'numeric', month: 'long', year: 'numeric', hour: 'numeric', minute: 'numeric' })}
+                </p>
+              </div>
+            </div>
+          </article>
+
+          {creatorProfile && (
+            <section class="w-full bg-sport-50 rounded-lg shadow-md p-6 flex items-center gap-6 mb-8">
+              <img
+                src={creatorProfile.profile_pic_link || '/default-profile.png'}
+                alt={creatorProfile.public_name}
+                class="w-20 h-20 rounded-full object-cover border-2 border-sport-500"
+              />
+              <div>
+                <h2 class="text-lg font-bold text-sport-700 mb-1">Articolo creato da</h2>
+                
+                <a href= {authorHref} class = "text-xl font semibold text-gray-900 hover: text-sport-600 transition-colors">
+                  {creatorProfile.public_name || 'Redazione EduNews24'}
+                </a>
+              </div>
+            </section>
+          )}
+          
+               <!-- Contact Form Section (if enabled) -->
+          {article.show_contact_form && (
+            <section class="w-full bg-white rounded-lg shadow-md p-6 md:p-8 mb-8">
+              <h2 class="text-2xl font-bold text-gray-900 mb-2">Hai bisogno di maggiori informazioni?</h2>
+              <p class="text-gray-600 mb-6">
+                Compila il form qui sotto e ti risponderemo al più presto.
+              </p>
+              <ContactForm client:load />
+            </section>
+          )}
+
+          <!-- Contact Form Section (if enabled) -->
+          {article.show_contact_form && (
+            <section class="w-full bg-white rounded-lg shadow-md p-6 md:p-8 mb-8">
+              <h2 class="text-2xl font-bold text-gray-900 mb-2">Hai bisogno di maggiori informazioni?</h2>
+              <p class="text-gray-600 mb-6">
+                Compila il form qui sotto e ti risponderemo al più presto.
+              </p>
+              <ContactForm client:load />
+            </section>
+          )}
+
+          <!-- Mobile Sidebar -->
+          <div class="lg:hidden">
+            <CategorySidebar
+              source={`article:${article.id}`}
+              isMobile={true}
+              videoUrl={article.video_url || ''}
+              thumbnailUrl={videoThumb || ''}
+              videoPageUrl={videoPageUrl}
+              articleTitle={article.title}
+            />
+          </div>
+
+          <!-- Related Articles -->
+          {relatedArticles && relatedArticles.length > 0 && (
+            <section class="bg-white rounded-lg shadow-sm p-6">
+              <h2 class="text-xl font-bold mb-6">Articoli Correlati</h2>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {relatedArticles.map(related => (
+                  <article class={`bg-white rounded-lg overflow-hidden border-l-4 border-${categoryData?.color || 'sport-500'} hover:shadow-md transition-shadow`}>
+                    <a href={`/${related.category_slug}/${related.slug}`} class="block">
+                      <img 
+                        src={related.image_url} 
+                        alt={related.title}
+                        class="w-full h-48 object-cover"
+                        loading="lazy"
+                        width="768"
+                        height="432"
+                      />
+                      <div class="p-4">
+                        <time class="text-sm text-gray-500 mb-2 block">
+                          {new Date(related.published_at).toLocaleDateString('en-GB')}
+                        </time>
+                        <h3 class="font-bold text-gray-900 line-clamp-2 hover:text-sport-500 transition-colors">
+                          {related.title}
+                        </h3>
+                      </div>
+                    </a>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+
+        <!-- Desktop Sidebar -->
+        <div class="hidden lg:block lg:w-80">
+          <CategorySidebar
+            source={`article:${article.id}`}
+            videoUrl={article.video_url || ''}
+            thumbnailUrl={videoThumb || ''}
+            videoPageUrl={videoPageUrl}
+            articleTitle={article.title}
+          />
+        </div>
+      </div>
+    </div>
+  </main>
+</Layout>
+
+<style>
+  .article-content :global(p) {
+    margin-bottom: 1.5rem;
+    line-height: 1.75;
+  }
+  
+  .article-content :global(strong) {
+    color: #1a1a1a;
+    font-weight: 600;
+  }
+  
+  .article-content :global(em) {
+    font-style: italic;
+    color: #4a5568;
+  }
+
+  .article-content :global(h2) {
+    font-size: 1.875rem;
+    font-weight: 700;
+    margin-top: 2.5rem;
+    margin-bottom: 1.25rem;
+    color: #1a1a1a;
+  }
+
+  .article-content :global(h3) {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+    color: #2d3748;
+  }
+  
+  .article-content :global(figure) {
+    margin: 2rem 0;
+  }
+  
+  .article-content :global(figure img) {
+    width: 100%;
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  }
+  
+  .article-content :global(figcaption) {
+    margin-top: 0.75rem;
+    text-align: center;
+    font-size: 0.875rem;
+    color: #718096;
+    font-style: italic;
+  }
+  
+  /* Add List Styles */
+  .article-content :global(ul),
+  .article-content :global(ol) {
+    margin-bottom: 1.5rem;
+    padding-left: 1.5rem; /* Indentation */
+  }
+  .article-content :global(li) {
+    margin-bottom: 0.5rem;
+    line-height: 1.75;
+  }
+</style>
+
+<script define:vars={{ audioUrl: article.audio_url, title: article.title }}>
+  const showAudioButton = document.getElementById('show-audio-player');
+  const audioPlayerContainer = document.getElementById('audio-player-container');
+  let isPlayerLoaded = false;
+
+  showAudioButton?.addEventListener('click', () => {
+    audioPlayerContainer?.classList.toggle('hidden');
+
+    if (!isPlayerLoaded && !audioPlayerContainer?.classList.contains('hidden')) {
+      const audio = document.createElement('audio');
+      audio.controls = true;
+      audio.autoplay = true; // Start playing when loaded
+      audio.src = audioUrl;
+      audio.title = title;
+      audio.classList.add('w-full');
+      
+      audioPlayerContainer.appendChild(audio);
+      isPlayerLoaded = true;
+    }
+
+    if (showAudioButton.textContent?.trim().includes('Ascolta')) {
+      showAudioButton.textContent = 'Nascondi';
+    } else {
+      showAudioButton.textContent = 'Ascolta';
+    }
+  });
+</script>

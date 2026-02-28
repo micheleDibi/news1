@@ -1,0 +1,562 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { supabase } from '../../../lib/supabase';
+
+// Set cache control headers
+Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+Astro.response.headers.set('Pragma', 'no-cache');
+Astro.response.headers.set('Expires', '0');
+Astro.response.headers.set('Surrogate-Control', 'no-store');
+
+// Get all user profiles
+const { data: profiles, error: fetchError } = await supabase
+  .from('profiles')
+  .select('id, full_name, email, description, is_displayable, profile_pic_link')
+  .order('full_name', { ascending: true });
+
+if (fetchError) {
+  console.error("Error fetching profiles:", fetchError);
+}
+---
+
+<AdminLayout title="Gestione Profili Pubblici">
+  <!-- Loading screen -->
+  <div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+    <div class="text-center">
+      <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+      <p class="text-sport-600">Loading...</p>
+    </div>
+  </div>
+
+  <div id="admin-content" class="hidden">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <!-- Header -->
+        <div class="md:flex md:items-center md:justify-between mb-6">
+          <div class="flex-1 min-w-0">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
+              Gestione Profili Pubblici
+            </h2>
+          </div>
+        </div>
+
+        <!-- Profiles Table -->
+        <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+          <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+              <thead class="bg-gray-50">
+                <tr>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Nome Completo
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Email
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Descrizione
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Visibile
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Foto Profilo
+                  </th>
+                  <th scope="col" class="relative px-6 py-3">
+                    <span class="sr-only">Azioni</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="profiles-table-body" class="bg-white divide-y divide-gray-200">
+                {profiles?.map((profile) => (
+                  <tr data-profile-id={profile.id} data-profile-name={profile.full_name}>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                      <div class="flex items-center">
+                        <div class="text-sm font-medium text-gray-900">{profile.full_name}</div>
+                      </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {profile.email || 'N/A'}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {profile.description ? (profile.description.length > 50 ? profile.description.substring(0, 50) + '...' : profile.description) : 'N/A'}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <span class={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${profile.is_displayable ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                        {profile.is_displayable ? 'Sì' : 'No'}
+                      </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {profile.profile_pic_link ? (
+                        <img src={profile.profile_pic_link} alt="Profile" class="h-8 w-8 rounded-full object-cover" />
+                      ) : (
+                        <span class="text-gray-400">Nessuna</span>
+                      )}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                      <button class="text-primary hover:text-primary-dark edit-button">Modifica</button>
+                    </td>
+                  </tr>
+                ))}
+                {(!profiles || profiles.length === 0) && (
+                  <tr>
+                    <td colspan="6" class="px-6 py-4 text-center text-sm text-gray-500">
+                      Nessun profilo trovato.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Profile Modal -->
+  <div id="profile-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl overflow-hidden max-w-lg w-full mx-4">
+      <form id="profile-form">
+        <div class="px-6 py-4 bg-primary text-white">
+          <h3 class="text-lg font-medium" id="modal-title">Modifica Profilo</h3>
+        </div>
+        <div class="px-6 py-4 space-y-4 overflow-y-auto max-h-[calc(100vh-220px)]">
+          <input type="hidden" id="profile-id-input" name="id">
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700">Nome Completo</label>
+            <input type="text" id="profile-name-display" readonly class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md bg-gray-50">
+          </div>
+
+          <div>
+            <label for="profile-description" class="block text-sm font-medium text-gray-700">Descrizione</label>
+            <textarea name="description" id="profile-description" rows="4" class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" placeholder="Descrizione del profilo pubblico..."></textarea>
+            <p class="mt-1 text-xs text-gray-500">Descrizione pubblica del profilo utente.</p>
+          </div>
+
+          <div>
+            <label for="profile-displayable" class="block text-sm font-medium text-gray-700">Visibile al Pubblico</label>
+            <select name="is_displayable" id="profile-displayable" class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+              <option value="true">Sì - Visibile</option>
+              <option value="false">No - Nascosto</option>
+            </select>
+            <p class="mt-1 text-xs text-gray-500">Determina se il profilo è visibile pubblicamente.</p>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-3">Foto Profilo</label>
+            
+            <!-- File Upload Option -->
+            <div class="mb-4">
+              <label for="profile-pic-file" class="block text-sm font-medium text-gray-600 mb-2">Carica File</label>
+              <div class="flex items-center gap-3">
+                <input 
+                  type="file" 
+                  id="profile-pic-file" 
+                  accept="image/*"
+                  class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary file:text-white hover:file:bg-primary-dark"
+                >
+                <button type="button" id="upload-file-button" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50" disabled>
+                  <span class="upload-text">Carica</span>
+                  <span class="upload-loading hidden">Caricamento...</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- URL Input Option -->
+            <div class="mb-4">
+              <label for="profile-pic-link" class="block text-sm font-medium text-gray-600 mb-2">Oppure inserisci URL</label>
+              <div class="flex items-center gap-3">
+                <input type="url" name="profile_pic_link" id="profile-pic-link" class="flex-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" placeholder="https://esempio.com/foto.jpg">
+                <button type="button" id="upload-url-button" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50">
+                  <span class="url-upload-text">Usa URL</span>
+                  <span class="url-upload-loading hidden">Caricamento...</span>
+                </button>
+              </div>
+            </div>
+
+            <p class="text-xs text-gray-500 mb-3">Carica un file immagine o inserisci l'URL di un'immagine esistente.</p>
+          </div>
+
+          <div id="profile-pic-preview" class="hidden">
+            <label class="block text-sm font-medium text-gray-700">Anteprima Foto</label>
+            <img id="profile-pic-preview-img" src="" alt="Anteprima" class="mt-1 h-16 w-16 rounded-full object-cover border border-gray-300">
+          </div>
+        </div>
+        <div class="px-6 py-4 bg-gray-50 flex justify-end space-x-3">
+          <button type="button" id="cancel-button" class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+            Annulla
+          </button>
+          <button type="submit" id="save-profile-button" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+            Salva Profilo
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</AdminLayout>
+
+<script>
+  import { supabase } from '../../../lib/supabase';
+
+  const profileModal = document.getElementById('profile-modal');
+  const profileForm = document.getElementById('profile-form') as HTMLFormElement;
+  const modalTitle = document.getElementById('modal-title');
+  const profileIdInput = document.getElementById('profile-id-input') as HTMLInputElement;
+  const profileNameDisplay = document.getElementById('profile-name-display') as HTMLInputElement;
+  const profileDescriptionInput = document.getElementById('profile-description') as HTMLTextAreaElement;
+  const profileDisplayableSelect = document.getElementById('profile-displayable') as HTMLSelectElement;
+  const profilePicLinkInput = document.getElementById('profile-pic-link') as HTMLInputElement;
+  const profilePicFileInput = document.getElementById('profile-pic-file') as HTMLInputElement;
+  const uploadFileButton = document.getElementById('upload-file-button') as HTMLButtonElement;
+  const uploadUrlButton = document.getElementById('upload-url-button') as HTMLButtonElement;
+  const profilePicPreview = document.getElementById('profile-pic-preview');
+  const profilePicPreviewImg = document.getElementById('profile-pic-preview-img') as HTMLImageElement;
+  const cancelButton = document.getElementById('cancel-button');
+  const profilesTableBody = document.getElementById('profiles-table-body');
+  const loadingScreen = document.getElementById('loading-screen');
+  const adminContent = document.getElementById('admin-content');
+
+  // Auth Check
+  async function checkAuth() {
+    loadingScreen?.classList.remove('hidden');
+    adminContent?.classList.add('hidden');
+
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError || !session) {
+      console.error('Auth Error:', sessionError);
+      window.location.href = '/login';
+      return;
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single();
+    
+    if (profileError || !(profile?.role === 'admin' || profile?.role === 'direttore')) {
+      console.error('Profile Error or insufficient role:', profileError, profile);
+      window.location.href = '/login';
+      return;
+    }
+
+    loadingScreen?.classList.add('hidden');
+    adminContent?.classList.remove('hidden');
+  }
+  checkAuth();
+
+  function openModal(profileData: any) {
+    profileForm.reset();
+    hideProfilePicPreview();
+    
+    if (modalTitle && profileData) {
+      modalTitle.textContent = 'Modifica Profilo';
+      profileIdInput.value = profileData.id;
+      profileNameDisplay.value = profileData.full_name;
+      profileDescriptionInput.value = profileData.description || '';
+      profileDisplayableSelect.value = profileData.is_displayable ? 'true' : 'false';
+      profilePicLinkInput.value = profileData.profile_pic_link || '';
+      
+      if (profileData.profile_pic_link) {
+        showProfilePicPreview(profileData.profile_pic_link);
+      }
+    }
+    
+    profileModal?.classList.remove('hidden');
+    profileModal?.classList.add('flex');
+  }
+
+  function closeModal() {
+    profileModal?.classList.add('hidden');
+    profileModal?.classList.remove('flex');
+    hideProfilePicPreview();
+  }
+
+  function showProfilePicPreview(url: string) {
+    profilePicPreviewImg.src = url;
+    profilePicPreview?.classList.remove('hidden');
+  }
+
+  function hideProfilePicPreview() {
+    profilePicPreview?.classList.add('hidden');
+    profilePicPreviewImg.src = '';
+  }
+
+  // Profile pic preview on URL change
+  profilePicLinkInput?.addEventListener('input', () => {
+    const url = profilePicLinkInput.value.trim();
+    if (url && isValidUrl(url)) {
+      showProfilePicPreview(url);
+    } else {
+      hideProfilePicPreview();
+    }
+  });
+
+  // File input change handler
+  profilePicFileInput?.addEventListener('change', () => {
+    const file = profilePicFileInput.files?.[0];
+    uploadFileButton.disabled = !file;
+  });
+
+  // File upload handler
+  uploadFileButton?.addEventListener('click', async () => {
+    const file = profilePicFileInput.files?.[0];
+    if (!file) return;
+
+    // Show loading state
+    const uploadText = uploadFileButton.querySelector('.upload-text') as HTMLElement;
+    const uploadLoading = uploadFileButton.querySelector('.upload-loading') as HTMLElement;
+    uploadText.classList.add('hidden');
+    uploadLoading.classList.remove('hidden');
+    uploadFileButton.disabled = true;
+
+    try {
+      // Create temporary preview
+      const tempUrl = URL.createObjectURL(file);
+      showProfilePicPreview(tempUrl);
+
+      // Upload to S3
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('filename', `profile_${generateUUID()}.${file.name.split('.').pop()}`);
+      formData.append('title', 'profile');
+
+      const uploadResponse = await fetch('/api/upload', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
+        },
+        body: formData
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to upload image file');
+      }
+
+      const { url } = await uploadResponse.json();
+      
+      // Clean up blob URL
+      URL.revokeObjectURL(tempUrl);
+      
+      // Set the S3 URL
+      profilePicLinkInput.value = url;
+      showProfilePicPreview(url);
+
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      alert('Errore nel caricamento dell\'immagine: ' + (error as Error).message);
+      hideProfilePicPreview();
+    } finally {
+      // Reset loading state
+      uploadText.classList.remove('hidden');
+      uploadLoading.classList.add('hidden');
+      uploadFileButton.disabled = false;
+    }
+  });
+
+  // URL upload handler
+  uploadUrlButton?.addEventListener('click', async () => {
+    const imageUrl = profilePicLinkInput.value.trim();
+    if (!imageUrl || !isValidUrl(imageUrl)) {
+      alert('Inserisci un URL valido.');
+      return;
+    }
+
+    // Show loading state
+    const urlUploadText = uploadUrlButton.querySelector('.url-upload-text') as HTMLElement;
+    const urlUploadLoading = uploadUrlButton.querySelector('.url-upload-loading') as HTMLElement;
+    urlUploadText.classList.add('hidden');
+    urlUploadLoading.classList.remove('hidden');
+    uploadUrlButton.disabled = true;
+
+    try {
+      const response = await fetch('/api/upload-from-url', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
+        },
+        body: JSON.stringify({ 
+          url: imageUrl,
+          filename: `profile_${generateUUID()}.webp`
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to upload image from URL');
+      }
+
+      const { url } = await response.json();
+      profilePicLinkInput.value = url;
+      showProfilePicPreview(url);
+
+    } catch (error) {
+      console.error('Error uploading from URL:', error);
+      alert('Errore nel caricamento dell\'immagine da URL: ' + (error as Error).message);
+    } finally {
+      // Reset loading state
+      urlUploadText.classList.remove('hidden');
+      urlUploadLoading.classList.add('hidden');
+      uploadUrlButton.disabled = false;
+    }
+  });
+
+  function generateUUID(): string {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c == 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  function isValidUrl(string: string): boolean {
+    try {
+      new URL(string);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Event Listeners
+  cancelButton?.addEventListener('click', closeModal);
+
+  profileModal?.addEventListener('click', (event) => {
+    if (event.target === profileModal) {
+      closeModal();
+    }
+  });
+
+  // Handle Edit button clicks
+  profilesTableBody?.addEventListener('click', async (event) => {
+    const target = event.target as HTMLElement;
+    const row = target.closest('tr');
+    if (!row) return;
+    const profileId = row.dataset.profileId;
+    if (!profileId) return;
+
+    if (target.classList.contains('edit-button')) {
+      const { data: profileToEdit, error } = await supabase
+        .from('profiles')
+        .select('id, full_name, email, description, is_displayable, profile_pic_link')
+        .eq('id', profileId)
+        .single();
+
+      if (error) {
+        console.error('Error fetching profile to edit:', error);
+        alert('Errore nel caricare il profilo per la modifica.');
+        return;
+      }
+      if (profileToEdit) {
+        openModal(profileToEdit);
+      }
+    }
+  });
+
+  // Handle Form Submission (Edit)
+  profileForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(profileForm);
+    
+    const profileId = formData.get('id') as string;
+    const description = formData.get('description') as string || '';
+    const isDisplayable = formData.get('is_displayable') === 'true';
+    const profilePicLink = formData.get('profile_pic_link') as string || '';
+
+    if (!profileId) {
+      alert("Errore: ID profilo mancante.");
+      return;
+    }
+
+    const profilePayload = {
+      description,
+      is_displayable: isDisplayable,
+      profile_pic_link: profilePicLink || null,
+    };
+
+    const saveButton = document.getElementById('save-profile-button') as HTMLButtonElement;
+    saveButton.disabled = true;
+    saveButton.textContent = 'Salvataggio...';
+
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .update(profilePayload)
+        .eq('id', profileId)
+        .select('id, full_name, email, description, is_displayable, profile_pic_link')
+        .single();
+
+      if (error) {
+        console.error('Error saving profile:', error);
+        alert(`Errore durante il salvataggio del profilo: ${error.message}`);
+      } else if (data) {
+        closeModal();
+        updateTableRow(data);
+      }
+    } catch (err) {
+      console.error('Unexpected error saving profile:', err);
+      alert('Si è verificato un errore inaspettato.');
+    } finally {
+      saveButton.disabled = false;
+      saveButton.textContent = 'Salva Profilo';
+    }
+  });
+
+  // Function to update row in the table
+  function updateTableRow(profile: any) {
+    if (!profilesTableBody) return;
+    const tableBody = profilesTableBody as HTMLTableSectionElement;
+    const existingRow = tableBody.querySelector(`tr[data-profile-id="${profile.id}"]`) as HTMLTableRowElement;
+
+    const truncatedDescription = profile.description ? (profile.description.length > 50 ? profile.description.substring(0, 50) + '...' : profile.description) : 'N/A';
+
+    const rowHtml = `
+      <td class="px-6 py-4 whitespace-nowrap">
+        <div class="flex items-center">
+          <div class="text-sm font-medium text-gray-900">${escapeHtml(profile.full_name)}</div>
+        </div>
+      </td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${escapeHtml(profile.email || 'N/A')}</td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${escapeHtml(truncatedDescription)}</td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        <span class="inline-flex px-2 py-1 text-xs font-semibold rounded-full ${profile.is_displayable ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
+          ${profile.is_displayable ? 'Sì' : 'No'}
+        </span>
+      </td>
+      <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        ${profile.profile_pic_link ? 
+          `<img src="${escapeHtml(profile.profile_pic_link)}" alt="Profile" class="h-8 w-8 rounded-full object-cover" />` : 
+          '<span class="text-gray-400">Nessuna</span>'
+        }
+      </td>
+      <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+        <button class="text-primary hover:text-primary-dark edit-button">Modifica</button>
+      </td>
+    `;
+
+    if (existingRow) {
+      existingRow.innerHTML = rowHtml;
+    }
+  }
+
+
+
+  function escapeHtml(unsafe: string | null | undefined): string {
+    if (unsafe === null || typeof unsafe === 'undefined') return '';
+    return unsafe
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+</script>
+
+<style>
+  /* Additional styles if needed */
+</style> 

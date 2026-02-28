@@ -1,0 +1,160 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../../layouts/AdminLayout.astro';
+import ArticleForm from '../../../../components/ArticleForm';
+import { supabase } from '../../../../lib/supabase';
+
+// Get the article data for this specific ID
+const { id } = Astro.params;
+const { data: article } = await supabase
+  .from('articles')
+  .select('*')
+  .eq('id', id)
+  .single();
+
+// Redirect if article not found
+if (!article) {
+  return Astro.redirect('/admin');
+}
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Loading...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden"
+    data-article-category-slug={article?.category_slug || ''}
+    data-article-category-name={article?.category || ''}
+>
+  <AdminLayout title="Edit Article">
+    <ArticleForm article={article} client:load />
+  </AdminLayout>
+</div>
+
+<script>
+  import { supabase } from '../../../../lib/supabase';
+  
+  async function checkAuth() {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        console.log('No session found, redirecting to login');
+        window.location.href = '/login';
+        return;
+      }
+
+      console.log('User authenticated, checking permissions');
+
+      // Get article category info from data attribute
+      const adminContentDiv = document.getElementById('admin-content');
+      const articleCategorySlug = adminContentDiv?.dataset.articleCategorySlug;
+      const articleCategoryName = adminContentDiv?.dataset.articleCategoryName;
+      console.log('Article category slug from data attribute:', articleCategorySlug);
+      console.log('Article category name from data attribute:', articleCategoryName);
+
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('id, role, permissions, full_name, email')
+        .eq('id', session.user.id)
+        .single();
+      
+      if (error) {
+        console.error("Error fetching profile:", error);
+        window.location.href = '/login';
+        return;
+      }
+
+      console.log('Current user profile:', profile);
+      
+      // Get the current article ID from the URL
+      const urlPath = window.location.pathname;
+      const articleId = urlPath.split('/').pop();
+      console.log('Article ID:', articleId);
+
+      const permissions = profile.permissions || {};
+      console.log('User permissions:', permissions);
+      
+      const isTeacher = profile.role === 'docente' || profile.role === 'insegnante' || profile.role === 'admin' || profile.role === 'redattore' || profile.role === 'giornalista' || profile.role === 'direttore';
+      const canEditArticles = !!permissions.edit_all_articles;
+      const canWriteArticles = !!permissions.write_articles;
+      const userCategoryPermissions = permissions.category_permissions;
+      const hasPermissionForThisCategory = Array.isArray(userCategoryPermissions) && 
+                                           articleCategorySlug && 
+                                           userCategoryPermissions.includes(articleCategorySlug);
+
+      console.log('Permission check details:', {
+        isTeacher,
+        canEditArticles,
+        canWriteArticles,
+        userCategoryPermissions,
+        hasPermissionForThisCategory,
+        role: profile.role
+      });
+
+      // Allow edit if they have 'edit_all_articles' OR ('write_articles' AND permission for this specific category)
+      const canEditThisArticle = isTeacher && (canEditArticles || (canWriteArticles && hasPermissionForThisCategory));
+      console.log('Can edit this article?', canEditThisArticle);
+
+      if (!canEditThisArticle) {
+        console.log('Permission denied for article editing');
+        
+        let reason = "Unknown reason";
+        if (!isTeacher) { reason = "User role does not permit article editing"; }
+        else if (!canEditArticles && !canWriteArticles) { reason = "User lacks both 'edit_all_articles' and 'write_articles' permissions"; }
+        else if (!canEditArticles && !hasPermissionForThisCategory) { reason = `User lacks 'edit_all_articles' and permission for category '${articleCategorySlug}'`; }
+        else { reason = "User lacks necessary permissions (check logs for specifics)"; } // Catch-all, should cover the !canWrite case implicitly
+        console.log(`Reason: ${reason}`);
+ 
+        let userMessage = "You don't have permission to edit this article."; // More specific message
+        if (!canEditArticles && canWriteArticles && !hasPermissionForThisCategory) {
+            userMessage = `You don't have permission to edit articles in the '${articleCategoryName || articleCategorySlug}' category.`;
+        }
+
+        const errorMessage = document.createElement('div');
+        errorMessage.className = 'fixed inset-0 bg-white z-50 flex items-center justify-center';
+        errorMessage.innerHTML = `
+          <div class="text-center p-6 max-w-md bg-white rounded-lg shadow-lg">
+            <svg class="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <h2 class="text-xl font-bold text-gray-900 mb-2">Permission Denied</h2>
+            <p class="text-gray-600 mb-6">${userMessage}</p>
+            <a href="/admin" class="px-4 py-2 bg-primary text-white rounded hover:bg-primary-dark">Return to Dashboard</a>
+          </div>
+        `;
+        document.body.appendChild(errorMessage);
+        // Hide loading screen if it's still visible
+        document.getElementById('loading-screen')?.classList.add('hidden');
+        return;
+      }
+
+      // Store user permissions and profile in sessionStorage for the component
+      console.log('Storing permissions in sessionStorage:', permissions);
+      sessionStorage.setItem('userPermissions', JSON.stringify(permissions));
+      sessionStorage.setItem('userProfile', JSON.stringify({
+        id: profile.id,
+        role: profile.role,
+        full_name: profile.full_name,
+        email: profile.email // Include email if available
+      }));
+
+      // If we get here, user is authenticated and authorized
+      document.getElementById('loading-screen')?.classList.add('hidden');
+      document.getElementById('admin-content')?.classList.remove('hidden');
+    } catch (error) {
+      console.error('Error in authentication check:', error);
+      alert('An error occurred while checking permissions. See console for details.');
+      // Hide loading screen on error too
+      document.getElementById('loading-screen')?.classList.add('hidden');
+    }
+  }
+
+  // Run auth check immediately
+  checkAuth();
+</script>

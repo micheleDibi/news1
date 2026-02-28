@@ -1,0 +1,140 @@
+---
+export const prerender = false;  // This enables server-side rendering for this route
+
+import Layout from '../../layouts/Layout.astro';
+import AudioPlayer from '../../components/AudioPlayer';
+import { supabase } from '../../lib/supabase';
+import type { Podcast } from '../../lib/supabase';
+import CategorySidebar from '../../components/CategorySidebar.astro';
+const { id } = Astro.params;
+
+// Get podcast data
+const { data: podcast } = await supabase
+  .from('podcasts')
+  .select('*')
+  .eq('id', id)
+  .single();
+
+if (!podcast) {
+  return Astro.redirect('/404');
+}
+
+// Get related podcasts
+const { data: relatedPodcasts } = await supabase
+  .from('podcasts')
+  .select('*')
+  .eq('category', podcast.category)
+  .neq('id', id)
+  .order('published_at', { ascending: false })
+  .limit(3);
+---
+
+<Layout title={`${podcast.title} - Podcast`}>
+  <main class="container mx-auto px-4 py-8">
+    <div class="flex flex-col lg:flex-row gap-8">
+      <!-- Main Content -->
+      <div class="flex-1">
+        <!-- Hero Section -->
+        <div class="bg-white rounded-xl shadow-sm overflow-hidden mb-8">
+          <div class="relative">
+            <img 
+              src={podcast.image_url || `https://picsum.photos/seed/${podcast.id}/1200/600`}
+              alt={podcast.title}
+              class="w-full aspect-video object-cover"
+            />
+            <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+              <div class="absolute bottom-0 left-0 right-0 p-6 md:p-8">
+                {podcast.category && (
+                  <span class="inline-block bg-sport-500 text-white px-3 py-1 text-sm font-semibold rounded-sm mb-4">
+                    {podcast.category}
+                  </span>
+                )}
+                <h1 class="text-2xl md:text-3xl lg:text-4xl font-bold text-white mb-4">
+                  {podcast.title}
+                </h1>
+                <div class="flex items-center gap-3 text-white/80 text-sm">
+                  <time datetime={podcast.published_at}>
+                    {new Date(podcast.published_at).toLocaleDateString('it-IT', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric'
+                    })}
+                  </time>
+                  {podcast.duration && (
+                    <>
+                      <span class="w-1 h-1 rounded-full bg-white/50"></span>
+                      <span>
+                        {Math.floor(podcast.duration / 60)} min
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-6 md:p-8">
+            <!-- Audio Player -->
+            <div class="mb-6">
+              {podcast.audio_url && (
+                <AudioPlayer 
+                  client:load 
+                  audioUrl={podcast.audio_url}
+                  title={podcast.title}
+                />
+              )}
+            </div>
+
+            <!-- Description -->
+            <div class="prose max-w-none">
+              <p class="text-gray-600 text-lg leading-relaxed">
+                {podcast.description}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mobile Sidebar -->
+        <div class="lg:hidden">
+          <CategorySidebar source={`podcast:${id}`} isMobile={true} />
+        </div>
+
+        <!-- Related Podcasts -->
+        {relatedPodcasts && relatedPodcasts.length > 0 && (
+          <section class="bg-white rounded-xl shadow-sm p-6 md:p-8">
+            <h2 class="text-xl font-bold mb-6">Altri podcast simili</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {relatedPodcasts.map((relatedPodcast: Podcast) => (
+                <a 
+                  href={`/podcasts/${relatedPodcast.id}`}
+                  class="group"
+                >
+                  <div class="relative aspect-video rounded-lg overflow-hidden mb-3">
+                    <img 
+                      src={relatedPodcast.image_url || `https://picsum.photos/seed/${relatedPodcast.id}/800/600`}
+                      alt={relatedPodcast.title}
+                      class="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-300"
+                    />
+                    {relatedPodcast.duration && (
+                      <div class="absolute top-2 right-2 bg-black/50 backdrop-blur-sm text-white px-2 py-0.5 text-xs rounded-full">
+                        {Math.floor(relatedPodcast.duration / 60)} min
+                      </div>
+                    )}
+                  </div>
+                  <h3 class="font-bold text-gray-900 group-hover:text-sport-500 transition-colors">
+                    {relatedPodcast.title}
+                  </h3>
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+
+      <!-- Desktop Sidebar -->
+      <div class="hidden lg:block lg:w-80">
+        <CategorySidebar source={`podcast:${id}`} />
+      </div>
+    </div>
+  </main>
+</Layout> 

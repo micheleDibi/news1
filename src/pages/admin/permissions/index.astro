@@ -1,0 +1,1396 @@
+---
+export const prerender = false;
+
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { supabase } from '../../../lib/supabase';
+import { categories } from '../../../lib/categories';
+
+// Set cache control headers
+Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+Astro.response.headers.set('Pragma', 'no-cache');
+Astro.response.headers.set('Expires', '0');
+Astro.response.headers.set('Surrogate-Control', 'no-store');
+
+// Get all profiles
+const { data: profiles } = await supabase
+  .from('profiles')
+  .select('*')
+  .order('full_name', { ascending: true });
+
+const permissions = [
+  { id: 'write_articles', name: 'Scrivere Articoli', description: 'Permette di creare nuovi articoli' },
+  { id: 'publish_articles', name: 'Pubblicare Articoli', description: 'Permette di pubblicare articoli' },
+  { id: 'edit_all_articles', name: 'Modificare Articoli', description: 'Permette di modificare qualsiasi articolo' },
+  { id: 'read_all_articles', name: 'Leggere Tutti gli Articoli', description: 'Permette di vedere tutti gli articoli nella sezione admin' },
+  { id: 'feature_articles', name: 'Mettere Articoli in Evidenza', description: 'Permette di mettere articoli in evidenza' },
+  { id: 'modify_creator', name: 'Modifica Creatore', description: 'Permette di cambiare il creatore associato a un articolo' },
+  { id: 'contact_form_in_article', name: 'Form Contatti negli Articoli', description: 'Permette di attivare il form di contatto dentro l’articolo' }
+];
+---
+
+<!-- Loading screen -->
+<div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-sport-500 mb-4"></div>
+    <p class="text-sport-600">Loading...</p>
+  </div>
+</div>
+
+<div id="admin-content" class="hidden">
+  <AdminLayout title="Gestione Permessi Utenti">
+    <div class="py-6">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 md:px-8">
+        <!-- Header -->
+        <div class="md:flex md:items-center md:justify-between mb-6">
+          <div class="flex-1 min-w-0">
+            <h2 class="text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
+              Gestione Permessi Utenti
+            </h2>
+          </div>
+          
+          <!-- Debug button for admins -->
+          <div class="mt-4 md:mt-0 flex space-x-4">
+            <button id="create-user-button" class="px-4 py-2 bg-primary text-white rounded hover:bg-primary-dark">
+              Crea Nuovo Utente
+            </button>
+          </div>
+        </div>
+        
+        <!-- Debug output -->
+        <div id="debug-output" class="bg-black text-green-400 p-4 rounded mb-6 hidden overflow-auto max-h-96">
+          <pre class="whitespace-pre-wrap"></pre>
+        </div>
+
+        <!-- Filters -->
+        <div class="bg-white shadow rounded-lg mb-6">
+          <div class="p-4 border-b border-gray-200">
+            <div class="flex flex-col md:flex-row gap-4">
+              <div class="flex-1">
+                <label for="search" class="sr-only">Search users</label>
+                <div class="relative rounded-md shadow-sm">
+                  <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  </div>
+                  <input
+                    type="search"
+                    name="search"
+                    id="search"
+                    class="focus:ring-primary focus:border-primary block w-full pl-10 sm:text-sm border-gray-300 rounded-md"
+                    placeholder="Cerca utenti..."
+                  />
+                </div>
+              </div>
+              <div class="w-full md:w-48">
+                <select
+                  id="role-filter"
+                  name="role-filter"
+                  class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-primary focus:border-primary sm:text-sm rounded-md"
+                >
+                  <option value="all">Tutti i Ruoli</option>
+                  <option value="direttore">Direttore</option>
+                  <option value="redattore">Redattore</option>
+                  <option value="giornalista">Giornalista</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Users Table -->
+        <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+          <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+              <thead class="bg-gray-50">
+                <tr>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Denominazione
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Ruolo
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Descrizione
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Email
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Immagine profilo
+                  </th>
+                  <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">
+                    Azioni
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="users-table-body" class="bg-white divide-y divide-gray-200">
+                {profiles?.map((profile) => (
+                  <tr data-user-id={profile.id}>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                      <div class="text-sm font-medium text-gray-900">
+                        {profile.public_name || "Utente Anonimo"}
+                      </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                      <span class={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                        profile.role === 'docente' || profile.role === 'insegnante' 
+                          ? 'bg-green-100 text-green-800' 
+                          : 'bg-gray-100 text-gray-800'
+                      }`}>
+                        {profile.role || "user"}
+                      </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {profile.description ? (profile.description.length > 50 ? profile.description.substring(0, 50) + '...' : profile.description) : 'N/A'}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {profile.email || "Nessuna email"}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                      {profile.profile_pic_link ? (
+                        <img src={profile.profile_pic_link} alt="Profile" class="h-10 w-10 rounded-full object-cover border border-gray-300" />
+                      ) : (
+                        <div class="h-10 w-10 rounded-full bg-primary-200 flex items-center justify-center text-primary-800 font-bold">
+                          {profile.full_name ? profile.full_name.charAt(0).toUpperCase() : 'U'}
+                        </div>
+                      )}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                      <button class="inline-flex items-center px-2 py-0.5 mr-1 rounded bg-primary text-white text-xs hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 edit-user" data-user-id={profile.id} data-username={profile.full_name || 'User'} data-email={profile.email || ''} data-role={profile.role || 'studente'}>
+                        Modifica
+                      </button>
+                      <button class="inline-flex items-center px-2 py-0.5 rounded bg-red-600 text-white text-xs hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 delete-user" data-user-id={profile.id} data-username={profile.full_name || 'User'}>
+                        Elimina
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </AdminLayout>
+</div>
+
+<!-- Edit Permissions Modal -->
+<div id="permissions-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl overflow-hidden max-w-lg w-full mx-4">
+    <div class="px-6 py-4 bg-primary text-white">
+      <h3 class="text-lg font-medium" id="modal-title">Modifica Permessi</h3>
+    </div>
+    <div class="px-6 py-4 max-h-[70vh] overflow-y-auto">
+      <input type="hidden" id="user-id-input">
+      <p class="text-sm text-gray-500 mb-4">Seleziona i permessi per <span id="username-display" class="font-semibold"></span></p>
+      
+      <div class="space-y-3 mb-4">
+        <div class="flex items-center">
+          <input type="checkbox" id="write_articles" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="write_articles" class="ml-2 block text-sm text-gray-900">
+            Scrivi Articoli
+          </label>
+        </div>
+        <div class="flex items-center">
+          <input type="checkbox" id="publish_articles" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="publish_articles" class="ml-2 block text-sm text-gray-900">
+            Pubblica Articoli
+          </label>
+        </div>
+        <div class="flex items-center">
+          <input type="checkbox" id="edit_all_articles" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="edit_all_articles" class="ml-2 block text-sm text-gray-900">
+            Modifica Articoli
+          </label>
+        </div>
+        <div class="flex items-center">
+          <input type="checkbox" id="read_all_articles" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="read_all_articles" class="ml-2 block text-sm text-gray-900">
+            Leggi Tutti gli Articoli
+          </label>
+        </div>
+        <div class="flex items-center">
+          <input type="checkbox" id="feature_articles" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="feature_articles" class="ml-2 block text-sm text-gray-900">
+            Metti Articoli in Evidenza
+          </label>
+        </div>
+        <div class="flex items-center">
+          <input type="checkbox" id="modify_creator" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="modify_creator" class="ml-2 block text-sm text-gray-900">
+            Modifica Creatore
+          </label>
+        </div>
+      </div>
+
+      <hr class="my-4">
+
+      <div>
+        <h4 class="text-md font-medium text-gray-800 mb-2">Permessi Categoria (Scrittura)</h4>
+        <p class="text-xs text-gray-500 mb-3">Seleziona le categorie in cui l'utente può scrivere articoli.</p>
+        <div class="space-y-2 max-h-48 overflow-y-auto border p-3 rounded-md">
+          {categories.map(category => (
+            <div class="flex items-center">
+              <input 
+                type="checkbox" 
+                id={`category_${category.slug}`} 
+                value={category.slug}
+                class="category-permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded"
+              >
+              <label for={`category_${category.slug}`} class="ml-2 block text-sm text-gray-900">
+                {category.name}
+              </label>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+    <div class="px-6 py-4 bg-gray-50 flex justify-end space-x-3">
+      <button id="cancel-button" class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+        Annulla
+      </button>
+      <button id="save-permissions" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+        Salva Permessi
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Create/Edit User Modal -->
+<div id="user-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl overflow-hidden max-w-lg w-full mx-4">
+    <div class="px-6 py-4 bg-primary text-white">
+      <h3 class="text-lg font-medium" id="user-modal-title">Crea Nuovo Utente</h3>
+    </div>
+    <div class="px-6 py-4 max-h-[70vh] overflow-y-auto">
+      <form id="user-form" class="space-y-4">
+        <input type="hidden" id="create-user-id-input">
+        <input type="hidden" id="action-type" value="create">
+        <div>
+          <label for="fullName" class="block text-sm font-medium text-gray-700">Nome Completo</label>
+          <input type="text" id="fullName" name="fullName" required 
+                 class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+        </div>
+        <div>
+          <label for="publicName" class="block text-sm font-medium text-gray-700">Nome Pubblico</label>
+          <input type="text" id="publicName" name="publicName" class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+        </div>
+        <div>
+          <label for="user-role" class="block text-sm font-medium text-gray-700">Ruolo</label>
+          <select id="user-role" name="user-role" required
+                  class="mt-1 block w-full py-2 px-3 border border-gray-300 bg-white rounded-md shadow-sm focus:outline-none focus:ring-primary focus:border-primary sm:text-sm">
+            <option value="direttore">Direttore</option>
+            <option value="redattore">Redattore</option>
+            <option value="giornalista">Giornalista</option>
+            <option value="admin">Amministratore</option>
+          </select>
+        </div>
+        <div id="profile-description-edit-group">
+          <label for="profile-description" class="block text-sm font-medium text-gray-700">Descrizione</label>
+          <textarea id="profile-description" name="profile-description" rows="2" class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"></textarea>
+        </div>
+        <div>
+          <label for="is-displayable" class="block text-sm font-medium text-gray-700">Visibile al Pubblico</label>
+          <input type="checkbox" id="is-displayable" name="is-displayable" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded" />
+          <span class="ml-2 text-sm text-gray-700">Sì</span>
+        </div>
+        <div>
+          <label for="email" class="block text-sm font-medium text-gray-700">Email</label>
+          <input type="email" id="email" name="email" required 
+                 class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+        </div>
+        <div id="profile-image-edit-group">
+          <label class="block text-sm font-medium text-gray-700 mb-1">Immagine Profilo</label>
+          <div class="flex items-center space-x-4 mb-2">
+            <img id="profile-pic-preview" src="" alt="Preview" class="h-14 w-14 rounded-full object-cover border border-gray-300 bg-gray-100" style="display:none;">
+            <input type="file" id="profile-pic-file" accept="image/*" class="block text-sm text-gray-500" />
+          </div>
+          <div class="flex space-x-2">
+            <input type="text" id="profile-pic-link" placeholder="URL immagine profilo" class="flex-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md" />
+            <button type="button" id="upload-url-button" class="px-3 py-2 bg-primary text-white text-sm rounded-md hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed">
+              Carica da URL
+            </button>
+          </div>
+        </div>
+        <div id="password-container">
+          <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+          <input type="password" id="password" name="password" minlength="6" required 
+                 class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
+          <p class="mt-1 text-xs text-gray-500">Minimo 6 caratteri</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-2">Permessi Generali</label>
+          <div class="space-y-2 bg-gray-50 p-3 rounded-md">
+            <div class="flex items-center">
+              <input type="checkbox" id="user_write_articles" name="user_permissions" value="write_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_write_articles" class="ml-2 block text-sm text-gray-900">Scrivi Articoli</label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'write_articles')?.description}</p>
+
+            <div class="flex items-center">
+              <input type="checkbox" id="user_publish_articles" name="user_permissions" value="publish_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_publish_articles" class="ml-2 block text-sm text-gray-900">Pubblica Articoli</label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'publish_articles')?.description}</p>
+
+            <div class="flex items-center">
+              <input type="checkbox" id="user_edit_all_articles" name="user_permissions" value="edit_all_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_edit_all_articles" class="ml-2 block text-sm text-gray-900">Modifica Articoli</label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'edit_all_articles')?.description}</p>
+
+            <div class="flex items-center">
+              <input type="checkbox" id="user_read_all_articles" name="user_permissions" value="read_all_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_read_all_articles" class="ml-2 block text-sm text-gray-900">Leggi Tutti gli Articoli</label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'read_all_articles')?.description}</p>
+
+            <div class="flex items-center">
+              <input type="checkbox" id="user_feature_articles" name="user_permissions" value="feature_articles" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_feature_articles" class="ml-2 block text-sm text-gray-900">Metti Articoli in Evidenza</label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'feature_articles')?.description}</p>
+
+            <div class="flex items-center">
+              <input type="checkbox" id="user_modify_creator" name="user_permissions" value="modify_creator" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_modify_creator" class="ml-2 block text-sm text-gray-900">Modifica Creatore</label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'modify_creator')?.description}</p>
+
+            <div class="flex items-center">
+              <input type="checkbox" id="user_contact_form_in_article" name="user_permissions" value="contact_form_in_article" 
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_contact_form_in_article" class="ml-2 block text-sm text-gray-900">
+                Form Contatti negli Articoli
+              </label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">
+              {permissions.find(p => p.id === 'contact_form_in_article')?.description}
+            </p>
+
+          </div>
+        </div>
+
+        <hr class="my-4">
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-2">Permessi Categoria (Scrittura)</label>
+          <p class="text-xs text-gray-500 mb-2">Seleziona le categorie in cui l'utente può scrivere articoli.</p>
+          <div class="space-y-2 bg-gray-50 p-3 rounded-md max-h-48 overflow-y-auto">
+            {categories.map(category => (
+              <div class="flex items-center">
+                <input 
+                  type="checkbox" 
+                  id={`user_category_${category.slug}`} 
+                  name="user_category_permissions" 
+                  value={category.slug}
+                  class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-category-permission-checkbox"
+                >
+                <label for={`user_category_${category.slug}`} class="ml-2 block text-sm text-gray-900">
+                  {category.name}
+                </label>
+              </div>
+            ))}
+          </div>
+        </div>
+      </form>
+    </div>
+    <div class="px-6 py-4 bg-gray-50 flex justify-end space-x-3">
+      <button id="cancel-user-button" class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+        Annulla
+      </button>
+      <button id="save-user" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+        Salva
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div id="delete-modal" class="fixed inset-0 bg-gray-500 bg-opacity-75 hidden items-center justify-center z-50">
+  <div class="bg-white rounded-lg shadow-xl overflow-hidden max-w-md w-full mx-4">
+    <div class="px-6 py-4 bg-red-600 text-white">
+      <h3 class="text-lg font-medium">Conferma Eliminazione</h3>
+    </div>
+    <div class="px-6 py-4">
+      <input type="hidden" id="delete-user-id">
+      <p class="text-sm text-gray-500">Sei sicuro di voler eliminare l'utente <span id="delete-username" class="font-semibold"></span>? Questa azione non può essere annullata.</p>
+    </div>
+    <div class="px-6 py-4 bg-gray-50 flex justify-end space-x-3">
+      <button id="cancel-delete" class="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+        Annulla
+      </button>
+      <button id="confirm-delete" class="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+        Elimina
+      </button>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* Remove shadow from Azioni column, use dark background instead */
+  th[style*="position: sticky; right: 0"],
+  td[style*="position: sticky; right: 0"] {
+    background: none !important;
+    color: inherit;
+    z-index: auto;
+    box-shadow: none;
+  }
+  /* Ensure buttons are visible on dark background */
+  .edit-user {
+    color: #fff !important;
+    background: #2563eb !important; /* Tailwind primary (blue-600) */
+  }
+  .delete-user {
+    color: #fff !important;
+    background: #dc2626 !important; /* Tailwind red-600 */
+  }
+  /* Custom horizontal scrollbar for the table */
+  .overflow-x-auto::-webkit-scrollbar {
+    height: 10px;
+  }
+  .overflow-x-auto::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 6px;
+    border: 2px solid #f8fafc;
+  }
+  .overflow-x-auto::-webkit-scrollbar-track {
+    background: #f8fafc;
+    border-radius: 6px;
+  }
+  /* For Firefox */
+  .overflow-x-auto {
+    scrollbar-color: #cbd5e1 #f8fafc;
+    scrollbar-width: thin;
+  }
+</style>
+
+<script>
+  import { supabase } from '../../../lib/supabase';
+  
+  // Type definitions
+  interface Permissions {
+    // Use an index signature for boolean flags, allow category_permissions array
+    [key: string]: boolean | string[] | undefined; 
+    // Explicitly define known keys for documentation/potential stricter checks elsewhere
+    write_articles?: boolean; 
+  publish_articles?: boolean; 
+  edit_all_articles?: boolean; 
+  read_all_articles?: boolean; 
+  feature_articles?: boolean; 
+  modify_creator?: boolean;
+  category_permissions?: string[];
+  contact_form_in_article?: boolean;
+}
+
+  interface RolePermissions {
+    [key: string]: Permissions;
+  }
+
+  // Elements
+  const modal = document.getElementById('permissions-modal');
+  const modalTitle = document.getElementById('modal-title');
+  const usernameDisplay = document.getElementById('username-display');
+  const userIdInput = document.getElementById('user-id-input') as HTMLInputElement;
+  const saveButton = document.getElementById('save-permissions') as HTMLButtonElement;
+  const cancelButton = document.getElementById('cancel-button');
+  const checkboxes = document.querySelectorAll<HTMLInputElement>('.permission-checkbox');
+  const categoryCheckboxes = document.querySelectorAll<HTMLInputElement>('.category-permission-checkbox');
+  const searchInput = document.getElementById('search') as HTMLInputElement;
+  const roleFilter = document.getElementById('role-filter') as HTMLSelectElement;
+  const tableRows = document.querySelectorAll('#users-table-body tr');
+  
+  // Define role permissions mapping
+  const rolePermissions: RolePermissions = {
+    admin: {
+      write_articles: true,
+      publish_articles: true,
+      edit_all_articles: true,
+      read_all_articles: true,
+      feature_articles: true,
+      modify_creator: true,
+      contact_form_in_article: false,
+    },
+    direttore: {
+      write_articles: true,
+      publish_articles: true,
+      edit_all_articles: true,
+      read_all_articles: true,
+      feature_articles: true,
+      modify_creator: true,
+      contact_form_in_article: false,
+    },
+    redattore: {
+      write_articles: true,
+      publish_articles: true,
+      edit_all_articles: true,
+      read_all_articles: false,
+      modify_creator: false,
+      contact_form_in_article: false,
+    },
+    giornalista: {
+      write_articles: true,
+      publish_articles: true,
+      edit_all_articles: true,
+      read_all_articles: true,
+      modify_creator: false,
+      contact_form_in_article: false,
+    }
+  };
+  
+  async function checkAuth() {
+    const sessionResp = await supabase.auth.getSession();
+    const session = sessionResp.data.session;
+    
+    if (!session) {
+      window.location.href = '/login';
+      return;
+    }
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single();
+    
+    if (error || !(profile?.role === 'admin')) {
+      window.location.href = '/login';
+      return;
+    }
+
+    // If we get here, user is authenticated and authorized
+    document.getElementById('loading-screen')?.classList.add('hidden');
+    document.getElementById('admin-content')?.classList.remove('hidden');
+  }
+
+  // Run auth check immediately
+  checkAuth();
+
+  // Open modal with user permissions
+  document.querySelectorAll('.edit-permissions').forEach(button => {
+    button.addEventListener('click', async () => {
+      const userId = (button as HTMLElement).dataset.userId;
+      const username = (button as HTMLElement).dataset.username;
+      
+      if (!userId || !modal) return;
+      
+      // Reset checkboxes
+      checkboxes.forEach(cb => cb.checked = false);
+      categoryCheckboxes.forEach(cb => cb.checked = false);
+      
+      // Get user permissions
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('permissions')
+        .eq('id', userId)
+        .single();
+      
+      if (!error && data?.permissions) {
+        const userPerms = data.permissions as Permissions;
+        // Set general checkboxes based on user permissions
+        Object.keys(userPerms).forEach(perm => {
+          const permKey = perm as keyof Permissions;
+          if (permKey !== 'category_permissions') {
+             const checkbox = document.getElementById(perm) as HTMLInputElement;
+             if (checkbox && typeof userPerms[permKey] === 'boolean') {
+                checkbox.checked = userPerms[permKey] as boolean;
+             }
+          }
+        });
+
+        // Set category checkboxes
+        if (userPerms.category_permissions && Array.isArray(userPerms.category_permissions)) {
+          userPerms.category_permissions.forEach(categorySlug => {
+            const checkbox = document.getElementById(`category_${categorySlug}`) as HTMLInputElement;
+            if (checkbox) checkbox.checked = true;
+          });
+        }
+      }
+      
+      // Set modal data
+      userIdInput.value = userId;
+      if (usernameDisplay) usernameDisplay.textContent = username || 'User';
+      if (modalTitle) modalTitle.textContent = `Edit Permissions for ${username || 'User'}`;
+      
+      // Show modal
+      modal.classList.remove('hidden');
+      modal.classList.add('flex');
+    });
+  });
+  
+  // Save permissions
+  saveButton?.addEventListener('click', async () => {
+    const userId = userIdInput.value;
+    if (!userId || !modal) return;
+    
+    // Get selected permissions
+    const permissions: Permissions = {} as Permissions;
+    checkboxes.forEach(cb => {
+      if (cb.checked) {
+        permissions[cb.id] = true;
+      } else {
+        permissions[cb.id] = false;
+      }
+    });
+
+    // Get selected category permissions
+    const categoryPermissions: string[] = [];
+    categoryCheckboxes.forEach(cb => {
+      if (cb.checked) {
+        categoryPermissions.push(cb.value);
+      }
+    });
+    permissions.category_permissions = categoryPermissions;
+    
+    console.log('Attempting to save permissions for user ID:', userId);
+    console.log('Permissions object being saved:', JSON.stringify(permissions));
+    
+    let originalButtonText = saveButton.textContent || '';
+    
+    try {
+      // Show loading state
+      saveButton.textContent = 'Saving...';
+      saveButton.disabled = true;
+      
+      // Get current session for authentication
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        console.error('No active session found');
+        alert('Sessione non valida. Effettua nuovamente il login.');
+        window.location.href = '/login?redirect=/admin/permissions';
+        return;
+      }
+      
+      console.log('Got session, token length:', session.access_token.length);
+      
+      if (session.access_token.length < 100) {
+        console.error('Invalid session token length');
+        alert('Sessione non valida. Effettua nuovamente il login.');
+        window.location.href = '/login?redirect=/admin/permissions';
+        return;
+      }
+      
+      // Try direct Supabase update first (more reliable)
+      console.log('Trying direct Supabase update...');
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ permissions: permissions as any })
+        .eq('id', userId)
+        .select();
+      
+      if (updateError) {
+        console.error('Error with direct update:', updateError);
+        alert(`Failed to update permissions: ${updateError.message}`);
+        saveButton.textContent = originalButtonText;
+        saveButton.disabled = false;
+        return;
+      }
+      
+      // Close modal and reload
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+      window.location.reload();
+      
+    } catch (e) {
+      console.error('Exception while saving permissions:', e);
+      alert('Si è verificato un errore durante il salvataggio dei permessi. Controlla la console per i dettagli.');
+      saveButton.textContent = originalButtonText;
+      saveButton.disabled = false;
+    }
+  });
+  
+  // Close modal
+  cancelButton?.addEventListener('click', () => {
+    if (modal) {
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+  });
+  
+  // Close modal when clicking outside
+  modal?.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+    }
+  });
+
+  // Search and filter functionality
+  function filterUsers() {
+    const searchTerm = searchInput?.value.toLowerCase() || '';
+    const roleFilterValue = roleFilter?.value || 'all';
+
+    tableRows.forEach((row) => {
+      const username = row.querySelector('td:first-child')?.textContent?.toLowerCase() || '';
+      const email = row.querySelector('td:nth-child(3)')?.textContent?.toLowerCase() || '';
+      const role = row.querySelector('td:nth-child(2) span')?.textContent?.toLowerCase() || '';
+      
+      const matchesSearch = username.includes(searchTerm) || email.includes(searchTerm);
+      const matchesRole = roleFilterValue === 'all' || role.includes(roleFilterValue);
+
+      if (row instanceof HTMLElement) {
+        row.style.display = matchesSearch && matchesRole ? '' : 'none';
+      }
+    });
+  }
+
+  searchInput?.addEventListener('input', filterUsers);
+  roleFilter?.addEventListener('change', filterUsers);
+  
+  // Debug functionality
+  const debugButton = document.getElementById('debug-button');
+  const debugOutput = document.getElementById('debug-output');
+  const debugPre = debugOutput?.querySelector('pre');
+  
+  debugButton?.addEventListener('click', async () => {
+    if (debugOutput && debugPre) {
+      try {
+        debugOutput.classList.remove('hidden');
+        debugPre.textContent = 'Loading debug information...';
+        
+        // Call the debug endpoint
+        const response = await fetch('/api/profiles/debug');
+        const data = await response.json();
+        
+        debugPre.textContent = JSON.stringify(data, null, 2);
+        
+        // Test direct permission update
+        debugPre.textContent += '\n\nTesting direct permission update...\n';
+        
+        // Get sample user ID
+        if (data.samples && data.samples.length > 0) {
+          const testUserId = data.samples[0].id;
+          
+          const testPermissions = {
+            write_articles: true,
+            publish_articles: true,
+            edit_all_articles: true,
+            read_all_articles: true
+          };
+          
+          debugPre.textContent = `Applying test permissions to user ${testUserId}...\n`;
+          debugPre.textContent += `Permissions to apply: ${JSON.stringify(testPermissions, null, 2)}\n\n`;
+          
+          const { error: updateError } = await supabase
+            .from('profiles')
+            .update({ permissions: testPermissions })
+            .eq('id', testUserId)
+            .select();
+          
+          if (updateError) {
+            debugPre.textContent += `Error updating user: ${updateError.message}\n`;
+          } else {
+            debugPre.textContent += `Update successful!\n\n`;
+          }
+          
+          // Test the API endpoint
+          debugPre.textContent += `Testing API endpoint...\n`;
+          
+          const apiResponse = await fetch('/api/profiles/update-permissions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              userId: testUserId,
+              permissions: { api_test: true, write_articles: true }
+            }),
+          });
+          
+          const apiData = await apiResponse.json();
+          debugPre.textContent += `API Response: ${JSON.stringify(apiData, null, 2)}\n\n`;
+          
+          debugPre.textContent += `\nVerifying final permissions for user ${testUserId}...\n`;
+          
+          const { data: verifyData, error: verifyError } = await supabase
+            .from('profiles')
+            .select('permissions')
+            .eq('id', testUserId)
+            .single();
+        } else {
+          debugPre.textContent += '\nNo sample user found to test updates';
+        }
+      } catch (error) {
+        debugPre.textContent = `Error during debug: ${error}`;
+      }
+    }
+  });
+  
+  // User Management Functionality
+  const userModal = document.getElementById('user-modal') as HTMLDivElement;
+  const userModalTitle = document.getElementById('user-modal-title') as HTMLHeadingElement;
+  const createUserIdInput = document.getElementById('create-user-id-input') as HTMLInputElement;
+  const actionType = document.getElementById('action-type') as HTMLInputElement;
+  const userForm = document.getElementById('user-form') as HTMLFormElement;
+  const saveUserButton = document.getElementById('save-user') as HTMLButtonElement;
+  const cancelUserButton = document.getElementById('cancel-user-button') as HTMLButtonElement;
+  const createUserButton = document.getElementById('create-user-button') as HTMLButtonElement;
+  const passwordContainer = document.getElementById('password-container') as HTMLDivElement;
+  const userRoleSelect = document.getElementById('user-role') as HTMLSelectElement;
+  const userPermissionCheckboxes = document.querySelectorAll<HTMLInputElement>('.user-general-permission-checkbox');
+  const userCategoryPermissionCheckboxes = document.querySelectorAll<HTMLInputElement>('.user-category-permission-checkbox');
+  const publicNameInput = document.getElementById('publicName') as HTMLInputElement;
+  
+  const deleteModal = document.getElementById('delete-modal') as HTMLDivElement;
+  const deleteUserIdInput = document.getElementById('delete-user-id') as HTMLInputElement;
+  const confirmDeleteButton = document.getElementById('confirm-delete') as HTMLButtonElement;
+  const cancelDeleteButton = document.getElementById('cancel-delete') as HTMLButtonElement;
+  
+  // Event listeners for user management
+  createUserButton?.addEventListener('click', openCreateUserModal);
+  saveUserButton?.addEventListener('click', saveUser);
+  cancelUserButton?.addEventListener('click', closeUserModal);
+  userRoleSelect?.addEventListener('change', updateUserPermissionsByRole);
+  confirmDeleteButton?.addEventListener('click', deleteUser);
+  cancelDeleteButton?.addEventListener('click', closeDeleteModal);
+  
+  function openDeleteModal(userId: string, username: string) {
+    deleteUserIdInput.value = userId;
+    const deleteUsernameSpan = document.getElementById('delete-username');
+    if (deleteUsernameSpan) {
+      deleteUsernameSpan.textContent = username;
+    }
+    deleteModal.classList.remove('hidden');
+    deleteModal.classList.add('flex');
+  }
+  
+  // Attach event handler to all .edit-user buttons after DOMContentLoaded
+  function attachEditUserButtonHandlers() {
+    document.querySelectorAll('.edit-user').forEach(button => {
+      button.addEventListener('click', function () {
+        const userId = (button as HTMLElement).getAttribute('data-user-id') || '';
+        const username = (button as HTMLElement).getAttribute('data-username') || 'User';
+        const email = (button as HTMLElement).getAttribute('data-email') || '';
+        const role = (button as HTMLElement).getAttribute('data-role') || 'studente';
+        openEditUserModal(userId, username, email, role);
+      });
+    });
+  }
+  
+  // Attach event handler to all .delete-user buttons after DOMContentLoaded
+  function attachDeleteUserButtonHandlers() {
+    document.querySelectorAll('.delete-user').forEach(button => {
+      button.addEventListener('click', function () {
+        const userId = (button as HTMLElement).getAttribute('data-user-id') || '';
+        const username = (button as HTMLElement).getAttribute('data-username') || 'User';
+        openDeleteModal(userId, username);
+      });
+    });
+  }
+  
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      attachEditUserButtonHandlers();
+      attachDeleteUserButtonHandlers();
+    });
+  } else {
+    attachEditUserButtonHandlers();
+    attachDeleteUserButtonHandlers();
+  }
+  
+  function openCreateUserModal() {
+    // Reset form
+    userForm.reset();
+    createUserIdInput.value = '';
+    actionType.value = 'create';
+    userModalTitle.textContent = 'Crea Nuovo Utente';
+    
+    // Show password field for new users
+    passwordContainer.style.display = 'block';
+    
+    // Hide profile image and description fields in create mode
+    const profileImageEditGroup = document.getElementById('profile-image-edit-group');
+    const profileDescriptionEditGroup = document.getElementById('profile-description-edit-group');
+    if (profileImageEditGroup) profileImageEditGroup.style.display = 'none';
+    if (profileDescriptionEditGroup) profileDescriptionEditGroup.style.display = 'none';
+    if (publicNameInput) publicNameInput.value = ''; // Reset public name
+    
+    // Set default role and permissions
+    userRoleSelect.value = 'studente';
+    updateUserPermissionsByRole();
+    
+    // Show modal
+    userModal.classList.remove('hidden');
+    userModal.classList.add('flex');
+  }
+  
+  async function openEditUserModal(userId: string, username: string, email: string, role: string) {
+    // Set form values
+    createUserIdInput.value = userId;
+    actionType.value = 'edit';
+    userModalTitle.textContent = `Modifica Utente: ${username}`;
+    
+    // Hide password field for editing
+    passwordContainer.style.display = 'none';
+    // Show profile image and description fields
+    const profileImageEditGroup = document.getElementById('profile-image-edit-group');
+    const profileDescriptionEditGroup = document.getElementById('profile-description-edit-group');
+    if (profileImageEditGroup) profileImageEditGroup.style.display = '';
+    if (profileDescriptionEditGroup) profileDescriptionEditGroup.style.display = '';
+    const fullNameInput = document.getElementById('fullName') as HTMLInputElement;
+    const emailInput = document.getElementById('email') as HTMLInputElement;
+    const profilePicPreview = document.getElementById('profile-pic-preview') as HTMLImageElement | null;
+    const profilePicLinkInput = document.getElementById('profile-pic-link') as HTMLInputElement | null;
+    const profilePicFileInput = document.getElementById('profile-pic-file') as HTMLInputElement | null;
+    const profileDescriptionInput = document.getElementById('profile-description') as HTMLTextAreaElement | null;
+    const isDisplayableInput = document.getElementById('is-displayable') as HTMLInputElement | null;
+    const publicNameInput = document.getElementById('publicName') as HTMLInputElement;
+    fullNameInput.value = username;
+    emailInput.value = email;
+    userRoleSelect.value = role;
+    publicNameInput.value = username; // Set public name for editing
+    // Get user profile fields
+    const { data: user } = await supabase
+      .from('profiles')
+      .select('permissions, profile_pic_link, description, is_displayable, public_name')
+      .eq('id', userId)
+      .single();
+    // Reset checkboxes
+    userPermissionCheckboxes.forEach(checkbox => { checkbox.checked = false; });
+    userCategoryPermissionCheckboxes.forEach(checkbox => { checkbox.checked = false; });
+    // Set checkboxes based on user permissions
+    if (user?.permissions) {
+       const userPerms = user.permissions as Permissions;
+       // Set general checkboxes
+       userPermissionCheckboxes.forEach(checkbox => {
+        const permName = checkbox.value;
+        if (typeof userPerms[permName] === 'boolean') {
+            checkbox.checked = userPerms[permName] as boolean;
+        }
+      });
+      // Set category checkboxes
+      if (userPerms.category_permissions && Array.isArray(userPerms.category_permissions)) {
+        userPerms.category_permissions.forEach(categorySlug => {
+           const checkbox = document.getElementById(`user_category_${categorySlug}`) as HTMLInputElement;
+           if (checkbox) checkbox.checked = true;
+        });
+      }
+    } else {
+      // Use default permissions for role if no specific permissions exist
+      updateUserPermissionsByRole();
+    }
+    // Set profile image and description
+    if (profilePicPreview && profilePicLinkInput) {
+      if (user?.profile_pic_link) {
+        profilePicPreview.src = user.profile_pic_link;
+        profilePicPreview.style.display = '';
+        profilePicLinkInput.value = user.profile_pic_link;
+      } else {
+        profilePicPreview.src = '';
+        profilePicPreview.style.display = 'none';
+        profilePicLinkInput.value = '';
+      }
+    }
+    if (profileDescriptionInput) profileDescriptionInput.value = user?.description || '';
+    if (isDisplayableInput) isDisplayableInput.checked = !!user?.is_displayable;
+    if (publicNameInput) publicNameInput.value = user?.public_name || ''; // Set public name for editing
+    // File input reset
+    if (profilePicFileInput) profilePicFileInput.value = '';
+    // Image preview and upload on file select
+    if (profilePicFileInput && profilePicPreview) {
+      profilePicFileInput.addEventListener('change', async (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (file) {
+          try {
+            // Show temporary preview
+            const tempUrl = URL.createObjectURL(file);
+            profilePicPreview.src = tempUrl;
+            profilePicPreview.style.display = '';
+            
+            // Upload to S3
+            const formData = new FormData();
+            formData.append('file', file);
+            // Generate unique filename for profile pic
+            const fileExt = file.name.split('.').pop();
+            const filename = `profile_${Date.now()}_${Math.random().toString(36).substring(2, 15)}.${fileExt}`;
+            formData.append('filename', filename);
+            formData.append('title', 'profile');
+
+            console.log('Uploading profile image to S3...');
+            
+            const uploadResponse = await fetch('/api/upload', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
+              },
+              body: formData
+            });
+
+            if (!uploadResponse.ok) {
+              const errorText = await uploadResponse.text();
+              console.error('Upload error response:', errorText);
+              throw new Error(`Failed to upload image file: ${errorText}`);
+            }
+
+            const responseData = await uploadResponse.json();
+            console.log('Upload response data:', responseData);
+            
+            const { url } = responseData;
+            
+            if (!url) {
+              throw new Error('No URL returned from image upload');
+            }
+            
+            console.log('Profile image uploaded successfully to:', url);
+            
+            // Clean up blob URL
+            URL.revokeObjectURL(tempUrl);
+            
+            // Set the S3 URL in both preview and input field
+            profilePicPreview.src = url;
+            if (profilePicLinkInput) {
+              profilePicLinkInput.value = url;
+            }
+            
+            alert('Immagine caricata con successo su S3!');
+            
+          } catch (error) {
+            console.error('Error uploading profile image:', error);
+            alert('Errore nel caricamento dell\'immagine: ' + (error as Error).message);
+            
+            // Reset preview on error
+            profilePicPreview.src = '';
+            profilePicPreview.style.display = 'none';
+          }
+        }
+      });
+    }
+    // Image preview on URL input
+    if (profilePicLinkInput && profilePicPreview) {
+      profilePicLinkInput.addEventListener('input', () => {
+        const url = profilePicLinkInput.value.trim();
+        if (url) {
+          profilePicPreview.src = url;
+          profilePicPreview.style.display = '';
+        } else {
+          profilePicPreview.src = '';
+          profilePicPreview.style.display = 'none';
+        }
+      });
+    }
+    
+    // Add URL upload to S3 functionality
+    const uploadUrlButton = document.getElementById('upload-url-button') as HTMLButtonElement;
+    if (uploadUrlButton && profilePicLinkInput && profilePicPreview) {
+      uploadUrlButton.addEventListener('click', async () => {
+        const imageUrl = profilePicLinkInput.value.trim();
+        if (!imageUrl || !imageUrl.startsWith('http')) {
+          alert('Inserisci un URL valido dell\'immagine.');
+          return;
+        }
+
+        try {
+          // Show loading state
+          uploadUrlButton.textContent = 'Caricando...';
+          (uploadUrlButton as HTMLButtonElement).disabled = true;
+
+          console.log('Uploading image from URL to S3:', imageUrl);
+
+          const response = await fetch('/api/upload-from-url', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
+            },
+            body: JSON.stringify({ imageUrl })
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to upload image from URL');
+          }
+
+          const { url: s3Url } = await response.json();
+          
+          console.log('Image uploaded from URL to S3:', s3Url);
+          
+          // Update the input field and preview with S3 URL
+          profilePicLinkInput.value = s3Url;
+          profilePicPreview.src = s3Url;
+          profilePicPreview.style.display = '';
+          
+          alert('Immagine caricata con successo da URL su S3!');
+
+        } catch (error) {
+          console.error('Error uploading image from URL:', error);
+          alert('Errore nel caricamento dell\'immagine da URL: ' + (error as Error).message);
+        } finally {
+          // Restore button state
+          uploadUrlButton.textContent = 'Carica da URL';
+          (uploadUrlButton as HTMLButtonElement).disabled = false;
+        }
+      });
+    }
+    // Show modal
+    userModal.classList.remove('hidden');
+    userModal.classList.add('flex');
+  }
+  
+  function closeUserModal() {
+    userModal.classList.remove('flex');
+    userModal.classList.add('hidden');
+  }
+  
+  function updateUserPermissionsByRole() {
+    const selectedRole = userRoleSelect.value;
+    const defaultPermissions = rolePermissions[selectedRole] || {};
+    
+    // Update general checkboxes based on the selected role
+    userPermissionCheckboxes.forEach(checkbox => {
+      const permName = checkbox.value;
+      if (typeof defaultPermissions[permName] === 'boolean') {
+          checkbox.checked = defaultPermissions[permName] as boolean;
+      } else {
+          // Uncheck if permission is not explicitly defined for the role
+          checkbox.checked = false; 
+      }
+    });
+
+    // Reset category checkboxes when role changes (assuming no default categories per role)
+    userCategoryPermissionCheckboxes.forEach(checkbox => {
+        checkbox.checked = false; 
+    });
+  }
+  
+  async function saveUser() {
+    // Get form data
+    const userId = createUserIdInput.value;
+    const action = actionType.value;
+    const fullNameInput = document.getElementById('fullName') as HTMLInputElement;
+    const emailInput = document.getElementById('email') as HTMLInputElement;
+    const passwordInput = document.getElementById('password') as HTMLInputElement;
+    const profilePicLinkInput = document.getElementById('profile-pic-link') as HTMLInputElement | null;
+    const profilePicFileInput = document.getElementById('profile-pic-file') as HTMLInputElement | null;
+    const profileDescriptionInput = document.getElementById('profile-description') as HTMLTextAreaElement | null;
+    const isDisplayableInput = document.getElementById('is-displayable') as HTMLInputElement | null;
+    const publicNameInput = document.getElementById('publicName') as HTMLInputElement;
+    const fullName = fullNameInput.value;
+    const email = emailInput.value;
+    const password = passwordInput.value;
+    const role = userRoleSelect.value;
+    
+    // Build permissions object
+    const permissions: Permissions = {} as Permissions;
+    userPermissionCheckboxes.forEach(checkbox => {
+      permissions[checkbox.value] = checkbox.checked;
+    });
+    
+    // Build category permissions array
+    const categoryPermissions: string[] = [];
+    userCategoryPermissionCheckboxes.forEach(checkbox => {
+       if (checkbox.checked) {
+         categoryPermissions.push(checkbox.value);
+       }
+    });
+    permissions.category_permissions = categoryPermissions;
+    
+    // Get profile image and description (edit only)
+    let profile_pic_link = '';
+    if (action === 'edit' && profilePicLinkInput) {
+      if (profilePicFileInput && profilePicFileInput.files && profilePicFileInput.files[0]) {
+        // Upload file to Supabase Storage or another service here if needed
+        // For now, just use a data URL preview (not persistent)
+        // You should implement actual upload logic as needed
+        profile_pic_link = profilePicLinkInput.value; // fallback to URL input
+      } else {
+        profile_pic_link = profilePicLinkInput.value;
+      }
+    }
+    const description = action === 'edit' && profileDescriptionInput ? profileDescriptionInput.value : '';
+    const is_displayable = isDisplayableInput ? isDisplayableInput.checked : false;
+    const public_name = publicNameInput ? publicNameInput.value : '';
+    
+    let originalButtonText = saveUserButton.textContent || 'Salva';
+    
+    try {
+      // Disable button to prevent multiple submissions
+      saveUserButton.disabled = true;
+      saveUserButton.textContent = 'Salvataggio...';
+      
+      // Get the session for authorization
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('Sessione non valida. Effettua nuovamente il login.');
+        window.location.href = '/login?redirect=/admin/permissions';
+        saveUserButton.disabled = false;
+        saveUserButton.textContent = originalButtonText;
+        return;
+      }
+      
+      // Log the data being sent for debugging
+      console.log('Frontend: Saving user with data:', {
+        userId: action === 'edit' ? userId : 'new',
+        fullName,
+        email,
+        role,
+        profile_pic_link,
+        description,
+        public_name
+      });
+      
+      let response;
+      
+      if (action === 'create') {
+        // Create new user
+        response = await fetch('/api/users/create', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({
+            full_name: fullName,
+            email,
+            password,
+            role,
+            permissions,
+            public_name
+          })
+        });
+        const responseData = await response.json();
+        if (!response.ok) {
+          throw new Error(responseData.error || responseData.message || 'Errore durante il salvataggio');
+        }
+      } else {
+        // Update user through API, include is_displayable
+        const response = await fetch('/api/users/update', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({
+            userId,
+            full_name: fullName,
+            public_name,
+            role,
+            permissions,
+            profile_pic_link,
+            description,
+            is_displayable,
+            email
+          })
+        });
+        const responseData = await response.json();
+        if (!response.ok) {
+          throw new Error(responseData.error || responseData.message || 'Errore durante il salvataggio');
+        }
+      }
+      
+      // After successful save, update the table row with the new public_name
+      const userRow = document.querySelector(`#users-table-body tr[data-user-id='${userId}']`);
+      if (userRow) {
+        // Update Denominazione (public_name)
+        const nameCell = userRow.querySelector('td:nth-child(1) .text-sm');
+        if (nameCell) nameCell.textContent = public_name || 'Utente Anonimo';
+      }
+      // Success! Close modal and reload the page
+      closeUserModal();
+      alert(action === 'create' ? 'Utente creato con successo!' : 'Utente aggiornato con successo!');
+      window.location.reload();
+      
+    } catch (error) {
+      console.error('Error saving user:', error);
+      alert(`Errore durante il salvataggio: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      
+      // Restore button state
+      saveUserButton.disabled = false;
+      saveUserButton.textContent = originalButtonText;
+    }
+  }
+  
+  function closeDeleteModal() {
+    deleteModal.classList.remove('flex');
+    deleteModal.classList.add('hidden');
+  }
+  
+  async function deleteUser() {
+    const userId = deleteUserIdInput.value;
+    
+    let originalDeleteButtonText = confirmDeleteButton.textContent || 'Elimina'; // Declare outside try
+    
+    try {
+      // Disable button
+      confirmDeleteButton.disabled = true;
+      confirmDeleteButton.textContent = 'Eliminazione...';
+      
+      console.log('Getting current session...');
+      // Get the session for authorization
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        console.error('No active session found');
+        alert('Sessione non valida. Effettua nuovamente il login.');
+        window.location.href = '/login?redirect=/admin/permissions';
+        // Restore button before returning
+        confirmDeleteButton.disabled = false;
+        confirmDeleteButton.textContent = originalDeleteButtonText;
+        return;
+      }
+      
+      console.log('Got session, preparing to delete user ID:', userId);
+      
+      // Delete user using API endpoint
+      const response = await fetch('/api/users/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ user_id: userId })
+      });
+      
+      console.log('Delete API response status:', response.status);
+      
+      const responseData = await response.json().catch(e => {
+        console.error('Failed to parse response as JSON:', e);
+        return { error: 'Invalid server response' };
+      });
+      
+      console.log('Delete API response data:', responseData);
+      
+      if (!response.ok) {
+        let errorMessage = 'Failed to delete user';
+        
+        if (responseData.error) {
+          errorMessage = responseData.error;
+          if (responseData.details) {
+            errorMessage += `: ${responseData.details}`;
+          }
+          if (responseData.code) {
+            // Add user-friendly explanations for common error codes
+            if (responseData.code === '23503') {
+              errorMessage = 'Impossibile eliminare l\'utente perché ha contenuti correlati (articoli, commenti, etc.)';
+            }
+          }
+        }
+        
+        throw new Error(errorMessage);
+      }
+      
+      // Success! Close modal and reload the page
+      closeDeleteModal();
+      alert('Utente eliminato con successo!');
+      window.location.reload();
+      
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      alert('Errore durante l\'eliminazione: ' + (error instanceof Error ? error.message : 'Unknown error'));
+       // Restore button state in catch block
+       if (confirmDeleteButton) {
+         confirmDeleteButton.disabled = false;
+         confirmDeleteButton.textContent = originalDeleteButtonText;
+       }
+    }
+    // No finally block needed if state restored on all error paths
+  }
+</script> 
