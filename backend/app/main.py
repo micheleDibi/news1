@@ -579,7 +579,66 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
 
     print(f"  [IMAGE FINDER] ✗ Nessuna immagine adatta trovata")
     return None
-    
+
+
+async def generate_article_image(title: str, category: str, tags: list = None, summary: str = None) -> str:
+    """
+    Genera un'immagine editoriale con DALL-E 3 per l'articolo.
+    Ritorna l'URL temporaneo DALL-E (~1h di validità).
+    """
+    tag_str = ", ".join(tags[:5]) if tags else ""
+    context = summary[:200] if summary else ""
+
+    dalle_prompt = (
+        f"Fotografia editoriale professionale per un articolo di notizie.\n"
+        f"Titolo: {title}\n"
+        f"Categoria: {category}\n"
+        f"{f'Parole chiave: {tag_str}' if tag_str else ''}\n"
+        f"{f'Contesto: {context}' if context else ''}\n\n"
+        f"Requisiti: fotorealistica, alta qualità, stile giornalistico. "
+        f"NO testo, NO scritte, NO loghi, NO watermark nell'immagine."
+    )
+
+    print(f"  [DALL-E] Generating image for: {title[:60]}...")
+    response = client_openai.images.generate(
+        model="dall-e-3",
+        prompt=dalle_prompt,
+        size="1792x1024",
+        quality="standard",
+        n=1,
+    )
+
+    dalle_url = response.data[0].url
+    print(f"  [DALL-E] ✓ Image generated: {dalle_url[:80]}...")
+    return dalle_url
+
+
+async def upload_dalle_to_s3(dalle_url: str, title: str) -> str:
+    """Carica immagine DALL-E su S3 tramite endpoint /api/upload-from-url."""
+    frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:4321')
+    upload_url = f"{frontend_url}/api/upload-from-url"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {os.getenv('API_SECRET_KEY')}"
+    }
+
+    payload = {
+        "imageUrl": dalle_url,
+        "title": title
+    }
+
+    print(f"  [S3 UPLOAD] Uploading DALL-E image to S3 via {upload_url}...")
+    resp = requests.post(upload_url, headers=headers, json=payload, timeout=60)
+
+    if resp.status_code == 200:
+        data = resp.json()
+        s3_url = data["url"]
+        print(f"  [S3 UPLOAD] ✓ Uploaded: {s3_url}")
+        return s3_url
+    else:
+        raise Exception(f"Upload failed: {resp.status_code} {resp.text}")
+
 
 @app.post("/api/news/publish/{news_id}")
 async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
@@ -599,9 +658,22 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
         text_to_audio = f"Titolo: {news_item.proposed_title}\n\n{news_item.proposed_response}"
         summary, title_summary = await generate_summary(news_item.proposed_response)
         print(f"Summary: {summary}")
-        image_url = find_best_image(news_item.url)
-        print(f"Image URL: {image_url}")
         proposed_slug, category_slug = generate_slugs(news_item.proposed_title, news_item.category)
+
+        # Generate image with DALL-E 3 and upload to S3
+        try:
+            dalle_url = await generate_article_image(
+                title=news_item.proposed_title,
+                category=news_item.category,
+                tags=news_item.tags,
+                summary=summary
+            )
+            image_url = await upload_dalle_to_s3(dalle_url, news_item.proposed_title)
+        except Exception as img_err:
+            print(f"  [DALL-E] ✗ Failed, falling back to find_best_image: {img_err}")
+            image_url = find_best_image(news_item.url)
+
+        print(f"Image URL: {image_url}")
         print(f"Proposed slug: {proposed_slug}")
         # Format article data for CMS API
         article_data = {
