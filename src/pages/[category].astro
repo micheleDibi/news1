@@ -113,10 +113,11 @@ if (categorySlug === ultimOraSlug) {
   // Existing logic for regular categories
   category = getCategoryBySlug(categorySlug || '');
 
-  const isCategoryGone = !category;
-  if (isCategoryGone) {
-    Astro.response.status = 410;
-    Astro.response.headers.set('X-Robots-Tag', 'noindex');
+  if (!category) {
+    return new Response(`<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>410 - Contenuto rimosso</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#ef4444;margin:0">410</h1><p style="font-size:1.5rem;font-weight:bold">Contenuto rimosso</p><p>Questa pagina non è più disponibile.</p><a href="/" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#2563eb;color:white;border-radius:0.375rem;text-decoration:none">Torna alla home</a></div></body></html>`, {
+      status: 410,
+      headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' }
+    });
   }
 
   // Fetch available secondary categories for this primary category
@@ -160,9 +161,11 @@ if (articlesError) {
 }
 
 // Moved this check down, after category might be manually defined for ultim'ora
-if (!category) { // This should ideally not be hit if ultim'ora is handled, but as a safeguard
-  console.warn(`Category object is null/undefined for slug: ${categorySlug} after processing. Redirecting to 404.`);
-  return Astro.redirect('/404');
+if (!category) {
+  return new Response(`<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>410 - Contenuto rimosso</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#ef4444;margin:0">410</h1><p style="font-size:1.5rem;font-weight:bold">Contenuto rimosso</p><p>Questa pagina non è più disponibile.</p><a href="/" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#2563eb;color:white;border-radius:0.375rem;text-decoration:none">Torna alla home</a></div></body></html>`, {
+    status: 410,
+    headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' }
+  });
 }
 
 const totalPages = Math.max(1, Math.ceil((totalCount ?? 0) / PER_PAGE));
@@ -309,26 +312,14 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData(breadcrumbData
 ---
 
 <Layout
-  title={isCategoryGone ? "410 - Contenuto rimosso" : `${category.name} - EduNews24`}
-  description={isCategoryGone ? "Questa pagina non è più disponibile." : metaDescription}
-  keywords={isCategoryGone ? undefined : metaKeywords}
-  canonicalUrl={isCategoryGone ? undefined : canonicalUrl}
+  title={`${category.name} - EduNews24`}
+  description={metaDescription}
+  keywords={metaKeywords}
+  canonicalUrl={canonicalUrl}
 >
-  {!isCategoryGone && <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />}
-  {!isCategoryGone && <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />}
+  <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />
+  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
 
-  {isCategoryGone ? (
-    <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
-      <div class="max-w-max mx-auto text-center">
-        <div class="text-red-500 text-8xl sm:text-9xl font-bold tracking-tight">410</div>
-        <p class="mt-4 text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">Contenuto rimosso</p>
-        <p class="mt-2 text-lg text-gray-600">Questa pagina non è più disponibile.</p>
-        <div class="mt-6 flex space-x-4 justify-center">
-          <a href="/" class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary">Torna alla home</a>
-        </div>
-      </div>
-    </div>
-  ) : (
   <main class="bg-gray-50 min-h-screen py-8">
     <div class="container mx-auto px-4">
       <div class="flex flex-col lg:flex-row gap-8">
@@ -599,6 +590,5 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData(breadcrumbData
         </a>
       )}
     </nav>
-  )}
   )}
 </Layout>
