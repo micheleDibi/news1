@@ -114,7 +114,8 @@ if (categorySlug === ultimOraSlug) {
   category = getCategoryBySlug(categorySlug || '');
 
   if (!category) {
-    return Astro.redirect('/404');
+    Astro.response.status = 410;
+    Astro.response.headers.set('X-Robots-Tag', 'noindex');
   }
 
   // Fetch available secondary categories for this primary category
@@ -306,7 +307,22 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData(breadcrumbData
 
 ---
 
-<Layout 
+{!category ? (
+<Layout title="410 - Contenuto rimosso">
+  <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
+    <div class="max-w-max mx-auto text-center">
+      <div class="text-red-500 text-8xl sm:text-9xl font-bold tracking-tight">410</div>
+      <p class="mt-4 text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">Contenuto rimosso</p>
+      <p class="mt-2 text-lg text-gray-600">Questa pagina non è più disponibile.</p>
+      <div class="mt-6 flex space-x-4 justify-center">
+        <a href="/" class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary">Torna alla home</a>
+        <button onclick="history.back()" class="inline-flex items-center px-4 py-2 border border-gray-300 text-base font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">Torna indietro</button>
+      </div>
+    </div>
+  </div>
+</Layout>
+) : (
+<Layout
   title={`${category.name} - EduNews24`}
   description={metaDescription}
   keywords={metaKeywords}
@@ -587,4 +603,5 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData(breadcrumbData
     </nav>
   )}
 
-</Layout> 
+</Layout>
+)}

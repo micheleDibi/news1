@@ -23,8 +23,8 @@ const { data: article, error: articleError } = await supabase
   .single();
 
 if (articleError || !article) {
-  console.error('Error fetching article or article not found:', articleError);
-  return Astro.redirect('/404');
+  Astro.response.status = 410;
+  Astro.response.headers.set('X-Robots-Tag', 'noindex');
 }
 
 const categoryData = categories.find(c => c.slug === category);
@@ -272,7 +272,22 @@ const imageWidth = 1280;
 const imageHeight = 720;
 ---
 
-<Layout 
+{!article ? (
+<Layout title="410 - Contenuto rimosso">
+  <div class="min-h-[70vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
+    <div class="max-w-max mx-auto text-center">
+      <div class="text-red-500 text-8xl sm:text-9xl font-bold tracking-tight">410</div>
+      <p class="mt-4 text-4xl font-bold text-gray-900 tracking-tight sm:text-5xl">Contenuto rimosso</p>
+      <p class="mt-2 text-lg text-gray-600">Questo articolo non è più disponibile.</p>
+      <div class="mt-6 flex space-x-4 justify-center">
+        <a href="/" class="inline-flex items-center px-4 py-2 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-primary">Torna alla home</a>
+        <button onclick="history.back()" class="inline-flex items-center px-4 py-2 border border-gray-300 text-base font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">Torna indietro</button>
+      </div>
+    </div>
+  </div>
+</Layout>
+) : (
+<Layout
   title={`${article.title} - EduNews24`}
   description={`${article.excerpt} Leggi di più.`}
   canonicalUrl={`https://edunews24.it/${article.category_slug}/${article.slug}`}
@@ -510,6 +525,7 @@ const imageHeight = 720;
     </div>
   </main>
 </Layout>
+)}
 
 <style>
   .article-content :global(p) {
