@@ -922,6 +922,9 @@ export default function ArticleForm({ article }: ArticleFormProps) {
 
   const [showContactConfirm, setShowContactConfirm] = useState(false);
 
+  // State for FAQ
+  const [faqs, setFaqs] = useState<{question: string; answer: string}[]>(article?.faqs || []);
+  const [faqLoading, setFaqLoading] = useState(false);
 
   // State for secondary categories - RE-ADDING THESE
   const [availableSecondaryCategories, setAvailableSecondaryCategories] = useState<SecondaryCategory[]>([]);
@@ -1641,7 +1644,8 @@ const cancelContactForm = () => {
         summary: data.summary || '', // Include summary
         title_summary: data.title_summary || '', // Include title_summary
         video_url: sidebarVideoUrl || data.video_url || '', // Ensure video_url is included
-        video_duration: data.video_duration ?? videoDuration ?? null
+        video_duration: data.video_duration ?? videoDuration ?? null,
+        faqs: faqs.length > 0 ? faqs : null
       };
 
       // Let the API handle publication timestamps
@@ -2135,6 +2139,54 @@ const cancelContactForm = () => {
     }
   };
 
+  const handleGenerateFaq = async () => {
+    const currentTitle = getValues('title');
+    const currentContent = getValues('content');
+
+    if (!currentTitle || !currentContent) {
+      alert('Inserisci prima un titolo e del contenuto per generare le FAQ.');
+      return;
+    }
+
+    setFaqLoading(true);
+    try {
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = currentContent;
+      const plainTextContent = tempDiv.textContent || tempDiv.innerText || '';
+
+      const response = await fetch('/api/generate-faq', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
+        },
+        body: JSON.stringify({
+          title: currentTitle,
+          content: plainTextContent
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API error: ${errorText}`);
+      }
+
+      const result = await response.json();
+
+      if (result && result.faqs && Array.isArray(result.faqs)) {
+        setFaqs(result.faqs);
+      } else {
+        console.error('FAQ Generation Error:', result?.error || 'Unexpected response format');
+        alert("Errore nella generazione delle FAQ: " + (result?.error || 'Risposta inattesa dal server.'));
+      }
+    } catch (error) {
+      console.error('Errore generazione FAQ:', error);
+      alert('Errore nella generazione delle FAQ: ' + (error as Error).message);
+    } finally {
+      setFaqLoading(false);
+    }
+  };
+
   const primaryCategory = watch('category'); // Watch the primary category field
 
   // Fetch secondary categories when primary category changes
@@ -2367,6 +2419,73 @@ const cancelContactForm = () => {
                     />
                   )}
                 </div>
+
+                {/* FAQ Section - below editor */}
+                {faqs.length > 0 && (
+                  <div className="bg-gray-50 rounded-lg p-4 lg:p-6">
+                    <div className="flex items-center justify-between mb-3 lg:mb-4">
+                      <h3 className="text-base lg:text-lg font-medium text-gray-900">Domande Frequenti (FAQ)</h3>
+                      <button
+                        type="button"
+                        onClick={() => setFaqs([])}
+                        className="text-xs text-red-500 hover:text-red-700 transition-colors"
+                      >
+                        Rimuovi tutte
+                      </button>
+                    </div>
+                    <div className="space-y-4">
+                      {faqs.map((faq, index) => (
+                        <div key={index} className="bg-white rounded-md p-4 border border-gray-200">
+                          <div className="flex items-start justify-between mb-2">
+                            <label className="block text-sm font-medium text-gray-700">Domanda {index + 1}</label>
+                            <button
+                              type="button"
+                              onClick={() => setFaqs(faqs.filter((_, i) => i !== index))}
+                              className="text-red-400 hover:text-red-600 transition-colors"
+                              title="Rimuovi FAQ"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                          <input
+                            type="text"
+                            value={faq.question}
+                            onChange={(e) => {
+                              const updated = [...faqs];
+                              updated[index] = { ...updated[index], question: e.target.value };
+                              setFaqs(updated);
+                            }}
+                            className="block w-full rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm mb-2"
+                            placeholder="Domanda..."
+                          />
+                          <textarea
+                            value={faq.answer}
+                            onChange={(e) => {
+                              const updated = [...faqs];
+                              updated[index] = { ...updated[index], answer: e.target.value };
+                              setFaqs(updated);
+                            }}
+                            rows={3}
+                            className="block w-full rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
+                            placeholder="Risposta..."
+                          />
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setFaqs([...faqs, { question: '', answer: '' }])}
+                        className="inline-flex items-center px-3 py-1.5 border border-dashed border-gray-300 rounded-md text-xs font-medium text-gray-600 hover:border-gray-400 hover:text-gray-700 transition-colors"
+                      >
+                        <svg className="w-3 h-3 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                        Aggiungi FAQ
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Sidebar - Right column */}
@@ -2428,19 +2547,6 @@ const cancelContactForm = () => {
                       </div>
                     )}
 
-                    {/* Show contact form checkbox */}
-                    <div className="flex items-center">
-                      <input
-                        type="checkbox"
-                        id="show_contact_form"
-                        {...register('show_contact_form')}
-                        className="h-4 w-4 text-primary border-gray-300 rounded focus:ring-primary"
-                      />
-                      <label htmlFor="show_contact_form" className="ml-2 block text-sm text-gray-700">
-                        Mostra Form Contatti in Articolo
-                      </label>
-                    </div>
-                    
                     {/* Only show featured checkbox if user has permission */}
                     {canFeatureArticles && (
                       <div className="flex items-center">
@@ -3033,6 +3139,43 @@ const cancelContactForm = () => {
                   </div>
 
                 </div>
+
+                {/* FAQ Generate Button */}
+                <div className="bg-gray-50 rounded-lg p-4 lg:p-6">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base lg:text-lg font-medium text-gray-900">FAQ</h3>
+                    <button
+                      type="button"
+                      onClick={handleGenerateFaq}
+                      disabled={faqLoading}
+                      className="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md shadow-sm text-xs font-medium text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title="Genera FAQ con AI"
+                    >
+                      {faqLoading ? (
+                        <>
+                          <svg className="animate-spin -ml-1 mr-1.5 h-3 w-3 text-gray-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          <span className="hidden sm:inline">Generando...</span>
+                          <span className="sm:hidden">...</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3 h-3 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                          <span className="hidden sm:inline">Genera F.A.Q.</span>
+                          <span className="sm:hidden">FAQ</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {faqs.length > 0 && (
+                    <p className="text-xs text-green-600 mt-2">{faqs.length} FAQ presenti</p>
+                  )}
+                </div>
+
                     {/* Show contact form checkbox */}
                     {canEditContactForm &&(
                       <div className="flex items-center">

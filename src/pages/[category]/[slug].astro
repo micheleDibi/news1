@@ -229,31 +229,55 @@ if (inOl) {
 
 const formattedContent = htmlBlocks.join('\n');
 
-// Extract FAQ items from markdown for structured data (FAQPage schema)
-const faqItems: { question: string; answer: string }[] = [];
-const faqSectionMatch = article.content.match(/^##\s+Domande frequenti\s*$/im);
+// Get FAQ items: prefer DB field, fallback to markdown extraction for older articles
+let faqItems: { question: string; answer: string }[] = [];
 
-if (faqSectionMatch) {
-  const faqContent = article.content.substring(
-    faqSectionMatch.index! + faqSectionMatch[0].length
-  );
-  const faqParts = faqContent.split(/^###\s+/m).filter(Boolean);
-
-  for (const part of faqParts) {
-    const partLines = part.trim().split('\n');
-    const question = partLines[0].replace(/\??\s*\{#[^}]+\}/, '').trim();
-    const answer = partLines.slice(1).join(' ').trim();
-    if (question && answer) {
-      const cleanAnswer = answer
-        .replace(/\*\*(.*?)\*\*/g, '$1')
-        .replace(/(?<![\w])_([^_]+)_(?![\w])/g, '$1')
-        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-      faqItems.push({ question: question.replace(/\?$/, '') + '?', answer: cleanAnswer });
+if (article.faqs && Array.isArray(article.faqs) && article.faqs.length > 0) {
+  faqItems = article.faqs;
+} else {
+  // Fallback: extract from markdown for backward compatibility
+  const faqSectionMatch = article.content.match(/^##\s+Domande frequenti\s*$/im);
+  if (faqSectionMatch) {
+    const faqContent = article.content.substring(
+      faqSectionMatch.index! + faqSectionMatch[0].length
+    );
+    const faqParts = faqContent.split(/^###\s+/m).filter(Boolean);
+    for (const part of faqParts) {
+      const partLines = part.trim().split('\n');
+      const question = partLines[0].replace(/\??\s*\{#[^}]+\}/, '').trim();
+      const answer = partLines.slice(1).join(' ').trim();
+      if (question && answer) {
+        const cleanAnswer = answer
+          .replace(/\*\*(.*?)\*\*/g, '$1')
+          .replace(/(?<![\w])_([^_]+)_(?![\w])/g, '$1')
+          .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+        faqItems.push({ question: question.replace(/\?$/, '') + '?', answer: cleanAnswer });
+      }
     }
   }
 }
 
 const faqStructuredData = generateFAQStructuredData(faqItems);
+
+// If FAQ items came from markdown fallback, strip the FAQ section from rendered content to avoid duplication
+let finalContent = formattedContent;
+if (faqItems.length > 0 && !(article.faqs && Array.isArray(article.faqs) && article.faqs.length > 0)) {
+  const faqHtmlIndex = finalContent.indexOf('<h2 id="domande-frequenti"');
+  if (faqHtmlIndex !== -1) {
+    finalContent = finalContent.substring(0, faqHtmlIndex).trim();
+  }
+}
+if (faqItems.length > 0) {
+  // Find the last </li></ul> of the TOC (first <ul> block containing anchor links)
+  const tocEndPattern = /(<li><a\s+href="#[^"]*"[^>]*>[^<]*<\/a><\/li>)\s*(<\/ul>)/;
+  const tocMatch = finalContent.match(tocEndPattern);
+  if (tocMatch) {
+    finalContent = finalContent.replace(
+      tocEndPattern,
+      `$1\n<li><a href="#domande-frequenti" class="text-primary hover:underline">Domande frequenti</a></li>\n$2`
+    );
+  }
+}
 
 // Helper function to generate srcset URLs
 // IMPORTANT: This assumes your backend /api/upload.ts will be modified
@@ -395,7 +419,7 @@ const imageHeight = 720;
               </div>
 
               <!-- Article Content -->
-              <div class="article-content" set:html={formattedContent} />
+              <div class="article-content" set:html={finalContent} />
 
               <!-- Published Date -->
               <div class="text-right mt-8">
@@ -405,6 +429,21 @@ const imageHeight = 720;
               </div>
             </div>
           </article>
+
+          {/* FAQ Section - below article */}
+          {faqItems.length > 0 && (
+            <section class="bg-white rounded-lg shadow-sm p-6 md:p-8">
+              <h2 id="domande-frequenti" class="text-2xl font-bold text-gray-900 mb-6">Domande frequenti</h2>
+              <div class="space-y-6">
+                {faqItems.map((faq) => (
+                  <div class="faq-item">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-2">{faq.question}</h3>
+                    <p class="text-gray-700 leading-relaxed">{faq.answer}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {creatorProfile && (
             <section class="w-full bg-sport-50 rounded-lg shadow-md p-6 flex items-center gap-6 mb-8">

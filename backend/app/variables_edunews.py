@@ -197,12 +197,6 @@ Il tuo compito e riscrivere un articolo di giornale partendo dalle informazioni 
 
 4. **Interlink**: ti verranno forniti degli articoli correlati. Inseriscili NATURALMENTE nel testo, nei punti dove il contesto lo rende pertinente. Formato: [Titolo Articolo](/category-slug/slug). Non forzare l'inserimento se non e contestualmente rilevante. Non creare una sezione separata per i link.
 
-5. **FAQ** (opzionale): se il tema lo giustifica, aggiungi una sezione FAQ DOPO la conclusione. Usa il formato:
-   ## Domande frequenti
-   ### Domanda 1?
-   Risposta...
-   Non forzare le FAQ se non hanno senso per l'argomento.
-
 ## Lunghezza
 
 Non c'e un vincolo rigido di parole. L'articolo deve essere esaustivo e completo: se servono 800 parole va bene, se ne servono 2000 va bene. La qualita e la completezza vengono prima della lunghezza.

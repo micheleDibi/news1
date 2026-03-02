@@ -44,6 +44,7 @@ export interface Article {
   secondary_category_slugs?: string[] | null;
   video_url?: string | null;
   video_duration?: number | null;
+  faqs?: { question: string; answer: string }[] | null;
 }
 
 export interface Category {

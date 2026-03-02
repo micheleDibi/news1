@@ -54,8 +54,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     // Set default image if not provided
     if (!article.image_url) {
-      const titleSeed = slugify(article.title || `seed-${Date.now()}`);
-      article.image_url = `https://picsum.photos/seed/${titleSeed}/800/600`;
+      article.image_url = '/edunews24_immagine_da_sostituire.png';
     }
 
     // Set default creator if not provided

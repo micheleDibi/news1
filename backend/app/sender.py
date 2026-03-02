@@ -21,8 +21,8 @@ from .variables_edunews import (
 )
 
 # API configuration
-BASE_URL = "http://localhost:8000"
-TELEGRAM_URL = "http://localhost:8004"
+BASE_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+TELEGRAM_URL = os.getenv("TELEGRAM_URL", "http://localhost:8004")
 PUBLIC_SUPABASE_URL = os.getenv("PUBLIC_SUPABASE_URL")
 PUBLIC_SUPABASE_ANON_KEY = os.getenv("PUBLIC_SUPABASE_ANON_KEY")
 # Supabase configuration

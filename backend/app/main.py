@@ -193,9 +193,6 @@ async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_d
 
     news_item: models.New = get_new_with_id(news_id, db)
     article_response: schemas.NewsArticle = get_reconstructed_article_via_claude(news_item)
-    if article_response is None:
-        print("Claude reconstruction failed, falling back to OpenAI")
-        article_response = get_reconstructed_article_via_openai(news_item)
     update_news_item_with_reconstruction(news_item, article_response, db)
     return article_response
 
@@ -660,18 +657,9 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
         print(f"Summary: {summary}")
         proposed_slug, category_slug = generate_slugs(news_item.proposed_title, news_item.category)
 
-        # Generate image with DALL-E 3 and upload to S3
-        try:
-            dalle_url = await generate_article_image(
-                title=news_item.proposed_title,
-                category=news_item.category,
-                tags=news_item.tags,
-                summary=summary
-            )
-            image_url = await upload_dalle_to_s3(dalle_url, news_item.proposed_title)
-        except Exception as img_err:
-            print(f"  [DALL-E] ✗ Failed, falling back to find_best_image: {img_err}")
-            image_url = find_best_image(news_item.url)
+        # Use default placeholder image
+        frontend_url = os.getenv('FRONTEND_URL', 'https://edunews24.it')
+        image_url = f"{frontend_url}/edunews24_immagine_da_sostituire.png"
 
         print(f"Image URL: {image_url}")
         print(f"Proposed slug: {proposed_slug}")
