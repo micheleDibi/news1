@@ -828,7 +828,7 @@ def backfill_missing_interpello_institutions(limit: int = 300) -> Dict[str, int]
 def run_news_pipeline(source_list: List[Dict[str, str]] = None):
     """Execute the complete news pipeline"""
 
-    trigger_bandi_refresh()
+   # trigger_bandi_refresh()
 
     source_list = fetch_sources_from_supabase()
     if not source_list:

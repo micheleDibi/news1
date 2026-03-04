@@ -25,6 +25,41 @@ from firecrawl import Firecrawl
 import boto3
 import math
 import re
+import ast
+
+
+class InterpelloArticleGenerateRequest(BaseModel):
+    interpello_name: str | None = None
+    interpello_date: str | None = None
+    interpello_description: str | None = None
+    interpello_link: str | None = None
+    city_name: str | None = None
+    region_name: str | None = None
+
+
+class InterpelloArticleGenerateResponse(BaseModel):
+    article_title: str
+    article_subtitle: str
+    article_content: str
+
+
+class InterpelloFAQItem(BaseModel):
+    question: str
+    answer: str
+
+
+class InterpelloFaqGenerateRequest(BaseModel):
+    interpello_name: str | None = None
+    interpello_date: str | None = None
+    interpello_description: str | None = None
+    interpello_link: str | None = None
+    city_name: str | None = None
+    region_name: str | None = None
+    source_url: str | None = "https://scuolainterpelli.it/interpelli-scuola-aggiornati/"
+
+
+class InterpelloFaqGenerateResponse(BaseModel):
+    faqs: list[InterpelloFAQItem]
 
 class ExtractSchema(BaseModel):
     title: str
@@ -91,6 +126,205 @@ def filter_existing_links(all_links: List[str], db: Session) -> List[str]:
             filtered_links.append(link)
             
     return filtered_links
+
+
+def _extract_json_object_from_text(text: str) -> dict | None:
+    if not text:
+        return None
+
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    cleaned = re.sub(r'[\x00-\x1f]+', '', text)
+    match = re.search(r'\{[\s\S]*\}', cleaned)
+    if not match:
+        return None
+
+    candidate = match.group(0)
+    try:
+        return json.loads(candidate)
+    except Exception:
+        pass
+
+    try:
+        python_like = ast.literal_eval(candidate)
+        if isinstance(python_like, dict):
+            return python_like
+    except Exception:
+        return None
+
+    return None
+
+
+def _fetch_text_context_from_url(url: str, max_length: int = 10000) -> str:
+    if not url:
+        return ""
+    try:
+        response = requests.get(
+            url,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+            }
+        )
+        if response.status_code != 200:
+            return ""
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        text = " ".join(soup.stripped_strings)
+        return text[:max_length]
+    except Exception:
+        return ""
+
+
+@app.post("/api/interpelli/generate-article", response_model=InterpelloArticleGenerateResponse)
+async def generate_interpello_article(payload: InterpelloArticleGenerateRequest):
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY missing on backend")
+
+    prompt = f"""
+Sei un giornalista professionista specializzato in interpelli scolastici italiani.
+Restituisci SOLO JSON valido nel formato:
+{{"article_title":"...","article_subtitle":"...","article_content":"..."}}
+
+Regole:
+- article_title: max 110 caratteri, chiaro e informativo.
+- article_subtitle: 140-220 caratteri, tono giornalistico professionale.
+- article_content: articolo in markdown con:
+  - Introduzione
+  - Dettagli dell'interpello
+  - Contesto territoriale
+  - Aspetti procedurali
+  - Conclusioni
+- Non inventare dati non presenti.
+- Se manca un'informazione, dichiaralo in modo trasparente.
+
+Dati interpello:
+- Nome: {payload.interpello_name or 'N/D'}
+- Data: {payload.interpello_date or 'N/D'}
+- Regione: {payload.region_name or 'N/D'}
+- Città: {payload.city_name or 'N/D'}
+- Descrizione: {payload.interpello_description or 'N/D'}
+- Link ufficiale: {payload.interpello_link or 'N/D'}
+"""
+
+    try:
+        response = client_openai.responses.create(
+            model="gpt-4.1",
+            input=prompt,
+            temperature=0.4
+        )
+
+        text = getattr(response, "output_text", "") or ""
+        if not text and getattr(response, "output", None):
+            try:
+                msg = response.output[0]
+                text = msg.content[0].text if msg and msg.content else ""
+            except Exception:
+                text = ""
+
+        parsed = _extract_json_object_from_text(text)
+        if not parsed:
+            raise HTTPException(status_code=502, detail="Invalid OpenAI response format")
+
+        article_title = str(parsed.get("article_title", "")).strip()
+        article_subtitle = str(parsed.get("article_subtitle", "")).strip()
+        article_content = str(parsed.get("article_content", "")).strip()
+
+        if not article_title or not article_subtitle or not article_content:
+            raise HTTPException(status_code=502, detail="OpenAI response missing required fields")
+
+        return InterpelloArticleGenerateResponse(
+            article_title=article_title,
+            article_subtitle=article_subtitle,
+            article_content=article_content
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate interpello article: {str(e)}")
+
+
+@app.post("/api/interpelli/generate-faq", response_model=InterpelloFaqGenerateResponse)
+async def generate_interpello_faq(payload: InterpelloFaqGenerateRequest):
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY missing on backend")
+
+    source_context = _fetch_text_context_from_url(
+        payload.source_url or "https://scuolainterpelli.it/interpelli-scuola-aggiornati/",
+        max_length=10000
+    )
+
+    prompt = f"""
+Sei un esperto di normativa scolastica italiana.
+Genera ESATTAMENTE 6 FAQ (domande e risposte) utili per questo interpello.
+Usa i dati dell'interpello e il contesto della pagina sorgente.
+
+Restituisci SOLO JSON valido in questo formato:
+{{"faqs":[{{"question":"...","answer":"..."}}]}}
+
+Regole:
+- Esattamente 6 elementi in faqs.
+- Domande pratiche e specifiche.
+- Risposte concise ma complete (2-4 frasi).
+- Non inventare dati puntuali non presenti; quando manca informazione, dichiaralo chiaramente.
+
+Dati interpello:
+- Nome/Istituto: {payload.interpello_name or 'N/D'}
+- Data: {payload.interpello_date or 'N/D'}
+- Regione: {payload.region_name or 'N/D'}
+- Città: {payload.city_name or 'N/D'}
+- Descrizione: {payload.interpello_description or 'N/D'}
+- Link ufficiale: {payload.interpello_link or 'N/D'}
+
+Contesto pagina interpelli (estratto testo):
+{source_context or 'N/D'}
+"""
+
+    try:
+        response = client_openai.responses.create(
+            model="gpt-4.1",
+            input=prompt,
+            temperature=0.2
+        )
+
+        text = getattr(response, "output_text", "") or ""
+        if not text and getattr(response, "output", None):
+            try:
+                msg = response.output[0]
+                text = msg.content[0].text if msg and msg.content else ""
+            except Exception:
+                text = ""
+
+        parsed = _extract_json_object_from_text(text)
+        if not parsed:
+            raise HTTPException(status_code=502, detail="Invalid OpenAI FAQ response format")
+
+        items = parsed.get("faqs", [])
+        if not isinstance(items, list):
+            raise HTTPException(status_code=502, detail="OpenAI FAQ response missing faqs array")
+
+        normalized: list[InterpelloFAQItem] = []
+        for item in items:
+            question = str((item or {}).get("question", "")).strip()
+            answer = str((item or {}).get("answer", "")).strip()
+            if not question or not answer:
+                continue
+            if not question.endswith("?"):
+                question = f"{question}?"
+            normalized.append(InterpelloFAQItem(question=question, answer=answer))
+
+        normalized = normalized[:6]
+        if len(normalized) != 6:
+            raise HTTPException(status_code=502, detail="OpenAI FAQ response must contain exactly 6 valid FAQs")
+
+        return InterpelloFaqGenerateResponse(faqs=normalized)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate interpello FAQ: {str(e)}")
 
 @app.post("/scrape_news")
 async def scrape_news(url: str, valid_prefix: str = None, db: Session = Depends(get_db)):

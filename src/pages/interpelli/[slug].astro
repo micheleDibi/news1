@@ -28,8 +28,6 @@ interface FAQItem {
   answer: string;
 }
 
-const INTERPELLI_SOURCE_URL = 'https://scuolainterpelli.it/interpelli-scuola-aggiornati/';
-
 // Function to generate URL-friendly slug from interpello data
 function generateInterpelloSlug(interpello: Interpello): string {
   const parts = [
@@ -50,7 +48,7 @@ function generateInterpelloSlug(interpello: Interpello): string {
 // Initialize Supabase client
 const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
 const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
-const openAiKey = import.meta.env.OPENAI_API_KEY;
+const backendUrl = import.meta.env.BACKEND_URL || 'http://localhost:8000';
 
 async function loadInterpelliData(): Promise<Interpello[]> {
   try {
@@ -87,102 +85,37 @@ function isGenericTitle(value?: string | null): boolean {
   return normalized === 'visualizza interpelli' || normalized === 'interpelli' || normalized.length < 12;
 }
 
-async function generateArticleWithOpenAI(target: Interpello): Promise<{ article_title: string; article_subtitle: string; article_content: string } | null> {
-  if (!openAiKey) return null;
-
-  const prompt = `
-Sei un giornalista professionista specializzato in interpelli scolastici italiani.
-Restituisci SOLO JSON valido nel formato:
-{"article_title":"...","article_subtitle":"...","article_content":"..."}
-
-Regole:
-- article_title: max 110 caratteri, chiaro e informativo.
-- article_subtitle: 140-220 caratteri, tono giornalistico professionale.
-- article_content: articolo in markdown con:
-  - Introduzione
-  - Dettagli dell'interpello
-  - Contesto territoriale
-  - Aspetti procedurali
-  - Conclusioni
-- Non inventare dati non presenti.
-- Se manca un'informazione, dichiaralo in modo trasparente.
-
-Dati interpello:
-- Nome: ${target.interpello_name || 'N/D'}
-- Data: ${target.interpello_date || 'N/D'}
-- Regione: ${target.region_name || 'N/D'}
-- Città: ${target.city_name || 'N/D'}
-- Descrizione: ${target.interpello_description || 'N/D'}
-- Link ufficiale: ${target.interpello_link || 'N/D'}
-`;
-
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openAiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'gpt-4.1',
-      input: prompt,
-      temperature: 0.4
-    })
-  });
-
-  if (!response.ok) {
-    console.error('OpenAI request failed:', await response.text());
-    return null;
-  }
-
-  const data = await response.json();
-  const messageOutput = data.output?.find((item: any) => item.type === 'message');
-  const text = messageOutput?.content?.[0]?.text || '';
-
+async function generateArticleViaBackend(target: Interpello): Promise<{ article_title: string; article_subtitle: string; article_content: string } | null> {
   try {
-    const parsed = JSON.parse(text);
-    const article_title = String(parsed?.article_title || '').trim();
-    const article_subtitle = String(parsed?.article_subtitle || '').trim();
-    const article_content = String(parsed?.article_content || '').trim();
-    if (!article_title || !article_subtitle || !article_content) return null;
-    return { article_title, article_subtitle, article_content };
-  } catch {
-    const cleaned = text.replace(/[\u0000-\u0019]+/g, '');
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    try {
-      const parsed = JSON.parse(match[0]);
-      const article_title = String(parsed?.article_title || '').trim();
-      const article_subtitle = String(parsed?.article_subtitle || '').trim();
-      const article_content = String(parsed?.article_content || '').trim();
-      if (!article_title || !article_subtitle || !article_content) return null;
-      return { article_title, article_subtitle, article_content };
-    } catch {
-      return null;
-    }
-  }
-}
-
-async function fetchInterpelliSourceContext(): Promise<string> {
-  try {
-    const response = await fetch(INTERPELLI_SOURCE_URL, {
+    const response = await fetch(`${backendUrl}/api/interpelli/generate-article`, {
+      method: 'POST',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36'
-      }
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        interpello_name: target.interpello_name,
+        interpello_date: target.interpello_date,
+        interpello_description: target.interpello_description,
+        interpello_link: target.interpello_link,
+        city_name: target.city_name,
+        region_name: target.region_name
+      })
     });
 
-    if (!response.ok) return '';
+    if (!response.ok) {
+      console.error('Backend generation request failed:', await response.text());
+      return null;
+    }
 
-    const html = await response.text();
-    const text = html
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    return text.slice(0, 10000);
-  } catch {
-    return '';
+    const data = await response.json();
+    const article_title = String(data?.article_title || '').trim();
+    const article_subtitle = String(data?.article_subtitle || '').trim();
+    const article_content = String(data?.article_content || '').trim();
+    if (!article_title || !article_subtitle || !article_content) return null;
+    return { article_title, article_subtitle, article_content };
+  } catch (error) {
+    console.error('Error calling backend article generation:', error);
+    return null;
   }
 }
 
@@ -222,86 +155,47 @@ function appendFaqToArticleContent(content: string, faqs: FAQItem[]): string {
   return `${cleanedContent}\n\n${faqMarkdown}`.trim();
 }
 
-async function generateFaqWithOpenAI(target: Interpello, sourceContext: string): Promise<FAQItem[] | null> {
-  if (!openAiKey) return null;
+async function generateFaqViaBackend(target: Interpello): Promise<FAQItem[] | null> {
+  try {
+    const response = await fetch(`${backendUrl}/api/interpelli/generate-faq`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        interpello_name: target.interpello_name,
+        interpello_date: target.interpello_date,
+        interpello_description: target.interpello_description,
+        interpello_link: target.interpello_link,
+        city_name: target.city_name,
+        region_name: target.region_name
+      })
+    });
 
-  const prompt = `
-Sei un esperto di normativa scolastica italiana.
-Genera ESATTAMENTE 6 FAQ (domande e risposte) utili per questo interpello.
-Usa i dati dell'interpello e anche il contesto estratto da questa pagina: ${INTERPELLI_SOURCE_URL}
-
-Restituisci SOLO JSON valido in questo formato:
-{"faqs":[{"question":"...","answer":"..."}]}
-
-Regole:
-- Esattamente 6 elementi in faqs.
-- Domande pratiche e specifiche.
-- Risposte concise ma complete (2-4 frasi).
-- Non inventare dati puntuali non presenti; quando manca informazione, dichiaralo chiaramente.
-
-Dati interpello:
-- Nome/Istituto: ${target.interpello_name || 'N/D'}
-- Data: ${target.interpello_date || 'N/D'}
-- Regione: ${target.region_name || 'N/D'}
-- Città: ${target.city_name || 'N/D'}
-- Descrizione: ${target.interpello_description || 'N/D'}
-- Link ufficiale: ${target.interpello_link || 'N/D'}
-
-Contesto pagina interpelli (estratto testo):
-${sourceContext || 'N/D'}
-`;
-
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${openAiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'gpt-4.1',
-      input: prompt,
-      temperature: 0.2
-    })
-  });
-
-  if (!response.ok) {
-    console.error('OpenAI FAQ request failed:', await response.text());
-    return null;
-  }
-
-  const data = await response.json();
-  const messageOutput = data.output?.find((item: any) => item.type === 'message');
-  const text = messageOutput?.content?.[0]?.text || '';
-
-  const tryParseFaq = (raw: string): FAQItem[] | null => {
-    try {
-      const parsed = JSON.parse(raw);
-      const items = Array.isArray(parsed?.faqs) ? parsed.faqs : [];
-      const normalized = items
-        .map((item: any) => ({
-          question: String(item?.question || '').trim(),
-          answer: String(item?.answer || '').trim()
-        }))
-        .filter((item: FAQItem) => item.question && item.answer)
-        .slice(0, 6)
-        .map((item: FAQItem) => ({
-          question: item.question.endsWith('?') ? item.question : `${item.question}?`,
-          answer: item.answer
-        }));
-
-      return normalized.length === 6 ? normalized : null;
-    } catch {
+    if (!response.ok) {
+      console.error('Backend FAQ generation request failed:', await response.text());
       return null;
     }
-  };
 
-  const direct = tryParseFaq(text);
-  if (direct) return direct;
+    const data = await response.json();
+    const items = Array.isArray(data?.faqs) ? data.faqs : [];
+    const normalized = items
+      .map((item: any) => ({
+        question: String(item?.question || '').trim(),
+        answer: String(item?.answer || '').trim()
+      }))
+      .filter((item: FAQItem) => item.question && item.answer)
+      .slice(0, 6)
+      .map((item: FAQItem) => ({
+        question: item.question.endsWith('?') ? item.question : `${item.question}?`,
+        answer: item.answer
+      }));
 
-  const cleaned = text.replace(/[\u0000-\u0019]+/g, '');
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  return tryParseFaq(match[0]);
+    return normalized.length === 6 ? normalized : null;
+  } catch (error) {
+    console.error('Error calling backend FAQ generation:', error);
+    return null;
+  }
 }
 
 let faqItems: FAQItem[] = [];
@@ -311,9 +205,9 @@ if (interpello) {
     || !interpello.article_subtitle?.trim()
     || !interpello.article_content?.trim();
 
-  if (shouldGenerate && supabaseUrl && supabaseKey && openAiKey) {
+  if (shouldGenerate && supabaseUrl && supabaseKey) {
     try {
-      const generated = await generateArticleWithOpenAI(interpello);
+      const generated = await generateArticleViaBackend(interpello);
       if (generated) {
         const supabase = createClient(supabaseUrl, supabaseKey);
         const { error: updateError } = await supabase
@@ -345,10 +239,9 @@ if (interpello) {
   faqItems = extractFaqFromMarkdown(interpello.article_content);
   const shouldGenerateFaq = faqItems.length < 6;
 
-  if (shouldGenerateFaq && supabaseUrl && supabaseKey && openAiKey && interpello.article_content?.trim()) {
+  if (shouldGenerateFaq && supabaseUrl && supabaseKey && interpello.article_content?.trim()) {
     try {
-      const sourceContext = await fetchInterpelliSourceContext();
-      const generatedFaq = await generateFaqWithOpenAI(interpello, sourceContext);
+      const generatedFaq = await generateFaqViaBackend(interpello);
 
       if (generatedFaq && generatedFaq.length === 6) {
         const updatedContentWithFaq = appendFaqToArticleContent(interpello.article_content, generatedFaq);
@@ -412,6 +305,7 @@ const normalizeArticleHeadingsToH2 = (markdown: string): { markdown: string; hea
   const lines = markdown.split('\n');
   const headings: { id: string; title: string }[] = [];
   const usedIds = new Set<string>();
+  let isInFaqSection = false;
 
   const normalizedLines = lines.map((line) => {
     const match = line.match(/^\s{0,3}#{1,6}\s+(.+)$/);
@@ -419,6 +313,17 @@ const normalizeArticleHeadingsToH2 = (markdown: string): { markdown: string; hea
 
     const rawTitle = match[1].trim();
     const cleanedTitle = rawTitle.replace(/\s*#+\s*$/, '').trim();
+    const isFaqMainHeading = /^domande\s+frequenti$/i.test(cleanedTitle);
+
+    if (isFaqMainHeading) {
+      isInFaqSection = true;
+      return `## ${cleanedTitle}`;
+    }
+
+    if (isInFaqSection) {
+      return `### ${cleanedTitle}`;
+    }
+
     let baseId = slugifyHeading(cleanedTitle) || 'sezione';
     let finalId = baseId;
     let i = 2;
@@ -648,26 +553,6 @@ const faqStructuredData = faqItems.length > 0 ? generateFAQStructuredData(faqIte
           ) : (
             <div class="border-t pt-6">
               <p class="text-gray-600">L'articolo dettagliato per questo interpello sarà disponibile a breve.</p>
-            </div>
-          )}
-
-          {faqItems.length > 0 && (
-            <div class="mt-6 border-t pt-6">
-              <details class="group border border-gray-200 rounded-md bg-white">
-                <summary class="list-none cursor-pointer px-4 py-3 flex items-center justify-between">
-                  <span class="text-sm font-semibold text-gray-800">FAQ Interpello (6 domande)</span>
-                  <span class="text-xs text-primary group-open:hidden">Mostra</span>
-                  <span class="text-xs text-primary hidden group-open:inline">Nascondi</span>
-                </summary>
-                <div class="px-4 pb-4 space-y-4">
-                  {faqItems.slice(0, 6).map((faq) => (
-                    <div>
-                      <h3 class="text-sm font-semibold text-gray-900 mb-1">{faq.question}</h3>
-                      <p class="text-sm text-gray-700 leading-relaxed">{faq.answer}</p>
-                    </div>
-                  ))}
-                </div>
-              </details>
             </div>
           )}
 
