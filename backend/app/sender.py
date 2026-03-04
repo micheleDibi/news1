@@ -4,6 +4,9 @@ import time
 from datetime import datetime, timezone
 import schedule
 from typing import List, Dict, Any, Tuple, Optional
+import re
+from html import unescape
+from urllib.parse import urljoin, urlparse
 from . import schemas
 import pytz
 import os
@@ -32,6 +35,7 @@ SUPABASE_KEY = PUBLIC_SUPABASE_ANON_KEY
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4321")
 REFRESH_ENDPOINT = f"{FRONTEND_URL}/api/bandi/refresh"
 SCHEDULE_MINUTES = 60 # Run every hour
+INTERPELLI_SOURCE_URL = "https://scuolainterpelli.it/interpelli-scuola-aggiornati/"
 
 # Pydantic models for firecrawl extraction
 class NestedModel1(BaseModel):
@@ -55,6 +59,171 @@ class NestedModel1Interpelli(BaseModel):
 
 class ExtractSchemaInterpelli(BaseModel):
     regions_interpelli: list[NestedModel1Interpelli] = None
+
+
+def _is_missing_or_generic_institution(value: Optional[str]) -> bool:
+    if not value:
+        return True
+    normalized = value.strip().lower()
+    if not normalized:
+        return True
+    generic_tokens = [
+        "visualizza interpelli",
+        "interpelli",
+        "clicca qui",
+        "dettagli"
+    ]
+    return normalized in generic_tokens or len(normalized) < 6
+
+
+def _extract_clean_title_from_html(html: str) -> Optional[str]:
+    if not html:
+        return None
+
+    patterns = [
+        r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<title[^>]*>(.*?)</title>',
+        r'<h1[^>]*>(.*?)</h1>'
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+
+        raw_value = re.sub(r'<[^>]+>', ' ', match.group(1))
+        cleaned = unescape(raw_value)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        if cleaned:
+            cleaned = re.sub(r'\s*[\|\-–—]\s*(scuolainterpelli\.it|interpelli scuola.*)$', '', cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r'^interpelli?\s*[:\-–—]\s*', '', cleaned, flags=re.IGNORECASE)
+            cleaned = cleaned.strip(' -–—|')
+            if cleaned:
+                return cleaned
+
+    return None
+
+
+def _normalize_url(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    parsed = urlparse(value.strip())
+    path = parsed.path.rstrip('/')
+    return f"{parsed.netloc.lower()}{path}"
+
+
+def _clean_institution_candidate(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    cleaned = unescape(value)
+    cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' \t\n\r-–—|:')
+    cleaned = re.sub(r'^(vai all\'interpello|visualizza interpelli)\s*', '', cleaned, flags=re.IGNORECASE).strip()
+    if _is_missing_or_generic_institution(cleaned):
+        return None
+    if len(cleaned) > 180:
+        return None
+    return cleaned
+
+
+def _fetch_page_html(url: Optional[str]) -> str:
+    if not url:
+        return ""
+    try:
+        response = requests.get(
+            url,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+            }
+        )
+        if response.status_code != 200:
+            return ""
+        return response.text
+    except Exception as e:
+        print(f"Failed to fetch page html for {url}: {str(e)}")
+        return ""
+
+
+def _extract_institution_from_elenco_html(elenco_html: str, elenco_url: str, interpello_link: Optional[str]) -> Optional[str]:
+    if not elenco_html or not interpello_link:
+        return None
+
+    target_norm = _normalize_url(interpello_link)
+    if not target_norm:
+        return None
+
+    anchor_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>', re.IGNORECASE)
+    for match in anchor_pattern.finditer(elenco_html):
+        href_raw = match.group(1).strip()
+        href_abs = urljoin(elenco_url, href_raw)
+        href_norm = _normalize_url(href_abs)
+        if not href_norm:
+            continue
+
+        if target_norm != href_norm and target_norm not in href_norm and href_norm not in target_norm:
+            continue
+
+        anchor_text = _clean_institution_candidate(match.group(2))
+        if anchor_text:
+            return anchor_text
+
+        start = max(0, match.start() - 1400)
+        end = min(len(elenco_html), match.end() + 1400)
+        context_html = elenco_html[start:end]
+        context_text = re.sub(r'<script[\s\S]*?</script>', ' ', context_html, flags=re.IGNORECASE)
+        context_text = re.sub(r'<style[\s\S]*?</style>', ' ', context_text, flags=re.IGNORECASE)
+        context_text = re.sub(r'<[^>]+>', ' ', context_text)
+        context_text = unescape(re.sub(r'\s+', ' ', context_text)).strip()
+
+        candidate_patterns = [
+            r'((?:Istituto|Liceo|I\.C\.|Istituzione\s+scolastica|Scuola)[^\.;\|\n]{6,120})',
+            r'((?:Istituto\s+Comprensivo|Liceo\s+[^\.;\|\n]+|Scuola\s+[^\.;\|\n]+))'
+        ]
+
+        for pattern in candidate_patterns:
+            m = re.search(pattern, context_text, flags=re.IGNORECASE)
+            if m:
+                candidate = _clean_institution_candidate(m.group(1))
+                if candidate:
+                    return candidate
+
+    return None
+
+
+def _extract_institution_from_link(interpello_link: Optional[str]) -> Optional[str]:
+    if not interpello_link:
+        return None
+
+    try:
+        html = _fetch_page_html(interpello_link)
+        if not html:
+            return None
+
+        from_title = _clean_institution_candidate(_extract_clean_title_from_html(html))
+        if from_title:
+            return from_title
+
+        text = re.sub(r'<script[\s\S]*?</script>', ' ', html, flags=re.IGNORECASE)
+        text = re.sub(r'<style[\s\S]*?</style>', ' ', text, flags=re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = unescape(re.sub(r'\s+', ' ', text)).strip()
+
+        patterns = [
+            r'((?:Istituto\s+Comprensivo|I\.C\.|Liceo\s+[^\.;\|\n]+|Scuola\s+[^\.;\|\n]+))',
+            r'((?:Istituto|Liceo|Scuola)[^\.;\|\n]{8,140})'
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, text, flags=re.IGNORECASE)
+            if m:
+                candidate = _clean_institution_candidate(m.group(1))
+                if candidate:
+                    return candidate
+
+        return None
+    except Exception as e:
+        print(f"Institution extraction failed for {interpello_link}: {str(e)}")
+        return None
 
 def trigger_bandi_refresh():
     """Calls the Astro API endpoint to refresh the bandi data."""
@@ -479,9 +648,10 @@ async def extract_interpelli_for_elenco(elenco_url: str):
         print(f"[{datetime.now()}] Extracting interpelli for: {elenco_url}")
         
         app = AsyncFirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
+        elenco_html = _fetch_page_html(elenco_url)
         response = await app.extract(
             urls=[elenco_url],
-            prompt='I need to put into a json every interpello for every region, put description, date, link and city name for every interpello.',
+            prompt='I need to put into a json every interpello for every region. For each interpello include: interpello_name (istituto/scuola quando disponibile), description, date, link and city name. If institution is visible in title or row, include it in interpello_name.',
             schema=ExtractSchemaInterpelli.model_json_schema()
         )
         
@@ -504,6 +674,23 @@ async def extract_interpelli_for_elenco(elenco_url: str):
                 
                 for interpello in interpelli:
                     print(f"DEBUG - Processing interpello: {interpello}")
+
+                    institution_name = interpello.get('interpello_name')
+                    if _is_missing_or_generic_institution(institution_name):
+                        extracted_institution = _extract_institution_from_elenco_html(
+                            elenco_html,
+                            elenco_url,
+                            interpello.get('interpello_link')
+                        )
+                        if extracted_institution:
+                            interpello['interpello_name'] = extracted_institution
+
+                    institution_name = interpello.get('interpello_name')
+                    if _is_missing_or_generic_institution(institution_name):
+                        extracted_institution = _extract_institution_from_link(interpello.get('interpello_link'))
+                        if extracted_institution:
+                            interpello['interpello_name'] = extracted_institution
+
                     # Add region name to the interpello data
                     interpello_data = {
                         **interpello,
@@ -547,6 +734,96 @@ def run_interpelli_pipeline():
         print(f"[{datetime.now()}] Completed daily interpelli processing")
     except Exception as e:
         print(f"Error running interpelli processing: {str(e)}")
+
+
+def backfill_missing_interpello_institutions(limit: int = 300) -> Dict[str, int]:
+    """
+    Backfill existing interpelli rows where institution is missing/generic.
+    Uses elenco-page context first, then detail-page extraction.
+    """
+    stats = {
+        "scanned": 0,
+        "candidates": 0,
+        "updated": 0,
+        "failed": 0
+    }
+
+    try:
+        supabase = get_supabase_client()
+        elenco_html = _fetch_page_html(INTERPELLI_SOURCE_URL)
+
+        batch_size = 500
+        offset = 0
+        stop = False
+
+        print(f"[{datetime.now()}] Starting interpelli institution backfill (limit={limit})...")
+
+        while not stop:
+            response = (
+                supabase
+                .table('interpelli')
+                .select('id, interpello_name, interpello_link, city_name, region_name')
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+
+            rows = response.data or []
+            if not rows:
+                break
+
+            for row in rows:
+                if stats["scanned"] >= limit:
+                    stop = True
+                    break
+
+                stats["scanned"] += 1
+
+                current_name = row.get('interpello_name')
+                if not _is_missing_or_generic_institution(current_name):
+                    continue
+
+                stats["candidates"] += 1
+                interpello_link = row.get('interpello_link')
+
+                extracted = _extract_institution_from_elenco_html(
+                    elenco_html,
+                    INTERPELLI_SOURCE_URL,
+                    interpello_link
+                )
+
+                if not extracted:
+                    extracted = _extract_institution_from_link(interpello_link)
+
+                if not extracted:
+                    continue
+
+                try:
+                    (
+                        supabase
+                        .table('interpelli')
+                        .update({'interpello_name': extracted})
+                        .eq('id', row.get('id'))
+                        .execute()
+                    )
+                    stats["updated"] += 1
+                    print(f"Updated interpello id={row.get('id')} -> {extracted}")
+                except Exception as update_error:
+                    stats["failed"] += 1
+                    print(f"Failed updating interpello id={row.get('id')}: {str(update_error)}")
+
+                time.sleep(0.15)
+
+            if len(rows) < batch_size:
+                break
+
+            offset += batch_size
+
+        print(f"[{datetime.now()}] Backfill completed: {stats}")
+        return stats
+
+    except Exception as e:
+        print(f"Error in backfill_missing_interpello_institutions: {str(e)}")
+        return stats
 
 def run_news_pipeline(source_list: List[Dict[str, str]] = None):
     """Execute the complete news pipeline"""

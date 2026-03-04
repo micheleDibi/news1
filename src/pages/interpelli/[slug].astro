@@ -4,6 +4,7 @@ import { format, parseISO, isValid } from 'date-fns';
 import { it } from 'date-fns/locale';
 import { createClient } from '@supabase/supabase-js';
 import { marked } from 'marked';
+import { generateFAQStructuredData } from '../../lib/seo';
 
 const { slug } = Astro.params;
 
@@ -21,6 +22,13 @@ interface Interpello {
   article_subtitle?: string;
   created_at?: string;
 }
+
+interface FAQItem {
+  question: string;
+  answer: string;
+}
+
+const INTERPELLI_SOURCE_URL = 'https://scuolainterpelli.it/interpelli-scuola-aggiornati/';
 
 // Function to generate URL-friendly slug from interpello data
 function generateInterpelloSlug(interpello: Interpello): string {
@@ -42,6 +50,7 @@ function generateInterpelloSlug(interpello: Interpello): string {
 // Initialize Supabase client
 const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
 const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
+const openAiKey = import.meta.env.OPENAI_API_KEY;
 
 async function loadInterpelliData(): Promise<Interpello[]> {
   try {
@@ -70,7 +79,307 @@ async function loadInterpelliData(): Promise<Interpello[]> {
 }
 
 const interpelliData: Interpello[] = await loadInterpelliData();
-const interpello = interpelliData.find(i => generateInterpelloSlug(i) === slug);
+let interpello = interpelliData.find(i => generateInterpelloSlug(i) === slug);
+
+function isGenericTitle(value?: string | null): boolean {
+  if (!value) return true;
+  const normalized = value.toLowerCase().trim();
+  return normalized === 'visualizza interpelli' || normalized === 'interpelli' || normalized.length < 12;
+}
+
+async function generateArticleWithOpenAI(target: Interpello): Promise<{ article_title: string; article_subtitle: string; article_content: string } | null> {
+  if (!openAiKey) return null;
+
+  const prompt = `
+Sei un giornalista professionista specializzato in interpelli scolastici italiani.
+Restituisci SOLO JSON valido nel formato:
+{"article_title":"...","article_subtitle":"...","article_content":"..."}
+
+Regole:
+- article_title: max 110 caratteri, chiaro e informativo.
+- article_subtitle: 140-220 caratteri, tono giornalistico professionale.
+- article_content: articolo in markdown con:
+  - Introduzione
+  - Dettagli dell'interpello
+  - Contesto territoriale
+  - Aspetti procedurali
+  - Conclusioni
+- Non inventare dati non presenti.
+- Se manca un'informazione, dichiaralo in modo trasparente.
+
+Dati interpello:
+- Nome: ${target.interpello_name || 'N/D'}
+- Data: ${target.interpello_date || 'N/D'}
+- Regione: ${target.region_name || 'N/D'}
+- Città: ${target.city_name || 'N/D'}
+- Descrizione: ${target.interpello_description || 'N/D'}
+- Link ufficiale: ${target.interpello_link || 'N/D'}
+`;
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${openAiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4.1',
+      input: prompt,
+      temperature: 0.4
+    })
+  });
+
+  if (!response.ok) {
+    console.error('OpenAI request failed:', await response.text());
+    return null;
+  }
+
+  const data = await response.json();
+  const messageOutput = data.output?.find((item: any) => item.type === 'message');
+  const text = messageOutput?.content?.[0]?.text || '';
+
+  try {
+    const parsed = JSON.parse(text);
+    const article_title = String(parsed?.article_title || '').trim();
+    const article_subtitle = String(parsed?.article_subtitle || '').trim();
+    const article_content = String(parsed?.article_content || '').trim();
+    if (!article_title || !article_subtitle || !article_content) return null;
+    return { article_title, article_subtitle, article_content };
+  } catch {
+    const cleaned = text.replace(/[\u0000-\u0019]+/g, '');
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      const parsed = JSON.parse(match[0]);
+      const article_title = String(parsed?.article_title || '').trim();
+      const article_subtitle = String(parsed?.article_subtitle || '').trim();
+      const article_content = String(parsed?.article_content || '').trim();
+      if (!article_title || !article_subtitle || !article_content) return null;
+      return { article_title, article_subtitle, article_content };
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function fetchInterpelliSourceContext(): Promise<string> {
+  try {
+    const response = await fetch(INTERPELLI_SOURCE_URL, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36'
+      }
+    });
+
+    if (!response.ok) return '';
+
+    const html = await response.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return text.slice(0, 10000);
+  } catch {
+    return '';
+  }
+}
+
+function extractFaqFromMarkdown(content?: string | null): FAQItem[] {
+  if (!content) return [];
+
+  const sectionMatch = content.match(/##\s+Domande\s+frequenti[\s\S]*$/i);
+  if (!sectionMatch) return [];
+
+  const faqSection = sectionMatch[0];
+  const parts = faqSection.split(/^###\s+/m).slice(1);
+  const faqs: FAQItem[] = [];
+
+  for (const part of parts) {
+    const lines = part.split('\n').map((line) => line.trim());
+    const question = (lines.shift() || '').replace(/\s+/g, ' ').trim();
+    const answer = lines.join('\n').trim();
+
+    if (question && answer) {
+      faqs.push({
+        question: question.endsWith('?') ? question : `${question}?`,
+        answer
+      });
+    }
+  }
+
+  return faqs;
+}
+
+function appendFaqToArticleContent(content: string, faqs: FAQItem[]): string {
+  const cleanedContent = content.replace(/##\s+Domande\s+frequenti[\s\S]*$/i, '').trim();
+  const faqMarkdown = [
+    '## Domande frequenti',
+    ...faqs.map((faq) => `### ${faq.question}\n${faq.answer}`)
+  ].join('\n\n');
+
+  return `${cleanedContent}\n\n${faqMarkdown}`.trim();
+}
+
+async function generateFaqWithOpenAI(target: Interpello, sourceContext: string): Promise<FAQItem[] | null> {
+  if (!openAiKey) return null;
+
+  const prompt = `
+Sei un esperto di normativa scolastica italiana.
+Genera ESATTAMENTE 6 FAQ (domande e risposte) utili per questo interpello.
+Usa i dati dell'interpello e anche il contesto estratto da questa pagina: ${INTERPELLI_SOURCE_URL}
+
+Restituisci SOLO JSON valido in questo formato:
+{"faqs":[{"question":"...","answer":"..."}]}
+
+Regole:
+- Esattamente 6 elementi in faqs.
+- Domande pratiche e specifiche.
+- Risposte concise ma complete (2-4 frasi).
+- Non inventare dati puntuali non presenti; quando manca informazione, dichiaralo chiaramente.
+
+Dati interpello:
+- Nome/Istituto: ${target.interpello_name || 'N/D'}
+- Data: ${target.interpello_date || 'N/D'}
+- Regione: ${target.region_name || 'N/D'}
+- Città: ${target.city_name || 'N/D'}
+- Descrizione: ${target.interpello_description || 'N/D'}
+- Link ufficiale: ${target.interpello_link || 'N/D'}
+
+Contesto pagina interpelli (estratto testo):
+${sourceContext || 'N/D'}
+`;
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${openAiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4.1',
+      input: prompt,
+      temperature: 0.2
+    })
+  });
+
+  if (!response.ok) {
+    console.error('OpenAI FAQ request failed:', await response.text());
+    return null;
+  }
+
+  const data = await response.json();
+  const messageOutput = data.output?.find((item: any) => item.type === 'message');
+  const text = messageOutput?.content?.[0]?.text || '';
+
+  const tryParseFaq = (raw: string): FAQItem[] | null => {
+    try {
+      const parsed = JSON.parse(raw);
+      const items = Array.isArray(parsed?.faqs) ? parsed.faqs : [];
+      const normalized = items
+        .map((item: any) => ({
+          question: String(item?.question || '').trim(),
+          answer: String(item?.answer || '').trim()
+        }))
+        .filter((item: FAQItem) => item.question && item.answer)
+        .slice(0, 6)
+        .map((item: FAQItem) => ({
+          question: item.question.endsWith('?') ? item.question : `${item.question}?`,
+          answer: item.answer
+        }));
+
+      return normalized.length === 6 ? normalized : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const direct = tryParseFaq(text);
+  if (direct) return direct;
+
+  const cleaned = text.replace(/[\u0000-\u0019]+/g, '');
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  return tryParseFaq(match[0]);
+}
+
+let faqItems: FAQItem[] = [];
+
+if (interpello) {
+  const shouldGenerate = isGenericTitle(interpello.article_title || interpello.interpello_name)
+    || !interpello.article_subtitle?.trim()
+    || !interpello.article_content?.trim();
+
+  if (shouldGenerate && supabaseUrl && supabaseKey && openAiKey) {
+    try {
+      const generated = await generateArticleWithOpenAI(interpello);
+      if (generated) {
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        const { error: updateError } = await supabase
+          .from('interpelli')
+          .update({
+            article_title: generated.article_title,
+            article_subtitle: generated.article_subtitle,
+            article_content: generated.article_content,
+            article_generated: true
+          })
+          .eq('id', interpello.id);
+
+        if (updateError) {
+          console.error('Failed to persist generated interpello article:', updateError.message);
+        } else {
+          interpello = {
+            ...interpello,
+            article_title: generated.article_title,
+            article_subtitle: generated.article_subtitle,
+            article_content: generated.article_content
+          };
+        }
+      }
+    } catch (generationError) {
+      console.error('Error generating interpello article:', generationError);
+    }
+  }
+
+  faqItems = extractFaqFromMarkdown(interpello.article_content);
+  const shouldGenerateFaq = faqItems.length < 6;
+
+  if (shouldGenerateFaq && supabaseUrl && supabaseKey && openAiKey && interpello.article_content?.trim()) {
+    try {
+      const sourceContext = await fetchInterpelliSourceContext();
+      const generatedFaq = await generateFaqWithOpenAI(interpello, sourceContext);
+
+      if (generatedFaq && generatedFaq.length === 6) {
+        const updatedContentWithFaq = appendFaqToArticleContent(interpello.article_content, generatedFaq);
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        const { error: faqUpdateError } = await supabase
+          .from('interpelli')
+          .update({
+            article_content: updatedContentWithFaq,
+            article_generated: true
+          })
+          .eq('id', interpello.id);
+
+        if (faqUpdateError) {
+          console.error('Failed to persist generated FAQ content:', faqUpdateError.message);
+        } else {
+          interpello = {
+            ...interpello,
+            article_content: updatedContentWithFaq
+          };
+          faqItems = generatedFaq;
+        }
+      }
+    } catch (faqGenerationError) {
+      console.error('Error generating interpello FAQ:', faqGenerationError);
+    }
+  }
+
+  if (faqItems.length === 0) {
+    faqItems = extractFaqFromMarkdown(interpello.article_content);
+  }
+}
 
 // Utility function to strip HTML tags and clean text for meta descriptions
 const stripHtmlTags = (html: string): string => {
@@ -89,6 +398,53 @@ const createSafeDescription = (text: string, maxLength: number = 160): string =>
   return cleaned.substring(0, maxLength - 3) + '...';
 };
 
+const slugifyHeading = (value: string): string =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-');
+
+const normalizeArticleHeadingsToH2 = (markdown: string): { markdown: string; headings: { id: string; title: string }[] } => {
+  const lines = markdown.split('\n');
+  const headings: { id: string; title: string }[] = [];
+  const usedIds = new Set<string>();
+
+  const normalizedLines = lines.map((line) => {
+    const match = line.match(/^\s{0,3}#{1,6}\s+(.+)$/);
+    if (!match) return line;
+
+    const rawTitle = match[1].trim();
+    const cleanedTitle = rawTitle.replace(/\s*#+\s*$/, '').trim();
+    let baseId = slugifyHeading(cleanedTitle) || 'sezione';
+    let finalId = baseId;
+    let i = 2;
+
+    while (usedIds.has(finalId)) {
+      finalId = `${baseId}-${i}`;
+      i += 1;
+    }
+
+    usedIds.add(finalId);
+    headings.push({ id: finalId, title: cleanedTitle });
+
+    return `## ${cleanedTitle}`;
+  });
+
+  return { markdown: normalizedLines.join('\n'), headings };
+};
+
+const injectH2Ids = (html: string, headings: { id: string; title: string }[]): string => {
+  let output = html;
+  for (const heading of headings) {
+    output = output.replace('<h2>', `<h2 id="${heading.id}">`);
+  }
+  return output;
+};
+
 // Helper function to format date (same as in interpelli.astro for consistency)
 const formatDate = (dateString: string): string => {
   try {
@@ -100,10 +456,16 @@ const formatDate = (dateString: string): string => {
   }
 };
 
-// Convert markdown to HTML if article_content exists
-const articleHtml = interpello?.article_content 
-  ? marked(interpello.article_content)
+const normalizedArticle = interpello?.article_content
+  ? normalizeArticleHeadingsToH2(interpello.article_content)
   : null;
+
+// Convert markdown to HTML if article_content exists
+const articleHtml = normalizedArticle
+  ? injectH2Ids(marked(normalizedArticle.markdown), normalizedArticle.headings)
+  : null;
+
+const articleToc = normalizedArticle?.headings || [];
 
 // Define keywords - combining relevant fields
 const keywords = [
@@ -131,6 +493,10 @@ const pageDescription = interpello?.article_subtitle
     ? createSafeDescription(interpello.interpello_description, 160)
     : 'Dettagli dell\'interpello scolastico.';
 
+const canonicalInterpelloUrl = interpello
+  ? (Astro.url?.href || `https://edunews24.it/interpelli/${slug}`)
+  : null;
+
 // Generate structured data for the interpello
 const structuredData = interpello ? JSON.stringify(
   Object.fromEntries(
@@ -142,11 +508,11 @@ const structuredData = interpello ? JSON.stringify(
       datePosted: interpello.interpello_date?.split('T')[0],
       identifier: slug,
       sameAs: interpello.interpello_link,
-      url: Astro.url?.href,
+      url: canonicalInterpelloUrl,
       employmentType: "Supplenza",
       hiringOrganization: {
         "@type": "Organization",
-        name: "Scuola Italiana"
+        name: interpello.interpello_name || "Scuola Italiana"
       },
       jobLocation: {
         "@type": "Place",
@@ -160,10 +526,48 @@ const structuredData = interpello ? JSON.stringify(
     }).filter(([_, value]) => value !== undefined && value !== null && value !== '')
   )
 ) : '';
+
+const breadcrumbStructuredData = interpello ? JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "item": {
+        "@type": "Thing",
+        "id": "https://edunews24.it/",
+        "name": "Home"
+      }
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "item": {
+        "@type": "Thing",
+        "id": "https://edunews24.it/interpelli",
+        "name": "Interpelli"
+      }
+    },
+    {
+      "@type": "ListItem",
+      "position": 3,
+      "item": {
+        "@type": "WebPage",
+        "id": canonicalInterpelloUrl,
+        "name": interpello.article_title || interpello.interpello_name || 'Dettaglio interpello'
+      }
+    }
+  ]
+}) : null;
+
+const faqStructuredData = faqItems.length > 0 ? generateFAQStructuredData(faqItems.slice(0, 6)) : null;
 ---
 
 <Layout title={pageTitle} description={pageDescription} keywords={keywords}>
   {interpello && <script type="application/ld+json" set:html={structuredData} slot="head" />}
+  {breadcrumbStructuredData && <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />}
+  {faqStructuredData && <script type="application/ld+json" set:html={faqStructuredData} slot="head" />}
   
   <main class="bg-gray-50 py-12">
     <div class="container mx-auto px-4 max-w-4xl">
@@ -177,16 +581,36 @@ const structuredData = interpello ? JSON.stringify(
             {interpello.article_subtitle && (
               <p class="text-lg text-gray-600 italic mb-3">{interpello.article_subtitle}</p>
             )}
-            <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
-              {interpello.region_name && (
-                <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
-                  📍 {interpello.region_name}
-                </span>
-              )}
-              {interpello.city_name && (
-                <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">
-                  🏙️ {interpello.city_name}
-                </span>
+            <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
+              <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
+                {interpello.interpello_name && (
+                  <span class="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-medium">
+                    🏫 {interpello.interpello_name}
+                  </span>
+                )}
+                {interpello.region_name && (
+                  <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
+                    📍 {interpello.region_name}
+                  </span>
+                )}
+                {interpello.city_name && (
+                  <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">
+                    🏙️ {interpello.city_name}
+                  </span>
+                )}
+              </div>
+              {interpello.interpello_link && (
+                <a
+                  href={interpello.interpello_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex items-center px-4 py-2 border border-primary text-sm font-medium rounded text-primary bg-white hover:bg-primary/10 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-primary transition"
+                >
+                  Vai all'Interpello Ufficiale
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </a>
               )}
             </div>
             <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
@@ -198,11 +622,23 @@ const structuredData = interpello ? JSON.stringify(
 
           {/* Details Grid - Original Info */}
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mb-6 text-sm bg-gray-50 p-4 rounded-md">
-            <div class="md:col-span-2"><strong class="block text-gray-500 text-xs uppercase">Istituto</strong><p>{interpello.interpello_name}</p></div>
             {interpello.interpello_description && (
               <div class="md:col-span-2"><strong class="block text-gray-500 text-xs uppercase">Descrizione</strong><p>{interpello.interpello_description}</p></div>
             )}
           </div>
+
+          {articleToc.length > 0 && (
+            <nav class="mb-6 border border-gray-200 rounded-md bg-white p-4" aria-label="Indice articolo">
+              <h2 class="text-base font-semibold text-gray-800 mb-3">Indice</h2>
+              <ul class="space-y-1 text-sm">
+                {articleToc.map((item) => (
+                  <li>
+                    <a href={`#${item.id}`} class="text-primary hover:underline">{item.title}</a>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          )}
 
           {/* Article Content Section - Main Content */}
           {articleHtml ? (
@@ -215,27 +651,31 @@ const structuredData = interpello ? JSON.stringify(
             </div>
           )}
 
-          {/* Link Section */}
-          {interpello.interpello_link && (
-            <div class="mt-8 pt-6 border-t border-gray-200 text-center">
-              <a
-                href={interpello.interpello_link}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="inline-flex items-center px-6 py-2.5 border border-primary text-base font-medium rounded-md text-primary bg-white hover:bg-primary/10 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition duration-150 ease-in-out"
-              >
-                Vai all'Interpello Ufficiale
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </a>
-              <div class="mt-4">
-                <a href="/interpelli" class="text-sm text-gray-600 hover:text-primary transition">
-                  ← Torna alla lista degli interpelli
-                </a>
-              </div>
+          {faqItems.length > 0 && (
+            <div class="mt-6 border-t pt-6">
+              <details class="group border border-gray-200 rounded-md bg-white">
+                <summary class="list-none cursor-pointer px-4 py-3 flex items-center justify-between">
+                  <span class="text-sm font-semibold text-gray-800">FAQ Interpello (6 domande)</span>
+                  <span class="text-xs text-primary group-open:hidden">Mostra</span>
+                  <span class="text-xs text-primary hidden group-open:inline">Nascondi</span>
+                </summary>
+                <div class="px-4 pb-4 space-y-4">
+                  {faqItems.slice(0, 6).map((faq) => (
+                    <div>
+                      <h3 class="text-sm font-semibold text-gray-900 mb-1">{faq.question}</h3>
+                      <p class="text-sm text-gray-700 leading-relaxed">{faq.answer}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
             </div>
           )}
+
+          <div class="mt-8 pt-6 border-t border-gray-200 text-center">
+            <a href="/interpelli" class="text-sm text-gray-600 hover:text-primary transition">
+              ← Torna alla lista degli interpelli
+            </a>
+          </div>
 
         </article>
       ) : (

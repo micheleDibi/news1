@@ -10,10 +10,68 @@ interface Interpello {
   interpello_name: string;
   interpello_date: string;
   interpello_description: string;
+  article_title?: string;
+  article_subtitle?: string;
   interpello_link: string;
   city_name: string;
   region_name: string;
   created_at?: string;
+}
+
+function isGenericText(value?: string | null): boolean {
+  if (!value) return true;
+  const normalized = value.toLowerCase().trim();
+  return !normalized || normalized === 'visualizza interpelli' || normalized === 'interpelli' || normalized.length < 8;
+}
+
+function getDisplayTitle(interpello: Interpello): string {
+  const preferredTitle = interpello.article_title?.trim();
+  if (preferredTitle && !isGenericText(preferredTitle)) {
+    return preferredTitle;
+  }
+
+  const institution = interpello.interpello_name?.trim();
+  if (institution && !isGenericText(institution)) {
+    return institution;
+  }
+
+  const city = interpello.city_name?.trim();
+  const region = interpello.region_name?.trim();
+  if (city && region) {
+    return `Interpello scolastico a ${city} (${region})`;
+  }
+  if (city) {
+    return `Interpello scolastico a ${city}`;
+  }
+  if (region) {
+    return `Interpello scolastico in ${region}`;
+  }
+
+  return 'Interpello scolastico';
+}
+
+function getDisplayDescription(interpello: Interpello): string {
+  const preferredSubtitle = interpello.article_subtitle?.trim();
+  if (preferredSubtitle && !isGenericText(preferredSubtitle)) {
+    return preferredSubtitle;
+  }
+
+  const description = interpello.interpello_description?.trim();
+  if (description && !isGenericText(description)) {
+    return description;
+  }
+
+  const city = interpello.city_name?.trim() || 'località non specificata';
+  const region = interpello.region_name?.trim() || 'regione non specificata';
+  return `Interpello pubblicato per ${city}, ${region}. Apri il dettaglio per informazioni complete su requisiti e modalità di candidatura.`;
+}
+
+function getDisplayInstitution(interpello: Interpello): string {
+  const institution = interpello.interpello_name?.trim();
+  if (institution && !isGenericText(institution)) {
+    return institution;
+  }
+  return 'Istituto non specificato';
 }
 
 // Function to generate URL-friendly slug from interpello data
@@ -190,10 +248,16 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
         ) : (
           <>
             {interpelliData.map((interpello: Interpello) => (
+              (() => {
+                const displayTitle = getDisplayTitle(interpello);
+                const displayDescription = getDisplayDescription(interpello);
+                const displayInstitution = getDisplayInstitution(interpello);
+
+                return (
               <article
                 class="interpello-item bg-white rounded-md border border-gray-200 overflow-hidden transition-all duration-200 hover:border-gray-300 hover:shadow-md"
-                data-name={interpello.interpello_name?.toLowerCase()}
-                data-description={interpello.interpello_description?.toLowerCase()}
+                data-name={displayTitle.toLowerCase()}
+                data-description={displayDescription.toLowerCase()}
                 data-date={formatDateForDataAttr(interpello.interpello_date)}
                 data-region={interpello.region_name?.toLowerCase()}
                 data-city={interpello.city_name?.toLowerCase()}
@@ -203,9 +267,17 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
                     <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-4">
                       <div class="flex-1">
                         <h2 class="text-lg font-semibold text-gray-800 mb-2 hover:text-primary transition-colors">
-                          {interpello.interpello_name}
+                          {displayTitle}
                         </h2>
+                        {displayDescription && (
+                          <p class="text-sm text-gray-600 mb-3">
+                            {displayDescription}
+                          </p>
+                        )}
                         <div class="flex flex-wrap items-center gap-2 text-sm text-gray-500 mb-3">
+                          <span class="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-medium">
+                            🏫 {displayInstitution}
+                          </span>
                           {interpello.region_name && (
                             <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
                               📍 {interpello.region_name}
@@ -224,14 +296,6 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
                         </div>
                       </div>
                     </div>
-
-                    {interpello.interpello_description && (
-                      <div class="mb-4">
-                        <p class="text-gray-700 text-sm leading-relaxed">
-                          {interpello.interpello_description}
-                        </p>
-                      </div>
-                    )}
                   </div>
                 </a>
 
@@ -251,12 +315,32 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
                   )}
                 </div>
               </article>
+                );
+              })()
             ))}
              {/* Message shown when no results match filters */}
              <p id="no-filtered-results-message" class="text-center text-gray-500 text-lg py-10 hidden">Nessun interpello corrisponde ai filtri selezionati.</p>
           </>
         )}
       </div>
+
+      {interpelliData.length > 0 && (
+        <div id="pagination-controls" class="mt-8 flex flex-col sm:flex-row items-center justify-between gap-3 p-4 bg-white rounded-md border border-gray-200">
+          <button
+            id="prev-page"
+            class="w-full sm:w-auto px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            ← Pagina precedente
+          </button>
+          <p id="page-info" class="text-sm text-gray-600">Pagina 1 di 1</p>
+          <button
+            id="next-page"
+            class="w-full sm:w-auto px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Pagina successiva →
+          </button>
+        </div>
+      )}
     </div>
   </main>
 </Layout>
@@ -270,14 +354,67 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
   const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
   const resetButton = document.getElementById('reset-filters');
   const visibleCountSpan = document.getElementById('visible-count');
+  const paginationControls = document.getElementById('pagination-controls');
+  const prevPageButton = document.getElementById('prev-page');
+  const nextPageButton = document.getElementById('next-page');
+  const pageInfo = document.getElementById('page-info');
 
-  function filterInterpelli() {
+  const itemsPerPage = 20;
+  let currentPage = 1;
+  let filteredItems = [...interpelloItems];
+
+  function updateResultsCount() {
+    if (visibleCountSpan) {
+      visibleCountSpan.textContent = filteredItems.length;
+    }
+
+    if (noFilteredResultsMessage) {
+      noFilteredResultsMessage.style.display = filteredItems.length === 0 ? 'block' : 'none';
+    }
+  }
+
+  function updatePaginationControls() {
+    const totalPages = Math.max(1, Math.ceil(filteredItems.length / itemsPerPage));
+    if (currentPage > totalPages) {
+      currentPage = totalPages;
+    }
+
+    if (paginationControls) {
+      paginationControls.style.display = filteredItems.length > 0 ? 'flex' : 'none';
+    }
+
+    if (pageInfo) {
+      pageInfo.textContent = `Pagina ${currentPage} di ${totalPages}`;
+    }
+
+    if (prevPageButton) {
+      prevPageButton.disabled = currentPage <= 1;
+    }
+
+    if (nextPageButton) {
+      nextPageButton.disabled = currentPage >= totalPages;
+    }
+  }
+
+  function renderCurrentPage() {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    const itemsToShow = new Set(filteredItems.slice(startIndex, endIndex));
+
+    interpelloItems.forEach(item => {
+      item.style.display = itemsToShow.has(item) ? '' : 'none';
+    });
+
+    updateResultsCount();
+    updatePaginationControls();
+  }
+
+  function filterInterpelli(resetPage = false) {
     const searchTerm = searchInput.value.toLowerCase().trim();
     const selectedDate = dateInput.value;
     const selectedLocationValue = locationSelect.value;
-    let visibleCount = 0;
 
-    interpelloItems.forEach(item => {
+    filteredItems = interpelloItems.filter(item => {
       const name = item.dataset.name || '';
       const description = item.dataset.description || '';
       const date = item.dataset.date || '';
@@ -304,24 +441,14 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
         locationMatch = city === targetCity;
       }
 
-      // Show/hide item based on all filters
-      if (textMatch && dateMatch && locationMatch) {
-        item.style.display = '';
-        visibleCount++;
-      } else {
-        item.style.display = 'none';
-      }
+      return textMatch && dateMatch && locationMatch;
     });
 
-    // Update results count
-    if (visibleCountSpan) {
-      visibleCountSpan.textContent = visibleCount;
+    if (resetPage) {
+      currentPage = 1;
     }
 
-    // Update no results message
-    if (noFilteredResultsMessage) {
-       noFilteredResultsMessage.style.display = visibleCount === 0 ? 'block' : 'none';
-    }
+    renderCurrentPage();
   }
 
   function debounce(func, wait) {
@@ -339,16 +466,37 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
   const debouncedFilter = debounce(filterInterpelli, 250);
 
   // Add event listeners
-  if (searchInput) searchInput.addEventListener('input', debouncedFilter);
-  if (dateInput) dateInput.addEventListener('change', filterInterpelli);
-  if (locationSelect) locationSelect.addEventListener('change', filterInterpelli);
+  if (searchInput) searchInput.addEventListener('input', () => debouncedFilter(true));
+  if (dateInput) dateInput.addEventListener('change', () => filterInterpelli(true));
+  if (locationSelect) locationSelect.addEventListener('change', () => filterInterpelli(true));
+
+  if (prevPageButton) {
+    prevPageButton.addEventListener('click', () => {
+      if (currentPage > 1) {
+        currentPage--;
+        renderCurrentPage();
+      }
+    });
+  }
+
+  if (nextPageButton) {
+    nextPageButton.addEventListener('click', () => {
+      const totalPages = Math.max(1, Math.ceil(filteredItems.length / itemsPerPage));
+      if (currentPage < totalPages) {
+        currentPage++;
+        renderCurrentPage();
+      }
+    });
+  }
 
   if (resetButton) {
     resetButton.addEventListener('click', () => {
       searchInput.value = '';
       dateInput.value = '';
       locationSelect.value = '';
-      filterInterpelli();
+      filterInterpelli(true);
     });
   }
+
+  filterInterpelli(true);
 </script> 
