@@ -1,6 +1,7 @@
 import requests
 import json
 import time
+import ast
 from datetime import datetime, timezone
 import schedule
 from typing import List, Dict, Any, Tuple, Optional
@@ -16,6 +17,7 @@ import asyncio
 load_dotenv()
 from supabase import create_client, Client
 from firecrawl import AsyncFirecrawlApp
+from openai import OpenAI
 from pydantic import BaseModel, Field
 from .variables_edunews import (
     hour_to_iniziate,
@@ -36,6 +38,81 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4321")
 REFRESH_ENDPOINT = f"{FRONTEND_URL}/api/bandi/refresh"
 SCHEDULE_MINUTES = 60 # Run every hour
 INTERPELLI_SOURCE_URL = "https://scuolainterpelli.it/interpelli-scuola-aggiornati/"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+ITALIAN_MONTHS = {
+    "gennaio": 1,
+    "febbraio": 2,
+    "marzo": 3,
+    "aprile": 4,
+    "maggio": 5,
+    "giugno": 6,
+    "luglio": 7,
+    "agosto": 8,
+    "settembre": 9,
+    "ottobre": 10,
+    "novembre": 11,
+    "dicembre": 12,
+}
+
+REGION_NAMES = [
+    "Abruzzo", "Basilicata", "Calabria", "Campania", "Emilia-Romagna", "Friuli-Venezia Giulia",
+    "Lazio", "Liguria", "Lombardia", "Marche", "Molise", "Piemonte", "Puglia", "Sardegna",
+    "Sicilia", "Toscana", "Trentino-Alto Adige", "Umbria", "Valle d'Aosta", "Veneto"
+]
+
+PROVINCE_CODE_TO_REGION = {
+    "AG": "Sicilia", "AL": "Piemonte", "AN": "Marche", "AO": "Valle d'Aosta", "AP": "Marche",
+    "AQ": "Abruzzo", "AR": "Toscana", "AT": "Piemonte", "AV": "Campania", "BA": "Puglia",
+    "BG": "Lombardia", "BI": "Piemonte", "BL": "Veneto", "BN": "Campania", "BO": "Emilia-Romagna",
+    "BR": "Puglia", "BS": "Lombardia", "BT": "Puglia", "BZ": "Trentino-Alto Adige", "CA": "Sardegna",
+    "CB": "Molise", "CE": "Campania", "CH": "Abruzzo", "CL": "Sicilia", "CN": "Piemonte",
+    "CO": "Lombardia", "CR": "Lombardia", "CS": "Calabria", "CT": "Sicilia", "CZ": "Calabria",
+    "EN": "Sicilia", "FC": "Emilia-Romagna", "FE": "Emilia-Romagna", "FG": "Puglia", "FI": "Toscana",
+    "FM": "Marche", "FR": "Lazio", "GE": "Liguria", "GO": "Friuli-Venezia Giulia", "GR": "Toscana",
+    "IM": "Liguria", "IS": "Molise", "KR": "Calabria", "LC": "Lombardia", "LE": "Puglia",
+    "LI": "Toscana", "LO": "Lombardia", "LT": "Lazio", "LU": "Toscana", "MB": "Lombardia",
+    "MC": "Marche", "ME": "Sicilia", "MI": "Lombardia", "MN": "Lombardia", "MO": "Emilia-Romagna",
+    "MS": "Toscana", "MT": "Basilicata", "NA": "Campania", "NO": "Piemonte", "NU": "Sardegna",
+    "OR": "Sardegna", "PA": "Sicilia", "PC": "Emilia-Romagna", "PD": "Veneto", "PE": "Abruzzo",
+    "PG": "Umbria", "PI": "Toscana", "PN": "Friuli-Venezia Giulia", "PO": "Toscana", "PR": "Emilia-Romagna",
+    "PT": "Toscana", "PU": "Marche", "PV": "Lombardia", "PZ": "Basilicata", "RA": "Emilia-Romagna",
+    "RC": "Calabria", "RE": "Emilia-Romagna", "RG": "Sicilia", "RI": "Lazio", "RM": "Lazio",
+    "RN": "Emilia-Romagna", "RO": "Veneto", "SA": "Campania", "SI": "Toscana", "SO": "Lombardia",
+    "SP": "Liguria", "SR": "Sicilia", "SS": "Sardegna", "SU": "Sardegna", "SV": "Liguria",
+    "TA": "Puglia", "TE": "Abruzzo", "TN": "Trentino-Alto Adige", "TO": "Piemonte", "TP": "Sicilia",
+    "TR": "Umbria", "TS": "Friuli-Venezia Giulia", "TV": "Veneto", "UD": "Friuli-Venezia Giulia", "VA": "Lombardia",
+    "VB": "Piemonte", "VC": "Piemonte", "VE": "Veneto", "VI": "Veneto", "VR": "Veneto", "VT": "Lazio", "VV": "Calabria"
+}
+
+PROVINCE_NAME_TO_REGION = {
+    "caserta": "Campania", "napoli": "Campania", "salerno": "Campania", "avellino": "Campania", "benevento": "Campania",
+    "milano": "Lombardia", "monza": "Lombardia", "varese": "Lombardia", "como": "Lombardia", "brescia": "Lombardia",
+    "bergamo": "Lombardia", "pavia": "Lombardia", "mantova": "Lombardia", "cremona": "Lombardia", "lodi": "Lombardia",
+    "roma": "Lazio", "frosinone": "Lazio", "latina": "Lazio", "rieti": "Lazio", "viterbo": "Lazio",
+    "torino": "Piemonte", "cuneo": "Piemonte", "novara": "Piemonte", "vercelli": "Piemonte", "asti": "Piemonte",
+    "genova": "Liguria", "savona": "Liguria", "la-spezia": "Liguria", "imperia": "Liguria",
+    "firenze": "Toscana", "pisa": "Toscana", "livorno": "Toscana", "siena": "Toscana", "arezzo": "Toscana",
+    "prato": "Toscana", "pistoia": "Toscana", "massa": "Toscana", "lucca": "Toscana", "grosseto": "Toscana",
+    "bologna": "Emilia-Romagna", "modena": "Emilia-Romagna", "parma": "Emilia-Romagna", "reggio": "Emilia-Romagna",
+    "forli": "Emilia-Romagna", "cesena": "Emilia-Romagna", "rimini": "Emilia-Romagna", "ferrara": "Emilia-Romagna", "piacenza": "Emilia-Romagna"
+}
+
+PROVINCE_CODE_TO_CITY = {
+    "CE": "Caserta", "BN": "Benevento", "AV": "Avellino", "NA": "Napoli", "SA": "Salerno",
+    "CS": "Cosenza", "CZ": "Catanzaro", "KR": "Crotone", "RC": "Reggio Calabria", "VV": "Vibo Valentia",
+    "RE": "Reggio Emilia", "BO": "Bologna", "MO": "Modena", "PR": "Parma", "FC": "Forlì-Cesena", "RN": "Rimini",
+    "MI": "Milano", "MB": "Monza", "VA": "Varese", "CO": "Como", "BS": "Brescia", "BG": "Bergamo", "PV": "Pavia",
+    "AQ": "L'Aquila", "RM": "Roma", "TO": "Torino"
+}
+
+DOMAIN_REGION_HINTS = {
+    'istruzionelombardia.gov.it': 'Lombardia',
+    'istruzioneer.gov.it': 'Emilia-Romagna',
+    'istruzione.calabria.it': 'Calabria',
+    'mim.gov.it': 'Italia'
+}
 
 # Pydantic models for firecrawl extraction
 class NestedModel1(BaseModel):
@@ -71,9 +148,45 @@ def _is_missing_or_generic_institution(value: Optional[str]) -> bool:
         "visualizza interpelli",
         "interpelli",
         "clicca qui",
-        "dettagli"
+        "dettagli",
+        "istituto non specificato",
+        "non specificata",
+        "non specificato"
     ]
-    return normalized in generic_tokens or len(normalized) < 6
+    if normalized in generic_tokens or len(normalized) < 6:
+        return True
+
+    if normalized.startswith('interpello'):
+        return True
+
+    if re.search(r'https?://|www\.|\b[a-z0-9.-]+\.[a-z]{2,}\b', normalized, flags=re.IGNORECASE):
+        return True
+
+    return False
+
+
+def _is_plausible_institution_name(value: Optional[str]) -> bool:
+    if _is_missing_or_generic_institution(value):
+        return False
+
+    normalized = (value or '').strip()
+    lowered = normalized.lower()
+
+    noisy_tokens = [
+        'aree tematiche',
+        'cookie',
+        'scuola in chiaro',
+        'personale docente/educativo',
+        'legale, contenzioso',
+        '-->'
+    ]
+    if any(token in lowered for token in noisy_tokens):
+        return False
+
+    if re.search(r'\b(istituto|i\.c\.|liceo|scuola|iis|cpia|convitto)\b', lowered, flags=re.IGNORECASE):
+        return True
+
+    return len(normalized.split()) <= 6 and len(normalized) <= 80
 
 
 def _extract_clean_title_from_html(html: str) -> Optional[str]:
@@ -119,11 +232,184 @@ def _clean_institution_candidate(value: Optional[str]) -> Optional[str]:
     cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip(' \t\n\r-–—|:')
     cleaned = re.sub(r'^(vai all\'interpello|visualizza interpelli)\s*', '', cleaned, flags=re.IGNORECASE).strip()
+    if re.search(r'https?://|www\.', cleaned, flags=re.IGNORECASE):
+        return None
+    if re.fullmatch(r'[\w.-]+\.[a-z]{2,}(/[\w\-./?%&=]*)?', cleaned, flags=re.IGNORECASE):
+        return None
+
+    cleaned = re.sub(r'\s*[-–—,]\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ\' ]+\s*\([A-Z]{2}\)\s*$', '', cleaned)
+    cleaned = re.sub(r'\s*[-–—,]\s*[A-Z][A-Za-zÀ-ÖØ-öø-ÿ\' ]+\s+[A-Z]{2}\s*$', '', cleaned)
+    cleaned = re.sub(r'\s*\([A-Z]{2}\)\s*$', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' \t\n\r-–—|:')
+
     if _is_missing_or_generic_institution(cleaned):
         return None
     if len(cleaned) > 180:
         return None
     return cleaned
+
+
+def _extract_institution_from_text(value: Optional[str]) -> Optional[str]:
+    cleaned = _clean_institution_candidate(value)
+    if not cleaned:
+        return None
+
+    patterns = [
+        r'((?:Istituto\s+Comprensivo|Istituto\s+Tecnico|Istituto\s+Superiore|Istituto|I\.C\.|Liceo|CPIA|Convitto|Scuola)\s+[^\n\.;\|]{3,130})',
+        r"((?:all['’]?|presso\s+l['’]?|presso\s+il\s+|presso\s+la\s+)?(?:Istituto\s+Comprensivo|Istituto\s+Tecnico|Istituto\s+Superiore|Istituto|I\.C\.|Liceo|CPIA|Convitto|Scuola)\s+[^\n\.;\|]{3,130})",
+        r'(IIS\s+[^\n\.;\|]{3,120})'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if match:
+            candidate = _clean_institution_candidate(match.group(1))
+            if candidate:
+                candidate = re.sub(r"^(?:all['’]?|presso\s+l['’]?|presso\s+il\s+|presso\s+la\s+)", '', candidate, flags=re.IGNORECASE).strip()
+                return candidate
+
+    if re.search(r'\binterpell', cleaned, flags=re.IGNORECASE):
+        return None
+
+    return None
+
+
+def _extract_city_from_text(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+
+    text = unescape(value)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    m = re.search(r'\b([A-Z][A-Za-zÀ-ÖØ-öø-ÿ\' ]{2,40})\s*\([A-Z]{2}\)\b', text)
+    if m:
+        city = re.sub(r'\s+', ' ', m.group(1)).strip(' -–—,')
+        if re.search(r'\b(istituto|liceo|scuola|i\.c\.|iis|cpia|convitto)\b', city, flags=re.IGNORECASE):
+            city = None
+        if city and len(city) >= 2:
+            return city
+
+    phrase_patterns = [
+        r"\b(?:a|ad|di|del|della|nel|nella|presso)\s+([A-Z][A-Za-zÀ-ÖØ-öø-ÿ'\- ]{2,35})\b",
+    ]
+    stop_terms = {
+        'tempo determinato', 'classe', 'concorso', 'supplenza', 'interpello', 'docente', 'personale',
+        'istituto', 'liceo', 'scuola', 'ic', 'iis', 'cpia', 'convitto'
+    }
+    for pattern in phrase_patterns:
+        for match in re.finditer(pattern, text):
+            candidate = re.sub(r'\s+', ' ', match.group(1)).strip(' -–—,')
+            lowered = candidate.lower()
+            if not candidate or len(candidate) < 3:
+                continue
+            if any(term in lowered for term in stop_terms):
+                continue
+            return candidate
+
+    lowered_text = text.lower()
+    for province_name in PROVINCE_NAME_TO_REGION.keys():
+        if re.search(rf'\b{re.escape(province_name)}\b', lowered_text):
+            return ' '.join(part.capitalize() for part in province_name.split('-'))
+
+    return None
+
+
+def _extract_city_from_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+
+    parsed = urlparse(url)
+    path = (parsed.path or '').strip('/').lower()
+    if not path:
+        path = ''
+
+    slug = path.split('/')[-1]
+    parts = [p for p in slug.split('-') if p]
+    if len(parts) < 2:
+        return None
+
+    if parts and re.fullmatch(r'[a-z]{2}', parts[-1]):
+        city_tokens = []
+        stop_words = {
+            'interpello', 'supplenza', 'classe', 'concorso', 'docente', 'personale',
+            'scuola', 'istituto', 'liceo', 'ic', 'iis', 'cattedra', 'ore', 'annuale'
+        }
+        for token in reversed(parts[:-1]):
+            if token in stop_words or re.fullmatch(r'\d{1,4}', token):
+                break
+            city_tokens.insert(0, token)
+            if len(city_tokens) >= 3:
+                break
+
+        if city_tokens:
+            return ' '.join(t.capitalize() for t in city_tokens)
+
+    host = (parsed.netloc or '').lower()
+    host_main = host.split(':')[0]
+    subdomain = host_main.split('.')[0] if host_main else ''
+
+    m = re.search(r'(?:uat|usp|ust)-([a-z\-]+)', host_main)
+    if m:
+        token = m.group(1).strip('-')
+        if token and token not in {'it'}:
+            return ' '.join(part.capitalize() for part in token.split('-') if part)
+
+    m2 = re.search(r'(?:uat|usp|ust)([a-z\-]+)', host_main)
+    if m2:
+        token = m2.group(1).strip('-')
+        if token and token not in {'it'}:
+            return ' '.join(part.capitalize() for part in token.split('-') if part)
+
+    if subdomain and subdomain not in {'www', 'web', 'media'} and re.fullmatch(r'[a-z\-]{3,40}', subdomain):
+        if subdomain in PROVINCE_NAME_TO_REGION:
+            return ' '.join(part.capitalize() for part in subdomain.split('-') if part)
+
+    if subdomain and re.fullmatch(r'[a-z]{2}', subdomain):
+        city = PROVINCE_CODE_TO_CITY.get(subdomain.upper())
+        if city:
+            return city
+
+    return None
+
+
+def _extract_region_from_text_or_url(text_value: Optional[str], url: Optional[str]) -> Optional[str]:
+    text = (text_value or '').lower()
+
+    for region in REGION_NAMES:
+        if region.lower() in text:
+            return region
+
+    code_match = re.search(r'\(([A-Z]{2})\)', text_value or '')
+    if code_match:
+        region = PROVINCE_CODE_TO_REGION.get(code_match.group(1).upper())
+        if region:
+            return region
+
+    if url:
+        parsed = urlparse(url)
+        host_path = f"{parsed.netloc} {parsed.path}".lower()
+
+        for domain_hint, region in DOMAIN_REGION_HINTS.items():
+            if domain_hint in (parsed.netloc or '').lower() and region != 'Italia':
+                return region
+
+        code_url = re.search(r'-(?P<code>[a-z]{2})(?:/|$)', parsed.path.lower())
+        if code_url:
+            region = PROVINCE_CODE_TO_REGION.get(code_url.group('code').upper())
+            if region:
+                return region
+
+        subdomain = (parsed.netloc or '').split('.')[0].lower()
+        if re.fullmatch(r'[a-z]{2}', subdomain):
+            region = PROVINCE_CODE_TO_REGION.get(subdomain.upper())
+            if region:
+                return region
+
+        for province_name, region in PROVINCE_NAME_TO_REGION.items():
+            if province_name in host_path:
+                return region
+
+    return None
 
 
 def _fetch_page_html(url: Optional[str]) -> str:
@@ -140,6 +426,23 @@ def _fetch_page_html(url: Optional[str]) -> str:
         if response.status_code != 200:
             return ""
         return response.text
+    except requests.exceptions.SSLError as e:
+        print(f"SSL fetch failed for {url}: {str(e)}. Retrying with verify=False")
+        try:
+            response = requests.get(
+                url,
+                timeout=25,
+                verify=False,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+                }
+            )
+            if response.status_code != 200:
+                return ""
+            return response.text
+        except Exception as retry_error:
+            print(f"Retry failed to fetch page html for {url}: {str(retry_error)}")
+            return ""
     except Exception as e:
         print(f"Failed to fetch page html for {url}: {str(e)}")
         return ""
@@ -164,8 +467,8 @@ def _extract_institution_from_elenco_html(elenco_html: str, elenco_url: str, int
         if target_norm != href_norm and target_norm not in href_norm and href_norm not in target_norm:
             continue
 
-        anchor_text = _clean_institution_candidate(match.group(2))
-        if anchor_text:
+        anchor_text = _extract_institution_from_text(match.group(2))
+        if _is_plausible_institution_name(anchor_text):
             return anchor_text
 
         start = max(0, match.start() - 1400)
@@ -185,7 +488,7 @@ def _extract_institution_from_elenco_html(elenco_html: str, elenco_url: str, int
             m = re.search(pattern, context_text, flags=re.IGNORECASE)
             if m:
                 candidate = _clean_institution_candidate(m.group(1))
-                if candidate:
+                if _is_plausible_institution_name(candidate):
                     return candidate
 
     return None
@@ -200,7 +503,7 @@ def _extract_institution_from_link(interpello_link: Optional[str]) -> Optional[s
         if not html:
             return None
 
-        from_title = _clean_institution_candidate(_extract_clean_title_from_html(html))
+        from_title = _extract_institution_from_text(_extract_clean_title_from_html(html))
         if from_title:
             return from_title
 
@@ -217,13 +520,466 @@ def _extract_institution_from_link(interpello_link: Optional[str]) -> Optional[s
             m = re.search(pattern, text, flags=re.IGNORECASE)
             if m:
                 candidate = _clean_institution_candidate(m.group(1))
-                if candidate:
+                if _is_plausible_institution_name(candidate):
                     return candidate
 
         return None
     except Exception as e:
         print(f"Institution extraction failed for {interpello_link}: {str(e)}")
         return None
+
+
+def _extract_institution_from_enriched_fields(interpello_data: dict) -> Optional[str]:
+    candidates = [
+        interpello_data.get('interpello_name'),
+        interpello_data.get('article_title'),
+        interpello_data.get('article_subtitle'),
+        interpello_data.get('interpello_description'),
+        interpello_data.get('article_content'),
+    ]
+
+    for value in candidates:
+        if not value:
+            continue
+
+        text = str(value)
+        text = re.sub(r'[`*_>#\-]+', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()[:2500]
+        extracted = _extract_institution_from_text(text)
+        if _is_plausible_institution_name(extracted):
+            return extracted
+
+    return None
+
+
+def _extract_json_object_from_text(text: str) -> Optional[dict]:
+    if not text:
+        return None
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    cleaned = re.sub(r'[\x00-\x1f]+', '', text)
+    match = re.search(r'\{[\s\S]*\}', cleaned)
+    if not match:
+        return None
+
+    candidate = match.group(0)
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    try:
+        parsed = ast.literal_eval(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        return None
+
+    return None
+
+
+def _looks_like_daily_elenco_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = (parsed.path or '').strip('/').lower()
+    if not path.startswith('interpelli-scuola-'):
+        return False
+
+    slug = path.replace('interpelli-scuola-', '')
+    parts = [p for p in slug.split('-') if p]
+    if len(parts) < 3:
+        return False
+
+    year = next((p for p in parts if re.fullmatch(r'20\d{2}', p)), None)
+    month = next((p for p in parts if p in ITALIAN_MONTHS), None)
+    day = next((p for p in parts if re.fullmatch(r'\d{1,2}', p)), None)
+    return bool(year and month and day)
+
+
+def _extract_daily_date_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    path = (parsed.path or '').strip('/').lower()
+    slug = path.replace('interpelli-scuola-', '')
+    parts = [p for p in slug.split('-') if p]
+
+    year = next((p for p in parts if re.fullmatch(r'20\d{2}', p)), None)
+    month = next((p for p in parts if p in ITALIAN_MONTHS), None)
+    day = next((p for p in parts if re.fullmatch(r'\d{1,2}', p)), None)
+
+    if not (year and month and day):
+        return datetime.now().isoformat()
+
+    try:
+        dt = datetime(int(year), ITALIAN_MONTHS[month], int(day))
+        return dt.isoformat()
+    except Exception:
+        return datetime.now().isoformat()
+
+
+def _extract_daily_elenco_links_from_mainpage(main_url: str) -> List[dict]:
+    html = _fetch_page_html(main_url)
+    if not html:
+        return []
+
+    anchor_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>', re.IGNORECASE)
+    seen = set()
+    results = []
+
+    for match in anchor_pattern.finditer(html):
+        href = match.group(1).strip()
+        absolute_url = urljoin(main_url, href)
+        normalized = _normalize_url(absolute_url)
+        if not normalized or normalized in seen:
+            continue
+
+        if not _looks_like_daily_elenco_url(absolute_url):
+            continue
+
+        seen.add(normalized)
+        label = unescape(re.sub(r'<[^>]+>', ' ', match.group(2)))
+        label = re.sub(r'\s+', ' ', label).strip()
+
+        if not label:
+            slug = urlparse(absolute_url).path.strip('/').replace('interpelli-scuola-', '')
+            label = f"Interpelli scuola {slug.replace('-', ' ')}"
+
+        results.append({
+            "elenco_name": label,
+            "elenco_date": _extract_daily_date_from_url(absolute_url),
+            "elenco_link": absolute_url
+        })
+
+    return results
+
+
+def _extract_candidate_interpello_links_from_html(html: str, base_url: str) -> List[dict]:
+    anchor_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>', re.IGNORECASE)
+    seen = set()
+    candidates = []
+
+    for match in anchor_pattern.finditer(html):
+        href = match.group(1).strip()
+        absolute = urljoin(base_url, href)
+        normalized = _normalize_url(absolute)
+        if not normalized or normalized in seen:
+            continue
+
+        text = unescape(re.sub(r'<[^>]+>', ' ', match.group(2)))
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        indicator = f"{absolute.lower()} {text.lower()}"
+        if 'interpell' not in indicator and not re.search(r'\.(pdf|doc|docx)$', absolute.lower()):
+            continue
+
+        seen.add(normalized)
+        candidates.append({"url": absolute, "title": text or None})
+
+    return candidates
+
+
+def _classify_interpello_link(url: str, html: str) -> str:
+    lower_url = (url or '').lower()
+    if any(token in lower_url for token in ['/tag/', '/category/', '?s=interpello', '/search']):
+        return 'list'
+    if re.search(r'\.(pdf|doc|docx)$', lower_url):
+        return 'single'
+
+    lower_html = (html or '').lower()
+    if 'elenco interpelli' in lower_html or 'archivio interpelli' in lower_html:
+        return 'list'
+
+    nested_candidates = _extract_candidate_interpello_links_from_html(html, url)
+    if len(nested_candidates) >= 4:
+        return 'list'
+
+    if len(nested_candidates) <= 1:
+        return 'single'
+
+    ai_result = _classify_interpello_link_ai(url, html)
+    if ai_result in ('single', 'list'):
+        return ai_result
+
+    return 'single'
+
+
+def _classify_interpello_link_ai(url: str, html: str) -> Optional[str]:
+    if not openai_client:
+        return None
+
+    context_text = re.sub(r'<script[\s\S]*?</script>', ' ', html or '', flags=re.IGNORECASE)
+    context_text = re.sub(r'<style[\s\S]*?</style>', ' ', context_text, flags=re.IGNORECASE)
+    context_text = re.sub(r'<[^>]+>', ' ', context_text)
+    context_text = unescape(re.sub(r'\s+', ' ', context_text)).strip()[:7000]
+
+    prompt = f"""
+Classifica questo link in una sola categoria:
+- single: pagina di un interpello specifico
+- list: pagina elenco/archivio/ricerca con più interpelli
+
+Restituisci SOLO JSON valido:
+{{"type":"single|list","confidence":0.0}}
+
+URL: {url}
+Contesto testo pagina:
+{context_text or 'N/D'}
+"""
+
+    try:
+        response = openai_client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt,
+            temperature=0
+        )
+        text = getattr(response, 'output_text', '') or ''
+        if not text and getattr(response, 'output', None):
+            text = response.output[0].content[0].text if response.output[0].content else ''
+
+        parsed = _extract_json_object_from_text(text)
+        if not parsed:
+            return None
+
+        kind = str(parsed.get('type', '')).strip().lower()
+        confidence = float(parsed.get('confidence', 0))
+        if kind in ('single', 'list') and confidence >= 0.55:
+            return kind
+    except Exception as e:
+        print(f"AI classification failed for {url}: {str(e)}")
+
+    return None
+
+
+_INTERPELLI_SOURCE_CONTEXT_CACHE = None
+
+
+def _get_interpelli_source_context() -> str:
+    global _INTERPELLI_SOURCE_CONTEXT_CACHE
+    if _INTERPELLI_SOURCE_CONTEXT_CACHE is not None:
+        return _INTERPELLI_SOURCE_CONTEXT_CACHE
+
+    html = _fetch_page_html(INTERPELLI_SOURCE_URL)
+    if not html:
+        _INTERPELLI_SOURCE_CONTEXT_CACHE = ''
+        return _INTERPELLI_SOURCE_CONTEXT_CACHE
+
+    text = re.sub(r'<script[\s\S]*?</script>', ' ', html, flags=re.IGNORECASE)
+    text = re.sub(r'<style[\s\S]*?</style>', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = unescape(re.sub(r'\s+', ' ', text)).strip()
+    _INTERPELLI_SOURCE_CONTEXT_CACHE = text[:10000]
+    return _INTERPELLI_SOURCE_CONTEXT_CACHE
+
+
+def _generate_interpello_article_ai(interpello_data: dict) -> Optional[dict]:
+    if not openai_client:
+        return None
+
+    prompt = f"""
+Sei un giornalista professionista specializzato in interpelli scolastici italiani.
+Restituisci SOLO JSON valido nel formato:
+{{"article_title":"...","article_subtitle":"...","article_content":"..."}}
+
+Regole:
+- article_title: max 110 caratteri, chiaro e informativo.
+- article_subtitle: 140-220 caratteri, tono giornalistico professionale.
+- article_content: articolo in markdown con Introduzione, Dettagli, Contesto territoriale, Aspetti procedurali, Conclusioni.
+- Non inventare dati non presenti.
+
+Dati interpello:
+- Nome: {interpello_data.get('interpello_name') or 'N/D'}
+- Data: {interpello_data.get('interpello_date') or 'N/D'}
+- Regione: {interpello_data.get('region_name') or 'N/D'}
+- Città: {interpello_data.get('city_name') or 'N/D'}
+- Descrizione: {interpello_data.get('interpello_description') or 'N/D'}
+- Link ufficiale: {interpello_data.get('interpello_link') or 'N/D'}
+"""
+
+    try:
+        response = openai_client.responses.create(model="gpt-4.1", input=prompt, temperature=0.4)
+        text = getattr(response, 'output_text', '') or ''
+        if not text and getattr(response, 'output', None):
+            text = response.output[0].content[0].text if response.output[0].content else ''
+        parsed = _extract_json_object_from_text(text)
+        if not parsed:
+            return None
+
+        title = str(parsed.get('article_title', '')).strip()
+        subtitle = str(parsed.get('article_subtitle', '')).strip()
+        content = str(parsed.get('article_content', '')).strip()
+        if not title or not subtitle or not content:
+            return None
+        return {"article_title": title, "article_subtitle": subtitle, "article_content": content}
+    except Exception as e:
+        print(f"AI article generation failed: {str(e)}")
+        return None
+
+
+def _generate_interpello_faq_ai(interpello_data: dict) -> Optional[List[dict]]:
+    if not openai_client:
+        return None
+
+    source_context = _get_interpelli_source_context()
+    prompt = f"""
+Sei un esperto di normativa scolastica italiana.
+Genera ESATTAMENTE 6 FAQ in JSON valido:
+{{"faqs":[{{"question":"...","answer":"..."}}]}}
+
+Regole:
+- 6 FAQ esatte.
+- Domande pratiche e risposte concise (2-4 frasi).
+- Non inventare dati non presenti.
+
+Dati interpello:
+- Nome/Istituto: {interpello_data.get('interpello_name') or 'N/D'}
+- Data: {interpello_data.get('interpello_date') or 'N/D'}
+- Regione: {interpello_data.get('region_name') or 'N/D'}
+- Città: {interpello_data.get('city_name') or 'N/D'}
+- Descrizione: {interpello_data.get('interpello_description') or 'N/D'}
+- Link ufficiale: {interpello_data.get('interpello_link') or 'N/D'}
+
+Contesto pagina interpelli:
+{source_context or 'N/D'}
+"""
+
+    try:
+        response = openai_client.responses.create(model="gpt-4.1", input=prompt, temperature=0.2)
+        text = getattr(response, 'output_text', '') or ''
+        if not text and getattr(response, 'output', None):
+            text = response.output[0].content[0].text if response.output[0].content else ''
+
+        parsed = _extract_json_object_from_text(text)
+        if not parsed:
+            return None
+
+        items = parsed.get('faqs', [])
+        if not isinstance(items, list):
+            return None
+
+        faqs = []
+        for item in items:
+            q = str((item or {}).get('question', '')).strip()
+            a = str((item or {}).get('answer', '')).strip()
+            if not q or not a:
+                continue
+            if not q.endswith('?'):
+                q = f"{q}?"
+            faqs.append({"question": q, "answer": a})
+
+        faqs = faqs[:6]
+        return faqs if len(faqs) == 6 else None
+    except Exception as e:
+        print(f"AI FAQ generation failed: {str(e)}")
+        return None
+
+
+def _append_faq_markdown(content: str, faqs: List[dict]) -> str:
+    if not content:
+        return content
+    cleaned = re.sub(r'##\s+Domande\s+frequenti[\s\S]*$', '', content, flags=re.IGNORECASE).strip()
+    faq_section = ['## Domande frequenti'] + [f"### {f['question']}\n{f['answer']}" for f in faqs]
+    return f"{cleaned}\n\n" + "\n\n".join(faq_section)
+
+
+def _enrich_interpello_data(interpello_data: dict) -> dict:
+    enriched = dict(interpello_data)
+    article = _generate_interpello_article_ai(enriched)
+    if article:
+        enriched.update(article)
+        faqs = _generate_interpello_faq_ai(enriched)
+        if faqs:
+            enriched['article_content'] = _append_faq_markdown(enriched.get('article_content', ''), faqs)
+        enriched['article_generated'] = True
+
+    normalized_institution = _extract_institution_from_enriched_fields(enriched)
+    if _is_plausible_institution_name(normalized_institution):
+        enriched['interpello_name'] = normalized_institution
+
+    return enriched
+
+
+def _save_interpello_if_new(supabase: Client, interpello_data: dict, existing_links: set) -> bool:
+    link = interpello_data.get('interpello_link')
+    normalized = _normalize_url(link)
+    if not normalized or normalized in existing_links:
+        return False
+    supabase.table('interpelli').insert(interpello_data).execute()
+    existing_links.add(normalized)
+    return True
+
+
+def _process_interpello_link(
+    supabase: Client,
+    link_url: str,
+    region_name: Optional[str],
+    city_name: Optional[str],
+    interpello_name: Optional[str],
+    interpello_date: Optional[str],
+    interpello_description: Optional[str],
+    existing_links: set,
+    visited: set,
+    depth: int = 0
+):
+    if depth > 2:
+        return
+
+    normalized = _normalize_url(link_url)
+    if not normalized or normalized in visited:
+        return
+    visited.add(normalized)
+
+    html = _fetch_page_html(link_url)
+    link_type = _classify_interpello_link(link_url, html)
+
+    if link_type == 'list':
+        nested = _extract_candidate_interpello_links_from_html(html, link_url)
+        for candidate in nested:
+            _process_interpello_link(
+                supabase=supabase,
+                link_url=candidate['url'],
+                region_name=region_name,
+                city_name=city_name,
+                interpello_name=candidate.get('title'),
+                interpello_date=interpello_date,
+                interpello_description=interpello_description,
+                existing_links=existing_links,
+                visited=visited,
+                depth=depth + 1
+            )
+        return
+
+    cleaned_title = _clean_institution_candidate(interpello_name)
+    institution_name = _extract_institution_from_text(cleaned_title)
+    if not _is_plausible_institution_name(institution_name):
+        extracted = _extract_institution_from_link(link_url)
+        if _is_plausible_institution_name(extracted):
+            institution_name = extracted
+
+    page_title = _extract_clean_title_from_html(html)
+    geo_context = ' | '.join([p for p in [interpello_name, page_title] if p])
+    derived_city = _extract_city_from_text(geo_context) or _extract_city_from_url(link_url)
+    derived_region = _extract_region_from_text_or_url(geo_context, link_url)
+    safe_city = (city_name or '').strip() or (derived_city or '').strip() or 'Non specificata'
+    safe_region = (region_name or '').strip() or (derived_region or '').strip() or 'Non specificata'
+
+    payload = {
+        'interpello_name': institution_name if _is_plausible_institution_name(institution_name) else 'Istituto non specificato',
+        'interpello_date': interpello_date or datetime.now().isoformat(),
+        'interpello_description': interpello_description or '',
+        'interpello_link': link_url,
+        'city_name': safe_city,
+        'region_name': safe_region,
+    }
+
+    enriched = _enrich_interpello_data(payload)
+    created = _save_interpello_if_new(supabase, enriched, existing_links)
+    if created:
+        print(f"Saved interpello: {enriched.get('interpello_link')}")
 
 def trigger_bandi_refresh():
     """Calls the Astro API endpoint to refresh the bandi data."""
@@ -598,42 +1354,36 @@ def write_log(message: str):
         f.write(message)
 
 async def extract_elencos():
-    """First process: Extract elenco interpelli and check for new ones"""
+    """First process: Extract daily elenco links and save new ones in Supabase"""
     try:
         print(f"[{datetime.now()}] Starting elencos extraction...")
         
-        app = AsyncFirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
-        response = await app.extract(
-            urls=[
-                "https://scuolainterpelli.it/interpelli-scuola-aggiornati/?doing_wp_cron=1749044753.9211940765380859375000"
-            ],
-            prompt='Put a list of all the elenco interpelli with all the necessary data on the schema. Only the last 20 items, the ones which are more near to the today\'s date',
-            schema=ExtractSchema.model_json_schema()
-        )
-
-        print(f"\n\n\nresponse: {response}")
-        
-        if not response or not response.data:
-            print("No elencos data received from firecrawl")
+        extracted_daily_elencos = _extract_daily_elenco_links_from_mainpage(INTERPELLI_SOURCE_URL)
+        if not extracted_daily_elencos:
+            print("No daily elenco links found on source page")
             return []
-        
+
         # Get existing elencos from Supabase
         supabase = get_supabase_client()
         existing_response = supabase.table('elenchi').select('elenco_link').execute()
-        existing_links = [item['elenco_link'] for item in existing_response.data] if existing_response.data else []
+        existing_links = set(
+            _normalize_url(item['elenco_link'])
+            for item in (existing_response.data or [])
+            if item.get('elenco_link')
+        )
         
         # Find new elencos
         new_elencos = []
-        extracted_data = response.data
-        
-        # The data structure is directly the elenco_list
-        if isinstance(extracted_data, dict) and 'elenco_list' in extracted_data:
-            for elenco in extracted_data['elenco_list']:
-                if elenco.get('elenco_link') and elenco['elenco_link'] not in existing_links:
-                    new_elencos.append(elenco)
-                    # Insert new elenco into Supabase
-                    supabase.table('elenchi').insert(elenco).execute()
-                    print(f"Added new elenco: {elenco.get('elenco_name', 'Unknown')}")
+        for elenco in extracted_daily_elencos:
+            link = elenco.get('elenco_link')
+            normalized = _normalize_url(link)
+            if not normalized or normalized in existing_links:
+                continue
+
+            new_elencos.append(elenco)
+            supabase.table('elenchi').insert(elenco).execute()
+            existing_links.add(normalized)
+            print(f"Added new elenco: {elenco.get('elenco_name', 'Unknown')} ({link})")
         
         print(f"Found {len(new_elencos)} new elencos")
         return new_elencos
@@ -643,67 +1393,43 @@ async def extract_elencos():
         return []
 
 async def extract_interpelli_for_elenco(elenco_url: str):
-    """Second process: Extract interpelli for a specific elenco URL"""
+    """Second process: Extract and classify interpello links for a specific daily elenco URL"""
     try:
         print(f"[{datetime.now()}] Extracting interpelli for: {elenco_url}")
-        
-        app = AsyncFirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
+
         elenco_html = _fetch_page_html(elenco_url)
-        response = await app.extract(
-            urls=[elenco_url],
-            prompt='I need to put into a json every interpello for every region. For each interpello include: interpello_name (istituto/scuola quando disponibile), description, date, link and city name. If institution is visible in title or row, include it in interpello_name.',
-            schema=ExtractSchemaInterpelli.model_json_schema()
-        )
-        
-        print(f"DEBUG - Raw response for {elenco_url}: {response}")
-        
-        if not response or not response.data:
-            print(f"No interpelli data received for {elenco_url}")
+        if not elenco_html:
+            print(f"No html content for elenco url: {elenco_url}")
             return
-        
-        print(f"DEBUG - Extracted data: {response.data}")
-        
+
         supabase = get_supabase_client()
-        extracted_data = response.data
-        
-        if isinstance(extracted_data, dict) and 'regions_interpelli' in extracted_data:
-            for region in extracted_data['regions_interpelli']:
-                print(f"DEBUG - Processing region: {region}")
-                region_name = region.get('region_name', 'Unknown')
-                interpelli = region.get('interpelli', [])
-                
-                for interpello in interpelli:
-                    print(f"DEBUG - Processing interpello: {interpello}")
 
-                    institution_name = interpello.get('interpello_name')
-                    if _is_missing_or_generic_institution(institution_name):
-                        extracted_institution = _extract_institution_from_elenco_html(
-                            elenco_html,
-                            elenco_url,
-                            interpello.get('interpello_link')
-                        )
-                        if extracted_institution:
-                            interpello['interpello_name'] = extracted_institution
+        existing_interpelli_resp = supabase.table('interpelli').select('interpello_link').execute()
+        existing_links = set(
+            _normalize_url(item['interpello_link'])
+            for item in (existing_interpelli_resp.data or [])
+            if item.get('interpello_link')
+        )
 
-                    institution_name = interpello.get('interpello_name')
-                    if _is_missing_or_generic_institution(institution_name):
-                        extracted_institution = _extract_institution_from_link(interpello.get('interpello_link'))
-                        if extracted_institution:
-                            interpello['interpello_name'] = extracted_institution
+        candidates = _extract_candidate_interpello_links_from_html(elenco_html, elenco_url)
+        if not candidates:
+            print(f"No interpello candidates found in {elenco_url}")
+            return
 
-                    # Add region name to the interpello data
-                    interpello_data = {
-                        **interpello,
-                        'region_name': region_name
-                    }
-                    
-                    print(f"DEBUG - Final interpello_data to insert: {interpello_data}")
-                    
-                    # Insert interpello into Supabase
-                    supabase.table('interpelli').insert(interpello_data).execute()
-                    print(f"Added interpello: {interpello.get('interpello_name', 'Unknown')} for region {region_name}")
-        else:
-            print(f"DEBUG - Data structure doesn't match expected format. Got: {extracted_data}")
+        visited = set()
+        for candidate in candidates:
+            _process_interpello_link(
+                supabase=supabase,
+                link_url=candidate['url'],
+                region_name=None,
+                city_name=None,
+                interpello_name=candidate.get('title'),
+                interpello_date=_extract_daily_date_from_url(elenco_url),
+                interpello_description=None,
+                existing_links=existing_links,
+                visited=visited,
+                depth=0
+            )
         
     except Exception as e:
         print(f"Error extracting interpelli for {elenco_url}: {str(e)}")
@@ -779,7 +1505,7 @@ def backfill_missing_interpello_institutions(limit: int = 300) -> Dict[str, int]
                 stats["scanned"] += 1
 
                 current_name = row.get('interpello_name')
-                if not _is_missing_or_generic_institution(current_name):
+                if _is_plausible_institution_name(current_name):
                     continue
 
                 stats["candidates"] += 1
@@ -794,7 +1520,7 @@ def backfill_missing_interpello_institutions(limit: int = 300) -> Dict[str, int]
                 if not extracted:
                     extracted = _extract_institution_from_link(interpello_link)
 
-                if not extracted:
+                if not _is_plausible_institution_name(extracted):
                     continue
 
                 try:
@@ -823,6 +1549,104 @@ def backfill_missing_interpello_institutions(limit: int = 300) -> Dict[str, int]
 
     except Exception as e:
         print(f"Error in backfill_missing_interpello_institutions: {str(e)}")
+        return stats
+
+
+def backfill_missing_interpello_locations(limit: int = 300) -> Dict[str, int]:
+    """
+    Backfill existing interpelli rows where city/region are missing or generic.
+    Uses article/title/description context plus URL heuristics.
+    """
+    stats = {
+        "scanned": 0,
+        "candidates": 0,
+        "updated": 0,
+        "failed": 0
+    }
+
+    try:
+        supabase = get_supabase_client()
+
+        batch_size = 500
+        offset = 0
+        stop = False
+
+        print(f"[{datetime.now()}] Starting interpelli location backfill (limit={limit})...")
+
+        while not stop:
+            response = (
+                supabase
+                .table('interpelli')
+                .select('id, interpello_link, article_title, article_subtitle, interpello_description, city_name, region_name')
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+
+            rows = response.data or []
+            if not rows:
+                break
+
+            for row in rows:
+                if stats["scanned"] >= limit:
+                    stop = True
+                    break
+
+                stats["scanned"] += 1
+
+                current_city = (row.get('city_name') or '').strip()
+                current_region = (row.get('region_name') or '').strip()
+                city_missing = not current_city or current_city.lower() == 'non specificata'
+                region_missing = not current_region or current_region.lower() == 'non specificata'
+
+                if not city_missing and not region_missing:
+                    continue
+
+                stats["candidates"] += 1
+
+                context = ' | '.join([
+                    p for p in [
+                        row.get('article_title'),
+                        row.get('article_subtitle'),
+                        row.get('interpello_description')
+                    ] if p
+                ])
+
+                new_city = current_city
+                if city_missing:
+                    new_city = _extract_city_from_text(context) or _extract_city_from_url(row.get('interpello_link')) or 'Non specificata'
+
+                new_region = current_region
+                if region_missing:
+                    new_region = _extract_region_from_text_or_url(context, row.get('interpello_link')) or 'Non specificata'
+
+                if new_city == current_city and new_region == current_region:
+                    continue
+
+                try:
+                    (
+                        supabase
+                        .table('interpelli')
+                        .update({'city_name': new_city, 'region_name': new_region})
+                        .eq('id', row.get('id'))
+                        .execute()
+                    )
+                    stats["updated"] += 1
+                except Exception as update_error:
+                    stats["failed"] += 1
+                    print(f"Failed updating location for interpello id={row.get('id')}: {str(update_error)}")
+
+                time.sleep(0.1)
+
+            if len(rows) < batch_size:
+                break
+
+            offset += batch_size
+
+        print(f"[{datetime.now()}] Location backfill completed: {stats}")
+        return stats
+
+    except Exception as e:
+        print(f"Error in backfill_missing_interpello_locations: {str(e)}")
         return stats
 
 def run_news_pipeline(source_list: List[Dict[str, str]] = None):
@@ -923,8 +1747,8 @@ def run_news_pipeline(source_list: List[Dict[str, str]] = None):
 
 def schedule_pipeline():
     """Schedule the pipeline to run at different times"""
-    # Schedule interpelli processing once daily at 2:00
-    schedule.every().day.at("02:00").do(run_interpelli_pipeline)
+    # Schedule interpelli processing once daily at 12:00
+    schedule.every().day.at("12:00").do(run_interpelli_pipeline)
     
     # Schedule for every hour between start and end time
     for hour in range(hour_to_iniziate, hour_to_end):

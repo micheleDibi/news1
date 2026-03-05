@@ -21,7 +21,25 @@ interface Interpello {
 function isGenericText(value?: string | null): boolean {
   if (!value) return true;
   const normalized = value.toLowerCase().trim();
-  return !normalized || normalized === 'visualizza interpelli' || normalized === 'interpelli' || normalized.length < 8;
+  if (!normalized || normalized === 'visualizza interpelli' || normalized === 'interpelli' || normalized.length < 8) {
+    return true;
+  }
+  if (normalized.includes('non specificat')) {
+    return true;
+  }
+  if (/https?:\/\/|www\.|\b[a-z0-9.-]+\.[a-z]{2,}\b/i.test(normalized)) {
+    return true;
+  }
+  return false;
+}
+
+function extractInstitutionFromText(value?: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const match = normalized.match(/((?:Istituto\s+Comprensivo|Istituto\s+Tecnico|Istituto\s+Superiore|Istituto|I\.C\.|Liceo|CPIA|Convitto|Scuola)\s+[^.;|\n]{3,130})/i);
+  if (!match?.[1]) return null;
+  const candidate = match[1].trim();
+  return isGenericText(candidate) ? null : candidate;
 }
 
 function getDisplayTitle(interpello: Interpello): string {
@@ -71,6 +89,17 @@ function getDisplayInstitution(interpello: Interpello): string {
   if (institution && !isGenericText(institution)) {
     return institution;
   }
+
+  const fromTitle = extractInstitutionFromText(interpello.article_title);
+  if (fromTitle) {
+    return fromTitle;
+  }
+
+  const fromSubtitle = extractInstitutionFromText(interpello.article_subtitle);
+  if (fromSubtitle) {
+    return fromSubtitle;
+  }
+
   return 'Istituto non specificato';
 }
 

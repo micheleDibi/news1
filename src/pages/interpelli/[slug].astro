@@ -48,7 +48,6 @@ function generateInterpelloSlug(interpello: Interpello): string {
 // Initialize Supabase client
 const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
 const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
-const backendUrl = import.meta.env.BACKEND_URL || 'http://localhost:8000';
 
 async function loadInterpelliData(): Promise<Interpello[]> {
   try {
@@ -83,40 +82,6 @@ function isGenericTitle(value?: string | null): boolean {
   if (!value) return true;
   const normalized = value.toLowerCase().trim();
   return normalized === 'visualizza interpelli' || normalized === 'interpelli' || normalized.length < 12;
-}
-
-async function generateArticleViaBackend(target: Interpello): Promise<{ article_title: string; article_subtitle: string; article_content: string } | null> {
-  try {
-    const response = await fetch(`${backendUrl}/api/interpelli/generate-article`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        interpello_name: target.interpello_name,
-        interpello_date: target.interpello_date,
-        interpello_description: target.interpello_description,
-        interpello_link: target.interpello_link,
-        city_name: target.city_name,
-        region_name: target.region_name
-      })
-    });
-
-    if (!response.ok) {
-      console.error('Backend generation request failed:', await response.text());
-      return null;
-    }
-
-    const data = await response.json();
-    const article_title = String(data?.article_title || '').trim();
-    const article_subtitle = String(data?.article_subtitle || '').trim();
-    const article_content = String(data?.article_content || '').trim();
-    if (!article_title || !article_subtitle || !article_content) return null;
-    return { article_title, article_subtitle, article_content };
-  } catch (error) {
-    console.error('Error calling backend article generation:', error);
-    return null;
-  }
 }
 
 function extractFaqFromMarkdown(content?: string | null): FAQItem[] {
@@ -155,123 +120,10 @@ function appendFaqToArticleContent(content: string, faqs: FAQItem[]): string {
   return `${cleanedContent}\n\n${faqMarkdown}`.trim();
 }
 
-async function generateFaqViaBackend(target: Interpello): Promise<FAQItem[] | null> {
-  try {
-    const response = await fetch(`${backendUrl}/api/interpelli/generate-faq`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        interpello_name: target.interpello_name,
-        interpello_date: target.interpello_date,
-        interpello_description: target.interpello_description,
-        interpello_link: target.interpello_link,
-        city_name: target.city_name,
-        region_name: target.region_name
-      })
-    });
-
-    if (!response.ok) {
-      console.error('Backend FAQ generation request failed:', await response.text());
-      return null;
-    }
-
-    const data = await response.json();
-    const items = Array.isArray(data?.faqs) ? data.faqs : [];
-    const normalized = items
-      .map((item: any) => ({
-        question: String(item?.question || '').trim(),
-        answer: String(item?.answer || '').trim()
-      }))
-      .filter((item: FAQItem) => item.question && item.answer)
-      .slice(0, 6)
-      .map((item: FAQItem) => ({
-        question: item.question.endsWith('?') ? item.question : `${item.question}?`,
-        answer: item.answer
-      }));
-
-    return normalized.length === 6 ? normalized : null;
-  } catch (error) {
-    console.error('Error calling backend FAQ generation:', error);
-    return null;
-  }
-}
-
 let faqItems: FAQItem[] = [];
 
 if (interpello) {
-  const shouldGenerate = isGenericTitle(interpello.article_title || interpello.interpello_name)
-    || !interpello.article_subtitle?.trim()
-    || !interpello.article_content?.trim();
-
-  if (shouldGenerate && supabaseUrl && supabaseKey) {
-    try {
-      const generated = await generateArticleViaBackend(interpello);
-      if (generated) {
-        const supabase = createClient(supabaseUrl, supabaseKey);
-        const { error: updateError } = await supabase
-          .from('interpelli')
-          .update({
-            article_title: generated.article_title,
-            article_subtitle: generated.article_subtitle,
-            article_content: generated.article_content,
-            article_generated: true
-          })
-          .eq('id', interpello.id);
-
-        if (updateError) {
-          console.error('Failed to persist generated interpello article:', updateError.message);
-        } else {
-          interpello = {
-            ...interpello,
-            article_title: generated.article_title,
-            article_subtitle: generated.article_subtitle,
-            article_content: generated.article_content
-          };
-        }
-      }
-    } catch (generationError) {
-      console.error('Error generating interpello article:', generationError);
-    }
-  }
-
   faqItems = extractFaqFromMarkdown(interpello.article_content);
-  const shouldGenerateFaq = faqItems.length < 6;
-
-  if (shouldGenerateFaq && supabaseUrl && supabaseKey && interpello.article_content?.trim()) {
-    try {
-      const generatedFaq = await generateFaqViaBackend(interpello);
-
-      if (generatedFaq && generatedFaq.length === 6) {
-        const updatedContentWithFaq = appendFaqToArticleContent(interpello.article_content, generatedFaq);
-        const supabase = createClient(supabaseUrl, supabaseKey);
-        const { error: faqUpdateError } = await supabase
-          .from('interpelli')
-          .update({
-            article_content: updatedContentWithFaq,
-            article_generated: true
-          })
-          .eq('id', interpello.id);
-
-        if (faqUpdateError) {
-          console.error('Failed to persist generated FAQ content:', faqUpdateError.message);
-        } else {
-          interpello = {
-            ...interpello,
-            article_content: updatedContentWithFaq
-          };
-          faqItems = generatedFaq;
-        }
-      }
-    } catch (faqGenerationError) {
-      console.error('Error generating interpello FAQ:', faqGenerationError);
-    }
-  }
-
-  if (faqItems.length === 0) {
-    faqItems = extractFaqFromMarkdown(interpello.article_content);
-  }
 }
 
 // Utility function to strip HTML tags and clean text for meta descriptions
