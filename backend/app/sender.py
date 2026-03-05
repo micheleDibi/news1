@@ -16,7 +16,7 @@ import asyncio
 
 load_dotenv()
 from supabase import create_client, Client
-from firecrawl import AsyncFirecrawlApp
+from firecrawl import Firecrawl
 from openai import OpenAI
 from pydantic import BaseModel, Field
 from .variables_edunews import (
@@ -39,7 +39,9 @@ REFRESH_ENDPOINT = f"{FRONTEND_URL}/api/bandi/refresh"
 SCHEDULE_MINUTES = 60 # Run every hour
 INTERPELLI_SOURCE_URL = "https://scuolainterpelli.it/interpelli-scuola-aggiornati/"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+firecrawl_app = Firecrawl(api_key=FIRECRAWL_API_KEY) if FIRECRAWL_API_KEY else None
 
 ITALIAN_MONTHS = {
     "gennaio": 1,
@@ -415,6 +417,28 @@ def _extract_region_from_text_or_url(text_value: Optional[str], url: Optional[st
 def _fetch_page_html(url: Optional[str]) -> str:
     if not url:
         return ""
+
+    if firecrawl_app:
+        try:
+            scrape_result = firecrawl_app.scrape(url, formats=['html'])
+
+            if hasattr(scrape_result, 'html') and scrape_result.html:
+                return scrape_result.html
+
+            if isinstance(scrape_result, dict):
+                html = scrape_result.get('html')
+                if html:
+                    return html
+                data = scrape_result.get('data')
+                if isinstance(data, dict) and data.get('html'):
+                    return data.get('html')
+
+            data_attr = getattr(scrape_result, 'data', None)
+            if isinstance(data_attr, dict) and data_attr.get('html'):
+                return data_attr.get('html')
+        except Exception as firecrawl_error:
+            print(f"Firecrawl fetch failed for {url}: {str(firecrawl_error)}. Falling back to requests")
+
     try:
         response = requests.get(
             url,
