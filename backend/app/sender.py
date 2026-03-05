@@ -33,29 +33,6 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4321")
 REFRESH_ENDPOINT = f"{FRONTEND_URL}/api/bandi/refresh"
 SCHEDULE_MINUTES = 60 # Run every hour
 
-# Pydantic models for firecrawl extraction
-class NestedModel1(BaseModel):
-    elenco_name: str = None
-    elenco_date: str = None  # Will be inserted as timestamp
-    elenco_link: str = None
-
-class ExtractSchema(BaseModel):
-    elenco_list: list[NestedModel1] = None
-
-class NestedModel2(BaseModel):
-    interpello_name: str = None
-    interpello_date: str = None  # Will be inserted as timestamp
-    interpello_description: str = None
-    interpello_link: str = None
-    city_name: str = None
-
-class NestedModel1Interpelli(BaseModel):
-    region_name: str = None
-    interpelli: list[NestedModel2] = None
-
-class ExtractSchemaInterpelli(BaseModel):
-    regions_interpelli: list[NestedModel1Interpelli] = None
-
 def trigger_bandi_refresh():
     """Calls the Astro API endpoint to refresh the bandi data."""
     print(f"[{datetime.now()}] Triggering bandi refresh at: {REFRESH_ENDPOINT}")
@@ -428,126 +405,6 @@ def write_log(message: str):
     with open("log.txt", "a") as f:
         f.write(message)
 
-async def extract_elencos():
-    """First process: Extract elenco interpelli and check for new ones"""
-    try:
-        print(f"[{datetime.now()}] Starting elencos extraction...")
-        
-        app = AsyncFirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
-        response = await app.extract(
-            urls=[
-                "https://scuolainterpelli.it/interpelli-scuola-aggiornati/?doing_wp_cron=1749044753.9211940765380859375000"
-            ],
-            prompt='Put a list of all the elenco interpelli with all the necessary data on the schema. Only the last 20 items, the ones which are more near to the today\'s date',
-            schema=ExtractSchema.model_json_schema()
-        )
-
-        print(f"\n\n\nresponse: {response}")
-        
-        if not response or not response.data:
-            print("No elencos data received from firecrawl")
-            return []
-        
-        # Get existing elencos from Supabase
-        supabase = get_supabase_client()
-        existing_response = supabase.table('elenchi').select('elenco_link').execute()
-        existing_links = [item['elenco_link'] for item in existing_response.data] if existing_response.data else []
-        
-        # Find new elencos
-        new_elencos = []
-        extracted_data = response.data
-        
-        # The data structure is directly the elenco_list
-        if isinstance(extracted_data, dict) and 'elenco_list' in extracted_data:
-            for elenco in extracted_data['elenco_list']:
-                if elenco.get('elenco_link') and elenco['elenco_link'] not in existing_links:
-                    new_elencos.append(elenco)
-                    # Insert new elenco into Supabase
-                    supabase.table('elenchi').insert(elenco).execute()
-                    print(f"Added new elenco: {elenco.get('elenco_name', 'Unknown')}")
-        
-        print(f"Found {len(new_elencos)} new elencos")
-        return new_elencos
-        
-    except Exception as e:
-        print(f"Error in extract_elencos: {str(e)}")
-        return []
-
-async def extract_interpelli_for_elenco(elenco_url: str):
-    """Second process: Extract interpelli for a specific elenco URL"""
-    try:
-        print(f"[{datetime.now()}] Extracting interpelli for: {elenco_url}")
-        
-        app = AsyncFirecrawlApp(api_key=os.getenv("FIRECRAWL_API_KEY"))
-        response = await app.extract(
-            urls=[elenco_url],
-            prompt='I need to put into a json every interpello for every region, put description, date, link and city name for every interpello.',
-            schema=ExtractSchemaInterpelli.model_json_schema()
-        )
-        
-        print(f"DEBUG - Raw response for {elenco_url}: {response}")
-        
-        if not response or not response.data:
-            print(f"No interpelli data received for {elenco_url}")
-            return
-        
-        print(f"DEBUG - Extracted data: {response.data}")
-        
-        supabase = get_supabase_client()
-        extracted_data = response.data
-        
-        if isinstance(extracted_data, dict) and 'regions_interpelli' in extracted_data:
-            for region in extracted_data['regions_interpelli']:
-                print(f"DEBUG - Processing region: {region}")
-                region_name = region.get('region_name', 'Unknown')
-                interpelli = region.get('interpelli', [])
-                
-                for interpello in interpelli:
-                    print(f"DEBUG - Processing interpello: {interpello}")
-                    # Add region name to the interpello data
-                    interpello_data = {
-                        **interpello,
-                        'region_name': region_name
-                    }
-                    
-                    print(f"DEBUG - Final interpello_data to insert: {interpello_data}")
-                    
-                    # Insert interpello into Supabase
-                    supabase.table('interpelli').insert(interpello_data).execute()
-                    print(f"Added interpello: {interpello.get('interpello_name', 'Unknown')} for region {region_name}")
-        else:
-            print(f"DEBUG - Data structure doesn't match expected format. Got: {extracted_data}")
-        
-    except Exception as e:
-        print(f"Error extracting interpelli for {elenco_url}: {str(e)}")
-
-async def process_interpelli():
-    """Main function to run both elencos and interpelli processes"""
-    try:
-        # First process: Extract and check elencos
-        new_elencos = await extract_elencos()
-        print(f"\n\n\nnew_elencos: {new_elencos}")
-        # Second process: Extract interpelli for each new elenco
-        for elenco in new_elencos:
-            print(f"\n\n\nelenco: {elenco}")
-            elenco_url = elenco.get('elenco_link')
-            if elenco_url:
-                await extract_interpelli_for_elenco(elenco_url)
-        
-        print(f"[{datetime.now()}] Completed interpelli processing")
-        
-    except Exception as e:
-        print(f"Error in process_interpelli: {str(e)}")
-
-def run_interpelli_pipeline():
-    """Execute the interpelli processing pipeline (runs once daily)"""
-    try:
-        print(f"[{datetime.now()}] Starting daily interpelli processing...")
-        asyncio.run(process_interpelli())
-        print(f"[{datetime.now()}] Completed daily interpelli processing")
-    except Exception as e:
-        print(f"Error running interpelli processing: {str(e)}")
-
 def run_news_pipeline(source_list: List[Dict[str, str]] = None):
     """Execute the complete news pipeline"""
 
@@ -646,9 +503,7 @@ def run_news_pipeline(source_list: List[Dict[str, str]] = None):
 
 def schedule_pipeline():
     """Schedule the pipeline to run at different times"""
-    # Schedule interpelli processing once daily at 2:00
-    schedule.every().day.at("02:00").do(run_interpelli_pipeline)
-    
+
     # Schedule for every hour between start and end time
     for hour in range(hour_to_iniziate, hour_to_end):
         if (hour - hour_to_iniziate) % 1 == 0:  # Run every hour
