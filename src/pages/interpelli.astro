@@ -37,35 +37,47 @@ function generateInterpelloSlug(interpello: Interpello): string {
 const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
 const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
 
+const PAGE_SIZE = 20;
+
 // Function to fetch interpelli data directly from Supabase
-async function loadInterpelliData(): Promise<Interpello[]> {
+async function loadInterpelliData(): Promise<{ items: Interpello[], total: number }> {
   try {
     if (!supabaseUrl || !supabaseKey) {
       console.error('Missing Supabase environment variables');
-      return [];
+      return { items: [], total: 0 };
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    
+
+    // Count totale
+    const { count } = await supabase
+      .from('interpelli')
+      .select('*', { count: 'exact', head: true })
+      .eq('link_type', 'single');
+
+    // Prima pagina
     const { data, error } = await supabase
       .from('interpelli')
       .select('*')
-      .order('interpello_date', { ascending: false });
+      .eq('link_type', 'single')
+      .order('interpello_date', { ascending: false })
+      .range(0, PAGE_SIZE - 1);
 
     if (error) {
       console.error('Supabase error:', error);
-      return [];
+      return { items: [], total: 0 };
     }
 
-    return data || [];
+    return { items: data || [], total: count || 0 };
   } catch (error) {
     console.error('Error fetching interpelli data:', error);
-    return [];
+    return { items: [], total: 0 };
   }
 }
 
 // Load the data
-const interpelliData: Interpello[] = await loadInterpelliData();
+const { items: interpelliData, total: totalCount } = await loadInterpelliData();
+const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
 // Helper function to format date for display (dd MMMM yyyy)
 const formatDate = (dateString: string): string => {
@@ -180,7 +192,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
       {/* Results Count */}
       <div class="mb-4">
         <p id="results-count" class="text-sm text-gray-600">
-          Trovati <span id="visible-count">{interpelliData.length}</span> interpelli
+          Trovati <span id="visible-count">{totalCount}</span> interpelli
         </p>
       </div>
 
@@ -257,98 +269,218 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
           </>
         )}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <nav id="pagination" class="mt-8 flex justify-center items-center gap-2" data-total-pages={totalPages} data-page-size={PAGE_SIZE}>
+          <button id="prev-page" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+            ← Precedente
+          </button>
+          <span class="px-4 py-2 text-sm text-gray-600">
+            Pagina <span id="current-page-num">1</span> di <span id="total-pages-num">{totalPages}</span>
+          </span>
+          <button id="next-page" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+            Successiva →
+          </button>
+        </nav>
+      )}
     </div>
   </main>
 </Layout>
 
-<script is:inline>
+<script is:inline define:vars={{ supabaseUrl, supabaseKey, PAGE_SIZE }}>
+  // Supabase REST query helper (no SDK needed client-side)
+  async function supabaseFetch(table, params) {
+    const url = new URL(`${supabaseUrl}/rest/v1/${table}`);
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    const res = await fetch(url.toString(), {
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Prefer': 'count=exact',
+      },
+    });
+    const total = parseInt(res.headers.get('content-range')?.split('/')[1] || '0', 10);
+    const data = await res.json();
+    return { data, total };
+  }
+
   const searchInput = document.getElementById('search-filter');
   const dateInput = document.getElementById('date-filter');
   const locationSelect = document.getElementById('location-filter');
   const interpelliList = document.getElementById('interpelli-list');
-  const interpelloItems = interpelliList ? Array.from(interpelliList.querySelectorAll('.interpello-item')) : [];
   const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
   const resetButton = document.getElementById('reset-filters');
   const visibleCountSpan = document.getElementById('visible-count');
+  const prevBtn = document.getElementById('prev-page');
+  const nextBtn = document.getElementById('next-page');
+  const currentPageNum = document.getElementById('current-page-num');
+  const totalPagesNum = document.getElementById('total-pages-num');
 
-  function filterInterpelli() {
-    const searchTerm = searchInput.value.toLowerCase().trim();
-    const selectedDate = dateInput.value;
-    const selectedLocationValue = locationSelect.value;
-    let visibleCount = 0;
+  let currentPage = 1;
+  let isLoading = false;
 
-    interpelloItems.forEach(item => {
-      const name = item.dataset.name || '';
-      const description = item.dataset.description || '';
-      const date = item.dataset.date || '';
-      const region = item.dataset.region || '';
-      const city = item.dataset.city || '';
+  function generateSlug(item) {
+    return [item.interpello_name, item.city_name, item.region_name, item.id?.toString()]
+      .filter(Boolean)
+      .join('-')
+      .toLowerCase()
+      .replace(/[^a-z0-9\-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+  }
 
-      // Text search in name and description
-      const textMatch = searchTerm === '' || 
-        name.includes(searchTerm) || 
-        description.includes(searchTerm);
+  function formatDateDisplay(dateString) {
+    try {
+      const d = new Date(dateString + 'T00:00:00');
+      if (isNaN(d.getTime())) return 'Data non valida';
+      return d.toLocaleDateString('it-IT', { day: '2-digit', month: 'long', year: 'numeric' });
+    } catch { return 'Data non valida'; }
+  }
 
-      // Date filter (show interpelli after selected date)
-      const dateMatch = !selectedDate || date >= selectedDate;
+  function renderItems(items) {
+    // Rimuovi le card esistenti ma mantieni il messaggio no-results
+    const existingItems = interpelliList.querySelectorAll('.interpello-item');
+    existingItems.forEach(el => el.remove());
 
-      // Location filter
-      let locationMatch = false;
-      if (!selectedLocationValue) {
-        locationMatch = true;
-      } else if (selectedLocationValue.startsWith('REGION::')) {
-        const targetRegion = selectedLocationValue.substring(8).toLowerCase();
-        locationMatch = region === targetRegion;
-      } else if (selectedLocationValue.startsWith('CITY::')) {
-        const targetCity = selectedLocationValue.substring(6).toLowerCase();
-        locationMatch = city === targetCity;
-      }
+    if (items.length === 0) {
+      if (noFilteredResultsMessage) noFilteredResultsMessage.classList.remove('hidden');
+      return;
+    }
+    if (noFilteredResultsMessage) noFilteredResultsMessage.classList.add('hidden');
 
-      // Show/hide item based on all filters
-      if (textMatch && dateMatch && locationMatch) {
-        item.style.display = '';
-        visibleCount++;
-      } else {
-        item.style.display = 'none';
-      }
+    const fragment = document.createDocumentFragment();
+    items.forEach(item => {
+      const article = document.createElement('article');
+      article.className = 'interpello-item bg-white rounded-md border border-gray-200 overflow-hidden transition-all duration-200 hover:border-gray-300 hover:shadow-md';
+      const slug = generateSlug(item);
+      const dateFormatted = item.interpello_date ? formatDateDisplay(item.interpello_date) : '';
+
+      article.innerHTML = `
+        <a href="/interpelli/${slug}" class="block hover:bg-gray-50/50">
+          <div class="p-5">
+            <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-4">
+              <div class="flex-1">
+                <h2 class="text-lg font-semibold text-gray-800 mb-2 hover:text-primary transition-colors">
+                  ${item.interpello_name || ''}
+                </h2>
+                <div class="flex flex-wrap items-center gap-2 text-sm text-gray-500 mb-3">
+                  ${item.region_name ? `<span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">📍 ${item.region_name}</span>` : ''}
+                  ${item.city_name ? `<span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">🏙️ ${item.city_name}</span>` : ''}
+                  ${dateFormatted ? `<span class="inline-flex items-center px-2 py-1 bg-gray-100 text-gray-800 rounded-md text-xs font-medium">📅 ${dateFormatted}</span>` : ''}
+                </div>
+              </div>
+            </div>
+            ${item.interpello_description ? `<div class="mb-4"><p class="text-gray-700 text-sm leading-relaxed">${item.interpello_description}</p></div>` : ''}
+          </div>
+        </a>
+        <div class="p-5 pt-0 flex flex-col sm:flex-row sm:justify-end items-start sm:items-center gap-3 border-t border-gray-100">
+          ${item.interpello_link ? `<a href="${item.interpello_link}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center px-4 py-2 border border-primary text-sm font-medium rounded text-primary bg-white hover:bg-primary/5 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-primary transition">Vai all'Interpello <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg></a>` : ''}
+        </div>`;
+      fragment.appendChild(article);
     });
-
-    // Update results count
-    if (visibleCountSpan) {
-      visibleCountSpan.textContent = visibleCount;
-    }
-
-    // Update no results message
+    // Inserisci prima del messaggio no-results
     if (noFilteredResultsMessage) {
-       noFilteredResultsMessage.style.display = visibleCount === 0 ? 'block' : 'none';
+      interpelliList.insertBefore(fragment, noFilteredResultsMessage);
+    } else {
+      interpelliList.appendChild(fragment);
     }
+  }
+
+  function updatePagination(total) {
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (currentPageNum) currentPageNum.textContent = currentPage;
+    if (totalPagesNum) totalPagesNum.textContent = pages;
+    if (prevBtn) prevBtn.disabled = currentPage <= 1;
+    if (nextBtn) nextBtn.disabled = currentPage >= pages;
+    // Nascondi paginazione se solo 1 pagina
+    const paginationNav = document.getElementById('pagination');
+    if (paginationNav) paginationNav.style.display = pages <= 1 ? 'none' : 'flex';
+  }
+
+  async function loadPage() {
+    if (isLoading) return;
+    isLoading = true;
+
+    const searchTerm = searchInput?.value?.trim() || '';
+    const selectedDate = dateInput?.value || '';
+    const selectedLocationValue = locationSelect?.value || '';
+
+    const from = (currentPage - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+
+    // Costruisci filtri per Supabase REST API
+    const params = {
+      'select': '*',
+      'link_type': 'eq.single',
+      'order': 'interpello_date.desc',
+      'offset': from.toString(),
+      'limit': PAGE_SIZE.toString(),
+    };
+
+    // Filtro testo (or su nome e descrizione)
+    if (searchTerm) {
+      params['or'] = `(interpello_name.ilike.*${searchTerm}*,interpello_description.ilike.*${searchTerm}*)`;
+    }
+
+    // Filtro data
+    if (selectedDate) {
+      params['interpello_date'] = `gte.${selectedDate}`;
+    }
+
+    // Filtro località
+    if (selectedLocationValue.startsWith('REGION::')) {
+      params['region_name'] = `eq.${selectedLocationValue.substring(8)}`;
+    } else if (selectedLocationValue.startsWith('CITY::')) {
+      params['city_name'] = `eq.${selectedLocationValue.substring(6)}`;
+    }
+
+    try {
+      const { data, total } = await supabaseFetch('interpelli', params);
+      renderItems(data || []);
+      if (visibleCountSpan) visibleCountSpan.textContent = total;
+      updatePagination(total);
+    } catch (e) {
+      console.error('Errore caricamento interpelli:', e);
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  function resetAndLoad() {
+    currentPage = 1;
+    loadPage();
   }
 
   function debounce(func, wait) {
     let timeout;
-    return function executedFunction(...args) {
-      const later = () => {
-        clearTimeout(timeout);
-        func(...args);
-      };
+    return (...args) => {
       clearTimeout(timeout);
-      timeout = setTimeout(later, wait);
+      timeout = setTimeout(() => func(...args), wait);
     };
   }
 
-  const debouncedFilter = debounce(filterInterpelli, 250);
+  const debouncedLoad = debounce(resetAndLoad, 300);
 
-  // Add event listeners
-  if (searchInput) searchInput.addEventListener('input', debouncedFilter);
-  if (dateInput) dateInput.addEventListener('change', filterInterpelli);
-  if (locationSelect) locationSelect.addEventListener('change', filterInterpelli);
+  // Event listeners
+  if (searchInput) searchInput.addEventListener('input', debouncedLoad);
+  if (dateInput) dateInput.addEventListener('change', resetAndLoad);
+  if (locationSelect) locationSelect.addEventListener('change', resetAndLoad);
+
+  if (prevBtn) prevBtn.addEventListener('click', () => {
+    if (currentPage > 1) { currentPage--; loadPage(); }
+  });
+  if (nextBtn) nextBtn.addEventListener('click', () => {
+    currentPage++;
+    loadPage();
+  });
 
   if (resetButton) {
     resetButton.addEventListener('click', () => {
-      searchInput.value = '';
-      dateInput.value = '';
-      locationSelect.value = '';
-      filterInterpelli();
+      if (searchInput) searchInput.value = '';
+      if (dateInput) dateInput.value = '';
+      if (locationSelect) locationSelect.value = '';
+      resetAndLoad();
     });
   }
 </script> 
