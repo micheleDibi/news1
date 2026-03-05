@@ -106,7 +106,7 @@ PROVINCE_CODE_TO_CITY = {
     "CS": "Cosenza", "CZ": "Catanzaro", "KR": "Crotone", "RC": "Reggio Calabria", "VV": "Vibo Valentia",
     "RE": "Reggio Emilia", "BO": "Bologna", "MO": "Modena", "PR": "Parma", "FC": "Forlì-Cesena", "RN": "Rimini",
     "MI": "Milano", "MB": "Monza", "VA": "Varese", "CO": "Como", "BS": "Brescia", "BG": "Bergamo", "PV": "Pavia",
-    "AQ": "L'Aquila", "RM": "Roma", "TO": "Torino"
+    "AQ": "L'Aquila", "RM": "Roma", "TO": "Torino", "GE": "Genova"
 }
 
 DOMAIN_REGION_HINTS = {
@@ -252,7 +252,12 @@ def _clean_institution_candidate(value: Optional[str]) -> Optional[str]:
 
 
 def _extract_institution_from_text(value: Optional[str]) -> Optional[str]:
-    cleaned = _clean_institution_candidate(value)
+    if not value:
+        return None
+
+    cleaned = unescape(str(value))
+    cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     if not cleaned:
         return None
 
@@ -271,6 +276,38 @@ def _extract_institution_from_text(value: Optional[str]) -> Optional[str]:
 
     if re.search(r'\binterpell', cleaned, flags=re.IGNORECASE):
         return None
+
+    fallback_candidate = _clean_institution_candidate(cleaned)
+    if _is_plausible_institution_name(fallback_candidate):
+        return fallback_candidate
+
+    return None
+
+
+def _extract_province_code_from_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+
+    parsed = urlparse(url)
+    path = (parsed.path or '').strip('/')
+    if not path:
+        return None
+
+    parts = [p for p in path.split('/') if p]
+    for part in reversed(parts):
+        upper_part = part.upper()
+
+        direct_code = re.match(r'^([A-Z]{2})(?:[^A-Z]|$)', upper_part)
+        if direct_code:
+            code = direct_code.group(1)
+            if code in PROVINCE_CODE_TO_REGION:
+                return code
+
+        embedded_code = re.search(r'\b([A-Z]{2})[A-Z]{2}\d{3,}\b', upper_part)
+        if embedded_code:
+            code = embedded_code.group(1)
+            if code in PROVINCE_CODE_TO_REGION:
+                return code
 
     return None
 
@@ -371,6 +408,12 @@ def _extract_city_from_url(url: Optional[str]) -> Optional[str]:
         if city:
             return city
 
+    code = _extract_province_code_from_url(url)
+    if code:
+        city = PROVINCE_CODE_TO_CITY.get(code)
+        if city:
+            return city
+
     return None
 
 
@@ -409,6 +452,12 @@ def _extract_region_from_text_or_url(text_value: Optional[str], url: Optional[st
 
         for province_name, region in PROVINCE_NAME_TO_REGION.items():
             if province_name in host_path:
+                return region
+
+        province_code = _extract_province_code_from_url(url)
+        if province_code:
+            region = PROVINCE_CODE_TO_REGION.get(province_code)
+            if region:
                 return region
 
     return None
