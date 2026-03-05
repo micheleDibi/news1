@@ -14,8 +14,10 @@ interface Interpello {
   interpello_date: string;
   interpello_description: string;
   interpello_link: string;
-  city_name: string;
-  region_name: string;
+  interpello_regione?: string;
+  interpello_provincia?: string;
+  interpello_citta?: string;
+  classe_concorso?: string;
   article_content?: string;
   article_title?: string;
   article_subtitle?: string;
@@ -26,17 +28,17 @@ interface Interpello {
 function generateInterpelloSlug(interpello: Interpello): string {
   const parts = [
     interpello.interpello_name,
-    interpello.city_name,
-    interpello.region_name,
+    interpello.interpello_provincia || interpello.interpello_citta,
+    interpello.interpello_regione,
     interpello.id?.toString()
-  ].filter(Boolean); // Remove empty/null values
-  
+  ].filter(Boolean);
+
   return parts
     .join('-')
     .toLowerCase()
-    .replace(/[^a-z0-9\-]/g, '-') // Replace non-alphanumeric chars with hyphens
-    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
-    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+    .replace(/[^a-z0-9\-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 // Initialize Supabase client
@@ -108,8 +110,10 @@ const articleHtml = interpello?.article_content
 // Define keywords - combining relevant fields
 const keywords = [
   interpello?.interpello_name,
-  interpello?.region_name,
-  interpello?.city_name,
+  interpello?.interpello_regione,
+  interpello?.interpello_provincia,
+  interpello?.interpello_citta,
+  interpello?.classe_concorso,
   interpello?.interpello_description,
   'interpello',
   'scuola',
@@ -152,8 +156,8 @@ const structuredData = interpello ? JSON.stringify(
         "@type": "Place",
         address: {
           "@type": "PostalAddress",
-          addressLocality: interpello.city_name,
-          addressRegion: interpello.region_name,
+          addressLocality: interpello.interpello_citta || interpello.interpello_provincia,
+          addressRegion: interpello.interpello_regione,
           addressCountry: "IT"
         }
       }
@@ -178,14 +182,24 @@ const structuredData = interpello ? JSON.stringify(
               <p class="text-lg text-gray-600 italic mb-3">{interpello.article_subtitle}</p>
             )}
             <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
-              {interpello.region_name && (
+              {interpello.interpello_regione && (
                 <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
-                  📍 {interpello.region_name}
+                  📍 {interpello.interpello_regione}
                 </span>
               )}
-              {interpello.city_name && (
+              {interpello.interpello_provincia && (
                 <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">
-                  🏙️ {interpello.city_name}
+                  🏛️ {interpello.interpello_provincia}
+                </span>
+              )}
+              {interpello.interpello_citta && (
+                <span class="inline-flex items-center px-2 py-1 bg-teal-100 text-teal-800 rounded-md text-xs font-medium">
+                  🏙️ {interpello.interpello_citta}
+                </span>
+              )}
+              {interpello.classe_concorso && (
+                <span class="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-medium">
+                  🎓 {interpello.classe_concorso}
                 </span>
               )}
             </div>
@@ -194,14 +208,6 @@ const structuredData = interpello ? JSON.stringify(
                 <span>Pubblicato il: <span class="font-medium text-gray-700">{formatDate(interpello.interpello_date)}</span></span>
               )}
             </div>
-          </div>
-
-          {/* Details Grid - Original Info */}
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mb-6 text-sm bg-gray-50 p-4 rounded-md">
-            <div class="md:col-span-2"><strong class="block text-gray-500 text-xs uppercase">Istituto</strong><p>{interpello.interpello_name}</p></div>
-            {interpello.interpello_description && (
-              <div class="md:col-span-2"><strong class="block text-gray-500 text-xs uppercase">Descrizione</strong><p>{interpello.interpello_description}</p></div>
-            )}
           </div>
 
           {/* Article Content Section - Main Content */}

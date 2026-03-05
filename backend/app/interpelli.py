@@ -6,7 +6,8 @@ Flusso:
 2. Filtra e salva nuovi link giornalieri su Supabase
 3. Per ogni pagina giornaliera, estrai i singoli interpelli
 4. Classifica ogni link (singolo vs lista) con Firecrawl + OpenAI
-5. Genera articolo giornalistico con FAQ per ogni interpello
+5. Arricchisci metadati (regione, provincia, citta, classe concorso) con OpenAI
+6. Genera articolo giornalistico con FAQ per ogni interpello
 
 Eseguibile con: python -m app.interpelli
 """
@@ -15,7 +16,7 @@ import re
 import json
 import requests
 from datetime import datetime, date, timedelta
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 
 from bs4 import BeautifulSoup
@@ -67,8 +68,9 @@ class InterpelloEntry:
     interpello_link: str
     interpello_date: Optional[str] = None
     interpello_description: str = ""
-    city_name: str = ""
-    region_name: str = ""
+    interpello_regione: str = ""
+    interpello_provincia: str = ""
+    interpello_citta: str = ""
     classe_concorso: Optional[str] = None
     link_type: str = "single"
 
@@ -237,7 +239,7 @@ def _extract_interpelli_from_html(html: str, date: Optional[str] = None) -> List
         content = soup
 
     current_region = ""
-    current_city = ""
+    current_province = ""
 
     for element in content.find_all(["h2", "h3", "p", "li"]):
         tag_name = element.name
@@ -248,10 +250,10 @@ def _extract_interpelli_from_html(html: str, date: Optional[str] = None) -> List
             if any(skip in text.lower() for skip in ["interpelli scuola", "indice", "sommario", "condivid"]):
                 continue
             current_region = text.title()
-            current_city = ""
+            current_province = ""
 
         elif tag_name == "h3":
-            current_city = element.get_text(strip=True).title()
+            current_province = element.get_text(strip=True).title()
 
         elif tag_name in ("p", "li"):
             for a_tag in element.find_all("a", href=True):
@@ -272,8 +274,9 @@ def _extract_interpelli_from_html(html: str, date: Optional[str] = None) -> List
                         interpello_link=href,
                         interpello_date=date,
                         interpello_description=name,
-                        city_name=current_city,
-                        region_name=current_region,
+                        interpello_regione=current_region,
+                        interpello_provincia=current_province,
+                        interpello_citta="",
                         classe_concorso=classe,
                     )
                 )
@@ -325,8 +328,9 @@ def save_interpelli_to_supabase(entries: List[InterpelloEntry], source_url: str)
             "interpello_link": e.interpello_link,
             "interpello_date": e.interpello_date,
             "interpello_description": e.interpello_description,
-            "city_name": e.city_name,
-            "region_name": e.region_name,
+            "interpello_regione": e.interpello_regione,
+            "interpello_provincia": e.interpello_provincia,
+            "interpello_citta": e.interpello_citta,
             "classe_concorso": e.classe_concorso,
             "source_daily_link": source_url,
             "link_type": "single",
@@ -400,8 +404,9 @@ Rispondi ESCLUSIVAMENTE con un JSON valido:
   "interpello_name": "nome/titolo dell'interpello",
   "interpello_description": "breve descrizione della posizione",
   "classe_concorso": "codice classe di concorso (es. A022, ADEE) oppure null",
-  "city_name": "citta/provincia oppure stringa vuota",
-  "region_name": "regione oppure stringa vuota"
+  "interpello_citta": "citta oppure stringa vuota",
+  "interpello_provincia": "provincia oppure stringa vuota",
+  "interpello_regione": "regione oppure stringa vuota"
 }"""
 
 
@@ -413,8 +418,9 @@ def _scrape_sub_link_details(url: str, parent: dict) -> InterpelloEntry:
         interpello_link=url,
         interpello_date=parent.get("interpello_date"),
         interpello_description=parent.get("interpello_description", ""),
-        city_name=parent.get("city_name", ""),
-        region_name=parent.get("region_name", ""),
+        interpello_regione=parent.get("interpello_regione", ""),
+        interpello_provincia=parent.get("interpello_provincia", ""),
+        interpello_citta=parent.get("interpello_citta", ""),
         classe_concorso=parent.get("classe_concorso"),
         link_type="single",
     )
@@ -446,8 +452,9 @@ def _scrape_sub_link_details(url: str, parent: dict) -> InterpelloEntry:
             interpello_link=url,
             interpello_date=parent.get("interpello_date"),
             interpello_description=data.get("interpello_description") or fallback.interpello_description,
-            city_name=data.get("city_name") or fallback.city_name,
-            region_name=data.get("region_name") or fallback.region_name,
+            interpello_regione=data.get("interpello_regione") or fallback.interpello_regione,
+            interpello_provincia=data.get("interpello_provincia") or fallback.interpello_provincia,
+            interpello_citta=data.get("interpello_citta") or fallback.interpello_citta,
             classe_concorso=data.get("classe_concorso") or fallback.classe_concorso,
             link_type="single",
         )
@@ -516,8 +523,9 @@ def classify_and_expand_all() -> int:
                             "interpello_link": entry.interpello_link,
                             "interpello_date": entry.interpello_date,
                             "interpello_description": entry.interpello_description,
-                            "city_name": entry.city_name,
-                            "region_name": entry.region_name,
+                            "interpello_regione": entry.interpello_regione,
+                            "interpello_provincia": entry.interpello_provincia,
+                            "interpello_citta": entry.interpello_citta,
                             "classe_concorso": entry.classe_concorso,
                             "source_daily_link": item.get("source_daily_link", ""),
                             "link_type": "single",
@@ -536,7 +544,110 @@ def classify_and_expand_all() -> int:
 
 
 # ===========================================================================
-# STEP 5 – Generazione articolo (OpenAI gpt-4.1)
+# STEP 5 – Enrichment metadati con OpenAI
+# ===========================================================================
+
+ENRICHMENT_PROMPT = """Sei un esperto del sistema scolastico italiano. Ti viene fornito il nome/descrizione di un interpello scolastico e le informazioni parziali gia estratte.
+
+Il tuo compito e completare/correggere i seguenti campi:
+- interpello_regione: la regione italiana (es. "Lombardia", "Sicilia")
+- interpello_provincia: la provincia (es. "Milano", "L'Aquila")
+- interpello_citta: la citta specifica se identificabile, altrimenti stringa vuota
+- classe_concorso: il codice della classe di concorso (es. "A022", "ADEE", "ADMM"). Se non identificabile, null.
+
+Usa le informazioni nel nome dell'interpello, nella descrizione e nel link per dedurre i dati mancanti.
+Ad esempio, se il link contiene "csalaquila" la provincia e "L'Aquila" e la regione "Abruzzo".
+
+Rispondi ESCLUSIVAMENTE con un JSON valido:
+{
+  "interpello_regione": "...",
+  "interpello_provincia": "...",
+  "interpello_citta": "...",
+  "classe_concorso": "..." oppure null
+}"""
+
+
+def enrich_interpello_metadata(item: dict) -> dict:
+    """Usa OpenAI per completare regione, provincia, citta e classe_concorso."""
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        user_content = (
+            f"Nome: {item.get('interpello_name', '')}\n"
+            f"Descrizione: {item.get('interpello_description', '')}\n"
+            f"Link: {item.get('interpello_link', '')}\n"
+            f"Regione attuale: {item.get('interpello_regione', '')}\n"
+            f"Provincia attuale: {item.get('interpello_provincia', '')}\n"
+            f"Citta attuale: {item.get('interpello_citta', '')}\n"
+            f"Classe concorso attuale: {item.get('classe_concorso', '')}\n"
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": ENRICHMENT_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(response.choices[0].message.content)
+        return {
+            "interpello_regione": data.get("interpello_regione") or item.get("interpello_regione", ""),
+            "interpello_provincia": data.get("interpello_provincia") or item.get("interpello_provincia", ""),
+            "interpello_citta": data.get("interpello_citta") or item.get("interpello_citta", ""),
+            "classe_concorso": data.get("classe_concorso") or item.get("classe_concorso"),
+        }
+    except Exception as e:
+        print(f"  Errore enrichment per '{item.get('interpello_name', '')}': {e}")
+        return {}
+
+
+def enrich_all_classified() -> int:
+    """Arricchisce i metadati di tutti gli interpelli classificati."""
+    supabase = get_supabase_client()
+    pending = (
+        supabase.table("interpelli")
+        .select("*")
+        .eq("status", "classified")
+        .eq("link_type", "single")
+        .execute()
+    )
+    items = pending.data or []
+    if not items:
+        print(f"[{datetime.now()}] Nessun interpello da arricchire")
+        return 0
+
+    print(f"[{datetime.now()}] Enrichment metadati per {len(items)} interpelli...")
+    enriched_count = 0
+
+    for item in items:
+        enriched = enrich_interpello_metadata(item)
+        if enriched:
+            supabase.table("interpelli").update(
+                {
+                    "interpello_regione": enriched["interpello_regione"],
+                    "interpello_provincia": enriched["interpello_provincia"],
+                    "interpello_citta": enriched["interpello_citta"],
+                    "classe_concorso": enriched["classe_concorso"],
+                    "status": "enriched",
+                }
+            ).eq("id", item["id"]).execute()
+            enriched_count += 1
+            print(f"  Arricchito: {item.get('interpello_name', '')[:50]}... -> {enriched.get('interpello_regione')}/{enriched.get('interpello_provincia')}/{enriched.get('classe_concorso')}")
+        else:
+            # Segna comunque come enriched per non bloccare la pipeline
+            supabase.table("interpelli").update(
+                {"status": "enriched"}
+            ).eq("id", item["id"]).execute()
+            enriched_count += 1
+
+    print(f"[{datetime.now()}] Enrichment completato: {enriched_count}/{len(items)}")
+    return enriched_count
+
+
+# ===========================================================================
+# STEP 6 – Generazione articolo (OpenAI gpt-4.1)
 # ===========================================================================
 
 ARTICLE_PROMPT = """Sei un giornalista esperto del settore istruzione italiana. Scrivi per EduNews24, una testata giornalistica online autorevole.
@@ -574,8 +685,9 @@ def generate_interpello_article(
     name: str,
     description: str,
     link: str,
-    region: str,
-    city: str,
+    regione: str,
+    provincia: str,
+    citta: str,
     classe: Optional[str],
     date: Optional[str],
 ) -> Optional[InterpelloArticle]:
@@ -587,9 +699,11 @@ def generate_interpello_article(
             f"Interpello: {name}\n"
             f"Descrizione: {description}\n"
             f"Link ufficiale: {link}\n"
-            f"Regione: {region}\n"
-            f"Citta: {city}\n"
+            f"Regione: {regione}\n"
+            f"Provincia: {provincia}\n"
         )
+        if citta:
+            user_content += f"Citta: {citta}\n"
         if classe:
             user_content += f"Classe di concorso: {classe}\n"
         if date:
@@ -617,12 +731,12 @@ def generate_interpello_article(
 
 
 def generate_articles_for_pending() -> int:
-    """Genera articoli per tutti gli interpelli classificati senza articolo."""
+    """Genera articoli per tutti gli interpelli arricchiti senza articolo."""
     supabase = get_supabase_client()
     pending = (
         supabase.table("interpelli")
         .select("*")
-        .eq("status", "classified")
+        .eq("status", "enriched")
         .eq("link_type", "single")
         .execute()
     )
@@ -639,8 +753,9 @@ def generate_articles_for_pending() -> int:
             name=item.get("interpello_name", ""),
             description=item.get("interpello_description", ""),
             link=item.get("interpello_link", ""),
-            region=item.get("region_name", ""),
-            city=item.get("city_name", ""),
+            regione=item.get("interpello_regione", ""),
+            provincia=item.get("interpello_provincia", ""),
+            citta=item.get("interpello_citta", ""),
             classe=item.get("classe_concorso"),
             date=item.get("interpello_date"),
         )
@@ -713,8 +828,13 @@ def run_interpelli_pipeline() -> Dict[str, Any]:
         expanded = classify_and_expand_all()
         result["expanded_sub_links"] = expanded
 
-        # Step 5: Genera articoli
-        print(f"\n--- STEP 5: Generazione articoli ---")
+        # Step 5: Enrichment metadati
+        print(f"\n--- STEP 5: Enrichment metadati ---")
+        enriched = enrich_all_classified()
+        result["enriched"] = enriched
+
+        # Step 6: Genera articoli
+        print(f"\n--- STEP 6: Generazione articoli ---")
         articles = generate_articles_for_pending()
         result["articles_generated"] = articles
 
