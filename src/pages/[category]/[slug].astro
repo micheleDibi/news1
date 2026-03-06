@@ -301,6 +301,12 @@ const imageHeight = 720;
   title={`${article.title} - EduNews24`}
   description={`${article.excerpt} Leggi di più.`}
   canonicalUrl={`https://edunews24.it/${article.category_slug}/${article.slug}`}
+  image={article.image_url}
+  ogType="article"
+  author={creatorProfile?.public_name || article.creator || "Redazione EduNews24"}
+  publishedTime={new Date(article.published_at).toISOString()}
+  modifiedTime={article.updated_at ? new Date(article.updated_at).toISOString() : new Date(article.published_at).toISOString()}
+  section={article.category}
 >
   <script type="application/ld+json" set:html={structuredData} slot="head" />
   <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />

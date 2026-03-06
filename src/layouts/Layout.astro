@@ -7,13 +7,25 @@ interface Props {
   description?: string;
   canonicalUrl?: string;
   keywords?: string;
+  image?: string;
+  ogType?: string;
+  author?: string;
+  publishedTime?: string;
+  modifiedTime?: string;
+  section?: string;
 }
 
-const { 
-  title, 
-  description = "EduNews24 - Il portale delle notizie scolastiche, universitarie e della ricerca in Italia", 
+const {
+  title,
+  description = "EduNews24 - Il portale delle notizie scolastiche, universitarie e della ricerca in Italia",
   canonicalUrl,
-  keywords
+  keywords,
+  image,
+  ogType = "website",
+  author,
+  publishedTime,
+  modifiedTime,
+  section
 } = Astro.props;
 
 // Fetch latest articles for breaking news
@@ -56,17 +68,25 @@ const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
     <link rel="shortcut icon" type="image/x-icon" href="/favicon.ico" />
     
     <!-- Open Graph / Facebook -->
-    <meta property="og:type" content="website" />
+    <meta property="og:type" content={ogType} />
     <meta property="og:url" content={fullUrl} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:locale" content="it_IT" />
     <meta property="og:site_name" content="EduNews24" />
-    
+    {image && <meta property="og:image" content={image} />}
+    {image && <meta property="og:image:width" content="1200" />}
+    {image && <meta property="og:image:height" content="800" />}
+    {publishedTime && <meta property="article:published_time" content={publishedTime} />}
+    {modifiedTime && <meta property="article:modified_time" content={modifiedTime} />}
+    {author && <meta property="article:author" content={author} />}
+    {section && <meta property="article:section" content={section} />}
+
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
+    {image && <meta name="twitter:image" content={image} />}
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
