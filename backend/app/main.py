@@ -657,9 +657,8 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
         print(f"Summary: {summary}")
         proposed_slug, category_slug = generate_slugs(news_item.proposed_title, news_item.category)
 
-        # Use default placeholder image
-        frontend_url = os.getenv('FRONTEND_URL', 'https://edunews24.it')
-        image_url = f"{frontend_url}/edunews24_immagine_da_sostituire.png"
+        # Use default placeholder image (relative path, works in any environment)
+        image_url = "/edunews24_immagine_da_sostituire.png"
 
         print(f"Image URL: {image_url}")
         print(f"Proposed slug: {proposed_slug}")
