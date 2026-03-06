@@ -48,10 +48,14 @@ def _llm_json_request(
 ) -> dict:
     """Chiama Claude Opus 4.6 per ottenere una risposta JSON."""
     claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    # Forza output JSON nel system prompt
+    json_system = system_prompt + "\n\nIMPORTANTE: Rispondi SOLO con JSON valido. Esegui l'escape di tutte le virgolette nei valori stringa con backslash (\\\")"
+
     response = claude.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=max_tokens,
-        system=system_prompt,
+        system=json_system,
         messages=[
             {"role": "user", "content": user_content},
         ],
@@ -64,7 +68,34 @@ def _llm_json_request(
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
-    return json.loads(raw)
+
+    # Primo tentativo di parsing
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: chiedi a Claude di fixare il JSON malformato
+    try:
+        fix_response = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            system="Correggi il seguente JSON malformato. Rispondi SOLO con il JSON corretto, senza markdown, senza spiegazioni. Assicurati che tutte le virgolette dentro i valori stringa siano escapate con backslash.",
+            messages=[
+                {"role": "user", "content": raw},
+            ],
+            temperature=0,
+        )
+        fixed = fix_response.content[0].text.strip()
+        if "```" in fixed:
+            fixed = fixed.split("```")[1]
+            if fixed.startswith("json"):
+                fixed = fixed[4:]
+            fixed = fixed.strip()
+        return json.loads(fixed)
+    except Exception as fix_err:
+        print(f"  Impossibile fixare JSON: {fix_err}")
+        raise
 
 MESI_ITALIANI = {
     "gennaio": "01", "febbraio": "02", "marzo": "03", "aprile": "04",
