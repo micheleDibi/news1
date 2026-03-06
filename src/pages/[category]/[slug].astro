@@ -69,14 +69,14 @@ const [secondaryCategoriesDetails, relatedArticles, creatorProfile] = await Prom
     // Try by id first
     let { data } = await supabase
       .from('profiles')
-      .select('public_name, full_name,profile_pic_link')
+      .select('public_name, full_name, profile_pic_link, description')
       .eq('id', article.creator)
       .single();
     if (!data) {
       // Fallback: try by full_name (article.creator contains the full_name)
       const { data: nameData } = await supabase
         .from('profiles')
-        .select('public_name, full_name,profile_pic_link')
+        .select('public_name, full_name, profile_pic_link, description')
         .eq('full_name', article.creator)
         .single();
       data = nameData;
@@ -454,10 +454,12 @@ const imageHeight = 720;
               />
               <div>
                 <h2 class="text-lg font-bold text-sport-700 mb-1">Articolo creato da</h2>
-                
-                <a href= {authorHref} class = "text-xl font semibold text-gray-900 hover: text-sport-600 transition-colors">
+                <a href={authorHref} class="text-xl font-semibold text-gray-900 hover:text-sport-600 transition-colors">
                   {creatorProfile.public_name || 'Redazione EduNews24'}
                 </a>
+                {creatorProfile.description && (
+                  <p class="text-sm text-gray-600 mt-1 line-clamp-2">{creatorProfile.description}</p>
+                )}
               </div>
             </section>
           )}
