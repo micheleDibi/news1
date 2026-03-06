@@ -21,7 +21,7 @@ from typing import List, Dict, Optional, Any
 
 from bs4 import BeautifulSoup
 from firecrawl import Firecrawl
-from openai import OpenAI
+import anthropic
 from dotenv import load_dotenv
 import os
 
@@ -34,8 +34,37 @@ from .database import get_supabase_client
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://www.scuolainterpelli.it/interpelli-scuola-aggiornati/"
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
+
+CLAUDE_MODEL = "claude-opus-4-6"
+
+
+def _llm_json_request(
+    system_prompt: str,
+    user_content: str,
+    temperature: float = 0,
+    max_tokens: int = 4096,
+) -> dict:
+    """Chiama Claude Opus 4.6 per ottenere una risposta JSON."""
+    claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    response = claude.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=[
+            {"role": "user", "content": user_content},
+        ],
+        temperature=temperature,
+    )
+    raw = response.content[0].text.strip()
+    # Gestisci eventuale blocco markdown ```json ... ```
+    if "```" in raw:
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+    return json.loads(raw)
 
 MESI_ITALIANI = {
     "gennaio": "01", "febbraio": "02", "marzo": "03", "aprile": "04",
@@ -372,22 +401,11 @@ def classify_interpello_link(link: str, name: str) -> LinkClassification:
         # Tronca a ~4000 caratteri per il prompt
         content_trimmed = content[:4000]
 
-        # Classificazione con OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": CLASSIFICATION_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Nome interpello: {name}\n\nContenuto pagina:\n{content_trimmed}",
-                },
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
+        # Classificazione con Claude
+        data = _llm_json_request(
+            system_prompt=CLASSIFICATION_PROMPT,
+            user_content=f"Nome interpello: {name}\n\nContenuto pagina:\n{content_trimmed}",
         )
-        raw = response.choices[0].message.content
-        data = json.loads(raw)
         return LinkClassification(
             link_type=data.get("link_type", "single"),
             sub_links=data.get("sub_links", []),
@@ -435,17 +453,10 @@ def _scrape_sub_link_details(url: str, parent: dict) -> InterpelloEntry:
 
         content_trimmed = content[:4000]
 
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": SUB_LINK_EXTRACTION_PROMPT},
-                {"role": "user", "content": content_trimmed},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
+        data = _llm_json_request(
+            system_prompt=SUB_LINK_EXTRACTION_PROMPT,
+            user_content=content_trimmed,
         )
-        data = json.loads(response.choices[0].message.content)
 
         return InterpelloEntry(
             interpello_name=data.get("interpello_name") or fallback.interpello_name,
@@ -568,10 +579,8 @@ Rispondi ESCLUSIVAMENTE con un JSON valido:
 
 
 def enrich_interpello_metadata(item: dict) -> dict:
-    """Usa OpenAI per completare regione, provincia, citta e classe_concorso."""
+    """Usa LLM per completare regione, provincia, citta e classe_concorso."""
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
         user_content = (
             f"Nome: {item.get('interpello_name', '')}\n"
             f"Descrizione: {item.get('interpello_description', '')}\n"
@@ -582,16 +591,10 @@ def enrich_interpello_metadata(item: dict) -> dict:
             f"Classe concorso attuale: {item.get('classe_concorso', '')}\n"
         )
 
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": ENRICHMENT_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0,
-            response_format={"type": "json_object"},
+        data = _llm_json_request(
+            system_prompt=ENRICHMENT_PROMPT,
+            user_content=user_content,
         )
-        data = json.loads(response.choices[0].message.content)
         return {
             "interpello_regione": data.get("interpello_regione") or item.get("interpello_regione", ""),
             "interpello_provincia": data.get("interpello_provincia") or item.get("interpello_provincia", ""),
@@ -693,8 +696,6 @@ def generate_interpello_article(
 ) -> Optional[InterpelloArticle]:
     """Genera un articolo giornalistico per un singolo interpello."""
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
         user_content = (
             f"Interpello: {name}\n"
             f"Descrizione: {description}\n"
@@ -709,17 +710,12 @@ def generate_interpello_article(
         if date:
             user_content += f"Data: {date}\n"
 
-        response = client.chat.completions.create(
-            model="gpt-4.1",
-            messages=[
-                {"role": "system", "content": ARTICLE_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
+        data = _llm_json_request(
+            system_prompt=ARTICLE_PROMPT,
+            user_content=user_content,
             temperature=0.7,
-            response_format={"type": "json_object"},
+            max_tokens=8000,
         )
-        raw = response.choices[0].message.content
-        data = json.loads(raw)
         return InterpelloArticle(
             article_title=data.get("article_title", name),
             article_subtitle=data.get("article_subtitle", ""),
