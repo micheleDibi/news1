@@ -3,6 +3,7 @@ export const prerender = false;
 import type { APIRoute } from 'astro';
 import { uploadToS3 } from '../../lib/aws';
 import { slugify } from '../../lib/utils';
+import { compressAndConvertVideo } from '../../lib/video-compress';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -44,22 +45,17 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
-    // Normalize content type for S3 (ensure inline playback)
-    let contentType = file.type;
-    if (!contentType) {
-      const lowerName = originalClientFilename?.toLowerCase() || '';
-      contentType = lowerName.endsWith('.mov') ? 'video/quicktime' : 'video/mp4';
-    }
-
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    //usamil titolo per il nome del file
-    const ext = (originalClientFilename.split('.').pop() || 'mp4').toLowerCase();
-    const videoFilename = `${slugify(title)}.${ext}`;
+    // Compress and convert to MP4 via FFmpeg
+    console.log(`Compressing video: ${originalClientFilename} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
+    const compressedBuffer = await compressAndConvertVideo(buffer, originalClientFilename);
+    console.log(`Compressed video: ${(compressedBuffer.length / 1024 / 1024).toFixed(1)}MB`);
 
-    // Upload the video file directly (no processing needed like with images)
-    //const videoUrl = await uploadToS3(buffer, originalClientFilename, contentType);
-    const videoUrl = await uploadToS3(buffer, videoFilename, contentType);
+    const contentType = 'video/mp4';
+    const videoFilename = `${slugify(title)}.mp4`;
+
+    const videoUrl = await uploadToS3(compressedBuffer, videoFilename, contentType);
 
     console.log(`Video uploaded successfully: ${videoUrl}`);
 

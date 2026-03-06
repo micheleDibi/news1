@@ -21,7 +21,7 @@ from .variables_edunews import (
 )
 
 # API configuration
-BASE_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+BASE_URL = os.getenv("BACKEND_URL", "http://localhost:8002")
 TELEGRAM_URL = os.getenv("TELEGRAM_URL", "http://localhost:8004")
 PUBLIC_SUPABASE_URL = os.getenv("PUBLIC_SUPABASE_URL")
 PUBLIC_SUPABASE_ANON_KEY = os.getenv("PUBLIC_SUPABASE_ANON_KEY")
@@ -33,6 +33,8 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4321")
 REFRESH_ENDPOINT = f"{FRONTEND_URL}/api/bandi/refresh"
 SCHEDULE_MINUTES = 60 # Run every hour
 
+
+# Anche questa da modificare
 def trigger_bandi_refresh():
     """Calls the Astro API endpoint to refresh the bandi data."""
     print(f"[{datetime.now()}] Triggering bandi refresh at: {REFRESH_ENDPOINT}")
@@ -408,8 +410,6 @@ def write_log(message: str):
 def run_news_pipeline(source_list: List[Dict[str, str]] = None):
     """Execute the complete news pipeline"""
 
-    trigger_bandi_refresh()
-
     source_list = fetch_sources_from_supabase()
     if not source_list:
         print("No sources available")
@@ -519,7 +519,6 @@ if __name__ == "__main__":
         run_news_pipeline()
         # Then schedule future runs
         schedule_pipeline()
-        trigger_bandi_refresh()
     except KeyboardInterrupt:
         print("\nShutting down news pipeline scheduler...")
     except Exception as e:
