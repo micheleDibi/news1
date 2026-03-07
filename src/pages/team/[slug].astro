@@ -164,7 +164,7 @@ const formattedDescription = profile.description
               <!-- Profile Description -->
               {formattedDescription && (
                 <div class="mb-8">
-                  <h2 class="text-2xl font-bold text-gray-900 mb-4">Chi sono</h2>
+                  <h2 class="text-2xl font-bold text-gray-900 mb-4">Chi è {profile.full_name}</h2>
                   <div class="prose max-w-none" set:html={formattedDescription} />
                 </div>
               )}
