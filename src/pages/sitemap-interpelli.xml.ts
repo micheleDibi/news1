@@ -4,25 +4,26 @@ interface Interpello {
   id: number;
   interpello_name: string;
   interpello_date: string;
-  city_name: string;
-  region_name: string;
+  interpello_regione?: string;
+  interpello_provincia?: string;
+  interpello_citta?: string;
 }
 
 // Function to generate URL-friendly slug from interpello data (same as in [slug].astro)
 function generateInterpelloSlug(interpello: Interpello): string {
   const parts = [
     interpello.interpello_name,
-    interpello.city_name,
-    interpello.region_name,
+    interpello.interpello_provincia || interpello.interpello_citta,
+    interpello.interpello_regione,
     interpello.id?.toString()
-  ].filter(Boolean); // Remove empty/null values
-  
+  ].filter(Boolean);
+
   return parts
     .join('-')
     .toLowerCase()
-    .replace(/[^a-z0-9\-]/g, '-') // Replace non-alphanumeric chars with hyphens
-    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
-    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+    .replace(/[^a-z0-9\-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 export async function GET() {
@@ -35,7 +36,7 @@ export async function GET() {
     while (hasMoreData) {
       const { data: interpelli, error } = await supabase
         .from('interpelli')
-        .select('id, interpello_name, interpello_date, city_name, region_name')
+        .select('id, interpello_name, interpello_date, interpello_regione, interpello_provincia, interpello_citta')
         .order('interpello_date', { ascending: false })
         .range(page * pageSize, (page + 1) * pageSize - 1);
 
