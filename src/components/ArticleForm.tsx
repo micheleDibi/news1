@@ -1376,40 +1376,77 @@ const cancelContactForm = () => {
     if (!file) return;
     console.log('🎥 Starting video upload process...');
     console.log('🎥 File details:', { name: file.name, size: file.size, type: file.type });
-    
+
     try {
       setIsUploadingVideo(true);
 
-      const formData = new FormData();
       const articleSlug = slugify(getValues('title') || 'articolo');
       const ext = file.name.split('.').pop() || 'mp4';
       const filename = `${articleSlug}.${ext}`;
-      formData.append('file', file);
-      formData.append('filename', filename);
-      formData.append('title', getValues('title') || '');
-      
+      const title = getValues('title') || '';
+      const authHeader = `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`;
+
       console.log('🎥 Uploading with filename:', filename);
+
+      // Chunked upload: split file into 50MB chunks
+      const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+      const uploadId = crypto.randomUUID();
+
+      console.log(`🎥 Splitting into ${totalChunks} chunks (${(CHUNK_SIZE / 1024 / 1024)}MB each), uploadId: ${uploadId}`);
+
+      // Send each chunk sequentially
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunkBlob = file.slice(start, end);
+
+        const chunkForm = new FormData();
+        chunkForm.append('chunk', chunkBlob);
+        chunkForm.append('uploadId', uploadId);
+        chunkForm.append('chunkIndex', String(i));
+        chunkForm.append('totalChunks', String(totalChunks));
+
+        console.log(`🎥 Sending chunk ${i + 1}/${totalChunks} (${((end - start) / 1024 / 1024).toFixed(1)}MB)`);
+
+        const chunkRes = await fetch('/api/upload-video-chunk', {
+          method: 'POST',
+          headers: { 'Authorization': authHeader },
+          body: chunkForm
+        });
+
+        if (!chunkRes.ok) {
+          const errPayload = await chunkRes.json().catch(() => null);
+          throw new Error(errPayload?.error || `Chunk ${i + 1} upload failed`);
+        }
+      }
+
+      console.log('🎥 All chunks uploaded. Requesting assembly + compression...');
+
+      // Request server to reassemble, compress, and upload to S3
+      const assembleForm = new FormData();
+      assembleForm.append('uploadId', uploadId);
+      assembleForm.append('filename', filename);
+      assembleForm.append('title', title);
 
       const response = await fetch('/api/upload-video', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
-        },
-        body: formData
+        headers: { 'Authorization': authHeader },
+        body: assembleForm
       });
-      
-      console.log('🎥 Upload response status:', response.status);
-      
+
+      console.log('🎥 Assembly response status:', response.status);
+
       if (!response.ok) {
         const errorPayload = await response.json().catch(() => null);
-        console.error('🎥 Upload failed with error:', errorPayload);
-        throw new Error(errorPayload?.error || 'Video upload failed');
+        console.error('🎥 Assembly failed with error:', errorPayload);
+        throw new Error(errorPayload?.error || 'Video assembly failed');
       }
-  
+
       const payload = await response.json();
       console.log('🎥 Upload successful! Payload:', payload);
       console.log('🎥 Video URL received:', payload.url);
-      
+
       // Update state
       setSidebarVideoUrl(payload.url);
       console.log('🎥 Updated sidebarVideoUrl state to:', payload.url);
@@ -1426,15 +1463,15 @@ const cancelContactForm = () => {
         setVideoDuration(null);
         setValue('video_duration',null);
       }
-      
+
       // Update form value
       setValue('video_url', payload.url);
       console.log('🎥 Set form video_url value to:', payload.url);
-      
+
       // Verify the form value was set
       const currentFormValue = getValues('video_url');
       console.log('🎥 Current form video_url value after setValue:', currentFormValue);
-      
+
     } catch (err) {
       console.error('🎥 Error uploading video:', err);
       alert((err as Error).message);
@@ -1443,16 +1480,6 @@ const cancelContactForm = () => {
       setIsUploadingVideo(false);
       console.log('🎥 Video upload process completed');
     }
-
-     /*await new Promise(resolve => setTimeout(resolve, 500));
-      const fakeUrl = '/videoSimona.mov';
-      setSidebarVideoUrl(fakeUrl);
-      setValue('video_url', fakeUrl);
-    } catch (err) {
-      console.error('Mock upload error:', err);
-    } finally {
-      setIsUploadingVideo(false);
-    }*/
 
   }, [article?.id, setValue]);
 
