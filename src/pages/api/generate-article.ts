@@ -2,6 +2,102 @@ export const prerender = false;
 
 import type { APIRoute } from 'astro';
 import Anthropic from '@anthropic-ai/sdk';
+import { supabase } from '../../lib/supabase';
+
+const STOP_WORDS_IT = new Set([
+  "di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la",
+  "i", "gli", "le", "un", "uno", "una", "e", "o", "ma", "che", "non", "si",
+  "del", "dello", "della", "dei", "degli", "delle", "al", "allo", "alla",
+  "ai", "agli", "alle", "dal", "dallo", "dalla", "dai", "dagli", "dalle",
+  "nel", "nello", "nella", "nei", "negli", "nelle", "sul", "sullo", "sulla",
+  "sui", "sugli", "sulle", "come", "se", "anche", "piu", "sono", "stato",
+  "essere", "ha", "hanno", "questo", "questa", "questi", "queste", "quello",
+]);
+
+function extractSignificantWords(text: string): Set<string> {
+  return new Set(
+    text.split(/\W+/)
+      .map(w => w.toLowerCase())
+      .filter(w => w.length > 2 && !STOP_WORDS_IT.has(w))
+  );
+}
+
+async function findRelatedArticles(prompt: string): Promise<{ title: string; slug: string; category_slug: string; score: number }[]> {
+  try {
+    const { data, error } = await supabase
+      .from('articles')
+      .select('id, title, slug, category_slug, tags')
+      .eq('isdraft', false);
+
+    if (error || !data || data.length === 0) {
+      console.log('No articles found for interlinking');
+      return [];
+    }
+
+    const promptWords = extractSignificantWords(prompt);
+    if (promptWords.size === 0) return [];
+
+    const scored: { title: string; slug: string; category_slug: string; score: number }[] = [];
+
+    for (const article of data) {
+      // Parse tags
+      let existingTags: string[] = [];
+      const rawTags = article.tags;
+      if (Array.isArray(rawTags)) {
+        existingTags = rawTags.filter((t: any) => typeof t === 'string' && t);
+      } else if (typeof rawTags === 'string') {
+        try { existingTags = JSON.parse(rawTags); } catch { existingTags = []; }
+        if (!Array.isArray(existingTags)) existingTags = [];
+      }
+      const existingTagsSet = new Set(existingTags.map(t => t.toLowerCase().trim()));
+
+      // Tag overlap score (weight 0.6) - match prompt words against tags
+      let tagOverlap = 0;
+      for (const word of promptWords) {
+        if (existingTagsSet.has(word)) tagOverlap++;
+        // Also check if prompt word is contained in multi-word tags
+        for (const tag of existingTagsSet) {
+          if (tag.includes(word) || word.includes(tag)) { tagOverlap++; break; }
+        }
+      }
+      const tagScore = (tagOverlap / Math.max(promptWords.size, 1)) * 0.6;
+
+      // Title keyword overlap score (weight 0.4) - rebalanced since no category
+      const titleWords = extractSignificantWords(article.title || '');
+      let titleOverlap = 0;
+      for (const word of promptWords) {
+        if (titleWords.has(word)) titleOverlap++;
+      }
+      const titleScore = (titleOverlap / Math.max(promptWords.size, 1)) * 0.4;
+
+      const totalScore = tagScore + titleScore;
+
+      if (totalScore > 0.1) {
+        scored.push({
+          title: article.title,
+          slug: article.slug,
+          category_slug: article.category_slug,
+          score: totalScore,
+        });
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, 3);
+
+    if (top.length > 0) {
+      console.log(`Found ${top.length} related articles for interlinking:`);
+      for (const a of top) {
+        console.log(`  - ${a.title} (score: ${a.score.toFixed(3)}) -> /${a.category_slug}/${a.slug}`);
+      }
+    }
+
+    return top;
+  } catch (e) {
+    console.error('Error finding related articles:', e);
+    return [];
+  }
+}
 
 const SYSTEM_PROMPT = `Sei un generatore AI di articoli giornalistici di alta qualita. DEVI restituire SOLO un JSON valido, senza testo prima o dopo, con la struttura esatta:
 {"article": {"title": string, "excerpt": string, "content": string, "keywords": string[]}}
@@ -20,6 +116,7 @@ Scrivi come un giornalista esperto di una testata autorevole italiana (Corriere 
 2. **Introduzione**: paragrafo di apertura che cattura l'attenzione con il fatto principale
 3. **Sezioni principali**: usa ## (H2) per i titoli delle sezioni principali, ### (H3) solo per sotto-sezioni quando necessario
 4. **Sintesi finale**: paragrafo conclusivo che riassume i punti chiave
+5. **Interlink**: se vengono forniti articoli correlati, inseriscili NATURALMENTE nel testo nei punti dove il contesto lo rende pertinente. Formato: [Titolo Articolo](/category-slug/slug). Non forzare l'inserimento se non e contestualmente rilevante. Non creare una sezione separata per i link.
 
 ## Formattazione
 
@@ -56,11 +153,22 @@ export const POST: APIRoute = async ({ request }) => {
   try {
     const { prompt, paragraphs, wordsPerParagraph, tone, persona, sourceUrl } = await request.json();
 
+    // Find related articles for interlinking
+    const relatedArticles = await findRelatedArticles(prompt);
+    let interlinksText = '';
+    if (relatedArticles.length > 0) {
+      interlinksText = '\n\nArticoli correlati disponibili per interlinking (inseriscili naturalmente nel testo dove pertinente):\n';
+      for (let i = 0; i < relatedArticles.length; i++) {
+        const a = relatedArticles[i];
+        interlinksText += `${i + 1}. [${a.title}](/${a.category_slug}/${a.slug})\n`;
+      }
+    }
+
     const userContent = `Topic: ${prompt}
 Numero di paragrafi: ${paragraphs}
 Parole per paragrafo: ${wordsPerParagraph}
 Tono: ${tone}
-Persona: ${persona}${sourceUrl ? `\nSource URL: ${sourceUrl}` : ''}
+Persona: ${persona}${sourceUrl ? `\nSource URL: ${sourceUrl}` : ''}${interlinksText}
 
 Rispondi SOLO con il JSON, senza blocchi di codice o altro testo.`;
 

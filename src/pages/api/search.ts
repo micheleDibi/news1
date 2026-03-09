@@ -5,16 +5,20 @@ import { supabase } from '../../lib/supabase';
 import { categories } from '../../lib/categories';
 
 export const POST: APIRoute = async ({ request }) => {
+  let query = '';
+  let category = '';
+
   try {
-    const { query, category } = await request.json();
+    const body = await request.json();
+    query = body.query || '';
+    category = body.category || '';
 
     let supabaseQuery = supabase
       .from('articles')
-      .select('*')
+      .select('id, title, slug, excerpt, image_url, category, category_slug, published_at, tags')
       .eq('isdraft', false)
       .order('published_at', { ascending: false });
 
-    // Add full-text search with proper query escaping
     if (query) {
       const searchTerm = query.replace(/%/g, '\\%').replace(/_/g, '\\_');
       supabaseQuery = supabaseQuery.or(
@@ -22,15 +26,12 @@ export const POST: APIRoute = async ({ request }) => {
       );
     }
 
-    // Add category filter if specified and not 'All'
     if (category && category !== 'All') {
       supabaseQuery = supabaseQuery.eq('category', category);
     }
 
-    // Limit results
     supabaseQuery = supabaseQuery.limit(10);
 
-    // Execute the query
     const { data: articles, error } = await supabaseQuery;
 
     if (error) {
@@ -38,35 +39,30 @@ export const POST: APIRoute = async ({ request }) => {
       throw error;
     }
 
-    // Transform articles to include category colors
     const transformedArticles = articles?.map(article => ({
       ...article,
       categoryColor: categories.find(c => c.name === article.category)?.color || 'sport-500'
     }));
 
-    return new Response(JSON.stringify({ 
+    return new Response(JSON.stringify({
       articles: transformedArticles || [],
       query,
       category,
       count: transformedArticles?.length || 0
     }), {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
     console.error('Search error:', error);
-    return new Response(JSON.stringify({ 
+    return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error',
       query,
       category
     }), {
       status: 500,
-      headers: {
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Content-Type': 'application/json' }
     });
   }
-}; 
+};

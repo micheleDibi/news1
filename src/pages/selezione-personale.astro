@@ -1,6 +1,6 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import { format, parseISO, isValid } from 'date-fns';
+import { format, parseISO, isValid, differenceInCalendarDays } from 'date-fns';
 import { it } from 'date-fns/locale';
 import { createClient } from '@supabase/supabase-js';
 import type { SelezioneBando } from '../types/bandi';
@@ -83,29 +83,32 @@ const formatDate = (dateString: string): string => {
   try {
     const parsedDate = parseISO(dateString);
     if (!isValid(parsedDate)) return "Data non valida";
-    return format(parsedDate, 'dd MMMM yyyy', { locale: it });
+    return format(parsedDate, 'dd MMM yyyy', { locale: it });
   } catch {
     return "Data non valida";
   }
 };
 
-const getStatusBadgeColor = (status: string): string => {
-  switch (status) {
-    case 'OPEN': return 'bg-green-100 text-green-800';
-    case 'CLOSED': return 'bg-red-100 text-red-800';
-    case 'PENDING': return 'bg-yellow-100 text-yellow-800';
-    default: return 'bg-gray-100 text-gray-800';
+const getDaysRemaining = (dateString: string): number | null => {
+  try {
+    const parsedDate = parseISO(dateString);
+    if (!isValid(parsedDate)) return null;
+    return differenceInCalendarDays(parsedDate, new Date());
+  } catch {
+    return null;
   }
 };
 
-const getStatusBorderColorClass = (status: string): string => {
-  switch (status) {
-    case 'OPEN': return 'border-green-500';
-    case 'CLOSED': return 'border-red-500';
-    case 'PENDING': return 'border-yellow-500';
-    default: return 'border-gray-300';
-  }
-};
+// Precompute card data
+const bandiWithDays = bandiData.map((bando: SelezioneBando) => {
+  const daysLeft = bando.data_scadenza ? getDaysRemaining(bando.data_scadenza) : null;
+  return {
+    ...bando,
+    daysLeft,
+    isExpiring: daysLeft !== null && daysLeft >= 0 && daysLeft <= 7,
+    isExpired: daysLeft !== null && daysLeft < 0,
+  };
+});
 
 const pageTitle = "Selezione Personale - EduNews24";
 const pageDescription = "Con EduNews24.it ricerca degli annunci di lavoro della pubblica amministrazione e delle migliori aziende private";
@@ -116,26 +119,47 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
   description={pageDescription}
   keywords={pageKeywords}
 >
-  <main class="bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
-    <div class="container mx-auto px-4 max-w-6xl">
-      <div class="mb-10 border-b pb-4">
-        <h1 class="text-3xl md:text-4xl font-bold text-primary">Selezione Personale</h1>
-        <p class="text-gray-600 mt-2">Bandi e concorsi pubblici in Italia</p>
+  <main class="bg-gray-50 min-h-screen">
+    {/* Hero header */}
+    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
+      <div class="container mx-auto max-w-6xl">
+        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
+          <ol class="inline-flex items-center space-x-1">
+            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
+            <li class="flex items-center">
+              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <span class="text-white font-medium">Selezione Personale</span>
+            </li>
+          </ol>
+        </nav>
+        <h1 class="text-3xl md:text-4xl font-bold mb-2">Selezione Personale</h1>
+        <p class="text-blue-100 text-lg max-w-2xl">Bandi, concorsi pubblici e opportunita di lavoro nella Pubblica Amministrazione italiana.</p>
+        <div class="mt-4 flex items-center gap-4 text-sm">
+          <span class="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <span id="hero-count">{totalCount}</span> bandi disponibili
+          </span>
+        </div>
       </div>
+    </div>
 
+    <div class="container mx-auto px-4 max-w-6xl -mt-6">
       {/* Filter Controls */}
-      <div class="mb-8 p-4 bg-white rounded-md shadow-sm">
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 items-end">
+      <div class="mb-6 p-5 bg-white rounded-xl shadow-md border border-gray-100">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
           {/* Search */}
           <div class="lg:col-span-2">
-            <label for="search-filter" class="block text-sm font-medium text-gray-700 mb-1">Cerca</label>
-            <input type="text" id="search-filter" placeholder="Titolo, Ente, Codice..." class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm">
+            <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Cerca</label>
+            <div class="relative">
+              <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+              <input type="text" id="search-filter" placeholder="Titolo, Ente, Codice..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
+            </div>
           </div>
 
           {/* Categoria */}
           <div>
-            <label for="category-filter" class="block text-sm font-medium text-gray-700 mb-1">Categoria</label>
-            <select id="category-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
+            <label for="category-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Categoria</label>
+            <select id="category-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
               {filterOptions.categorie.map(cat => <option value={cat}>{cat}</option>)}
             </select>
@@ -143,16 +167,27 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
 
           {/* Settore */}
           <div>
-            <label for="settore-filter" class="block text-sm font-medium text-gray-700 mb-1">Settore</label>
-            <select id="settore-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
+            <label for="settore-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Settore</label>
+            <select id="settore-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
               <option value="">Tutti</option>
               {filterOptions.settori.map(s => <option value={s}>{s}</option>)}
             </select>
           </div>
 
+          {/* Sede */}
+          <div>
+            <label for="sede-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Sede</label>
+            <select id="sede-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              <option value="">Tutte</option>
+              {filterOptions.sedi.map(s => <option value={s}>{s}</option>)}
+            </select>
+          </div>
+
           {/* Reset Button */}
-          <div class="flex items-end">
-            <button id="reset-filters" class="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+          <div>
+            <label class="block text-xs font-semibold text-transparent mb-1.5">Reset</label>
+            <button id="reset-filters" class="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-1.5">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
               Resetta
             </button>
           </div>
@@ -160,140 +195,155 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
       </div>
 
       {/* Results Count */}
-      <div class="mb-4">
-        <p id="results-count" class="text-sm text-gray-600">
-          Trovati <span id="visible-count">{totalCount}</span> bandi
+      <div class="mb-4 flex items-center justify-between">
+        <p id="results-count" class="text-sm text-gray-500">
+          <span id="visible-count" class="font-semibold text-gray-700">{totalCount}</span> bandi trovati
         </p>
+        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-blue-600">
+          <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          Caricamento...
+        </div>
       </div>
 
-      <div id="bandi-list" class="space-y-5">
+      <div id="bandi-list" class="space-y-4">
         {bandiData.length === 0 ? (
-          <p id="no-results-message" class="text-center text-gray-500 text-lg py-10">Nessun bando trovato al momento.</p>
+          <div id="no-results-message" class="text-center py-16 bg-white rounded-xl shadow-sm">
+            <svg class="mx-auto w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <p class="text-gray-500 text-lg font-medium">Nessun bando trovato</p>
+            <p class="text-gray-400 text-sm mt-1">Prova a modificare i filtri di ricerca</p>
+          </div>
         ) : (
-          <>
-            {bandiData.map((bando: SelezioneBando) => (
-              <article
-                class:list={["bando-item bg-white rounded-md border overflow-hidden transition-colors duration-200 hover:border-gray-300", getStatusBorderColorClass(bando.calculated_status)]}
-              >
-                <a href={`/selezione-personale/${bando.slug}`} class="block hover:bg-gray-50/50">
-                  <div class="p-5">
-                    <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-4">
-                      <div class="flex-1">
-                        <h2 class="text-lg font-semibold text-gray-800 mb-1 hover:text-primary transition-colors">
-                          {bando.article_title || bando.titolo}
-                        </h2>
-                        {(bando.enti_riferimento?.length > 0 || bando.sedi?.length > 0) && (
-                          <p class="text-sm text-gray-500">
-                            {bando.enti_riferimento?.length > 0 && (
-                              <>
-                                <span class="font-medium text-gray-600">Ente:</span> {bando.enti_riferimento.join(', ')}
-                                {bando.sedi?.length > 0 && <span class="mx-1">|</span>}
-                              </>
-                            )}
-                            {bando.sedi?.length > 0 && (
-                              <>
-                                <span class="font-medium text-gray-600">Sede:</span> {bando.sedi.join(', ')}
-                              </>
-                            )}
-                          </p>
+          <Fragment>
+            {bandiWithDays.map((bando) => (
+                <article class="bando-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200">
+                  <a href={`/selezione-personale/${bando.slug}`} class="block">
+                    <div class="p-5 sm:p-6">
+                      <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
+                        <div class="flex-1 min-w-0">
+                          <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">
+                            {bando.article_title || bando.titolo}
+                          </h2>
+                        </div>
+                        <div class="flex items-center gap-2 flex-shrink-0">
+                          {bando.daysLeft !== null && !bando.isExpired && (
+                            <span class:list={[
+                              "text-xs font-medium px-2 py-1 rounded-md",
+                              bando.isExpiring ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-blue-50 text-blue-600 border border-blue-100"
+                            ]}>
+                              {bando.daysLeft === 0 ? "Scade oggi" : `${bando.daysLeft}g rimasti`}
+                            </span>
+                          )}
+                          <span class:list={[
+                            "inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md",
+                            bando.calculated_status === 'OPEN' ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
+                            bando.calculated_status === 'CLOSED' ? "bg-red-50 text-red-700 border border-red-200" :
+                            "bg-yellow-50 text-yellow-700 border border-yellow-200"
+                          ]}>
+                            <span class:list={[
+                              "w-1.5 h-1.5 rounded-full",
+                              bando.calculated_status === 'OPEN' ? "bg-emerald-500" :
+                              bando.calculated_status === 'CLOSED' ? "bg-red-500" : "bg-yellow-500"
+                            ]}></span>
+                            {bando.status_label}
+                          </span>
+                        </div>
+                      </div>
+
+                      {(bando.enti_riferimento?.length > 0 || bando.sedi?.length > 0) && (
+                        <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
+                          {bando.enti_riferimento?.length > 0 && (
+                            <span class="inline-flex items-center gap-1.5">
+                              <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                              <span class="truncate">{bando.enti_riferimento.join(', ')}</span>
+                            </span>
+                          )}
+                          {bando.sedi?.length > 0 && (
+                            <span class="inline-flex items-center gap-1.5">
+                              <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                              <span class="truncate">{bando.sedi.join(', ')}</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
+                        {bando.figura_ricercata && (
+                          <span class="inline-flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                            <span class="font-medium">{bando.figura_ricercata}</span>
+                          </span>
                         )}
-                      </div>
-                      <div class="flex-shrink-0 text-right space-y-1 pt-1">
-                        <span class={`inline-block px-2.5 py-0.5 text-xs font-medium rounded-full ${getStatusBadgeColor(bando.calculated_status)}`}>
-                          {bando.status_label}
+                        {bando.num_posti && (
+                          <span class="inline-flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                            <span><strong>{bando.num_posti}</strong> {bando.num_posti === 1 ? 'posto' : 'posti'}</span>
+                          </span>
+                        )}
+                        {bando.tipo_procedura && (
+                          <span class="inline-flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                            {bando.tipo_procedura}
+                          </span>
+                        )}
+                        {bando.data_pubblicazione && (
+                          <span class="inline-flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                            {formatDate(bando.data_pubblicazione)}
+                          </span>
+                        )}
+                        {bando.data_scadenza && (
+                          <span class:list={["inline-flex items-center gap-1.5", bando.isExpiring ? "text-amber-600 font-medium" : bando.isExpired ? "text-red-500" : ""]}>
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            Scadenza: {formatDate(bando.data_scadenza)}
+                          </span>
+                        )}
+                        <span class="inline-flex items-center gap-1 text-xs text-gray-400">
+                          Cod. {bando.codice}
                         </span>
-                        <p class="text-xs text-gray-400">Cod. {bando.codice}</p>
                       </div>
-                    </div>
 
-                    <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mb-4 text-sm border-t border-gray-100 pt-4 mt-4">
-                      {bando.figura_ricercata && (
-                        <div>
-                          <p class="text-xs text-gray-500 uppercase tracking-wider">Figura Ricercata</p>
-                          <p class="font-medium text-gray-700">{bando.figura_ricercata}</p>
+                      {(bando.categorie?.length > 0 || bando.settori?.length > 0) && (
+                        <div class="flex flex-wrap gap-1.5 mt-3">
+                          {bando.categorie?.map((cat: string) => (
+                            <span class="inline-block bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 rounded-md">{cat}</span>
+                          ))}
+                          {bando.settori?.map((sec: string) => (
+                            <span class="inline-block bg-blue-50 text-blue-600 text-xs font-medium px-2 py-0.5 rounded-md">{sec}</span>
+                          ))}
                         </div>
                       )}
-                      {bando.num_posti && (
-                        <div>
-                          <p class="text-xs text-gray-500 uppercase tracking-wider">Posti</p>
-                          <p class="font-medium text-gray-700">{bando.num_posti}</p>
-                        </div>
-                      )}
-                      {bando.tipo_procedura && (
-                        <div>
-                          <p class="text-xs text-gray-500 uppercase tracking-wider">Procedura</p>
-                          <p class="font-medium text-gray-700">{bando.tipo_procedura}</p>
-                        </div>
-                      )}
-                      {bando.data_pubblicazione && (
-                        <div class="sm:col-span-1">
-                          <p class="text-xs text-gray-500 uppercase tracking-wider">Pubblicazione</p>
-                          <p class="font-medium text-gray-700 text-xs">{formatDate(bando.data_pubblicazione)}</p>
-                        </div>
-                      )}
-                      {bando.data_scadenza && (
-                        <div class="sm:col-span-1">
-                          <p class="text-xs text-gray-500 uppercase tracking-wider">Scadenza</p>
-                          <p class="font-medium text-red-600 text-xs">{formatDate(bando.data_scadenza)}</p>
-                        </div>
+
+                      {bando.article_subtitle && (
+                        <p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">{bando.article_subtitle}</p>
                       )}
                     </div>
-
-                    {(bando.categorie?.length > 0 || bando.settori?.length > 0) && (
-                      <div class="flex flex-wrap gap-x-3 gap-y-1 mb-4 pt-3 border-t border-gray-100 text-xs">
-                        {bando.categorie?.map((cat: string) => <span class="text-gray-600 font-medium">{cat}</span>)}
-                        {bando.settori?.map((sec: string) => <span class="text-blue-600 font-medium">{sec}</span>)}
-                      </div>
-                    )}
-
-                    {bando.article_subtitle && (
-                      <p class="text-gray-700 text-sm leading-relaxed">{bando.article_subtitle}</p>
-                    )}
-                  </div>
-                </a>
-              </article>
+                  </a>
+                </article>
             ))}
             <p id="no-filtered-results-message" class="text-center text-gray-500 text-lg py-10 hidden">Nessun bando corrisponde ai filtri selezionati.</p>
-          </>
+          </Fragment>
         )}
       </div>
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <nav id="pagination" class="mt-8 flex justify-center items-center gap-2" data-total-pages={totalPages} data-page-size={PAGE_SIZE}>
-          <button id="prev-page" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
-            &larr; Precedente
+        <nav id="pagination" class="mt-8 mb-12 flex justify-center items-center gap-3" data-total-pages={totalPages} data-page-size={PAGE_SIZE}>
+          <button id="prev-page" class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm" disabled>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+            Precedente
           </button>
-          <span class="px-4 py-2 text-sm text-gray-600">
-            Pagina <span id="current-page-num">1</span> di <span id="total-pages-num">{totalPages}</span>
+          <span class="px-4 py-2 text-sm text-gray-500 bg-white border border-gray-200 rounded-lg shadow-sm">
+            <span id="current-page-num" class="font-semibold text-gray-700">1</span> / <span id="total-pages-num">{totalPages}</span>
           </span>
-          <button id="next-page" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
-            Successiva &rarr;
+          <button id="next-page" class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm">
+            Successiva
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
           </button>
         </nav>
       )}
     </div>
   </main>
 </Layout>
-
-<style is:global>
-.prose :where(p):not(:where([class~="not-prose"] *)) {
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
-}
-.prose a {
-    color: #0056b3;
-    text-decoration: none;
-}
-.prose a:hover {
-    color: #003d80;
-    text-decoration: underline;
-}
-.prose strong {
-    font-weight: 600;
-    color: #333;
-}
-</style>
 
 <script is:inline define:vars={{ supabaseUrl, supabaseKey, PAGE_SIZE }}>
   async function supabaseFetch(table, params) {
@@ -314,10 +364,13 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
   const searchInput = document.getElementById('search-filter');
   const categorySelect = document.getElementById('category-filter');
   const settoreSelect = document.getElementById('settore-filter');
+  const sedeSelect = document.getElementById('sede-filter');
   const bandiList = document.getElementById('bandi-list');
   const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
   const resetButton = document.getElementById('reset-filters');
   const visibleCountSpan = document.getElementById('visible-count');
+  const heroCountSpan = document.getElementById('hero-count');
+  const loadingIndicator = document.getElementById('loading-indicator');
   const prevBtn = document.getElementById('prev-page');
   const nextBtn = document.getElementById('next-page');
   const currentPageNum = document.getElementById('current-page-num');
@@ -329,23 +382,20 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
   function formatDateDisplay(dateString) {
     try {
       const d = new Date(dateString);
-      if (isNaN(d.getTime())) return 'Data non valida';
-      return d.toLocaleDateString('it-IT', { day: '2-digit', month: 'long', year: 'numeric' });
-    } catch { return 'Data non valida'; }
+      if (isNaN(d.getTime())) return 'N/D';
+      return d.toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric' });
+    } catch { return 'N/D'; }
   }
 
-  function getStatusBadge(status, label) {
-    const colors = {
-      'OPEN': 'bg-green-100 text-green-800',
-      'CLOSED': 'bg-red-100 text-red-800',
-      'PENDING': 'bg-yellow-100 text-yellow-800',
-    };
-    const borderColors = {
-      'OPEN': 'border-green-500',
-      'CLOSED': 'border-red-500',
-      'PENDING': 'border-yellow-500',
-    };
-    return { badge: colors[status] || 'bg-gray-100 text-gray-800', border: borderColors[status] || 'border-gray-300' };
+  function getDaysLeft(dateString) {
+    try {
+      const d = new Date(dateString);
+      if (isNaN(d.getTime())) return null;
+      const now = new Date();
+      now.setHours(0,0,0,0);
+      d.setHours(0,0,0,0);
+      return Math.ceil((d - now) / (1000 * 60 * 60 * 24));
+    } catch { return null; }
   }
 
   function renderItems(items) {
@@ -360,45 +410,62 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
 
     const fragment = document.createDocumentFragment();
     items.forEach(item => {
-      const { badge, border } = getStatusBadge(item.calculated_status, item.status_label);
+      const daysLeft = item.data_scadenza ? getDaysLeft(item.data_scadenza) : null;
+      const isExpiring = daysLeft !== null && daysLeft >= 0 && daysLeft <= 7;
+      const isExpired = daysLeft !== null && daysLeft < 0;
+
+      const statusDot = item.calculated_status === 'OPEN' ? 'bg-emerald-500' :
+                         item.calculated_status === 'CLOSED' ? 'bg-red-500' : 'bg-yellow-500';
+      const statusBg = item.calculated_status === 'OPEN' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                        item.calculated_status === 'CLOSED' ? 'bg-red-50 text-red-700 border-red-200' :
+                        'bg-yellow-50 text-yellow-700 border-yellow-200';
+
       const article = document.createElement('article');
-      article.className = `bando-item bg-white rounded-md border overflow-hidden transition-colors duration-200 hover:border-gray-300 ${border}`;
+      article.className = 'bando-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200';
 
       const enti = (item.enti_riferimento || []).join(', ');
       const sedi = (item.sedi || []).join(', ');
-      const categorie = (item.categorie || []).map(c => `<span class="text-gray-600 font-medium">${c}</span>`).join('');
-      const settori = (item.settori || []).map(s => `<span class="text-blue-600 font-medium">${s}</span>`).join('');
+      const categorie = (item.categorie || []).map(c => `<span class="inline-block bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 rounded-md">${c}</span>`).join('');
+      const settori = (item.settori || []).map(s => `<span class="inline-block bg-blue-50 text-blue-600 text-xs font-medium px-2 py-0.5 rounded-md">${s}</span>`).join('');
+
+      let daysLeftHtml = '';
+      if (daysLeft !== null && !isExpired) {
+        const cls = isExpiring ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-blue-50 text-blue-600 border border-blue-100';
+        const label = daysLeft === 0 ? 'Scade oggi' : `${daysLeft}g rimasti`;
+        daysLeftHtml = `<span class="text-xs font-medium px-2 py-1 rounded-md ${cls}">${label}</span>`;
+      }
+
+      const scadenzaCls = isExpiring ? 'text-amber-600 font-medium' : isExpired ? 'text-red-500' : '';
 
       article.innerHTML = `
-        <a href="/selezione-personale/${item.slug}" class="block hover:bg-gray-50/50">
-          <div class="p-5">
-            <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-4">
-              <div class="flex-1">
-                <h2 class="text-lg font-semibold text-gray-800 mb-1 hover:text-primary transition-colors">
-                  ${item.article_title || item.titolo || ''}
-                </h2>
-                ${(enti || sedi) ? `<p class="text-sm text-gray-500">
-                  ${enti ? `<span class="font-medium text-gray-600">Ente:</span> ${enti}` : ''}
-                  ${enti && sedi ? '<span class="mx-1">|</span>' : ''}
-                  ${sedi ? `<span class="font-medium text-gray-600">Sede:</span> ${sedi}` : ''}
-                </p>` : ''}
+        <a href="/selezione-personale/${item.slug}" class="block">
+          <div class="p-5 sm:p-6">
+            <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
+              <div class="flex-1 min-w-0">
+                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">${item.article_title || item.titolo || ''}</h2>
               </div>
-              <div class="flex-shrink-0 text-right space-y-1 pt-1">
-                <span class="inline-block px-2.5 py-0.5 text-xs font-medium rounded-full ${badge}">
+              <div class="flex items-center gap-2 flex-shrink-0">
+                ${daysLeftHtml}
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-md border ${statusBg}">
+                  <span class="w-1.5 h-1.5 rounded-full ${statusDot}"></span>
                   ${item.status_label || ''}
                 </span>
-                <p class="text-xs text-gray-400">Cod. ${item.codice || ''}</p>
               </div>
             </div>
-            <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mb-4 text-sm border-t border-gray-100 pt-4 mt-4">
-              ${item.figura_ricercata ? `<div><p class="text-xs text-gray-500 uppercase tracking-wider">Figura Ricercata</p><p class="font-medium text-gray-700">${item.figura_ricercata}</p></div>` : ''}
-              ${item.num_posti ? `<div><p class="text-xs text-gray-500 uppercase tracking-wider">Posti</p><p class="font-medium text-gray-700">${item.num_posti}</p></div>` : ''}
-              ${item.tipo_procedura ? `<div><p class="text-xs text-gray-500 uppercase tracking-wider">Procedura</p><p class="font-medium text-gray-700">${item.tipo_procedura}</p></div>` : ''}
-              ${item.data_pubblicazione ? `<div class="sm:col-span-1"><p class="text-xs text-gray-500 uppercase tracking-wider">Pubblicazione</p><p class="font-medium text-gray-700 text-xs">${formatDateDisplay(item.data_pubblicazione)}</p></div>` : ''}
-              ${item.data_scadenza ? `<div class="sm:col-span-1"><p class="text-xs text-gray-500 uppercase tracking-wider">Scadenza</p><p class="font-medium text-red-600 text-xs">${formatDateDisplay(item.data_scadenza)}</p></div>` : ''}
+            ${(enti || sedi) ? `<div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
+              ${enti ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg><span class="truncate">${enti}</span></span>` : ''}
+              ${sedi ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg><span class="truncate">${sedi}</span></span>` : ''}
+            </div>` : ''}
+            <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
+              ${item.figura_ricercata ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg><span class="font-medium">${item.figura_ricercata}</span></span>` : ''}
+              ${item.num_posti ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path></svg><span><strong>${item.num_posti}</strong> ${item.num_posti === 1 ? 'posto' : 'posti'}</span></span>` : ''}
+              ${item.tipo_procedura ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>${item.tipo_procedura}</span>` : ''}
+              ${item.data_pubblicazione ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>${formatDateDisplay(item.data_pubblicazione)}</span>` : ''}
+              ${item.data_scadenza ? `<span class="inline-flex items-center gap-1.5 ${scadenzaCls}"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>Scadenza: ${formatDateDisplay(item.data_scadenza)}</span>` : ''}
+              <span class="inline-flex items-center gap-1 text-xs text-gray-400">Cod. ${item.codice || ''}</span>
             </div>
-            ${(categorie || settori) ? `<div class="flex flex-wrap gap-x-3 gap-y-1 mb-4 pt-3 border-t border-gray-100 text-xs">${categorie}${settori}</div>` : ''}
-            ${item.article_subtitle ? `<p class="text-gray-700 text-sm leading-relaxed">${item.article_subtitle}</p>` : ''}
+            ${(categorie || settori) ? `<div class="flex flex-wrap gap-1.5 mt-3">${categorie}${settori}</div>` : ''}
+            ${item.article_subtitle ? `<p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">${item.article_subtitle}</p>` : ''}
           </div>
         </a>`;
       fragment.appendChild(article);
@@ -424,10 +491,13 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
   async function loadPage() {
     if (isLoading) return;
     isLoading = true;
+    if (loadingIndicator) loadingIndicator.classList.remove('hidden');
+    if (loadingIndicator) loadingIndicator.classList.add('flex');
 
     const searchTerm = searchInput?.value?.trim() || '';
     const category = categorySelect?.value || '';
     const settore = settoreSelect?.value || '';
+    const sede = sedeSelect?.value || '';
 
     const from = (currentPage - 1) * PAGE_SIZE;
 
@@ -448,16 +518,22 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
     if (settore) {
       params['settori'] = `cs.{${settore}}`;
     }
+    if (sede) {
+      params['sedi'] = `cs.{${sede}}`;
+    }
 
     try {
       const { data, total } = await supabaseFetch('selezione_personale', params);
       renderItems(data || []);
       if (visibleCountSpan) visibleCountSpan.textContent = total;
+      if (heroCountSpan) heroCountSpan.textContent = total;
       updatePagination(total);
     } catch (e) {
       console.error('Errore caricamento bandi:', e);
     } finally {
       isLoading = false;
+      if (loadingIndicator) loadingIndicator.classList.add('hidden');
+      if (loadingIndicator) loadingIndicator.classList.remove('flex');
     }
   }
 
@@ -479,13 +555,15 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
   if (searchInput) searchInput.addEventListener('input', debouncedLoad);
   if (categorySelect) categorySelect.addEventListener('change', resetAndLoad);
   if (settoreSelect) settoreSelect.addEventListener('change', resetAndLoad);
+  if (sedeSelect) sedeSelect.addEventListener('change', resetAndLoad);
 
   if (prevBtn) prevBtn.addEventListener('click', () => {
-    if (currentPage > 1) { currentPage--; loadPage(); }
+    if (currentPage > 1) { currentPage--; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
   });
   if (nextBtn) nextBtn.addEventListener('click', () => {
     currentPage++;
     loadPage();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
   if (resetButton) {
@@ -493,6 +571,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
       if (searchInput) searchInput.value = '';
       if (categorySelect) categorySelect.value = '';
       if (settoreSelect) settoreSelect.value = '';
+      if (sedeSelect) sedeSelect.value = '';
       resetAndLoad();
     });
   }

@@ -1,6 +1,6 @@
 ---
 import Layout from '../../layouts/Layout.astro';
-import { format, parseISO, isValid } from 'date-fns';
+import { format, parseISO, isValid, differenceInCalendarDays } from 'date-fns';
 import { it } from 'date-fns/locale';
 import { createClient } from '@supabase/supabase-js';
 import { marked } from 'marked';
@@ -64,8 +64,22 @@ const formatDate = (dateString: string): string => {
   }
 };
 
+const getDaysRemaining = (dateString: string): number | null => {
+  try {
+    const parsedDate = parseISO(dateString);
+    if (!isValid(parsedDate)) return null;
+    return differenceInCalendarDays(parsedDate, new Date());
+  } catch {
+    return null;
+  }
+};
+
+// Deadline info
+const daysLeft = bando?.data_scadenza ? getDaysRemaining(bando.data_scadenza) : null;
+const isExpiring = daysLeft !== null && daysLeft >= 0 && daysLeft <= 7;
+const isExpired = daysLeft !== null && daysLeft < 0;
+
 // Convert markdown to HTML
-// Strip {#anchor-id} syntax from headings (not supported by marked)
 const cleanedMarkdown = bando?.article_content
   ?.replace(/^(#{1,6}\s+.+?)\s*\{#[a-z0-9-]+\}\s*$/gm, '$1')
   ?? null;
@@ -139,102 +153,269 @@ const structuredData = bando ? JSON.stringify(
     }).filter(([_, value]) => value !== undefined && value !== null && value !== '')
   )
 ) : '';
+
+// Build detail items for the info card
+const detailItems: { label: string; value: string; icon: string }[] = [];
+if (bando) {
+  if (bando.figura_ricercata) detailItems.push({ label: 'Figura Ricercata', value: bando.figura_ricercata, icon: 'user' });
+  if (bando.num_posti) detailItems.push({ label: 'Posti Disponibili', value: `${bando.num_posti}`, icon: 'users' });
+  if (bando.tipo_procedura) detailItems.push({ label: 'Tipo Procedura', value: bando.tipo_procedura, icon: 'clipboard' });
+  if (bando.sedi?.length > 0) detailItems.push({ label: 'Sede', value: bando.sedi.join(', '), icon: 'location' });
+  if (bando.salary_min || bando.salary_max) {
+    let salaryText = '';
+    if (bando.salary_min && bando.salary_max) salaryText = `${bando.salary_min.toLocaleString('it-IT')} - ${bando.salary_max.toLocaleString('it-IT')} \u20AC`;
+    else if (bando.salary_min) salaryText = `da ${bando.salary_min.toLocaleString('it-IT')} \u20AC`;
+    else salaryText = `fino a ${bando.salary_max!.toLocaleString('it-IT')} \u20AC`;
+    detailItems.push({ label: 'Retribuzione', value: salaryText, icon: 'salary' });
+  }
+}
 ---
 
 <Layout title={pageTitle} description={pageDescription} keywords={keywords}>
   {bando && <script type="application/ld+json" set:html={structuredData} slot="head" />}
 
-  <main class="bg-gray-50 py-12">
-    <div class="container mx-auto px-4 max-w-4xl">
-      {bando ? (
-        <article class="bg-white rounded-lg shadow-md overflow-hidden p-6 md:p-8">
-          {/* Header Section */}
-          <div class="border-b pb-5 mb-6">
-            <h1 class="text-2xl md:text-3xl font-bold text-primary mb-2">
+  <main class="bg-gray-50 min-h-screen">
+    {bando ? (
+      <>
+        {/* Hero header */}
+        <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-8 px-4 sm:px-6 lg:px-8">
+          <div class="container mx-auto max-w-5xl">
+            {/* Breadcrumb */}
+            <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
+              <ol class="inline-flex items-center space-x-1">
+                <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
+                <li class="flex items-center">
+                  <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+                  <a href="/selezione-personale" class="hover:text-white transition-colors">Selezione Personale</a>
+                </li>
+                <li class="flex items-center">
+                  <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+                  <span class="text-white truncate max-w-[40vw]">{bando.article_title || bando.titolo}</span>
+                </li>
+              </ol>
+            </nav>
+
+            {/* Status + Deadline badges */}
+            <div class="flex flex-wrap items-center gap-2 mb-3">
+              <span class:list={[
+                "inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-full",
+                bando.calculated_status === 'OPEN' ? "bg-emerald-400/20 text-emerald-100 border border-emerald-400/30" :
+                bando.calculated_status === 'CLOSED' ? "bg-red-400/20 text-red-100 border border-red-400/30" :
+                "bg-yellow-400/20 text-yellow-100 border border-yellow-400/30"
+              ]}>
+                <span class:list={[
+                  "w-2 h-2 rounded-full",
+                  bando.calculated_status === 'OPEN' ? "bg-emerald-400" :
+                  bando.calculated_status === 'CLOSED' ? "bg-red-400" : "bg-yellow-400"
+                ]}></span>
+                {bando.status_label}
+              </span>
+              {daysLeft !== null && !isExpired && (
+                <span class:list={[
+                  "inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-full",
+                  isExpiring ? "bg-amber-400/20 text-amber-100 border border-amber-400/30" : "bg-white/10 text-blue-100 border border-white/20"
+                ]}>
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                  {daysLeft === 0 ? "Scade oggi" : `${daysLeft} giorni rimasti`}
+                </span>
+              )}
+              {isExpired && (
+                <span class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-full bg-red-400/20 text-red-100 border border-red-400/30">
+                  Scaduto
+                </span>
+              )}
+              <span class="text-xs text-blue-200">Cod. {bando.codice}</span>
+            </div>
+
+            <h1 class="text-2xl md:text-3xl lg:text-4xl font-bold leading-tight mb-2">
               {bando.article_title || bando.titolo}
             </h1>
             {bando.article_subtitle && (
-              <p class="text-lg text-gray-600 italic mb-3">{bando.article_subtitle}</p>
+              <p class="text-blue-100 text-lg max-w-3xl leading-relaxed">{bando.article_subtitle}</p>
             )}
-            <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
-              {bando.codice && <span>Codice: <span class="font-medium text-gray-700">{bando.codice}</span></span>}
-              {bando.enti_riferimento?.length > 0 && <span>Ente: <span class="font-medium text-gray-700">{bando.enti_riferimento.join(', ')}</span></span>}
-            </div>
-            <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
-              {bando.data_pubblicazione && <span>Pubblicato il: <span class="font-medium text-gray-700">{formatDate(bando.data_pubblicazione)}</span></span>}
-              {bando.data_scadenza && <span>Scade il: <span class="font-medium text-red-600">{formatDate(bando.data_scadenza)}</span></span>}
+
+            {/* Ente & Sede in header */}
+            <div class="flex flex-wrap items-center gap-x-5 gap-y-1 mt-4 text-sm text-blue-200">
+              {bando.enti_riferimento?.length > 0 && (
+                <span class="inline-flex items-center gap-1.5">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                  {bando.enti_riferimento.join(', ')}
+                </span>
+              )}
+              {bando.sedi?.length > 0 && (
+                <span class="inline-flex items-center gap-1.5">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                  {bando.sedi.join(', ')}
+                </span>
+              )}
+              {bando.data_pubblicazione && (
+                <span class="inline-flex items-center gap-1.5">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                  Pubblicato il {formatDate(bando.data_pubblicazione)}
+                </span>
+              )}
             </div>
           </div>
+        </div>
 
-          {/* Details Grid */}
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 mb-6 text-sm">
-            {bando.figura_ricercata && <div><strong class="block text-gray-500 text-xs uppercase">Figura Ricercata</strong><p>{bando.figura_ricercata}</p></div>}
-            {bando.num_posti && <div><strong class="block text-gray-500 text-xs uppercase">Posti Disponibili</strong><p>{bando.num_posti}</p></div>}
-            {bando.tipo_procedura && <div><strong class="block text-gray-500 text-xs uppercase">Tipo Procedura</strong><p>{bando.tipo_procedura}</p></div>}
-            {bando.status_label && <div><strong class="block text-gray-500 text-xs uppercase">Stato</strong><p class={`font-medium ${bando.calculated_status === 'OPEN' ? 'text-green-700' : bando.calculated_status === 'CLOSED' ? 'text-red-700' : 'text-yellow-700'}`}>{bando.status_label}</p></div>}
-            {bando.sedi?.length > 0 && <div class="md:col-span-2"><strong class="block text-gray-500 text-xs uppercase">Sedi</strong><p>{bando.sedi.join(', ')}</p></div>}
-            {(bando.salary_min || bando.salary_max) && (
-              <div><strong class="block text-gray-500 text-xs uppercase">Retribuzione</strong><p>{bando.salary_min && `${bando.salary_min}`}{bando.salary_min && bando.salary_max && ' - '}{bando.salary_max && `${bando.salary_max}`} &euro;</p></div>
-            )}
-          </div>
+        <div class="container mx-auto px-4 max-w-5xl py-8">
+          <div class="flex flex-col lg:flex-row gap-8">
+            {/* Main content */}
+            <div class="flex-1 min-w-0">
+              {/* Article Content */}
+              {articleHtml ? (
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                  <div class="prose prose-sm lg:prose-base max-w-none text-gray-700 p-6 md:p-8">
+                    <div set:html={articleHtml} />
+                  </div>
+                </div>
+              ) : bando.descrizione ? (
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden p-6 md:p-8">
+                  <h2 class="text-lg font-semibold text-gray-800 mb-3">Descrizione Completa</h2>
+                  <div class="prose prose-sm max-w-none text-gray-700" set:html={bando.descrizione} />
+                </div>
+              ) : (
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 md:p-8 text-center">
+                  <svg class="mx-auto w-12 h-12 text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                  <p class="text-gray-500">L'articolo dettagliato per questo bando sara disponibile a breve.</p>
+                </div>
+              )}
 
-          {/* Tags Section */}
-          {(bando.categorie?.length > 0 || bando.settori?.length > 0) && (
-            <div class="mb-6 border-t pt-4">
-              <h3 class="text-xs text-gray-500 uppercase font-semibold mb-2">Aree Tematiche</h3>
-              <div class="flex flex-wrap gap-2">
-                {bando.categorie?.map((cat: string) => <span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded">{cat}</span>)}
-                {bando.settori?.map((sec: string) => <span class="bg-indigo-100 text-indigo-800 text-xs font-medium px-2.5 py-0.5 rounded">{sec}</span>)}
+              {/* Back to list + official link (bottom mobile) */}
+              <div class="mt-6 flex flex-col sm:flex-row items-center gap-3">
+                <a href="/selezione-personale" class="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-700 transition-colors">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                  Torna alla lista dei bandi
+                </a>
+                {bando.link_reindirizzamento && (
+                  <a
+                    href={bando.link_reindirizzamento}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="sm:ml-auto inline-flex items-center gap-2 px-5 py-2.5 bg-blue-700 text-white text-sm font-medium rounded-lg hover:bg-blue-800 transition-colors shadow-sm lg:hidden"
+                  >
+                    Vai al Bando Ufficiale
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                  </a>
+                )}
               </div>
             </div>
-          )}
 
-          {/* Article Content */}
-          {articleHtml ? (
-            <div class="prose prose-sm lg:prose-base max-w-none text-gray-700 border-t pt-6">
-              <div set:html={articleHtml} />
-            </div>
-          ) : bando.descrizione ? (
-            <div class="prose prose-sm max-w-none text-gray-700 border-t pt-5">
-              <h2 class="text-lg font-semibold text-gray-800 mb-3">Descrizione Completa</h2>
-              <div set:html={bando.descrizione} />
-            </div>
-          ) : (
-            <div class="border-t pt-6">
-              <p class="text-gray-600">L'articolo dettagliato per questo bando sara disponibile a breve.</p>
-            </div>
-          )}
+            {/* Sidebar */}
+            <aside class="lg:w-80 flex-shrink-0">
+              <div class="lg:sticky lg:top-6 space-y-5">
+                {/* Info card */}
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                  <div class="bg-gradient-to-r from-blue-600 to-indigo-700 px-5 py-3">
+                    <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Dettagli Bando</h3>
+                  </div>
+                  <div class="p-5 space-y-4">
+                    {detailItems.map(item => (
+                      <div class="flex items-start gap-3">
+                        <div class="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          {item.icon === 'user' && <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>}
+                          {item.icon === 'users' && <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>}
+                          {item.icon === 'clipboard' && <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>}
+                          {item.icon === 'location' && <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>}
+                          {item.icon === 'salary' && <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>}
+                        </div>
+                        <div>
+                          <p class="text-xs text-gray-400 uppercase tracking-wider font-medium">{item.label}</p>
+                          <p class="text-sm text-gray-800 font-medium">{item.value}</p>
+                        </div>
+                      </div>
+                    ))}
 
-          {/* Link Section */}
-          {bando.link_reindirizzamento && (
-            <div class="mt-8 pt-6 border-t border-gray-200 text-center">
-              <a
-                href={bando.link_reindirizzamento}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="inline-flex items-center px-6 py-2.5 border border-primary text-base font-medium rounded-md text-primary bg-white hover:bg-primary/10 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition duration-150 ease-in-out"
-              >
-                Vai al Bando Ufficiale
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 ml-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </a>
-              <div class="mt-4">
-                <a href="/selezione-personale" class="text-sm text-gray-600 hover:text-primary transition">
-                  &larr; Torna alla lista dei bandi
+                    {/* Dates */}
+                    <div class="border-t border-gray-100 pt-4 space-y-3">
+                      {bando.data_pubblicazione && (
+                        <div class="flex items-center justify-between text-sm">
+                          <span class="text-gray-500">Pubblicazione</span>
+                          <span class="font-medium text-gray-700">{formatDate(bando.data_pubblicazione)}</span>
+                        </div>
+                      )}
+                      {bando.data_scadenza && (
+                        <div class="flex items-center justify-between text-sm">
+                          <span class="text-gray-500">Scadenza</span>
+                          <span class:list={[
+                            "font-medium",
+                            isExpiring ? "text-amber-600" : isExpired ? "text-red-600" : "text-gray-700"
+                          ]}>{formatDate(bando.data_scadenza)}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Status */}
+                    <div class="border-t border-gray-100 pt-4">
+                      <div class="flex items-center justify-between">
+                        <span class="text-sm text-gray-500">Stato</span>
+                        <span class:list={[
+                          "inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-md border",
+                          bando.calculated_status === 'OPEN' ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                          bando.calculated_status === 'CLOSED' ? "bg-red-50 text-red-700 border-red-200" :
+                          "bg-yellow-50 text-yellow-700 border-yellow-200"
+                        ]}>
+                          <span class:list={[
+                            "w-1.5 h-1.5 rounded-full",
+                            bando.calculated_status === 'OPEN' ? "bg-emerald-500" :
+                            bando.calculated_status === 'CLOSED' ? "bg-red-500" : "bg-yellow-500"
+                          ]}></span>
+                          {bando.status_label}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tags */}
+                {(bando.categorie?.length > 0 || bando.settori?.length > 0) && (
+                  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                    <h3 class="text-xs text-gray-400 uppercase font-semibold tracking-wider mb-3">Aree Tematiche</h3>
+                    <div class="flex flex-wrap gap-2">
+                      {bando.categorie?.map((cat: string) => (
+                        <span class="bg-gray-100 text-gray-700 text-xs font-medium px-2.5 py-1 rounded-lg">{cat}</span>
+                      ))}
+                      {bando.settori?.map((sec: string) => (
+                        <span class="bg-blue-50 text-blue-700 text-xs font-medium px-2.5 py-1 rounded-lg">{sec}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* CTA */}
+                {bando.link_reindirizzamento && (
+                  <a
+                    href={bando.link_reindirizzamento}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="flex items-center justify-center gap-2 w-full px-5 py-3 bg-blue-700 text-white font-semibold rounded-xl hover:bg-blue-800 transition-colors shadow-sm"
+                  >
+                    Vai al Bando Ufficiale
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                  </a>
+                )}
+
+                {/* Back link */}
+                <a href="/selezione-personale" class="hidden lg:flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-700 transition-colors justify-center">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                  Torna alla lista dei bandi
                 </a>
               </div>
-            </div>
-          )}
-        </article>
-      ) : (
-        <div class="text-center py-20">
-          <h1 class="text-2xl font-semibold text-gray-700 mb-4">Bando non Trovato</h1>
-          <p class="text-gray-500 mb-6">Il bando che stai cercando non e disponibile o lo slug non e corretto.</p>
-          <a href="/selezione-personale" class="text-primary hover:underline">Torna alla lista dei bandi</a>
+            </aside>
+          </div>
         </div>
-      )}
-    </div>
+      </>
+    ) : (
+      <div class="container mx-auto px-4 max-w-5xl py-20 text-center">
+        <svg class="mx-auto w-20 h-20 text-gray-300 mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+        <h1 class="text-2xl font-bold text-gray-700 mb-3">Bando non Trovato</h1>
+        <p class="text-gray-500 mb-6 max-w-md mx-auto">Il bando che stai cercando non e disponibile o lo slug non e corretto.</p>
+        <a href="/selezione-personale" class="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-700 text-white font-medium rounded-lg hover:bg-blue-800 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+          Torna alla lista dei bandi
+        </a>
+      </div>
+    )}
   </main>
 </Layout>
 
@@ -246,33 +427,34 @@ const structuredData = bando ? JSON.stringify(
 
 .prose :where(h2):not(:where([class~="not-prose"] *)) {
   font-size: 1.5em;
-  font-weight: 600;
-  margin-top: 1.2em;
+  font-weight: 700;
+  margin-top: 1.5em;
   margin-bottom: 0.5em;
-  color: #2d3748;
+  color: #1a202c;
   line-height: 1.3;
 }
 
 .prose :where(h3):not(:where([class~="not-prose"] *)) {
   font-size: 1.25em;
   font-weight: 600;
-  margin-top: 1em;
+  margin-top: 1.2em;
   margin-bottom: 0.4em;
   color: #2d3748;
 }
 
 .prose a {
-  color: #0056b3;
+  color: #2563eb;
   text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .prose a:hover {
-  color: #003d80;
+  color: #1d4ed8;
 }
 
 .prose strong {
   font-weight: 600;
-  color: #333;
+  color: #1a202c;
 }
 
 .prose em {
@@ -292,10 +474,13 @@ const structuredData = bando ? JSON.stringify(
 }
 
 .prose blockquote {
-  border-left: 4px solid #cbd5e0;
+  border-left: 4px solid #3b82f6;
   padding-left: 1em;
   margin: 1.5em 0;
   font-style: italic;
   color: #4a5568;
+  background: #eff6ff;
+  padding: 1em 1.25em;
+  border-radius: 0 0.5rem 0.5rem 0;
 }
 </style>
