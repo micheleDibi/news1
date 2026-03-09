@@ -103,8 +103,12 @@ const formatDate = (dateString: string): string => {
 };
 
 // Convert markdown to HTML if article_content exists
-const articleHtml = interpello?.article_content 
-  ? marked(interpello.article_content)
+// Strip {#anchor-id} syntax from headings (not supported by marked)
+const cleanedMarkdown = interpello?.article_content
+  ?.replace(/^(#{1,6}\s+.+?)\s*\{#[a-z0-9-]+\}\s*$/gm, '$1')
+  ?? null;
+const articleHtml = cleanedMarkdown
+  ? marked(cleanedMarkdown)
   : null;
 
 // Define keywords - combining relevant fields

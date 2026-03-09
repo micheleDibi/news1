@@ -26,7 +26,7 @@ async function loadBando(): Promise<SelezioneBando | null> {
       .select('*')
       .eq('slug', slug)
       .eq('status', 'completed')
-      .single();
+      .maybeSingle();
 
     if (error) {
       console.error('Supabase error:', error);
@@ -65,8 +65,12 @@ const formatDate = (dateString: string): string => {
 };
 
 // Convert markdown to HTML
-const articleHtml = bando?.article_content
-  ? marked(bando.article_content)
+// Strip {#anchor-id} syntax from headings (not supported by marked)
+const cleanedMarkdown = bando?.article_content
+  ?.replace(/^(#{1,6}\s+.+?)\s*\{#[a-z0-9-]+\}\s*$/gm, '$1')
+  ?? null;
+const articleHtml = cleanedMarkdown
+  ? marked(cleanedMarkdown)
   : null;
 
 // Keywords
