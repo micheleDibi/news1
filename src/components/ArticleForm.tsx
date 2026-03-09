@@ -918,6 +918,7 @@ export default function ArticleForm({ article }: ArticleFormProps) {
 
   const [sidebarVideoUrl, setSidebarVideoUrl] = useState<string>(article?.video_url || '');
   const [isUploadingVideo, setIsUploadingVideo] = useState(false);
+  const [videoUploadProgress, setVideoUploadProgress] = useState(0);
   const [videoDuration, setVideoDuration]= useState <number|null>(article?.video_duration??null);
 
   const [showContactConfirm, setShowContactConfirm] = useState(false);
@@ -1379,6 +1380,7 @@ const cancelContactForm = () => {
 
     try {
       setIsUploadingVideo(true);
+      setVideoUploadProgress(0);
 
       const articleSlug = slugify(getValues('title') || 'articolo');
       const ext = file.name.split('.').pop() || 'mp4';
@@ -1395,7 +1397,7 @@ const cancelContactForm = () => {
 
       console.log(`🎥 Splitting into ${totalChunks} chunks (${(CHUNK_SIZE / 1024 / 1024)}MB each), uploadId: ${uploadId}`);
 
-      // Send each chunk sequentially
+      // Send each chunk sequentially (0% - 70% of progress)
       for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, file.size);
@@ -1419,9 +1421,12 @@ const cancelContactForm = () => {
           const errPayload = await chunkRes.json().catch(() => null);
           throw new Error(errPayload?.error || `Chunk ${i + 1} upload failed`);
         }
+
+        setVideoUploadProgress(Math.round(((i + 1) / totalChunks) * 70));
       }
 
       console.log('🎥 All chunks uploaded. Requesting assembly + compression...');
+      setVideoUploadProgress(75);
 
       // Request server to reassemble, compress, and upload to S3
       const assembleForm = new FormData();
@@ -1442,6 +1447,8 @@ const cancelContactForm = () => {
         console.error('🎥 Assembly failed with error:', errorPayload);
         throw new Error(errorPayload?.error || 'Video assembly failed');
       }
+
+      setVideoUploadProgress(100);
 
       const payload = await response.json();
       console.log('🎥 Upload successful! Payload:', payload);
@@ -1478,6 +1485,7 @@ const cancelContactForm = () => {
     } finally {
       console.timeEnd('videoUpload'); // Fine timing upload video
       setIsUploadingVideo(false);
+      setVideoUploadProgress(0);
       console.log('🎥 Video upload process completed');
     }
 
@@ -2780,13 +2788,21 @@ const cancelContactForm = () => {
                               </label>
                               <p className="pl-1 hidden sm:inline">o trascina qui</p>
                             </div>
-                            <p className="text-xs text-gray-500">MP4, WebM, MOV fino a 100MB</p>
+                            <p className="text-xs text-gray-500">MP4, WebM, MOV — il video viene compresso automaticamente</p>
                             {isUploadingVideo && (
-                              <div className="flex items-center justify-center mt-2">
-                                <svg className="animate-spin h-4 w-4 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
+                              <div className="mt-3 w-full px-2">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-xs font-medium text-primary">
+                                    {videoUploadProgress < 70 ? 'Caricamento...' : videoUploadProgress < 100 ? 'Compressione in corso...' : 'Completato!'}
+                                  </span>
+                                  <span className="text-xs font-medium text-primary">{videoUploadProgress}%</span>
+                                </div>
+                                <div className="w-full bg-gray-200 rounded-full h-2">
+                                  <div
+                                    className="bg-primary h-2 rounded-full transition-all duration-300"
+                                    style={{ width: `${videoUploadProgress}%` }}
+                                  ></div>
+                                </div>
                               </div>
                             )}
                           </div>
