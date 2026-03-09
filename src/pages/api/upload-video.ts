@@ -22,11 +22,13 @@ export const POST: APIRoute = async ({ request }) => {
 
     const formData = await request.formData();
     const uploadId = formData.get('uploadId') as string;
-    const title = formData.get('title') as string;
+    const title = (formData.get('title') as string) || '';
     const originalFilename = formData.get('filename') as string;
 
-    if (!uploadId || !title || !originalFilename) {
-      return new Response(JSON.stringify({ error: 'Missing uploadId, title, or filename' }), {
+    console.log('Assembly request:', { uploadId, title, originalFilename });
+
+    if (!uploadId || !originalFilename) {
+      return new Response(JSON.stringify({ error: 'Missing uploadId or filename' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -82,7 +84,7 @@ export const POST: APIRoute = async ({ request }) => {
     console.log(`Compressed video: ${(compressedBuffer.length / 1024 / 1024).toFixed(1)}MB`);
 
     const contentType = 'video/mp4';
-    const videoFilename = `${slugify(title)}.mp4`;
+    const videoFilename = `${slugify(title || originalFilename.replace(/\.[^.]+$/, ''))}.mp4`;
 
     const videoUrl = await uploadToS3(compressedBuffer, videoFilename, contentType);
 
