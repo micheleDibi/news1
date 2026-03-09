@@ -1434,29 +1434,54 @@ const cancelContactForm = () => {
       assembleForm.append('filename', filename);
       assembleForm.append('title', title);
 
-      const response = await fetch('/api/upload-video', {
+      const assembleRes = await fetch('/api/upload-video', {
         method: 'POST',
         headers: { 'Authorization': authHeader },
         body: assembleForm
       });
 
-      console.log('🎥 Assembly response status:', response.status);
+      console.log('🎥 Assembly response status:', assembleRes.status);
 
-      if (!response.ok) {
-        const errorPayload = await response.json().catch(() => null);
+      if (!assembleRes.ok) {
+        const errorPayload = await assembleRes.json().catch(() => null);
         console.error('🎥 Assembly failed with error:', errorPayload);
         throw new Error(errorPayload?.error || 'Video assembly failed');
       }
 
-      setVideoUploadProgress(100);
+      // Poll for compression status
+      console.log('🎥 Compression started, polling for status...');
+      let videoUrl = '';
+      while (true) {
+        await new Promise(r => setTimeout(r, 3000)); // Poll every 3 seconds
+        setVideoUploadProgress(prev => Math.min(prev + 1, 95)); // Slowly increment 75→95
 
-      const payload = await response.json();
-      console.log('🎥 Upload successful! Payload:', payload);
-      console.log('🎥 Video URL received:', payload.url);
+        const statusRes = await fetch(`/api/upload-video-status?uploadId=${uploadId}`, {
+          headers: { 'Authorization': authHeader }
+        });
+
+        if (!statusRes.ok) {
+          throw new Error('Failed to check compression status');
+        }
+
+        const statusData = await statusRes.json();
+        console.log('🎥 Compression status:', statusData.status);
+
+        if (statusData.status === 'done') {
+          videoUrl = statusData.url;
+          break;
+        } else if (statusData.status === 'error') {
+          throw new Error(statusData.error || 'Video compression failed');
+        }
+        // status === 'processing' → continue polling
+      }
+
+      setVideoUploadProgress(100);
+      console.log('🎥 Upload successful!');
+      console.log('🎥 Video URL received:', videoUrl);
 
       // Update state
-      setSidebarVideoUrl(payload.url);
-      console.log('🎥 Updated sidebarVideoUrl state to:', payload.url);
+      setSidebarVideoUrl(videoUrl);
+      console.log('🎥 Updated sidebarVideoUrl state to:', videoUrl);
 
       try {
         const durationSeconds = await getVideoFileDuration (file);
@@ -1472,8 +1497,8 @@ const cancelContactForm = () => {
       }
 
       // Update form value
-      setValue('video_url', payload.url);
-      console.log('🎥 Set form video_url value to:', payload.url);
+      setValue('video_url', videoUrl);
+      console.log('🎥 Set form video_url value to:', videoUrl);
 
       // Verify the form value was set
       const currentFormValue = getValues('video_url');

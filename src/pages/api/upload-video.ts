@@ -4,9 +4,17 @@ import type { APIRoute } from 'astro';
 import { uploadToS3 } from '../../lib/aws';
 import { slugify } from '../../lib/utils';
 import { compressAndConvertVideo } from '../../lib/video-compress';
-import { readFile, unlink, readdir } from 'fs/promises';
+import { readFile, unlink, readdir, writeFile, rmdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+
+// In-memory job status store
+const jobs = new Map<string, { status: 'processing' | 'done' | 'error'; url?: string; error?: string }>();
+
+// Cleanup old jobs after 30 minutes
+function scheduleJobCleanup(uploadId: string) {
+  setTimeout(() => jobs.delete(uploadId), 30 * 60 * 1000);
+}
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -60,9 +68,6 @@ export const POST: APIRoute = async ({ request }) => {
       chunks.push(await readFile(chunkPath));
       await unlink(chunkPath).catch(() => {});
     }
-
-    // Remove chunk directory
-    const { rmdir } = await import('fs/promises');
     await rmdir(chunkDir).catch(() => {});
 
     const buffer = Buffer.concat(chunks);
@@ -78,27 +83,40 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
-    // Compress and convert to MP4 via FFmpeg
-    console.log(`Compressing video: ${originalFilename} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
-    const compressedBuffer = await compressAndConvertVideo(buffer, originalFilename);
-    console.log(`Compressed video: ${(compressedBuffer.length / 1024 / 1024).toFixed(1)}MB`);
+    // Mark job as processing and respond immediately
+    jobs.set(uploadId, { status: 'processing' });
+    scheduleJobCleanup(uploadId);
 
-    const contentType = 'video/mp4';
-    const videoFilename = `${slugify(title || originalFilename.replace(/\.[^.]+$/, ''))}.mp4`;
+    // Run compression + upload in the background (not awaited)
+    (async () => {
+      try {
+        console.log(`Compressing video: ${originalFilename} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
+        const compressedBuffer = await compressAndConvertVideo(buffer, originalFilename);
+        console.log(`Compressed video: ${(compressedBuffer.length / 1024 / 1024).toFixed(1)}MB`);
 
-    const videoUrl = await uploadToS3(compressedBuffer, videoFilename, contentType);
+        const contentType = 'video/mp4';
+        const videoFilename = `${slugify(title || originalFilename.replace(/\.[^.]+$/, ''))}.mp4`;
+        const videoUrl = await uploadToS3(compressedBuffer, videoFilename, contentType);
 
-    console.log(`Video uploaded successfully: ${videoUrl}`);
+        console.log(`Video uploaded successfully: ${videoUrl}`);
+        jobs.set(uploadId, { status: 'done', url: videoUrl });
+      } catch (err) {
+        console.error('Background compression/upload error:', err);
+        jobs.set(uploadId, { status: 'error', error: err instanceof Error ? err.message : 'Compression failed' });
+      }
+    })();
 
+    // Respond immediately — client will poll /api/upload-video-status
     return new Response(JSON.stringify({
       success: true,
-      url: videoUrl
+      uploadId,
+      message: 'Compression started. Poll /api/upload-video-status for progress.'
     }), {
-      status: 200,
+      status: 202,
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    console.error('Error uploading video file:', error);
+    console.error('Error in upload-video:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {
@@ -107,3 +125,6 @@ export const POST: APIRoute = async ({ request }) => {
     });
   }
 };
+
+// Export jobs map so the status endpoint can access it
+export { jobs };
