@@ -30,33 +30,7 @@ SUPABASE_URL = PUBLIC_SUPABASE_URL
 SUPABASE_KEY = PUBLIC_SUPABASE_ANON_KEY
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4321")
-REFRESH_ENDPOINT = f"{FRONTEND_URL}/api/bandi/refresh"
 SCHEDULE_MINUTES = 60 # Run every hour
-
-
-# Anche questa da modificare
-def trigger_bandi_refresh():
-    """Calls the Astro API endpoint to refresh the bandi data."""
-    print(f"[{datetime.now()}] Triggering bandi refresh at: {REFRESH_ENDPOINT}")
-    try:
-        response = requests.get(REFRESH_ENDPOINT, timeout=120) # Add a timeout (e.g., 2 minutes)
-
-        if response.status_code == 200:
-            try:
-                response_data = response.json()
-                print(f"[{datetime.now()}] Successfully refreshed bandi data. Response: {response_data.get('message', '')}")
-            except requests.exceptions.JSONDecodeError:
-                 print(f"[{datetime.now()}] Successfully triggered refresh (Status 200), but response was not valid JSON: {response.text}")
-        else:
-            print(f"[{datetime.now()}] Failed to refresh bandi data. Status code: {response.status_code}")
-            print(f"Response: {response.text}")
-
-    except requests.exceptions.Timeout:
-         print(f"[{datetime.now()}] Error: Request timed out while trying to refresh bandi data at {REFRESH_ENDPOINT}")
-    except requests.exceptions.RequestException as e:
-        print(f"[{datetime.now()}] Error calling refresh endpoint: {e}")
-    except Exception as e:
-        print(f"[{datetime.now()}] An unexpected error occurred: {e}")
 
 def get_supabase_client() -> Client:
     """Initialize and return a Supabase client"""
