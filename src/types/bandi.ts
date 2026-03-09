@@ -1,36 +1,31 @@
-export interface Group {
-  id: string | null;
-  titolo: string | null;
-  concorsi: any[] | null; // Replace 'any' with a more specific type if known
-}
-
-export interface Bando {
-  sedi: string[];
-  settori: string[];
-  categorie: string[];
-  calculatedStatus: 'OPEN' | 'CLOSED' | 'PENDING';
-  statusLabel: string;
-  id: string;
+export interface SelezioneBando {
+  id: number;
   codice: string;
   titolo: string;
   descrizione: string;
-  descrizioneBreve: string;
-  figuraRicercata: string;
-  dataPubblicazione: string; // ISO date string
-  dataScadenza: string;      // ISO date string
-  dataVisibilita: string;    // ISO date string
-  linkReindirizzamento: string | null;
-  tipoProcedura: string;
-  group: Group;
-  importaCandidature: any | null;
-  options: any | null;
-  salaryMin: number | null;
-  salaryMax: number | null;
-  numPosti: number;
-  ente: any | null;
-  entiRiferimento: string[];
-  allegatoMediaId: string | null;
-  tipiProcedureGruppo: any | null;
-  numCandidaturePending: number | null;
-  numCandidatureSubmitted: number | null;
-} 
+  descrizione_breve: string;
+  figura_ricercata: string;
+  num_posti: number | null;
+  tipo_procedura: string;
+  data_pubblicazione: string;
+  data_scadenza: string;
+  data_visibilita: string;
+  sedi: string[];
+  categorie: string[];
+  settori: string[];
+  enti_riferimento: string[];
+  salary_min: number | null;
+  salary_max: number | null;
+  link_reindirizzamento: string | null;
+  calculated_status: 'OPEN' | 'CLOSED' | 'PENDING';
+  status_label: string;
+  allegato_media_id: string | null;
+  status: string;
+  article_title: string | null;
+  article_subtitle: string | null;
+  article_content: string | null;
+  article_keywords: string[];
+  slug: string;
+  created_at: string;
+  updated_at: string;
+}

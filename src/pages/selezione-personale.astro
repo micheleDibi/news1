@@ -2,294 +2,114 @@
 import Layout from '../layouts/Layout.astro';
 import { format, parseISO, isValid } from 'date-fns';
 import { it } from 'date-fns/locale';
-import type { Bando } from '../types/bandi'; // Corrected path
-import fs from 'fs/promises';
-import path from 'path';
+import { createClient } from '@supabase/supabase-js';
+import type { SelezioneBando } from '../types/bandi';
 
-// Define the path to the data file
-const dataFilePath = path.resolve(process.cwd(), 'src/data/bandi.json');
+// Initialize Supabase client
+const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
+const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
 
-// Function to generate URL-friendly slug from bando data
-function generateBandoSlug(bando: Bando): string {
-  const parts = [
-    bando.figuraRicercata,
-    bando.sedi?.join('-'),
-    bando.entiRiferimento?.join('-'),
-    bando.codice
-  ].filter(Boolean); // Remove empty/null values
-  
-  return parts
-    .join('-')
-    .toLowerCase()
-    .replace(/[^a-z0-9\-]/g, '-') // Replace non-alphanumeric chars with hyphens
-    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
-    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
-}
+const PAGE_SIZE = 20;
 
-// Function to read bandi data
-async function loadBandiData(): Promise<Bando[]> {
+// Function to fetch bandi data from Supabase
+async function loadBandiData(): Promise<{ items: SelezioneBando[], total: number }> {
   try {
-    // Ensure the data directory exists (optional, writeFile will create it)
-    // await fs.mkdir(path.dirname(dataFilePath), { recursive: true });
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('Missing Supabase environment variables');
+      return { items: [], total: 0 };
+    }
 
-    const jsonData = await fs.readFile(dataFilePath, 'utf-8');
-    const data = JSON.parse(jsonData);
-    // Basic validation: check if it's an array
-    if (Array.isArray(data)) {
-       return data as Bando[];
-    } else {
-      // Log the invalid structure for debugging
-      console.error('Error: bandi.json does not contain a valid array. Found:', typeof data, JSON.stringify(data).substring(0, 100)); // Log type and first 100 chars
-      return [];
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    const { count } = await supabase
+      .from('selezione_personale')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'completed');
+
+    const { data, error } = await supabase
+      .from('selezione_personale')
+      .select('*')
+      .eq('status', 'completed')
+      .order('data_pubblicazione', { ascending: false })
+      .range(0, PAGE_SIZE - 1);
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return { items: [], total: 0 };
     }
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      console.warn('src/data/bandi.json not found. Returning empty array.');
-    } else {
-      console.error('Error reading or parsing src/data/bandi.json:', error);
-    }
-    return []; // Return empty array on error (e.g., file not found)
+
+    return { items: (data || []) as SelezioneBando[], total: count || 0 };
+  } catch (error) {
+    console.error('Error fetching bandi data:', error);
+    return { items: [], total: 0 };
   }
 }
 
-// Load the data
-const bandiData: Bando[] = await loadBandiData();
+// Load filter options
+async function loadFilterOptions() {
+  try {
+    if (!supabaseUrl || !supabaseKey) return { categorie: [], settori: [], sedi: [] };
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    const { data } = await supabase
+      .from('selezione_personale')
+      .select('categorie, settori, sedi')
+      .eq('status', 'completed');
 
-// --- START: Region/Province Mapping ---
+    const categorie = new Set<string>();
+    const settori = new Set<string>();
+    const sedi = new Set<string>();
 
-const locationToRegionMap: Record<string, string> = {
-  'abruzzo': 'Abruzzo',
-  'agrigento': 'Sicilia',
-  'alessandria': 'Piemonte',
-  'ancona': 'Marche',
-  'aosta': 'Valle d\'Aosta',
-  'arezzo': 'Toscana',
-  'ascoli piceno': 'Marche',
-  'asti': 'Piemonte',
-  'avellino': 'Campania',
-  'bari': 'Puglia',
-  'barletta-andria-trani': 'Puglia',
-  'basilicata': 'Basilicata',
-  'belluno': 'Veneto',
-  'benevento': 'Campania',
-  'bergamo': 'Lombardia',
-  'biella': 'Piemonte',
-  'bologna': 'Emilia-Romagna',
-  'brescia': 'Lombardia',
-  'brindisi': 'Puglia',
-  'cagliari': 'Sardegna',
-  'calabria': 'Calabria',
-  'caltanissetta': 'Sicilia',
-  'campania': 'Campania',
-  'campobasso': 'Molise',
-  'caserta': 'Campania',
-  'catania': 'Sicilia',
-  'catanzaro': 'Calabria',
-  'chieti': 'Abruzzo',
-  'como': 'Lombardia',
-  'cosenza': 'Calabria',
-  'cremona': 'Lombardia',
-  'crotone': 'Calabria',
-  'cuneo': 'Piemonte',
-  'emilia romagna': 'Emilia-Romagna', // Normalize name
-  'fermo': 'Marche',
-  'ferrara': 'Emilia-Romagna',
-  'firenze': 'Toscana',
-  'foggia': 'Puglia',
-  'forlì-cesena': 'Emilia-Romagna',
-  'friuli venezia giulia': 'Friuli Venezia Giulia',
-  'frosinone': 'Lazio',
-  'genova': 'Liguria',
-  'gorizia': 'Friuli Venezia Giulia',
-  'grosseto': 'Toscana',
-  'imperia': 'Liguria',
-  'isernia': 'Molise',
-  'l\'aquila': 'Abruzzo',
-  'la spezia': 'Liguria',
-  'latina': 'Lazio',
-  'lazio': 'Lazio',
-  'lecce': 'Puglia',
-  'lecco': 'Lombardia',
-  'liguria': 'Liguria',
-  'livorno': 'Toscana',
-  'lodi': 'Lombardia',
-  'lombardia': 'Lombardia',
-  'lucca': 'Toscana',
-  'macerata': 'Marche',
-  'mantova': 'Lombardia',
-  'marche': 'Marche',
-  'massa-carrara': 'Toscana',
-  'matera': 'Basilicata',
-  'messina': 'Sicilia',
-  'milano': 'Lombardia',
-  'modena': 'Emilia-Romagna',
-  'molise': 'Molise',
-  'monza e della brianza': 'Lombardia',
-  'napoli': 'Campania',
-  'nazionale': 'Nazionale', // Special region
-  'novara': 'Piemonte',
-  'nuoro': 'Sardegna',
-  'oristano': 'Sardegna',
-  'padova': 'Veneto',
-  'palermo': 'Sicilia',
-  'parma': 'Emilia-Romagna',
-  'pavia': 'Lombardia',
-  'perugia': 'Umbria',
-  'pesaro e urbino': 'Marche',
-  'pescara': 'Abruzzo',
-  'piacenza': 'Emilia-Romagna',
-  'piemonte': 'Piemonte',
-  'pisa': 'Toscana',
-  'pistoia': 'Toscana',
-  'pordenone': 'Friuli Venezia Giulia',
-  'potenza': 'Basilicata',
-  'prato': 'Toscana',
-  'puglia': 'Puglia',
-  'ravenna': 'Emilia-Romagna',
-  'reggio calabria': 'Calabria',
-  'reggio emilia': 'Emilia-Romagna',
-  'rieti': 'Lazio',
-  'rimini': 'Emilia-Romagna',
-  'roma': 'Lazio',
-  'rovigo': 'Veneto',
-  'salerno': 'Campania',
-  'sardegna': 'Sardegna',
-  'sassari': 'Sardegna',
-  'savona': 'Liguria',
-  'sicilia': 'Sicilia',
-  'siena': 'Toscana',
-  'siracusa': 'Sicilia',
-  'sondrio': 'Lombardia',
-  'sud sardegna': 'Sardegna',
-  'taranto': 'Puglia',
-  'teramo': 'Abruzzo',
-  'terni': 'Umbria',
-  'torino': 'Piemonte',
-  'toscana': 'Toscana',
-  'trapani': 'Sicilia',
-  'trentino alto adige': 'Trentino Alto Adige', // Normalize name
-  'trento': 'Trentino Alto Adige',
-  'treviso': 'Veneto',
-  'trieste': 'Friuli Venezia Giulia',
-  'udine': 'Friuli Venezia Giulia',
-  'umbria': 'Umbria',
-  'valle d\'aosta': 'Valle d\'Aosta', // Normalize name
-  'varese': 'Lombardia',
-  'veneto': 'Veneto',
-  'venezia': 'Veneto',
-  'verbano-cusio-ossola': 'Piemonte',
-  'vercelli': 'Piemonte',
-  'verona': 'Veneto',
-  'vibo valentia': 'Calabria',
-  'vicenza': 'Veneto',
-  'viterbo': 'Lazio'
-};
+    (data || []).forEach((row: any) => {
+      (row.categorie || []).forEach((c: string) => categorie.add(c));
+      (row.settori || []).forEach((s: string) => settori.add(s));
+      (row.sedi || []).forEach((s: string) => sedi.add(s));
+    });
 
-// Create a structure mapping regions to their provinces (based on the provided list)
-const regionProvinceData: Record<string, string[]> = {};
-const allSediInData = [...new Set(bandiData.flatMap(b => b.sedi).filter(Boolean))];
-
-allSediInData.forEach(sede => {
-  const sedeLower = sede.toLowerCase();
-  const region = locationToRegionMap[sedeLower];
-  if (region && region !== 'Nazionale') { // Exclude 'Nazionale' from region structure
-    // Don't add regions themselves to the province list of a region
-    if (sedeLower !== region.toLowerCase()) { 
-      if (!regionProvinceData[region]) {
-        regionProvinceData[region] = [];
-      }
-      // Avoid adding duplicates if multiple capitalizations exist
-      if (!regionProvinceData[region].some(p => p.toLowerCase() === sedeLower)) {
-         regionProvinceData[region].push(sede); // Keep original capitalization for display
-      }
-    }
-  } else if (!region) {
-    console.warn(`Sede "${sede}" not found in locationToRegionMap.`);
+    return {
+      categorie: [...categorie].sort(),
+      settori: [...settori].sort(),
+      sedi: [...sedi].sort(),
+    };
+  } catch {
+    return { categorie: [], settori: [], sedi: [] };
   }
-});
-
-// Sort provinces within each region
-for (const region in regionProvinceData) {
-  regionProvinceData[region].sort();
 }
 
-// Get unique regions present in the data (including Nazionale if present)
-const uniqueRegionsInData = [...new Set(allSediInData.map(sede => locationToRegionMap[sede.toLowerCase()]).filter(Boolean))].sort();
+const { items: bandiData, total: totalCount } = await loadBandiData();
+const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+const filterOptions = await loadFilterOptions();
 
-// Sort regions alphabetically, keeping 'Nazionale' first if it exists
-const sortedRegions = uniqueRegionsInData.sort((a, b) => {
-  if (a === 'Nazionale') return -1;
-  if (b === 'Nazionale') return 1;
-  return a.localeCompare(b);
-});
-
-// Prepare data for optgroup structure
-const locationOptions = sortedRegions.map(region => {
-  const provinces = regionProvinceData[region] || [];
-  return { region, provinces }; 
-});
-
-// --- END: Region/Province Mapping ---
-
-// Helper function to format date for display (dd MMMM yyyy, HH:mm)
 const formatDate = (dateString: string): string => {
   try {
     const parsedDate = parseISO(dateString);
-    if (!isValid(parsedDate)) { // Check if the parsed date is valid
-       console.warn("Invalid date object after parsing:", dateString);
-       return "Data non valida";
-    }
-    return format(parsedDate, 'dd MMMM yyyy, HH:mm', { locale: it });
-  } catch (e) {
-    console.error("Error formatting date:", dateString, e);
+    if (!isValid(parsedDate)) return "Data non valida";
+    return format(parsedDate, 'dd MMMM yyyy', { locale: it });
+  } catch {
     return "Data non valida";
   }
 };
 
-// Helper function to format date for data attributes (YYYY-MM-DD)
-const formatDateForDataAttr = (dateString: string): string => {
-   try {
-    const parsedDate = parseISO(dateString);
-    if (!isValid(parsedDate)) {
-      return ""; // Return empty string for invalid dates
-    }
-    return format(parsedDate, 'yyyy-MM-dd'); // Format as YYYY-MM-DD
-  } catch (e) {
-    return ""; // Return empty string on error
-  }
-};
-
-// Helper function to get status classes (border color)
-const getStatusBorderColorClass = (status: Bando['calculatedStatus']): string => {
+const getStatusBadgeColor = (status: string): string => {
   switch (status) {
-    case 'OPEN': return 'border-green-500';
-    case 'CLOSED': return 'border-red-500';
-    case 'PENDING': return 'border-yellow-500';
-    default: return 'border-gray-300'; // Use a neutral gray for default
-  }
-};
-
-// Helper function to get status badge classes (background and text color)
-const getStatusBadgeColor = (status: Bando['calculatedStatus']): string => {
-   switch (status) {
     case 'OPEN': return 'bg-green-100 text-green-800';
     case 'CLOSED': return 'bg-red-100 text-red-800';
     case 'PENDING': return 'bg-yellow-100 text-yellow-800';
     default: return 'bg-gray-100 text-gray-800';
   }
-}
+};
 
-// Unique statuses for the filter dropdown
-const uniqueStatuses = [...new Set(bandiData.map(b => b.calculatedStatus).filter(Boolean))] as Bando['calculatedStatus'][];
+const getStatusBorderColorClass = (status: string): string => {
+  switch (status) {
+    case 'OPEN': return 'border-green-500';
+    case 'CLOSED': return 'border-red-500';
+    case 'PENDING': return 'border-yellow-500';
+    default: return 'border-gray-300';
+  }
+};
 
-// Unique values for other filters
-const uniqueCategories = [...new Set(bandiData.flatMap(b => b.categorie).filter(Boolean))].sort();
-// const uniqueSedi = [...new Set(bandiData.flatMap(b => b.sedi).filter(Boolean))].sort(); // No longer needed directly
-const uniqueSettori = [...new Set(bandiData.flatMap(b => b.settori).filter(Boolean))].sort();
-
-const pageTitle = "Bandi e Concorsi - EduNews24";
+const pageTitle = "Selezione Personale - EduNews24";
 const pageDescription = "Con EduNews24.it ricerca degli annunci di lavoro della pubblica amministrazione e delle migliori aziende private";
-const pageKeywords = "selezione personale, lavoro, ricerca lavoro, lavori, motore di ricerca lavoro, motore ricerca lavoro, offerte lavoro, offerte di lavoro, annunci lavoro, annunci di lavoro, cerco lavoro, cerca lavoro, carriera, impiego, professione, trova lavoro, pubblica amministrazione, annunci di lavoro Pa, annunci di lavoro pubblica amministrazione, bandi pubblici di selezione, bandi e concorsi per selezione personale";
+const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavoro, annunci lavoro, pubblica amministrazione, bandi pubblici, bandi e concorsi";
 ---
 <Layout
   title={pageTitle}
@@ -300,399 +120,380 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, lavori, motor
     <div class="container mx-auto px-4 max-w-6xl">
       <div class="mb-10 border-b pb-4">
         <h1 class="text-3xl md:text-4xl font-bold text-primary">Selezione Personale</h1>
+        <p class="text-gray-600 mt-2">Bandi e concorsi pubblici in Italia</p>
       </div>
 
       {/* Filter Controls */}
       <div class="mb-8 p-4 bg-white rounded-md shadow-sm">
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 items-end">
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 items-end">
           {/* Search */}
-          <div class="lg:col-span-1">
+          <div class="lg:col-span-2">
             <label for="search-filter" class="block text-sm font-medium text-gray-700 mb-1">Cerca</label>
             <input type="text" id="search-filter" placeholder="Titolo, Ente, Codice..." class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm">
           </div>
-          {/* Status */}
-          <div class="lg:col-span-1">
-            <label for="status-filter" class="block text-sm font-medium text-gray-700 mb-1">Stato</label>
-            <select id="status-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
-              <option value="">Tutti</option>
-              {uniqueStatuses.map(status => (
-                 <option value={status}>{status === 'OPEN' ? 'Aperto' : status === 'CLOSED' ? 'Chiuso' : 'In Scadenza'}</option>
-              ))}
-            </select>
-          </div>
-           {/* Publication Date */}
-          <div class="lg:col-span-1">
-             <label for="pub-date-filter" class="block text-sm font-medium text-gray-700 mb-1">Pubblicato Dopo Il</label>
-             <input type="date" id="pub-date-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm">
-          </div>
-          {/* Expiration Date */}
-          <div class="lg:col-span-1">
-             <label for="exp-date-filter" class="block text-sm font-medium text-gray-700 mb-1">Scade Prima Del</label>
-             <input type="date" id="exp-date-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm">
-          </div>
+
           {/* Categoria */}
-          <div class="lg:col-span-1">
+          <div>
             <label for="category-filter" class="block text-sm font-medium text-gray-700 mb-1">Categoria</label>
             <select id="category-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
               <option value="">Tutte</option>
-              {uniqueCategories.map(cat => <option value={cat}>{cat}</option>)}
+              {filterOptions.categorie.map(cat => <option value={cat}>{cat}</option>)}
             </select>
           </div>
 
-          {/* Area Geografica Filter (Single Dropdown with Optgroup) */}
-          <div class="lg:col-span-1">
-            <label for="location-filter" class="block text-sm font-medium text-gray-700 mb-1">Area Geografica</label>
-            <select id="location-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
-              <option value="">Tutte le Aree</option>
-              {/* Render options based on locationOptions */}
-              {locationOptions.map(({ region, provinces }) => (
-                 <>
-                  {region === 'Nazionale' ? (
-                    <option value="REGION::Nazionale">Nazionale</option>
-                  ) : (
-                    <optgroup label={region}>
-                      {/* Option to select the entire region */} 
-                      <option value={`REGION::${region}`}>{region} (Tutte le province)</option>
-                      {/* Options for each province */}
-                      {provinces.map(province => (
-                        <option value={`PROVINCE::${province}`}>{province}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                 </>
-              ))}
-            </select>
-          </div>
-
-           {/* Settore */}
-          <div class="lg:col-span-1">
+          {/* Settore */}
+          <div>
             <label for="settore-filter" class="block text-sm font-medium text-gray-700 mb-1">Settore</label>
             <select id="settore-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
               <option value="">Tutti</option>
-              {uniqueSettori.map(settore => <option value={settore}>{settore}</option>)}
+              {filterOptions.settori.map(s => <option value={s}>{s}</option>)}
             </select>
           </div>
+
           {/* Reset Button */}
-           <div class="lg:col-span-1 flex items-end"> {/* Adjusted grid span and added flex for alignment */}
-             <button id="reset-filters" class="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
-               Resetta
-             </button>
-           </div>
+          <div class="flex items-end">
+            <button id="reset-filters" class="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+              Resetta
+            </button>
+          </div>
         </div>
       </div>
-      {/* End Filter Controls */}
 
+      {/* Results Count */}
+      <div class="mb-4">
+        <p id="results-count" class="text-sm text-gray-600">
+          Trovati <span id="visible-count">{totalCount}</span> bandi
+        </p>
+      </div>
 
-      <div id="bandi-list" class="space-y-5"> {/* Added ID for easier selection */}
+      <div id="bandi-list" class="space-y-5">
         {bandiData.length === 0 ? (
           <p id="no-results-message" class="text-center text-gray-500 text-lg py-10">Nessun bando trovato al momento.</p>
         ) : (
           <>
-            {bandiData.map((bando: Bando) => (
+            {bandiData.map((bando: SelezioneBando) => (
               <article
-                class:list={["bando-item bg-white rounded-md border overflow-hidden transition-colors duration-200 hover:border-gray-300", getStatusBorderColorClass(bando.calculatedStatus)]}
-                data-title={bando.titolo?.toLowerCase()}
-                data-ente={bando.entiRiferimento?.join(',').toLowerCase()}
-                data-status={bando.calculatedStatus}
-                data-codice={bando.codice?.toLowerCase()}
-                data-pubblicazione={formatDateForDataAttr(bando.dataPubblicazione)}
-                data-scadenza={formatDateForDataAttr(bando.dataScadenza)}
-                data-categorie={bando.categorie?.join(',').toLowerCase()}
-                data-sedi={bando.sedi?.join(',').toLowerCase()}
-                data-sedi-raw={JSON.stringify(bando.sedi)}
-                data-settori={bando.settori?.join(',').toLowerCase()}
+                class:list={["bando-item bg-white rounded-md border overflow-hidden transition-colors duration-200 hover:border-gray-300", getStatusBorderColorClass(bando.calculated_status)]}
               >
-                <a href={`/selezione-personale/${generateBandoSlug(bando)}`} class="block hover:bg-gray-50/50">
+                <a href={`/selezione-personale/${bando.slug}`} class="block hover:bg-gray-50/50">
                   <div class="p-5">
                     <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-4">
                       <div class="flex-1">
-                        <h2 class="text-lg font-semibold text-gray-800 mb-1 group-hover:text-primary transition-colors">{bando.titolo}</h2>
-                        {(bando.entiRiferimento?.length > 0 || bando.sedi?.length > 0) && (
-                           <p class="text-sm text-gray-500">
-                        {bando.entiRiferimento?.length > 0 && (
+                        <h2 class="text-lg font-semibold text-gray-800 mb-1 hover:text-primary transition-colors">
+                          {bando.article_title || bando.titolo}
+                        </h2>
+                        {(bando.enti_riferimento?.length > 0 || bando.sedi?.length > 0) && (
+                          <p class="text-sm text-gray-500">
+                            {bando.enti_riferimento?.length > 0 && (
                               <>
-                                <span class="font-medium text-gray-600">Ente:</span> {bando.entiRiferimento.join(', ')}
+                                <span class="font-medium text-gray-600">Ente:</span> {bando.enti_riferimento.join(', ')}
                                 {bando.sedi?.length > 0 && <span class="mx-1">|</span>}
                               </>
-                        )}
-                         {bando.sedi?.length > 0 && (
+                            )}
+                            {bando.sedi?.length > 0 && (
                               <>
                                 <span class="font-medium text-gray-600">Sede:</span> {bando.sedi.join(', ')}
                               </>
-                             )}
+                            )}
                           </p>
-                         )}
+                        )}
                       </div>
                       <div class="flex-shrink-0 text-right space-y-1 pt-1">
-                        <span class={`inline-block px-2.5 py-0.5 text-xs font-medium rounded-full ${getStatusBadgeColor(bando.calculatedStatus)}`}>
-                          {bando.statusLabel}
+                        <span class={`inline-block px-2.5 py-0.5 text-xs font-medium rounded-full ${getStatusBadgeColor(bando.calculated_status)}`}>
+                          {bando.status_label}
                         </span>
-                         <p class="text-xs text-gray-400">Cod. {bando.codice}</p>
+                        <p class="text-xs text-gray-400">Cod. {bando.codice}</p>
                       </div>
                     </div>
 
                     <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mb-4 text-sm border-t border-gray-100 pt-4 mt-4">
-                      {bando.figuraRicercata && (
+                      {bando.figura_ricercata && (
                         <div>
                           <p class="text-xs text-gray-500 uppercase tracking-wider">Figura Ricercata</p>
-                          <p class="font-medium text-gray-700">{bando.figuraRicercata}</p>
+                          <p class="font-medium text-gray-700">{bando.figura_ricercata}</p>
                         </div>
                       )}
-                      {bando.numPosti && (
+                      {bando.num_posti && (
                         <div>
                           <p class="text-xs text-gray-500 uppercase tracking-wider">Posti</p>
-                          <p class="font-medium text-gray-700">{bando.numPosti}</p>
+                          <p class="font-medium text-gray-700">{bando.num_posti}</p>
                         </div>
                       )}
-                       {bando.tipoProcedura && (
-                         <div>
+                      {bando.tipo_procedura && (
+                        <div>
                           <p class="text-xs text-gray-500 uppercase tracking-wider">Procedura</p>
-                          <p class="font-medium text-gray-700">{bando.tipoProcedura}</p>
+                          <p class="font-medium text-gray-700">{bando.tipo_procedura}</p>
                         </div>
-                       )}
-                       {bando.statusLabel && (
-                          <div>
-                            <p class="text-xs text-gray-500 uppercase tracking-wider">Stato</p>
-                            <p class={`font-medium ${bando.calculatedStatus === 'OPEN' ? 'text-green-700' : bando.calculatedStatus === 'CLOSED' ? 'text-red-700' : 'text-yellow-700'}`}>{bando.statusLabel}</p>
+                      )}
+                      {bando.data_pubblicazione && (
+                        <div class="sm:col-span-1">
+                          <p class="text-xs text-gray-500 uppercase tracking-wider">Pubblicazione</p>
+                          <p class="font-medium text-gray-700 text-xs">{formatDate(bando.data_pubblicazione)}</p>
                         </div>
-                       )}
-                        {bando.dataPubblicazione && (
-                          <div class="sm:col-span-1">
-                            <p class="text-xs text-gray-500 uppercase tracking-wider">Pubblicazione</p>
-                            <p class="font-medium text-gray-700 text-xs">{formatDate(bando.dataPubblicazione)}</p>
-                          </div>
-                        )}
-                      {bando.dataScadenza && (
+                      )}
+                      {bando.data_scadenza && (
                         <div class="sm:col-span-1">
                           <p class="text-xs text-gray-500 uppercase tracking-wider">Scadenza</p>
-                          <p class="font-medium text-red-600 text-xs">{formatDate(bando.dataScadenza)}</p>
+                          <p class="font-medium text-red-600 text-xs">{formatDate(bando.data_scadenza)}</p>
                         </div>
                       )}
                     </div>
 
-
                     {(bando.categorie?.length > 0 || bando.settori?.length > 0) && (
                       <div class="flex flex-wrap gap-x-3 gap-y-1 mb-4 pt-3 border-t border-gray-100 text-xs">
-                          {bando.categorie?.map((cat: string) => <span class="text-gray-600 font-medium">{cat}</span>)}
-                          {bando.settori?.map((sec: string) => <span class="text-blue-600 font-medium">{sec}</span>)}
-                       </div>
+                        {bando.categorie?.map((cat: string) => <span class="text-gray-600 font-medium">{cat}</span>)}
+                        {bando.settori?.map((sec: string) => <span class="text-blue-600 font-medium">{sec}</span>)}
+                      </div>
                     )}
 
-                    {bando.descrizioneBreve && (
-                       <div class="prose prose-sm max-w-none text-gray-600 mb-5 pt-4 mt-4 border-t border-gray-100">
-                         <details>
-                            <summary class="cursor-pointer font-medium text-sm text-primary hover:underline list-none -ml-4 pl-4 relative before:content-['+'] before:absolute before:left-1 before:top-0 before:font-mono before:text-gray-400 open:before:content-['-']">
-                              Mostra Descrizione
-                            </summary>
-                            <div set:html={bando.descrizioneBreve} class="mt-2 text-gray-700" />
-                         </details>
-                      </div>
+                    {bando.article_subtitle && (
+                      <p class="text-gray-700 text-sm leading-relaxed">{bando.article_subtitle}</p>
                     )}
                   </div>
                 </a>
-
-                <div class="p-5 pt-0 flex flex-col sm:flex-row sm:justify-end items-start sm:items-center gap-3 border-t border-gray-100 mt-auto">
-                  {bando.linkReindirizzamento && (
-                    <a
-                      href={bando.linkReindirizzamento}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="inline-flex items-center px-3.5 py-1.5 border border-primary text-sm font-medium rounded text-primary bg-white hover:bg-primary/5 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-primary transition"
-                    >
-                      Vai al Bando
-                      <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 ml-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                    </a>
-                  )}
-                </div>
               </article>
             ))}
-             {/* Message shown when no results match filters */}
-             <p id="no-results-message" class="text-center text-gray-500 text-lg py-10 hidden">Nessun bando corrisponde ai filtri selezionati.</p>
+            <p id="no-filtered-results-message" class="text-center text-gray-500 text-lg py-10 hidden">Nessun bando corrisponde ai filtri selezionati.</p>
           </>
         )}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <nav id="pagination" class="mt-8 flex justify-center items-center gap-2" data-total-pages={totalPages} data-page-size={PAGE_SIZE}>
+          <button id="prev-page" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+            &larr; Precedente
+          </button>
+          <span class="px-4 py-2 text-sm text-gray-600">
+            Pagina <span id="current-page-num">1</span> di <span id="total-pages-num">{totalPages}</span>
+          </span>
+          <button id="next-page" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+            Successiva &rarr;
+          </button>
+        </nav>
+      )}
     </div>
   </main>
 </Layout>
 
 <style is:global>
-/* Global styles to ensure prose elements render correctly */
 .prose :where(p):not(:where([class~="not-prose"] *)) {
   margin-top: 0.5em;
   margin-bottom: 0.5em;
 }
-.prose details > summary {
-  /* Reset default list styling for summary */
-  list-style: none;
-}
-.prose details > summary::-webkit-details-marker {
-  /* Hide default marker in WebKit browsers */
-  display: none;
-}
-.prose details > summary::marker {
- /* Hide default marker in Firefox */
- display: none;
-}
-
-/* Basic styling for links and strong tags within prose */
 .prose a {
-    color: #0056b3; /* Use primary color from theme or fallback */
-    text-decoration: none; /* Remove default underline, rely on hover */
+    color: #0056b3;
+    text-decoration: none;
 }
 .prose a:hover {
-    color: #003d80; /* Darker primary */
+    color: #003d80;
     text-decoration: underline;
 }
 .prose strong {
     font-weight: 600;
-    color: #333; /* Slightly darker for emphasis */
-}
-
-/* Ensure lists inside prose have reasonable spacing */
-.prose ul, .prose ol {
-    margin-top: 0.8em;
-    margin-bottom: 0.8em;
-    padding-left: 1.5em;
-}
-.prose li {
-    margin-top: 0.2em;
-    margin-bottom: 0.2em;
-}
-.prose li > p {
-    margin: 0;
-}
-
-/* Add open state styling for details */
-details[open] > summary {
-  margin-bottom: 0.5rem;
+    color: #333;
 }
 </style>
 
-<script define:vars={{ serverLocationToRegionMap: locationToRegionMap }} is:inline>
-  // Explicitly declare the map in the client-side script scope
-  const locationToRegionMap = serverLocationToRegionMap;
+<script is:inline define:vars={{ supabaseUrl, supabaseKey, PAGE_SIZE }}>
+  async function supabaseFetch(table, params) {
+    const url = new URL(`${supabaseUrl}/rest/v1/${table}`);
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    const res = await fetch(url.toString(), {
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Prefer': 'count=exact',
+      },
+    });
+    const total = parseInt(res.headers.get('content-range')?.split('/')[1] || '0', 10);
+    const data = await res.json();
+    return { data, total };
+  }
 
   const searchInput = document.getElementById('search-filter');
-  const statusSelect = document.getElementById('status-filter');
-  const pubDateInput = document.getElementById('pub-date-filter');
-  const expDateInput = document.getElementById('exp-date-filter');
   const categorySelect = document.getElementById('category-filter');
-  const locationSelect = document.getElementById('location-filter');
   const settoreSelect = document.getElementById('settore-filter');
   const bandiList = document.getElementById('bandi-list');
-  const bandoItems = bandiList ? Array.from(bandiList.querySelectorAll('.bando-item')) : [];
-  const noResultsMessage = document.getElementById('no-results-message');
+  const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
   const resetButton = document.getElementById('reset-filters');
+  const visibleCountSpan = document.getElementById('visible-count');
+  const prevBtn = document.getElementById('prev-page');
+  const nextBtn = document.getElementById('next-page');
+  const currentPageNum = document.getElementById('current-page-num');
+  const totalPagesNum = document.getElementById('total-pages-num');
 
-  function filterBandi() {
-    const searchTerm = searchInput.value.toLowerCase().trim();
-    const selectedStatus = statusSelect.value;
-    const selectedPubDate = pubDateInput.value;
-    const selectedExpDate = expDateInput.value;
-    const selectedCategory = categorySelect.value;
-    const selectedLocationValue = locationSelect.value;
-    const selectedSettore = settoreSelect.value;
-    let visibleCount = 0;
+  let currentPage = 1;
+  let isLoading = false;
 
-    bandoItems.forEach(item => {
-      const title = item.dataset.title || '';
-      const ente = item.dataset.ente || '';
-      const codice = item.dataset.codice || '';
-      const status = item.dataset.status || '';
-      const pubDate = item.dataset.pubblicazione || 'N/A';
-      const expDate = item.dataset.scadenza || 'N/A';
-      const categories = (item.dataset.categorie || '').split(',').filter(Boolean);
-      const sedi = (item.dataset.sedi || '').split(',').filter(Boolean);
-      const settori = (item.dataset.settori || '').split(',').filter(Boolean);
+  function formatDateDisplay(dateString) {
+    try {
+      const d = new Date(dateString);
+      if (isNaN(d.getTime())) return 'Data non valida';
+      return d.toLocaleDateString('it-IT', { day: '2-digit', month: 'long', year: 'numeric' });
+    } catch { return 'Data non valida'; }
+  }
 
-      // Get the raw sedi list for the item
-      let bandoSedi = [];
-      try {
-         bandoSedi = JSON.parse(item.dataset.sediRaw || '[]');
-      } catch (e) {
-        console.error('Error parsing data-sedi-raw:', item.dataset.sediRaw, e);
-      }
+  function getStatusBadge(status, label) {
+    const colors = {
+      'OPEN': 'bg-green-100 text-green-800',
+      'CLOSED': 'bg-red-100 text-red-800',
+      'PENDING': 'bg-yellow-100 text-yellow-800',
+    };
+    const borderColors = {
+      'OPEN': 'border-green-500',
+      'CLOSED': 'border-red-500',
+      'PENDING': 'border-yellow-500',
+    };
+    return { badge: colors[status] || 'bg-gray-100 text-gray-800', border: borderColors[status] || 'border-gray-300' };
+  }
 
-      // --- Filtering Logic ---
-      const textMatch = searchTerm === '' || title.includes(searchTerm) || ente.includes(searchTerm) || codice.includes(searchTerm);
-      const statusMatch = selectedStatus === '' || status === selectedStatus;
-      const pubDateMatch = !selectedPubDate || pubDate >= selectedPubDate;
-      const expDateMatch = !selectedExpDate || expDate <= selectedExpDate;
-      const categoryMatch = selectedCategory === '' || categories.includes(selectedCategory.toLowerCase());
-      const settoreMatch = selectedSettore === '' || settori.includes(selectedSettore.toLowerCase());
+  function renderItems(items) {
+    const existingItems = bandiList.querySelectorAll('.bando-item');
+    existingItems.forEach(el => el.remove());
 
-      // --- Refined Location Matching --- 
-      let locationMatch = false;
-      const locationValue = selectedLocationValue; 
+    if (items.length === 0) {
+      if (noFilteredResultsMessage) noFilteredResultsMessage.classList.remove('hidden');
+      return;
+    }
+    if (noFilteredResultsMessage) noFilteredResultsMessage.classList.add('hidden');
 
-      if (!locationValue) {
-        locationMatch = true;
-      } else if (locationValue === 'REGION::Nazionale') {
-        locationMatch = bandoSedi.some(s => s.trim().toLowerCase() === 'nazionale');
-      } else if (locationValue.startsWith('PROVINCE::')) {
-        const targetProvince = locationValue.substring(10);
-        locationMatch = bandoSedi.some(s => s.trim().toLowerCase() === targetProvince.toLowerCase());
-      } else if (locationValue.startsWith('REGION::')) {
-        const targetRegion = locationValue.substring(8);
-        locationMatch = bandoSedi.some(s => {
-          const sedeLowerTrimmed = s.trim().toLowerCase();
-          const mappedRegion = locationToRegionMap[sedeLowerTrimmed];
-          const matches = mappedRegion && mappedRegion.toLowerCase() === targetRegion.toLowerCase();
-          console.log(`Bando Check: Sede='${s}', MappedRegion='${mappedRegion}', TargetRegion='${targetRegion}', Match=${matches}`); // DEBUG LINE
-          return matches;
-        });
-      }
-      // --- End Refined Location Matching ---
+    const fragment = document.createDocumentFragment();
+    items.forEach(item => {
+      const { badge, border } = getStatusBadge(item.calculated_status, item.status_label);
+      const article = document.createElement('article');
+      article.className = `bando-item bg-white rounded-md border overflow-hidden transition-colors duration-200 hover:border-gray-300 ${border}`;
 
-      // Combine all matches
-      if (textMatch && statusMatch && pubDateMatch && expDateMatch && categoryMatch && settoreMatch && locationMatch) {
-        item.style.display = '';
-        visibleCount++;
-      } else {
-        item.style.display = 'none';
-      }
+      const enti = (item.enti_riferimento || []).join(', ');
+      const sedi = (item.sedi || []).join(', ');
+      const categorie = (item.categorie || []).map(c => `<span class="text-gray-600 font-medium">${c}</span>`).join('');
+      const settori = (item.settori || []).map(s => `<span class="text-blue-600 font-medium">${s}</span>`).join('');
+
+      article.innerHTML = `
+        <a href="/selezione-personale/${item.slug}" class="block hover:bg-gray-50/50">
+          <div class="p-5">
+            <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-4">
+              <div class="flex-1">
+                <h2 class="text-lg font-semibold text-gray-800 mb-1 hover:text-primary transition-colors">
+                  ${item.article_title || item.titolo || ''}
+                </h2>
+                ${(enti || sedi) ? `<p class="text-sm text-gray-500">
+                  ${enti ? `<span class="font-medium text-gray-600">Ente:</span> ${enti}` : ''}
+                  ${enti && sedi ? '<span class="mx-1">|</span>' : ''}
+                  ${sedi ? `<span class="font-medium text-gray-600">Sede:</span> ${sedi}` : ''}
+                </p>` : ''}
+              </div>
+              <div class="flex-shrink-0 text-right space-y-1 pt-1">
+                <span class="inline-block px-2.5 py-0.5 text-xs font-medium rounded-full ${badge}">
+                  ${item.status_label || ''}
+                </span>
+                <p class="text-xs text-gray-400">Cod. ${item.codice || ''}</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 mb-4 text-sm border-t border-gray-100 pt-4 mt-4">
+              ${item.figura_ricercata ? `<div><p class="text-xs text-gray-500 uppercase tracking-wider">Figura Ricercata</p><p class="font-medium text-gray-700">${item.figura_ricercata}</p></div>` : ''}
+              ${item.num_posti ? `<div><p class="text-xs text-gray-500 uppercase tracking-wider">Posti</p><p class="font-medium text-gray-700">${item.num_posti}</p></div>` : ''}
+              ${item.tipo_procedura ? `<div><p class="text-xs text-gray-500 uppercase tracking-wider">Procedura</p><p class="font-medium text-gray-700">${item.tipo_procedura}</p></div>` : ''}
+              ${item.data_pubblicazione ? `<div class="sm:col-span-1"><p class="text-xs text-gray-500 uppercase tracking-wider">Pubblicazione</p><p class="font-medium text-gray-700 text-xs">${formatDateDisplay(item.data_pubblicazione)}</p></div>` : ''}
+              ${item.data_scadenza ? `<div class="sm:col-span-1"><p class="text-xs text-gray-500 uppercase tracking-wider">Scadenza</p><p class="font-medium text-red-600 text-xs">${formatDateDisplay(item.data_scadenza)}</p></div>` : ''}
+            </div>
+            ${(categorie || settori) ? `<div class="flex flex-wrap gap-x-3 gap-y-1 mb-4 pt-3 border-t border-gray-100 text-xs">${categorie}${settori}</div>` : ''}
+            ${item.article_subtitle ? `<p class="text-gray-700 text-sm leading-relaxed">${item.article_subtitle}</p>` : ''}
+          </div>
+        </a>`;
+      fragment.appendChild(article);
     });
 
-    // Update no results message
-    if (noResultsMessage) {
-       noResultsMessage.style.display = visibleCount === 0 ? 'block' : 'none';
+    if (noFilteredResultsMessage) {
+      bandiList.insertBefore(fragment, noFilteredResultsMessage);
+    } else {
+      bandiList.appendChild(fragment);
     }
+  }
+
+  function updatePagination(total) {
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (currentPageNum) currentPageNum.textContent = currentPage;
+    if (totalPagesNum) totalPagesNum.textContent = pages;
+    if (prevBtn) prevBtn.disabled = currentPage <= 1;
+    if (nextBtn) nextBtn.disabled = currentPage >= pages;
+    const paginationNav = document.getElementById('pagination');
+    if (paginationNav) paginationNav.style.display = pages <= 1 ? 'none' : 'flex';
+  }
+
+  async function loadPage() {
+    if (isLoading) return;
+    isLoading = true;
+
+    const searchTerm = searchInput?.value?.trim() || '';
+    const category = categorySelect?.value || '';
+    const settore = settoreSelect?.value || '';
+
+    const from = (currentPage - 1) * PAGE_SIZE;
+
+    const params = {
+      'select': '*',
+      'status': 'eq.completed',
+      'order': 'data_pubblicazione.desc',
+      'offset': from.toString(),
+      'limit': PAGE_SIZE.toString(),
+    };
+
+    if (searchTerm) {
+      params['or'] = `(article_title.ilike.*${searchTerm}*,titolo.ilike.*${searchTerm}*,codice.ilike.*${searchTerm}*)`;
+    }
+    if (category) {
+      params['categorie'] = `cs.{${category}}`;
+    }
+    if (settore) {
+      params['settori'] = `cs.{${settore}}`;
+    }
+
+    try {
+      const { data, total } = await supabaseFetch('selezione_personale', params);
+      renderItems(data || []);
+      if (visibleCountSpan) visibleCountSpan.textContent = total;
+      updatePagination(total);
+    } catch (e) {
+      console.error('Errore caricamento bandi:', e);
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  function resetAndLoad() {
+    currentPage = 1;
+    loadPage();
   }
 
   function debounce(func, wait) {
     let timeout;
-    return function executedFunction(...args) {
-      const later = () => {
-        clearTimeout(timeout);
-        func(...args);
-      };
+    return (...args) => {
       clearTimeout(timeout);
-      timeout = setTimeout(later, wait);
+      timeout = setTimeout(() => func(...args), wait);
     };
   }
 
-  const debouncedFilter = debounce(filterBandi, 250);
+  const debouncedLoad = debounce(resetAndLoad, 300);
 
-  if (searchInput) searchInput.addEventListener('input', debouncedFilter);
-  if (statusSelect) statusSelect.addEventListener('change', filterBandi);
-  if (pubDateInput) pubDateInput.addEventListener('change', filterBandi);
-  if (expDateInput) expDateInput.addEventListener('change', filterBandi);
-  if (categorySelect) categorySelect.addEventListener('change', filterBandi);
-  if (locationSelect) locationSelect.addEventListener('change', filterBandi);
-  if (settoreSelect) settoreSelect.addEventListener('change', filterBandi);
+  if (searchInput) searchInput.addEventListener('input', debouncedLoad);
+  if (categorySelect) categorySelect.addEventListener('change', resetAndLoad);
+  if (settoreSelect) settoreSelect.addEventListener('change', resetAndLoad);
 
-   if (resetButton) {
+  if (prevBtn) prevBtn.addEventListener('click', () => {
+    if (currentPage > 1) { currentPage--; loadPage(); }
+  });
+  if (nextBtn) nextBtn.addEventListener('click', () => {
+    currentPage++;
+    loadPage();
+  });
+
+  if (resetButton) {
     resetButton.addEventListener('click', () => {
-      searchInput.value = '';
-      statusSelect.value = '';
-      pubDateInput.value = '';
-      expDateInput.value = '';
-      categorySelect.value = '';
-      locationSelect.value = '';
-      settoreSelect.value = '';
-      filterBandi();
+      if (searchInput) searchInput.value = '';
+      if (categorySelect) categorySelect.value = '';
+      if (settoreSelect) settoreSelect.value = '';
+      resetAndLoad();
     });
   }
-</script> 
+</script>
