@@ -4,6 +4,7 @@ import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
 import { slugify } from '../../../lib/utils';
 import { pingSearchEngines } from '../../../lib/seo';
+import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -79,7 +80,7 @@ export const POST: APIRoute = async ({ request }) => {
       .single();
 
     if (error) {
-      console.error('Supabase error:', error);
+      logger.error('Supabase error:', error);
       return new Response(JSON.stringify({ 
         error: 'Database error',
         details: error.message
@@ -96,7 +97,7 @@ export const POST: APIRoute = async ({ request }) => {
       try {
         await pingSearchEngines(`https://edunews24.it/${data.category_slug}/${data.slug}`);
       } catch (error) {
-        console.error('Error pinging search engines:', error);
+        logger.error('Error pinging search engines:', error);
         // Don't fail the request if pinging fails
       }
     }
@@ -113,7 +114,7 @@ export const POST: APIRoute = async ({ request }) => {
 
   } catch (error) {
     // Enhanced error logging
-    console.error('Error creating article:', {
+    logger.error('Error creating article:', {
       error,
       type: error instanceof Error ? error.constructor.name : typeof error,
       message: error instanceof Error ? error.message : String(error),

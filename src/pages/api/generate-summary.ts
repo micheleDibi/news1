@@ -1,6 +1,7 @@
 export const prerender = false;
 
 import type { APIRoute } from 'astro';
+import { logger } from '../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   // Authorization check
@@ -72,7 +73,7 @@ Genera summary e title_summary ottimizzati per questo articolo. Rispondi solo co
     }
 
     const data = await response.json();
-    console.log('Summary generation response:', data);
+    logger.info('Summary generation response:', data);
 
     let text = '';
     const messageOutput = data.output?.find((item: any) => item.type === 'message');
@@ -80,7 +81,7 @@ Genera summary e title_summary ottimizzati per questo articolo. Rispondi solo co
       text = messageOutput.content[0].text;
     }
 
-    console.log('Raw OpenAI summary response:', text);
+    logger.info('Raw OpenAI summary response:', text);
 
     let json;
     try {
@@ -107,7 +108,7 @@ Genera summary e title_summary ottimizzati per questo articolo. Rispondi solo co
     });
     
   } catch (error) {
-    console.error('Error in generate-summary API:', error);
+    logger.error('Error in generate-summary API:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

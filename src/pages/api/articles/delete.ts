@@ -2,6 +2,7 @@ export const prerender = false;
 
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -25,7 +26,7 @@ export const POST: APIRoute = async ({ request }) => {
       .eq('id', id);
 
     if (error) {
-      console.error('Error deleting article:', error);
+      logger.error('Error deleting article:', error);
       return new Response(JSON.stringify({ error: error.message }), {
         status: 500,
         headers: {
@@ -41,7 +42,7 @@ export const POST: APIRoute = async ({ request }) => {
       }
     });
   } catch (error) {
-    console.error('Server error when deleting article:', error);
+    logger.error('Server error when deleting article:', error);
     return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
       status: 500,
       headers: {

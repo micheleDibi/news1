@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../lib/supabase';
 import bcrypt from 'bcryptjs';
+import { logger } from '../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -57,7 +58,7 @@ export const POST: APIRoute = async ({ request }) => {
         });
       }
       
-      console.error('Error checking API request status:', error);
+      logger.error('Error checking API request status:', error);
       return new Response(JSON.stringify({ 
         error: 'Failed to check request status. Please try again.' 
       }), {
@@ -92,7 +93,7 @@ export const POST: APIRoute = async ({ request }) => {
     });
 
   } catch (error) {
-    console.error('Server error checking API status:', error);
+    logger.error('Server error checking API status:', error);
     return new Response(JSON.stringify({ 
       error: 'Internal server error. Please try again later.' 
     }), {

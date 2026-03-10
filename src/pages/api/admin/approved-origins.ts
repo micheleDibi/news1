@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 export const GET: APIRoute = async ({ request }) => {
   try {
@@ -46,7 +47,7 @@ export const GET: APIRoute = async ({ request }) => {
       .order('reviewed_at', { ascending: false });
 
     if (error) {
-      console.error('Error fetching approved origins:', error);
+      logger.error('Error fetching approved origins:', error);
       return new Response(JSON.stringify({ error: 'Failed to fetch approved origins' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
@@ -70,7 +71,7 @@ export const GET: APIRoute = async ({ request }) => {
     });
 
   } catch (error) {
-    console.error('Server error fetching approved origins:', error);
+    logger.error('Server error fetching approved origins:', error);
     return new Response(JSON.stringify({ error: 'Internal server error' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }

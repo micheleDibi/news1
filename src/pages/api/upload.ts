@@ -5,6 +5,7 @@ import { uploadToS3 } from '../../lib/aws';
 import sharp from 'sharp';
 // import { v4 as uuidv4 } from 'uuid'; // uuid is part of originalClientFilename from client
 import { slugify } from '../../lib/utils';
+import { logger } from '../../lib/logger';
 
 const TARGET_WIDTHS = [320, 480, 640, 768, 1024, 1280]; // Define target widths for variants
 
@@ -67,9 +68,9 @@ export const POST: APIRoute = async ({ request }) => {
         
         const variantFilename = `${baseName}-${width}w.webp`; // e.g., article_content_uuid-640w.webp
         await uploadToS3(variantBuffer, variantFilename, 'image/webp', 'images/');
-        console.log(`Uploaded variant: ${variantFilename}`);
+        logger.info(`Uploaded variant: ${variantFilename}`);
       } catch (variantError) {
-        console.error(`Error creating or uploading variant for width ${width}:`, variantError);
+        logger.error(`Error creating or uploading variant for width ${width}:`, variantError);
         // Decide if you want to fail the whole request or just skip this variant
         // For now, it just logs and continues
       }
@@ -87,7 +88,7 @@ export const POST: APIRoute = async ({ request }) => {
     });
 
   } catch (error) {
-    console.error('Error uploading file:', error);
+    logger.error('Error uploading file:', error);
     return new Response(JSON.stringify({ 
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

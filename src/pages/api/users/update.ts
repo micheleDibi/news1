@@ -1,11 +1,12 @@
 import type { APIRoute } from "astro";
 import { supabase } from "../../../lib/supabase";
+import { logger } from "../../../lib/logger";
 
 export const POST: APIRoute = async ({ request }) => {
   // Check authorization
   const authHeader = request.headers.get("Authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    console.error("Authorization header missing or invalid", { authHeader });
+    logger.error("Authorization header missing or invalid", { authHeader });
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: {
@@ -50,7 +51,7 @@ export const POST: APIRoute = async ({ request }) => {
     } = await supabase.auth.getUser(token);
 
     if (tokenError || !tokenUser) {
-      console.error("Token validation failed", { tokenError });
+      logger.error("Token validation failed", { tokenError });
       return new Response(JSON.stringify({ error: "Invalid token" }), {
         status: 401,
         headers: {
@@ -85,7 +86,7 @@ export const POST: APIRoute = async ({ request }) => {
       );
 
       if (passwordError) {
-        console.error("Error updating password:", passwordError);
+        logger.error("Error updating password:", passwordError);
         return new Response(JSON.stringify({ error: passwordError.message }), {
           status: 500,
           headers: {
@@ -138,7 +139,7 @@ export const POST: APIRoute = async ({ request }) => {
       updateData.is_displayable = is_displayable;
 
     // Log the update data for debugging
-    console.log("API: Profile update data for user", userId, ":", updateData);
+    logger.info("API: Profile update data for user", userId, ":", updateData);
 
     // Only update profile if there are fields to update
     if (Object.keys(updateData).length > 0) {
@@ -148,7 +149,7 @@ export const POST: APIRoute = async ({ request }) => {
         .eq("id", userId);
 
       if (updateError) {
-        console.error("Error updating profile:", updateError);
+        logger.error("Error updating profile:", updateError);
         return new Response(JSON.stringify({ error: updateError.message }), {
           status: 500,
           headers: {
@@ -171,7 +172,7 @@ export const POST: APIRoute = async ({ request }) => {
       }
     );
   } catch (error) {
-    console.error("Error in update user endpoint:", error);
+    logger.error("Error in update user endpoint:", error);
     return new Response(
       JSON.stringify({
         error: error instanceof Error ? error.message : "Unknown error",

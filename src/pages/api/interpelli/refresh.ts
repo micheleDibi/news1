@@ -2,6 +2,7 @@ import type { APIRoute } from 'astro';
 import type { Interpello } from '../../../types/interpelli';
 import fs from 'fs/promises';
 import path from 'path';
+import { logger } from '../../../lib/logger';
 
 // Define the path to the data file
 const dataFilePath = path.resolve(process.cwd(), 'src/data/interpelli.json');
@@ -92,7 +93,7 @@ async function fetchInteripelliData(): Promise<Interpello[]> {
 
 // Astro API Route (GET request to trigger refresh)
 export const GET: APIRoute = async ({ request }) => {
-  console.log('Received request to refresh interpelli data...');
+  logger.info('Received request to refresh interpelli data...');
 
   const interpelli = await fetchInteripelliData();
 
@@ -109,14 +110,14 @@ export const GET: APIRoute = async ({ request }) => {
 
     // Write the fetched data to the JSON file
     await fs.writeFile(dataFilePath, JSON.stringify(interpelli, null, 2), 'utf-8');
-    console.log(`Successfully wrote ${interpelli.length} interpelli to ${dataFilePath}`);
+    logger.info(`Successfully wrote ${interpelli.length} interpelli to ${dataFilePath}`);
 
     return new Response(JSON.stringify({ message: `Successfully updated interpelli. Found ${interpelli.length} items.` }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    console.error("Error writing interpelli data to file:", error);
+    logger.error("Error writing interpelli data to file:", error);
     return new Response(JSON.stringify({ message: "Failed to write data to file." }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }

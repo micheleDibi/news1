@@ -19,6 +19,7 @@ from .variables_edunews import (
     hour_to_end,
     query_generator
 )
+from .logger import logger
 
 # API configuration
 BASE_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
@@ -29,7 +30,6 @@ PUBLIC_SUPABASE_ANON_KEY = os.getenv("PUBLIC_SUPABASE_ANON_KEY")
 SUPABASE_URL = PUBLIC_SUPABASE_URL
 SUPABASE_KEY = PUBLIC_SUPABASE_ANON_KEY
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4321")
 SCHEDULE_MINUTES = 60 # Run every hour
 
 def get_supabase_client() -> Client:
@@ -42,10 +42,10 @@ def fetch_sources_from_supabase() -> List[Dict[str, str]]:
     """Fetch sources with their valid prefixes from Supabase"""
     try:
         supabase = get_supabase_client()
-        print(f"supabase: {supabase}, credentials: {SUPABASE_URL}, {SUPABASE_KEY}")
+        logger.debug("supabase: {}, credentials: {}, {}", supabase, SUPABASE_URL, SUPABASE_KEY)
         response = supabase.table('sources').select('*').execute()
         if not response.data:
-            print("No sources found in Supabase")
+            logger.info("No sources found in Supabase")
             return []
         
         # Convert to list of dictionaries with link and valid_prefix
@@ -57,27 +57,12 @@ def fetch_sources_from_supabase() -> List[Dict[str, str]]:
                 'link': source.get('link', ''),
                 'valid_prefix': valid_prefix
             })
-        print(f"sources: {sources}")
-        print(f"Fetched {len(sources)} sources from Supabase")
+        logger.debug("sources: {}", sources)
+        logger.info("Fetched {} sources from Supabase", len(sources))
         return sources
     except Exception as e:
-        print(f"Error fetching sources from Supabase: {str(e)}")
+        logger.error("Error fetching sources from Supabase: {}", e)
         return []
-
-def append_to_log_json(log_entry):
-    """Send a log entry to the frontend API to be stored"""
-    try:
-        response = requests.post(f"{FRONTEND_URL}/api/logs/create", json=log_entry)
-        if response.status_code == 200:
-            print(f"Successfully sent log to frontend API: {log_entry['process']}")
-            return True
-        else:
-            print(f"Failed to send log to frontend API: {response.status_code}")
-            print(f"Response: {response.text}")
-            return False
-    except Exception as e:
-        print(f"Error sending log to frontend API: {str(e)}")
-        return False
 
 def send_telegram_notification(message: str) -> bool:
     """Send a notification via Telegram server"""
@@ -86,13 +71,13 @@ def send_telegram_notification(message: str) -> bool:
         # return response.status_code == 200
         return True
     except Exception as e:
-        print(f"Failed to send Telegram notification: {str(e)}")
+        logger.error("Failed to send Telegram notification: {}", e)
         return False
 
 def scrape_news(source_list: List[Dict[str, str]] = None, pipeline_state: Dict[str, Any] = None) -> List[str]:
     """Scrape news from specified sources"""
     if source_list is None:
-        print("No source list provided")
+        logger.info("No source list provided")
         return []
     
     # Update pipeline state with scraping info
@@ -105,7 +90,7 @@ def scrape_news(source_list: List[Dict[str, str]] = None, pipeline_state: Dict[s
         }
         
     send_telegram_notification("🔄 Avvio processo di scraping...")
-    print(f"\n[{datetime.now()}] Starting scraping process...")
+    logger.info("Starting scraping process...")
     success_count = 0
     news_list = []
     
@@ -120,7 +105,7 @@ def scrape_news(source_list: List[Dict[str, str]] = None, pipeline_state: Dict[s
             )
             
             if response.status_code == 200:
-                print(f"Successfully scraped {source['link']}")
+                logger.info("Successfully scraped {}", source['link'])
                 scraped_links = response.json()["news_links"]
                 news_list.extend(scraped_links)
                 
@@ -130,7 +115,7 @@ def scrape_news(source_list: List[Dict[str, str]] = None, pipeline_state: Dict[s
                 
                 success_count += 1
             else:
-                print(f"Failed to scrape {source['link']}: {response.status_code}")
+                logger.error("Failed to scrape {}: {}", source['link'], response.status_code)
                 # Add failure to pipeline state
                 if pipeline_state is not None:
                     pipeline_state["scraping"].setdefault("failures", []).append({
@@ -138,7 +123,7 @@ def scrape_news(source_list: List[Dict[str, str]] = None, pipeline_state: Dict[s
                         "status_code": response.status_code
                     })
         except Exception as e:
-            print(f"Error scraping {source['link']}: {str(e)}")
+            logger.error("Error scraping {}: {}", source['link'], e)
             # Add error to pipeline state
             if pipeline_state is not None:
                 pipeline_state["scraping"].setdefault("errors", []).append({
@@ -152,7 +137,7 @@ def scrape_news(source_list: List[Dict[str, str]] = None, pipeline_state: Dict[s
         pipeline_state["scraping"]["success_count"] = success_count
         pipeline_state["scraping"]["total_links"] = len(news_list)
     
-    print(f"News list: {news_list} INSIDE SENDER")
+    logger.debug("News list: {} INSIDE SENDER", news_list)
     return news_list
 
 def check_duplicates(news_list: List[str], pipeline_state: Dict[str, Any] = None) -> List[int]:
@@ -167,14 +152,14 @@ def check_duplicates(news_list: List[str], pipeline_state: Dict[str, Any] = None
         }
     
     send_telegram_notification("🔄 Avvio controllo duplicati...")
-    print(f"\n[{datetime.now()}] Checking for duplicates...")
-    print(f"News list: {news_list}")
+    logger.info("Checking for duplicates...")
+    logger.debug("News list: {}", news_list)
     link_list = schemas.LinkList(links=news_list)
     try:
         response = requests.post(f"{BASE_URL}/api/news/analyze", json=link_list.model_dump())
         if response.status_code == 200:
             unique_ids = response.json().get("unique_news_ids", [])
-            print(f"Found {len(unique_ids)} unique news items")
+            logger.info("Found {} unique news items", len(unique_ids))
             
             # Update pipeline state
             if pipeline_state is not None:
@@ -184,7 +169,7 @@ def check_duplicates(news_list: List[str], pipeline_state: Dict[str, Any] = None
             
             return unique_ids
         
-        print(f"Failed to check duplicates: {response.status_code}")
+        logger.error("Failed to check duplicates: {}", response.status_code)
         # Add failure to pipeline state
         if pipeline_state is not None:
             pipeline_state["selected_links"]["status"] = "failed"
@@ -192,7 +177,7 @@ def check_duplicates(news_list: List[str], pipeline_state: Dict[str, Any] = None
         
         return []
     except Exception as e:
-        print(f"Error checking duplicates: {str(e)}")
+        logger.error("Error checking duplicates: {}", e)
         # Add error to pipeline state
         if pipeline_state is not None:
             pipeline_state["selected_links"]["status"] = "error"
@@ -211,11 +196,11 @@ def summarize_news(pipeline_state: Dict[str, Any] = None) -> List[str]:
         }
     
     send_telegram_notification("🔄 Avvio processo di sintesi...")
-    print(f"\n[{datetime.now()}] Starting summarization process...")
+    logger.info("Starting summarization process...")
     try:
         response = requests.get(f"{BASE_URL}/summarize_news")
         if response.status_code == 200:
-            print("Successfully summarized news")
+            logger.info("Successfully summarized news")
             summarized_ids = response.json().get("summarized_news_IDs", [])
             summarized_news = response.json().get("summarized_news", [])
             summarized_urls = response.json().get("summarized_urls", [])
@@ -227,7 +212,7 @@ def summarize_news(pipeline_state: Dict[str, Any] = None) -> List[str]:
             if summarized_urls and len(summarized_urls) == len(summarized_ids):
                 for i, url in enumerate(summarized_urls):
                     url_to_id_map[url] = summarized_ids[i]
-                    print(f"Mapped URL {url} to ID {summarized_ids[i]}")
+                    logger.debug("Mapped URL {} to ID {}", url, summarized_ids[i])
             
             # Update pipeline state
             if pipeline_state is not None:
@@ -239,7 +224,7 @@ def summarize_news(pipeline_state: Dict[str, Any] = None) -> List[str]:
             
             return summarized_ids
         
-        print(f"Failed to summarize news: {response.status_code}")
+        logger.error("Failed to summarize news: {}", response.status_code)
         # Add failure to pipeline state
         if pipeline_state is not None:
             pipeline_state["summarization"]["status"] = "failed"
@@ -247,7 +232,7 @@ def summarize_news(pipeline_state: Dict[str, Any] = None) -> List[str]:
         
         return []
     except Exception as e:
-        print(f"Error summarizing news: {str(e)}")
+        logger.error("Error summarizing news: {}", e)
         # Add error to pipeline state
         if pipeline_state is not None:
             pipeline_state["summarization"]["status"] = "error"
@@ -267,7 +252,7 @@ def reconstruct_articles(news_ids: List[int], pipeline_state: Dict[str, Any] = N
         }
     
     send_telegram_notification(f"🔄 Avvio processo di ricostruzione per {len(news_ids)} articoli...")
-    print(f"\n[{datetime.now()}] Reconstructing articles...")
+    logger.info("Reconstructing articles...")
     success_count = 0
     
     for news_id in news_ids:
@@ -275,7 +260,7 @@ def reconstruct_articles(news_ids: List[int], pipeline_state: Dict[str, Any] = N
             response = requests.post(f"{BASE_URL}/api/news/reconstruct/{news_id}")
             if response.status_code == 200:
                 success_count += 1
-                print(f"Successfully reconstructed article ID: {news_id}")
+                logger.info("Successfully reconstructed article ID: {}", news_id)
                 
                 # Update pipeline state
                 if pipeline_state is not None:
@@ -285,7 +270,7 @@ def reconstruct_articles(news_ids: List[int], pipeline_state: Dict[str, Any] = N
                         "article": response.json()
                     })
             else:
-                print(f"Failed to reconstruct article ID {news_id}: {response.status_code}")
+                logger.error("Failed to reconstruct article ID {}: {}", news_id, response.status_code)
                 
                 # Add failure to pipeline state
                 if pipeline_state is not None:
@@ -295,7 +280,7 @@ def reconstruct_articles(news_ids: List[int], pipeline_state: Dict[str, Any] = N
                         "error": f"Status code: {response.status_code}"
                     })
         except Exception as e:
-            print(f"Error reconstructing article ID {news_id}: {str(e)}")
+            logger.error("Error reconstructing article ID {}: {}", news_id, e)
             
             # Add error to pipeline state
             if pipeline_state is not None:
@@ -324,7 +309,7 @@ def publish_news(news_ids: List[int], pipeline_state: Dict[str, Any] = None) -> 
         }
     
     send_telegram_notification("🔄 Inizio pubblicazione articoli selezionati...")
-    print(f"\n[{datetime.now()}] Publishing news...")
+    logger.info("Publishing news...")
     published_count = 0
     
     for news_id in news_ids:
@@ -332,7 +317,7 @@ def publish_news(news_ids: List[int], pipeline_state: Dict[str, Any] = None) -> 
             response = requests.post(f"{BASE_URL}/api/news/publish/{news_id}")
             if response.status_code == 200:
                 published_count += 1
-                print(f"Successfully published news ID: {news_id}")
+                logger.info("Successfully published news ID: {}", news_id)
                 send_telegram_notification(f"{response.json()['message']}")
                 
                 # Update pipeline state
@@ -345,7 +330,7 @@ def publish_news(news_ids: List[int], pipeline_state: Dict[str, Any] = None) -> 
                         "wp_url": response.json().get('wp_url', '')
                     })
             else:
-                print(f"Failed to publish news ID {news_id}: {response.status_code}")
+                logger.error("Failed to publish news ID {}: {}", news_id, response.status_code)
                 
                 # Add failure to pipeline state
                 if pipeline_state is not None:
@@ -355,7 +340,7 @@ def publish_news(news_ids: List[int], pipeline_state: Dict[str, Any] = None) -> 
                         "error": f"Status code: {response.status_code}"
                     })
         except Exception as e:
-            print(f"Error publishing news ID {news_id}: {str(e)}")
+            logger.error("Error publishing news ID {}: {}", news_id, e)
             
             # Add error to pipeline state
             if pipeline_state is not None:
@@ -377,16 +362,12 @@ def publish_news(news_ids: List[int], pipeline_state: Dict[str, Any] = None) -> 
     
     return published_count
 
-def write_log(message: str):
-    with open("log.txt", "a") as f:
-        f.write(message)
-
 def run_news_pipeline(source_list: List[Dict[str, str]] = None):
     """Execute the complete news pipeline"""
 
     source_list = fetch_sources_from_supabase()
     if not source_list:
-        print("No sources available")
+        logger.info("No sources available")
         return
     
     # Initialize a single pipeline state that will contain all information
@@ -399,56 +380,47 @@ def run_news_pipeline(source_list: List[Dict[str, str]] = None):
         # Process-specific data will be added to this dictionary as the pipeline progresses
     }
     
-    write_log(f"---------------------------------------------\nStarting pipeline at {datetime.now()}\n\n\n\n\n\n")
     send_telegram_notification("🔄 Avvio pipeline delle notizie...")
-    
-    print(f"\n{'='*50}")
-    print(f"{'='*50}")
+
+    logger.info("=" * 50)
+    logger.info("=" * 50)
     
     try:
         # Step 1: Scrape
         news_list = scrape_news(source_list, pipeline_state)
         if not news_list:
-            print("No news found, stopping pipeline")
+            logger.info("No news found, stopping pipeline")
             pipeline_state["status"] = "no-news"
             pipeline_state["message"] = "No news found"
-            # Send the comprehensive log entry
-            append_to_log_json(pipeline_state)
             return
         
-        print(f"News list: {news_list}, type of news_list: {type(news_list)}")
+        logger.debug("News list: {}, type of news_list: {}", news_list, type(news_list))
         
         # Step 2: Check duplicates
         unique_ids = check_duplicates(news_list, pipeline_state)
         pipeline_state["unique_ids"] = unique_ids
         
         if not unique_ids:
-            print("No unique articles found, stopping pipeline")
+            logger.info("No unique articles found, stopping pipeline")
             pipeline_state["status"] = "no-news"
             pipeline_state["message"] = "No unique articles found"
-            # Send the comprehensive log entry
-            append_to_log_json(pipeline_state)
             return
         
         # Step 3: Summarize
         summarized_ids = summarize_news(pipeline_state)
         if not summarized_ids:
-            print("No articles to summarize, stopping pipeline")
+            logger.info("No articles to summarize, stopping pipeline")
             pipeline_state["status"] = "no-news"
             pipeline_state["message"] = "No articles to summarize"
-            # Send the comprehensive log entry
-            append_to_log_json(pipeline_state)
             return
         
         pipeline_state["summarized_ids"] = summarized_ids
         
         # Step 4: Reconstruct articles
         if not reconstruct_articles(summarized_ids, pipeline_state):
-            print("No articles reconstructed, stopping pipeline")
+            logger.info("No articles reconstructed, stopping pipeline")
             pipeline_state["status"] = "no-news"
             pipeline_state["message"] = "No articles reconstructed"
-            # Send the comprehensive log entry
-            append_to_log_json(pipeline_state)
             return
         
         # Step 5: Publish
@@ -462,18 +434,13 @@ def run_news_pipeline(source_list: List[Dict[str, str]] = None):
             pipeline_state["status"] = "no-news"
             pipeline_state["message"] = "No articles published"
         
-        # Send the comprehensive log entry with complete pipeline information
-        append_to_log_json(pipeline_state)
-        
-        print(f"\n{'='*50}")
-        print(f"{'='*50}\n")
+        logger.info("=" * 50)
+        logger.info("=" * 50)
     
     except Exception as e:
-        print(f"Error in pipeline: {str(e)}")
+        logger.error("Error in pipeline: {}", e)
         pipeline_state["status"] = "error"
         pipeline_state["error"] = str(e)
-        # Send the comprehensive log entry with error information
-        append_to_log_json(pipeline_state)
 
 def schedule_pipeline():
     """Schedule the pipeline to run at different times"""
@@ -494,6 +461,6 @@ if __name__ == "__main__":
         # Then schedule future runs
         schedule_pipeline()
     except KeyboardInterrupt:
-        print("\nShutting down news pipeline scheduler...")
+        logger.info("Shutting down news pipeline scheduler...")
     except Exception as e:
-        print(f"Error in main execution: {str(e)}")
+        logger.error("Error in main execution: {}", e)

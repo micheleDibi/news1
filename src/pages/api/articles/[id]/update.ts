@@ -2,6 +2,7 @@ export const prerender = false;
 
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../../lib/supabase';
+import { logger } from '../../../../lib/logger';
 
 export const put: APIRoute = async ({ params, request }) => {
   try {
@@ -34,7 +35,7 @@ export const put: APIRoute = async ({ params, request }) => {
       }
     );
   } catch (error) {
-    console.error('Error updating article:', error);
+    logger.error('Error updating article:', error);
     return new Response(
       JSON.stringify({
         success: false,

@@ -1,17 +1,18 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
     // Get session using the request cookies
     const authorizationHeader = request.headers.get('Authorization');
     const cookies = request.headers.get('Cookie');
-    console.log('Auth header:', authorizationHeader);
-    console.log('Cookies:', cookies);
+    logger.info('Auth header:', authorizationHeader);
+    logger.info('Cookies:', cookies);
     
     // Try getting session from cookies
     const { data: { session } } = await supabase.auth.getSession();
-    console.log('Session found:', session ? 'Yes' : 'No');
+    logger.info('Session found:', session ? 'Yes' : 'No');
     
     // TEMPORARY BYPASS: Skip authentication for debugging
     // In production, you would never do this, but for debugging it's helpful
@@ -50,7 +51,7 @@ export const POST: APIRoute = async ({ request }) => {
     }
     
     // Update the user's permissions
-    console.log(`API: Updating permissions for user ${userId}`, permissions);
+    logger.info(`API: Updating permissions for user ${userId}`, permissions);
     
     const { error: updateError } = await supabase
       .from('profiles')
@@ -58,7 +59,7 @@ export const POST: APIRoute = async ({ request }) => {
       .eq('id', userId);
     
     if (updateError) {
-      console.error('API: Error updating permissions:', updateError);
+      logger.error('API: Error updating permissions:', updateError);
       return new Response(
         JSON.stringify({ success: false, error: updateError.message }),
         { status: 500 }
@@ -73,7 +74,7 @@ export const POST: APIRoute = async ({ request }) => {
       .single();
     
     if (verifyError) {
-      console.error('API: Error verifying permissions update:', verifyError);
+      logger.error('API: Error verifying permissions update:', verifyError);
       return new Response(
         JSON.stringify({ 
           success: true, 
@@ -94,7 +95,7 @@ export const POST: APIRoute = async ({ request }) => {
     );
     
   } catch (error) {
-    console.error('API: Unexpected error updating permissions:', error);
+    logger.error('API: Unexpected error updating permissions:', error);
     return new Response(
       JSON.stringify({ success: false, error: 'Internal server error' }),
       { status: 500 }

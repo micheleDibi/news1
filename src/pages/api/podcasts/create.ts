@@ -2,6 +2,7 @@ export const prerender = false;
 
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -58,7 +59,7 @@ export const POST: APIRoute = async ({ request }) => {
     });
 
   } catch (error) {
-    console.error('Error creating podcast:', error);
+    logger.error('Error creating podcast:', error);
     return new Response(JSON.stringify({ 
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

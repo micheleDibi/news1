@@ -22,6 +22,7 @@ from requests.auth import HTTPBasicAuth
 from datetime import datetime, timedelta
 import pytz
 from .variables_edunews import *
+from .logger import logger
 from firecrawl import Firecrawl
 import boto3
 import math
@@ -57,25 +58,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def write_log(message: str):
-    try:
-        with open("log.txt", "a") as f:
-            f.write(message)
-    except Exception as e:
-        print(f"Error writing log: {str(e)}")
-
-def create_log_message_summarize(summarized_news: List[schemas.News]) -> str:
-    try:
-        log_message = "---------------------------------------------\nSummarized news:\n"
-        for news in summarized_news:
-            log_message += f"----------\nTitle: \n{news.title}\n\n"
-        log_message += f"Facts: \n{', '.join(news.facts)}\n\n" 
-        log_message += f"Context: \n{news.context}\n\n"
-        log_message += "\n\n\n"
-    except Exception as e:
-        print(f"Error creating log message: {str(e)}")
-        return None
-    return log_message
 
 
 def filter_existing_links(all_links: List[str], db: Session) -> List[str]:
@@ -84,7 +66,7 @@ def filter_existing_links(all_links: List[str], db: Session) -> List[str]:
     """
     with open('to_scrape.json', 'r') as f:
         to_scrape = json.load(f)
-    print(f"all_links: {all_links}")
+    logger.debug("all_links: {}", all_links)
 
     filtered_links = []
     for link in all_links:
@@ -97,7 +79,7 @@ def filter_existing_links(all_links: List[str], db: Session) -> List[str]:
 async def scrape_news(url: str, valid_prefix: str = None, db: Session = Depends(get_db)):
 
     all_links: List[str] = get_links_from_url_via_firecrawl(url)
-    print(f"all_links: {all_links}")
+    logger.debug("all_links: {}", all_links)
     filtered_links = filter_existing_links(all_links, db)
     #news_list: List[str] = get_news_links_from_all_links_via_openai(filtered_links, root_url)
     news_list = filtered_links
@@ -107,7 +89,7 @@ async def scrape_news(url: str, valid_prefix: str = None, db: Session = Depends(
     news_list = [link for link in news_list if link.startswith(prefix_to_check)]
     news_list = news_list[:3]
 
-    print(f"News list: {news_list}")
+    logger.debug("News list: {}", news_list)
     insert_news_into_json(news_list, db)
 
     return {"news_links": news_list}
@@ -116,16 +98,16 @@ async def scrape_news(url: str, valid_prefix: str = None, db: Session = Depends(
 async def analyze_news(unpublished_news: schemas.LinkList, db: Session = Depends(get_db)):
     """Analyze news using chain-of-thought with multiple OpenAI calls"""
 
-    print(f"Unpublished news: {unpublished_news.links}")
+    logger.debug("Unpublished news: {}", unpublished_news.links)
     try:
         # type: List[models.New]
         published_news, recent_news = get_published_and_recent_news(db) 
 
         comparison_text: str = get_comparison_text(published_news, unpublished_news.links)
-        print(f"Comparison text: {comparison_text}")
+        logger.debug("Comparison text: {}", comparison_text)
         events_to_publish: schemas.EventList = get_unpublished_events_via_openai(comparison_text)
         #send_telegram_notifications([unpublished_events, events_to_publish_message])
-        print(f"Events to publish: {events_to_publish}")
+        logger.debug("Events to publish: {}", events_to_publish)
         
         if events_to_publish is None:
             return {
@@ -137,7 +119,7 @@ async def analyze_news(unpublished_news: schemas.LinkList, db: Session = Depends
             
         #get only the first ID of the Events
         simplified_selection = [group.links[0] for group in events_to_publish.events]
-        print(f"Simplified selection: {simplified_selection}")
+        logger.debug("Simplified selection: {}", simplified_selection)
         
         to_scrape = read_to_scrape_file('to_scrape.json')
         for link in simplified_selection:
@@ -152,7 +134,7 @@ async def analyze_news(unpublished_news: schemas.LinkList, db: Session = Depends
         }
 
     except Exception as e:
-        print(f"Error in analyze_news: {str(e)}")
+        logger.error("Error in analyze_news: {}", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/summarize_news")
@@ -166,19 +148,19 @@ async def summarize_news(db: Session = Depends(get_db)):
         if status != "to_summarize":
             continue
         try:
-            print(f"Summarizing news from {url}")
+            logger.info("Summarizing news from {}", url)
             parsed_content: schemas.News = get_news_from_link_via_firecrawl(url)
-            print(f"Parsed content: {parsed_content}")
+            logger.debug("Parsed content: {}", parsed_content)
             summary: schemas.News = summarize_news_content_via_openai(parsed_content)
-            print(f"Summary: {summary}")
+            logger.debug("Summary: {}", summary)
             summarized_news.append(summary)
             id = store_summarized_news(db, url, summary)
-            print(f"Summarized news ID: {id}")
+            logger.info("Summarized news ID: {}", id)
             summarized_news_ids.append(id)
             summarized_urls.append(url)  # Store the URL for this ID
-            print(f"Summarized news ID: {id}, until now {summarized_news_ids}")
+            logger.debug("Summarized news ID: {}, until now {}", id, summarized_news_ids)
             to_scrape[url] = "summarized" if summary is not None else None
-            print(f"URL {url} = {to_scrape[url]}")
+            logger.debug("URL {} = {}", url, to_scrape[url])
         except Exception as e:
             return {"error": str(e)}
         
@@ -322,7 +304,7 @@ async def convert_text_to_audio(text: str, id: int):
         )
 
         # 6️⃣ Request text-to-speech conversion
-        print(f"Sending request to Google Cloud Text-to-Speech API for part: '{text_part[:30]}...'")
+        logger.info("Sending request to Google Cloud Text-to-Speech API for part: '{}...'", text_part[:30])
         response = await asyncio.to_thread(
             client.synthesize_speech,
             input=input_text_segment,
@@ -343,7 +325,7 @@ async def convert_text_to_audio(text: str, id: int):
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
     )
-    print(f"s3_client = {s3_client}")
+    logger.debug("s3_client = {}", s3_client)
 
     # Construct the file key (path inside the bucket)
     file_key = f"audios/audio_{id_str}.mp3"
@@ -421,7 +403,7 @@ def _get_image_dimensions(url: str, scraper) -> tuple:
         img = Image.open(img_data)
         return img.size  # (width, height)
     except Exception as e:
-        print(f"  [IMG] Errore dimensioni per {url[:80]}...: {e}")
+        logger.debug("[IMG] Errore dimensioni per {}...: {}", url[:80], e)
         return (0, 0)
 
 def _extract_srcset_candidates(img_tag, base_url: str) -> list:
@@ -458,7 +440,7 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
 
     Ritorna l'URL dell'immagine trovata o None.
     """
-    print(f"\n[IMAGE FINDER] Cercando immagine per: {source_url}")
+    logger.info("[IMAGE FINDER] Cercando immagine per: {}", source_url)
 
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
@@ -467,11 +449,11 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
     try:
         response = scraper.get(source_url, timeout=15)
         if response.status_code != 200:
-            print(f"  [IMAGE FINDER] Errore HTTP {response.status_code}")
+            logger.error("[IMAGE FINDER] Errore HTTP {}", response.status_code)
             return None
         soup = BeautifulSoup(response.text, 'html.parser')
     except Exception as e:
-        print(f"  [IMAGE FINDER] Errore fetch pagina: {e}")
+        logger.error("[IMAGE FINDER] Errore fetch pagina: {}", e)
         return None
 
     # ── FASE 1: Meta tag og:image e twitter:image ──────────────────────
@@ -488,9 +470,9 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
     # Verifica dimensioni dei meta tag (spesso sono gia >= 1200px)
     for url in meta_candidates:
         w, h = _get_image_dimensions(url, scraper)
-        print(f"  [META] {url[:80]}... → {w}x{h}")
+        logger.debug("[META] {}... -> {}x{}", url[:80], w, h)
         if w >= min_width:
-            print(f"  [IMAGE FINDER] ✓ Trovata via meta tag: {w}x{h}")
+            logger.info("[IMAGE FINDER] Trovata via meta tag: {}x{}", w, h)
             return url
 
     # ── FASE 2: srcset con larghezza dichiarata >= min_width ───────────
@@ -505,9 +487,9 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
     # Verifica dimensioni reali delle migliori candidate srcset
     for url in srcset_urls[:5]:
         w, h = _get_image_dimensions(url, scraper)
-        print(f"  [SRCSET] {url[:80]}... → {w}x{h}")
+        logger.debug("[SRCSET] {}... -> {}x{}", url[:80], w, h)
         if w >= min_width:
-            print(f"  [IMAGE FINDER] ✓ Trovata via srcset: {w}x{h}")
+            logger.info("[IMAGE FINDER] Trovata via srcset: {}x{}", w, h)
             return url
 
     # ── FASE 3: <img> con attributo width >= min_width ─────────────────
@@ -521,9 +503,9 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
                     alt = img.get('alt', '')
                     if not _is_blacklisted(url, alt):
                         w, h = _get_image_dimensions(url, scraper)
-                        print(f"  [WIDTH ATTR] {url[:80]}... → {w}x{h}")
+                        logger.debug("[WIDTH ATTR] {}... -> {}x{}", url[:80], w, h)
                         if w >= min_width:
-                            print(f"  [IMAGE FINDER] ✓ Trovata via width attr: {w}x{h}")
+                            logger.info("[IMAGE FINDER] Trovata via width attr: {}x{}", w, h)
                             return url
         except (ValueError, TypeError):
             pass
@@ -543,9 +525,9 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
                     alt = img.get('alt', '')
                     if not _is_blacklisted(url, alt):
                         w, h = _get_image_dimensions(url, scraper)
-                        print(f"  [PRIORITY CLASS] {url[:80]}... → {w}x{h}")
+                        logger.debug("[PRIORITY CLASS] {}... -> {}x{}", url[:80], w, h)
                         if w >= min_width:
-                            print(f"  [IMAGE FINDER] ✓ Trovata via classe prioritaria: {w}x{h}")
+                            logger.info("[IMAGE FINDER] Trovata via classe prioritaria: {}x{}", w, h)
                             return url
                 break  # Una volta trovato il pattern, passa alla prossima img
 
@@ -567,14 +549,14 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
     # Testa al massimo 10 immagini rimanenti
     for url in all_img_urls[:10]:
         w, h = _get_image_dimensions(url, scraper)
-        print(f"  [SCAN] {url[:80]}... → {w}x{h}")
+        logger.debug("[SCAN] {}... -> {}x{}", url[:80], w, h)
         if w >= min_width:
-            print(f"  [IMAGE FINDER] ✓ Trovata via scan generale: {w}x{h}")
+            logger.info("[IMAGE FINDER] Trovata via scan generale: {}x{}", w, h)
             return url
 
     # ── FASE 6: Fallback — rilassa il vincolo a 800px ──────────────────
     # Se non troviamo nulla >= 1200px, proviamo con un minimo di 800px
-    print(f"  [IMAGE FINDER] Nessuna immagine >= {min_width}px. Provo con 800px...")
+    logger.info("[IMAGE FINDER] Nessuna immagine >= {}px. Provo con 800px...", min_width)
     best_url = None
     best_width = 0
 
@@ -592,10 +574,10 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
             best_width = w
 
     if best_url:
-        print(f"  [IMAGE FINDER] ✓ Fallback a {best_width}px: {best_url[:80]}...")
+        logger.info("[IMAGE FINDER] Fallback a {}px: {}...", best_width, best_url[:80])
         return best_url
 
-    print(f"  [IMAGE FINDER] ✗ Nessuna immagine adatta trovata")
+    logger.info("[IMAGE FINDER] Nessuna immagine adatta trovata")
     return None
 
 
@@ -617,7 +599,7 @@ async def generate_article_image(title: str, category: str, tags: list = None, s
         f"NO testo, NO scritte, NO loghi, NO watermark nell'immagine."
     )
 
-    print(f"  [DALL-E] Generating image for: {title[:60]}...")
+    logger.info("[DALL-E] Generating image for: {}...", title[:60])
     response = client_openai.images.generate(
         model="dall-e-3",
         prompt=dalle_prompt,
@@ -627,7 +609,7 @@ async def generate_article_image(title: str, category: str, tags: list = None, s
     )
 
     dalle_url = response.data[0].url
-    print(f"  [DALL-E] ✓ Image generated: {dalle_url[:80]}...")
+    logger.info("[DALL-E] Image generated: {}...", dalle_url[:80])
     return dalle_url
 
 
@@ -646,13 +628,13 @@ async def upload_dalle_to_s3(dalle_url: str, title: str) -> str:
         "title": title
     }
 
-    print(f"  [S3 UPLOAD] Uploading DALL-E image to S3 via {upload_url}...")
+    logger.info("[S3 UPLOAD] Uploading DALL-E image to S3 via {}...", upload_url)
     resp = requests.post(upload_url, headers=headers, json=payload, timeout=60)
 
     if resp.status_code == 200:
         data = resp.json()
         s3_url = data["url"]
-        print(f"  [S3 UPLOAD] ✓ Uploaded: {s3_url}")
+        logger.info("[S3 UPLOAD] Uploaded: {}", s3_url)
         return s3_url
     else:
         raise Exception(f"Upload failed: {resp.status_code} {resp.text}")
@@ -672,11 +654,11 @@ async def generate_and_save_audio(article_id: int, text: str):
                 requests.put, update_url, headers=headers, json={"audio_url": audio_url}
             )
             if response.status_code == 200:
-                print(f"[TTS] Audio salvato per articolo {article_id}: {audio_url}")
+                logger.info("[TTS] Audio salvato per articolo {}: {}", article_id, audio_url)
             else:
-                print(f"[TTS] Errore salvataggio audio_url per articolo {article_id}: {response.text}")
+                logger.error("[TTS] Errore salvataggio audio_url per articolo {}: {}", article_id, response.text)
     except Exception as e:
-        print(f"[TTS] Errore generazione audio per articolo {article_id}: {e}")
+        logger.error("[TTS] Errore generazione audio per articolo {}: {}", article_id, e)
 
 
 @app.post("/api/news/publish/{news_id}")
@@ -685,10 +667,10 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
     # Fetch the news item from database
     news_item = db.query(models.New).filter(models.New.id == news_id).first()
 
-    print(f"news_item = {news_item}")
+    logger.debug("news_item = {}", news_item)
 
-    print(f"news_item.proposed_title = {news_item.proposed_title}")
-    print(f"news_item.proposed_response = {news_item.proposed_response}")
+    logger.debug("news_item.proposed_title = {}", news_item.proposed_title)
+    logger.debug("news_item.proposed_response = {}", news_item.proposed_response)
 
     if not news_item:
         raise HTTPException(status_code=404, detail="News item not found")
@@ -696,14 +678,14 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
     try:
         text_to_audio = f"Titolo: {news_item.proposed_title}\n\n{news_item.proposed_response}"
         summary, title_summary = await generate_summary(news_item.proposed_response)
-        print(f"Summary: {summary}")
+        logger.debug("Summary: {}", summary)
         proposed_slug, category_slug = generate_slugs(news_item.proposed_title, news_item.category)
 
         # Use default placeholder image (relative path, works in any environment)
         image_url = "/edunews24_immagine_da_sostituire.png"
 
-        print(f"Image URL: {image_url}")
-        print(f"Proposed slug: {proposed_slug}")
+        logger.debug("Image URL: {}", image_url)
+        logger.debug("Proposed slug: {}", proposed_slug)
         # Format article data for CMS API
         article_data = {
             "title": news_item.proposed_title,
@@ -722,18 +704,18 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
             "title_summary": title_summary
         }
 
-        print(f"article_data = {article_data}")
+        logger.debug("article_data = {}", article_data)
 
         # Send to CMS API
         CMS_API_URL = f"{os.getenv('FRONTEND_URL', 'http://localhost:4321')}/api/articles/create"
-        print(f"CMS_API_URL = {CMS_API_URL}")
+        logger.debug("CMS_API_URL = {}", CMS_API_URL)
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {os.getenv('API_SECRET_KEY')}"
         }
 
         response = requests.post(CMS_API_URL, headers=headers, json=article_data)
-        print(f"response = {response}")
+        logger.debug("response = {}", response)
         if response.status_code == 200:
             # Update local database with published status
             news_item.is_published = True
@@ -766,8 +748,8 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
 
 
 def generate_slugs(proposed_title: str, category: str):
-    print(f"Proposed title: {proposed_title}")
-    print(f"Category: {category}")
+    logger.debug("Proposed title: {}", proposed_title)
+    logger.debug("Category: {}", category)
     proposed_slug = proposed_title.lower() \
         .replace('università', 'universita') \
         .replace(' ', '-') \
@@ -803,7 +785,7 @@ def generate_slugs(proposed_title: str, category: str):
         .replace('"', '') \
         .strip('-')
     
-    print(f"Proposed slug: {proposed_slug}")
+    logger.debug("Proposed slug: {}", proposed_slug)
 
     category_slug = category.lower() \
         .replace('università', 'universita') \
@@ -812,7 +794,7 @@ def generate_slugs(proposed_title: str, category: str):
         .replace(r'--+', '-') \
         .strip()
     
-    print(f"Category slug: {category_slug}")
+    logger.debug("Category slug: {}", category_slug)
 
     return proposed_slug, category_slug
 
@@ -824,7 +806,7 @@ def get_content_and_root_url(url: str):
         root_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
         return content, root_url
     except Exception as e:
-        print(f"Error getting content and root url: {str(e)}")
+        logger.error("Error getting content and root url: {}", e)
         return None, None
 
 
@@ -844,7 +826,7 @@ def get_news_links_from_all_links_via_openai(all_links: List[str], root_url: str
         )
         final_news = [f"{root_url}/{new}" if not new.startswith('http') else new for new in news_list.news]
     except Exception as e:
-        print(f"Error getting news links from all links: {str(e)}")
+        logger.error("Error getting news links from all links: {}", e)
         return None
     return final_news
 
@@ -859,12 +841,12 @@ def insert_news_into_json(news_list: List[str], db: Session = Depends(get_db)):
         existing_news = db.query(models.New).filter(models.New.url == new).first()
 
         if existing_news:
-            print(f"Skipping {new}, already in database")
+            logger.info("Skipping {}, already in database", new)
             continue
         if new not in to_scrape:
-            to_scrape[new] = "" 
+            to_scrape[new] = ""
         else:
-            print(f"Skipping {new}, already in database")
+            logger.info("Skipping {}, already in database", new)
     
     with open('to_scrape.json', 'w') as f:
         json.dump(to_scrape, f, indent=2)
@@ -886,8 +868,8 @@ def update_to_scrape_file(to_scrape: dict, file_path: str = 'to_scrape.json') ->
 
 def get_news_from_link_via_firecrawl(link: str) -> str:
     try:
-        print(f"Scraping URL: {link}")
-        print(f"extract api key: {firecrawl_app_extract.api_key}")
+        logger.info("Scraping URL: {}", link)
+        logger.debug("extract api key: {}", firecrawl_app_extract.api_key)
 
         # Define the JSON schema for the News model
         news_schema = {
@@ -911,25 +893,25 @@ def get_news_from_link_via_firecrawl(link: str) -> str:
             prompt=SUMMARIZING_PROMPT,
             schema=news_schema
         )
-        print(f"Extract response: {data}")
+        logger.debug("Extract response: {}", data)
         # Extract the actual data from the response
         extracted_data = data.data if hasattr(data, 'data') else data
-        print(f"Extracted data: {extracted_data}")
+        logger.debug("Extracted data: {}", extracted_data)
         return extracted_data
     except Exception as e:
-        print(f"Error getting news from link via firecrawl: {str(e)}")
+        logger.error("Error getting news from link via firecrawl: {}", e)
         return None
 
 def get_links_from_url_via_firecrawl(link: str) -> List[str]:
     try:
         scrape_result = firecrawl_app.scrape(link, formats=['links'])
-        print(f"Scrape result: {scrape_result}")
+        logger.debug("Scrape result: {}", scrape_result)
         # Extract links from the response object
         links = scrape_result.links if hasattr(scrape_result, 'links') else []
-        print(f"Extracted links: {links}")
+        logger.debug("Extracted links: {}", links)
         return links
     except Exception as e:
-        print(f"Error getting links from url via firecrawl: {str(e)}")
+        logger.error("Error getting links from url via firecrawl: {}", e)
         return None
 
     
@@ -951,7 +933,7 @@ def summarize_news_content_via_openai(parsed_content: str) -> schemas.News:
         )
         return summary
     except Exception as e:
-        print(f"Error summarizing content: {str(e)}")
+        logger.error("Error summarizing content: {}", e)
         return None
 
 def store_summarized_news(db: Session, url: str, summary: schemas.News) -> int:
@@ -979,9 +961,9 @@ def store_summarized_news(db: Session, url: str, summary: schemas.News) -> int:
         db.commit()
         db.refresh(new_article)
     except Exception as e:
-        print(f"Error storing summarized news: {str(e)}")
+        logger.error("Error storing summarized news: {}", e)
         return None
-    print(f"Added {url} to database")
+    logger.info("Added {} to database", url)
     return new_article.id
 
 
@@ -1063,7 +1045,7 @@ def get_reconstructed_article_via_openai(news_item: models.New):
         tags = keywords.output[0].content[0].parsed.tags
 
 
-        print(f"\n\n This is the provided informations: Title: {news_item.title}, Facts: {news_item.facts}, Context: {news_item.context}, Category: {news_item.category}, Location: {news_item.location}, Published date: {news_item.published_date}, parole chiave: {keywords}\n\n")
+        logger.debug("Provided informations: Title: {}, Facts: {}, Context: {}, Category: {}, Location: {}, Published date: {}, parole chiave: {}", news_item.title, news_item.facts, news_item.context, news_item.category, news_item.location, news_item.published_date, keywords)
         article_response_openai = client_openai.responses.parse(
                         model='gpt-4.1',
                         input=[
@@ -1074,11 +1056,11 @@ def get_reconstructed_article_via_openai(news_item: models.New):
                         max_output_tokens=8000
         )
         article_response = article_response_openai.output[0].content[0].parsed
-        print(f"Article response: {article_response}")
+        logger.debug("Article response: {}", article_response)
         article_response.tags = tags
 
     except Exception as e:
-        print(f"Error reconstructing article: {str(e)}")
+        logger.error("Error reconstructing article: {}", e)
         return None
     return article_response
 
@@ -1107,7 +1089,7 @@ def find_related_articles(title: str, tags: List[str], category: str) -> List[di
         ).eq('isdraft', False).execute()
 
         if not response.data:
-            print("No articles found in Supabase for interlinking")
+            logger.info("No articles found in Supabase for interlinking")
             return []
 
         # Normalizza i tag dell'articolo nuovo
@@ -1167,14 +1149,14 @@ def find_related_articles(title: str, tags: List[str], category: str) -> List[di
         scored_articles.sort(key=lambda x: x['score'], reverse=True)
         top_articles = scored_articles[:3]
 
-        print(f"Found {len(top_articles)} related articles for interlinking:")
+        logger.info("Found {} related articles for interlinking:", len(top_articles))
         for a in top_articles:
-            print(f"  - {a['title']} (score: {a['score']:.3f}) -> /{a['category_slug']}/{a['slug']}")
+            logger.info("  - {} (score: {:.3f}) -> /{}/{}", a['title'], a['score'], a['category_slug'], a['slug'])
 
         return top_articles
 
     except Exception as e:
-        print(f"Error finding related articles: {str(e)}")
+        logger.error("Error finding related articles: {}", e)
         return []
 
 
@@ -1214,7 +1196,7 @@ def get_reconstructed_article_via_claude(news_item: models.New) -> schemas.NewsA
 
         keywords_data = json.loads(keywords_text)
         tags = keywords_data.get("tags", [])
-        print(f"Claude keywords: {tags}")
+        logger.debug("Claude keywords: {}", tags)
 
         # Step B: Trova articoli correlati
         category_for_search = news_item.category or ""
@@ -1268,11 +1250,11 @@ def get_reconstructed_article_via_claude(news_item: models.New) -> schemas.NewsA
             proposed_content=article_data.get("proposed_content", ""),
             tags=tags
         )
-        print(f"Claude article reconstructed: {result.proposed_title}")
+        logger.info("Claude article reconstructed: {}", result.proposed_title)
         return result
 
     except Exception as e:
-        print(f"Error reconstructing article via Claude: {str(e)}")
+        logger.error("Error reconstructing article via Claude: {}", e)
         return None
 
 
@@ -1292,26 +1274,26 @@ async def generate_summary(content: str) -> str:
         text_format=Summary,
         max_output_tokens=4000
     )
-        print(f"Summary: {summary_response.output[0].content[0].parsed.summary}")
+        logger.debug("Summary: {}", summary_response.output[0].content[0].parsed.summary)
         summary = summary_response.output[0].content[0].parsed.summary  
         title = summary_response.output[0].content[0].parsed.title
         return summary, title
 
     except Exception as e:
-        print(f"Error generating summary: {str(e)}")
+        logger.error("Error generating summary: {}", e)
         return None
 
 def update_news_item_with_reconstruction(news_item: models.New, article_response: schemas.NewsArticle, db: Session) -> None:
 
     if article_response is None:
         return None
-    print(f"THIS IS THE ARTICLE I AM RECEIVEING: {article_response.proposed_title}\n{article_response.proposed_subtitle}\n{article_response.proposed_content}\n{article_response.tags}\n")
+    logger.debug("Article received: title={}, subtitle={}, content={}, tags={}", article_response.proposed_title, article_response.proposed_subtitle, article_response.proposed_content, article_response.tags)
     news_item.proposed_title = article_response.proposed_title
     news_item.proposed_subtitle = article_response.proposed_subtitle
     news_item.proposed_response = article_response.proposed_content
     news_item.tags = article_response.tags
     db.commit()
-    print(f"Updated news item with reconstruction: {news_item}")
+    logger.info("Updated news item with reconstruction: {}", news_item)
 
 def get_success_message(news_item: models.New):
     return f"""📰 Article Published!\n\n"
@@ -1345,10 +1327,7 @@ def get_comparison_text(published_news: List[models.New], recent_news: List[str]
     published_data = [{"id": news.id, "title": news.title} for news in published_news]
     recent_data = [{"link": news} for news in recent_news]
 
-    print(f"""
-    Recent Unpublished News:
-    {json.dumps(recent_data, indent=2)}
-    """)
+    logger.debug("Recent Unpublished News: {}", json.dumps(recent_data, indent=2))
     return f"""
     Recent Unpublished News:
     {json.dumps(recent_data, indent=2)}
@@ -1364,7 +1343,7 @@ def get_unpublished_str(unpublished_events: List[schemas.Event]):
         unpublished_str += f"Event: {event.event_name}\n"
         unpublished_str += f"Links: {', '.join(map(str, event.links))}\n"
         unpublished_str += "\n"
-    print(f"Unpublished str: {unpublished_str}")
+    logger.debug("Unpublished str: {}", unpublished_str)
     return unpublished_str
 
 def get_unpublished_events_via_openai(comparison_text: str):
@@ -1379,10 +1358,10 @@ def get_unpublished_events_via_openai(comparison_text: str):
             ],
             response_model=schemas.EventList,
         )
-        print(f"All events in recent news: {all_events_in_recent_news}")
+        logger.debug("All events in recent news: {}", all_events_in_recent_news)
         return all_events_in_recent_news
     except Exception as e:
-        print(f"Error getting events in recent news via openai: {str(e)}")
+        logger.error("Error getting events in recent news via openai: {}", e)
         return None
 
 
@@ -1398,9 +1377,9 @@ def get_events_to_publish_via_openai(unpublished_events_str: str) -> schemas.Eve
         ],
             response_model=schemas.EventList,
         )
-        print(f"THE AMOUNT OF EVENTS TO PUBLISH IS {len(events_to_publish.events)}")
+        logger.info("The amount of events to publish is {}", len(events_to_publish.events))
     except Exception as e:
-        print(f"Error getting events to publish via openai: {str(e)}")
+        logger.error("Error getting events to publish via openai: {}", e)
         return None
 
     events_to_publish_message = (
@@ -1419,7 +1398,7 @@ def send_telegram_notifications(messages: List[str]):
         for message in messages:
             requests.post("http://localhost:8001/send", params={"message": message})
     except Exception as e:
-        print(f"Failed to send Telegram notification: {str(e)}")
+        logger.error("Failed to send Telegram notification: {}", e)
 
 
 
@@ -1457,12 +1436,12 @@ async def get_news(db: Session = Depends(get_db)):
                 }
                 news_list.append(news_dict)
             except Exception as e:
-                print(f"Error processing news item: {str(e)}")
+                logger.error("Error processing news item: {}", e)
                 continue
         
         return news_list
     except Exception as e:
-        print(f"Error fetching news: {str(e)}")
+        logger.error("Error fetching news: {}", e)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/api/news/recent")
@@ -1525,7 +1504,7 @@ async def reconstruct_article(db: Session = Depends(get_db)):
                     )
                     #print(f"Article response: {article_response}\n\n")
                     
-                    print(f"This is the provided informations: Title: {news_item.title}, Facts: {news_item.facts}, Context: {news_item.context}, Category: {news_item.category}, Location: {news_item.location}, Published date: {news_item.published_date}")
+                    logger.debug("Provided informations: Title: {}, Facts: {}, Context: {}, Category: {}, Location: {}, Published date: {}", news_item.title, news_item.facts, news_item.context, news_item.category, news_item.location, news_item.published_date)
                     # Update the database with the reconstructed article
                     news_item.proposed_title = article_response.proposed_title
                     news_item.proposed_response = article_response.proposed_content
@@ -1537,7 +1516,7 @@ async def reconstruct_article(db: Session = Depends(get_db)):
 
                     to_scrape[url] = "reconstructed"
             except Exception as e:
-                print(f"Error processing {url}: {str(e)}")
+                logger.error("Error processing {}: {}", url, e)
                 continue
 
     with open('to_scrape.json', 'w') as f:
@@ -1557,13 +1536,13 @@ async def get_single_news(news_id: int, db: Session = Depends(get_db)):
             # ... other fields ...
         }
     except Exception as e:
-        print(f"Error fetching single news item: {str(e)}")
+        logger.error("Error fetching single news item: {}", e)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/api/context/finetuning/generate")
 async def generate_finetuning(news: schemas.FinetuneContext):
     response = []
-    print(f"News: {len(news.news)}\n\n")
+    logger.info("News: {}", len(news.news))
     for new in news.news:
         summary = client.chat.completions.create(
                         model=MODEL,
@@ -1573,7 +1552,7 @@ async def generate_finetuning(news: schemas.FinetuneContext):
                         ],
                         response_model=schemas.News,
                     )
-        print(f"Summary title: {summary.title}\n\n Summary context: {summary.context}\n\n Summary facts: {summary.facts}\n\n")
+        logger.debug("Summary title: {} | Summary context: {} | Summary facts: {}", summary.title, summary.context, summary.facts)
         response.append({"title": summary.title, "context": summary.context, "facts": summary.facts})
     
     return {"response": response}
@@ -1581,9 +1560,9 @@ async def generate_finetuning(news: schemas.FinetuneContext):
 @app.post("/api/news/edit")
 async def edit_news(body: schemas.Edit_new, db: Session = Depends(get_db)):
     # Fetch the news item from the database
-    print(f"body = {body.id}")
-    print(f"new_text = {body.new_text}")
-    print(f"text = {body.edit_text}")
+    logger.debug("body = {}", body.id)
+    logger.debug("new_text = {}", body.new_text)
+    logger.debug("text = {}", body.edit_text)
     news_item = db.query(models.New).filter(models.New.id == body.id).first()
     if not news_item:
         raise HTTPException(status_code=404, detail="News item not found")
@@ -1610,7 +1589,7 @@ async def edit_news(body: schemas.Edit_new, db: Session = Depends(get_db)):
         response_model=schemas.NewsArticle
     )
 
-    print(f"Response = {str(response)}")
+    logger.debug("Response = {}", response)
     return {"Response": response}
 
 @app.put("/api/news/{news_id}/update")
@@ -1636,10 +1615,10 @@ async def update_news(news_id: int, updated_news: schemas.NewsArticle, db: Sessi
 
 @app.post("/api/news/rate")
 async def rate_news(rating: schemas.NewsRating, db: Session = Depends(get_db)):
-    print(f"Received rating: {rating}")
+    logger.info("Received rating: {}", rating)
     news_item = db.query(models.New).filter(models.New.id == rating.id).first()
     if not news_item:
-        print(f"News item with id {rating.id} not found")
+        logger.error("News item with id {} not found", rating.id)
         raise HTTPException(status_code=404, detail="News item not found")
 
     news_item.category_rating = rating.category_rating
@@ -1650,7 +1629,7 @@ async def rate_news(rating: schemas.NewsRating, db: Session = Depends(get_db)):
     try:
         db.commit()
         db.refresh(news_item)
-        print(f"Updated ratings for news item {rating.id}: {news_item.category_rating}, {news_item.editorial_rating}, {news_item.importance_rating}")
+        logger.info("Updated ratings for news item {}: {}, {}, {}", rating.id, news_item.category_rating, news_item.editorial_rating, news_item.importance_rating)
         
         # Update JSON file with ratings
         update_ratings_json(news_item.id, {
@@ -1659,7 +1638,7 @@ async def rate_news(rating: schemas.NewsRating, db: Session = Depends(get_db)):
             "importance_rating": news_item.importance_rating
         })
     except Exception as e:
-        print(f"Error updating ratings: {str(e)}")
+        logger.error("Error updating ratings: {}", e)
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update ratings")
 
@@ -1672,7 +1651,7 @@ async def rate_news(rating: schemas.NewsRating, db: Session = Depends(get_db)):
 
 @app.post("/api/news/rate-proposed")
 async def rate_proposed_content(rating: schemas.ProposedContentRating, db: Session = Depends(get_db)):
-    print(f"Rating = {rating.content_rating}, {rating.subtitle_rating}")
+    logger.info("Rating = {}, {}", rating.content_rating, rating.subtitle_rating)
     news_item = db.query(models.New).filter(models.New.id == rating.id).first()
     if not news_item:
         raise HTTPException(status_code=404, detail="News item not found")
@@ -1751,7 +1730,7 @@ async def test_wordpress_post():
                 "post_link": post_data.get('link')
             }
         else:
-            print(f"ENV VARIABLES: url: {WORDPRESS_API_URL}, username: {WORDPRESS_USERNAME}, password: {WORDPRESS_APP_PASSWORD}")
+            logger.error("WordPress post failed. URL: {}, username: {}", WORDPRESS_API_URL, WORDPRESS_USERNAME)
             raise HTTPException(
                 status_code=response.status_code,
                 detail=f"Failed to create test post. WordPress response: {response.text}"
@@ -1896,7 +1875,7 @@ def classify_category(new: schemas.News):
     Facts: {', '.join(new.facts)}
     Context: {new.context}
     """
-    print(f"Classification text: {classification_text}\n\n")
+    logger.debug("Classification text: {}", classification_text)
 
     response = client.chat.completions.create(
         model=MODEL,
@@ -1910,7 +1889,7 @@ def classify_category(new: schemas.News):
         response_model=CategoryEnum,
     )
 
-    print(f"Response: {response}\n\n")
+    logger.debug("Response: {}", response)
 
     return response
 
@@ -2019,7 +1998,7 @@ async def reconstruct_first_article(db: Session = Depends(get_db)):
 
     except Exception as e:
         # Handle potential exceptions during reconstruction
-        print(f"Error reconstructing first article (ID: {news_item.id}): {str(e)}")
+        logger.error("Error reconstructing first article (ID: {}): {}", news_item.id, e)
         raise HTTPException(status_code=500, detail=f"Error during reconstruction: {str(e)}")
 
 if __name__ == "__main__":

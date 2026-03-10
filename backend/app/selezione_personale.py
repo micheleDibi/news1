@@ -23,6 +23,7 @@ import os
 load_dotenv()
 
 from .database import get_supabase_client
+from .logger import logger
 
 # ---------------------------------------------------------------------------
 # Configurazione
@@ -94,20 +95,9 @@ def _llm_json_request(
             fixed = fixed.strip()
         return json.loads(fixed)
     except Exception as fix_err:
-        print(f"  Impossibile fixare JSON: {fix_err}")
+        logger.error("Impossibile fixare JSON: {}", fix_err)
         raise
 
-
-def append_to_log_json(log_entry: dict):
-    """Invia un log entry all'API frontend."""
-    try:
-        response = requests.post(f"{FRONTEND_URL}/api/logs/create", json=log_entry)
-        if response.status_code == 200:
-            print(f"Successfully sent log to frontend API: {log_entry.get('process', '')}")
-        else:
-            print(f"Failed to send log to frontend API: {response.status_code}")
-    except Exception as e:
-        print(f"Error sending log to frontend API: {e}")
 
 
 def _generate_slug(titolo: str, codice: str, enti: list = None) -> str:
@@ -133,7 +123,7 @@ def _generate_slug(titolo: str, codice: str, enti: list = None) -> str:
 
 def fetch_bandi_from_inpa(size: int = 2000) -> List[Dict]:
     """Scarica i bandi aperti dall'API INPA."""
-    print(f"[{datetime.now()}] Fetching bandi da INPA API (size={size})...")
+    logger.info("Fetching bandi da INPA API (size={})", size)
 
     payload = {
         "text": "",
@@ -155,17 +145,17 @@ def fetch_bandi_from_inpa(size: int = 2000) -> List[Dict]:
         url = f"{INPA_API_URL}?page=0&size={size}"
         resp = requests.post(url, headers=HEADERS, json=payload, timeout=60)
         if resp.status_code != 200:
-            print(f"  Errore HTTP {resp.status_code} dall'API INPA")
+            logger.error("Errore HTTP {} dall'API INPA", resp.status_code)
             return []
 
         data = resp.json()
         bandi = data.get("content", [])
         total = data.get("totalElements", 0)
-        print(f"[{datetime.now()}] Scaricati {len(bandi)} bandi su {total} totali")
+        logger.info("Scaricati {} bandi su {} totali", len(bandi), total)
         return bandi
 
     except Exception as e:
-        print(f"[{datetime.now()}] Errore fetch INPA: {e}")
+        logger.error("Errore fetch INPA: {}", e)
         return []
 
 
@@ -237,7 +227,7 @@ def save_new_bandi_to_supabase(bandi: List[Dict]) -> int:
             new_rows.append(_extract_bando_row(bando))
 
     if not new_rows:
-        print(f"[{datetime.now()}] Nessun nuovo bando da salvare")
+        logger.info("Nessun nuovo bando da salvare")
         return 0
 
     # Inserisci in batch da 100
@@ -247,7 +237,7 @@ def save_new_bandi_to_supabase(bandi: List[Dict]) -> int:
         resp = supabase.table("selezione_personale").insert(batch).execute()
         inserted += len(resp.data) if resp.data else 0
 
-    print(f"[{datetime.now()}] Salvati {inserted} nuovi bandi su Supabase")
+    logger.info("Salvati {} nuovi bandi su Supabase", inserted)
     return inserted
 
 
@@ -357,7 +347,7 @@ def generate_article_for_bando(bando: dict) -> Optional[dict]:
         }
 
     except Exception as e:
-        print(f"  Errore generazione articolo per '{bando.get('titolo', '')}': {e}")
+        logger.error("Errore generazione articolo per '{}': {}", bando.get('titolo', ''), e)
         return None
 
 
@@ -373,14 +363,14 @@ def generate_articles_for_pending() -> int:
     )
     items = pending.data or []
     if not items:
-        print(f"[{datetime.now()}] Nessun bando in attesa di articolo")
+        logger.info("Nessun bando in attesa di articolo")
         return 0
 
-    print(f"[{datetime.now()}] Generazione articoli per {len(items)} bandi...")
+    logger.info("Generazione articoli per {} bandi...", len(items))
     success_count = 0
 
     for item in items:
-        print(f"  Generando articolo per: {item.get('titolo', '')[:60]}...")
+        logger.info("Generando articolo per: {}...", item.get('titolo', '')[:60])
         article = generate_article_for_bando(item)
         if article:
             # Rigenera slug con article_title se disponibile
@@ -401,13 +391,13 @@ def generate_articles_for_pending() -> int:
                 }
             ).eq("id", item["id"]).execute()
             success_count += 1
-            print(f"  Articolo generato: {article['article_title'][:60]}...")
+            logger.info("Articolo generato: {}...", article['article_title'][:60])
         else:
             supabase.table("selezione_personale").update(
                 {"status": "error", "updated_at": datetime.now().isoformat()}
             ).eq("id", item["id"]).execute()
 
-    print(f"[{datetime.now()}] Generati {success_count}/{len(items)} articoli")
+    logger.info("Generati {}/{} articoli", success_count, len(items))
     return success_count
 
 
@@ -417,9 +407,9 @@ def generate_articles_for_pending() -> int:
 
 def run_selezione_personale_pipeline() -> Dict[str, Any]:
     """Esegue la pipeline completa selezione personale."""
-    print(f"\n{'='*60}")
-    print(f"[{datetime.now()}] AVVIO PIPELINE SELEZIONE PERSONALE")
-    print(f"{'='*60}\n")
+    logger.info("=" * 60)
+    logger.info("AVVIO PIPELINE SELEZIONE PERSONALE")
+    logger.info("=" * 60)
 
     result: Dict[str, Any] = {
         "timestamp": datetime.now().isoformat(),
@@ -429,33 +419,30 @@ def run_selezione_personale_pipeline() -> Dict[str, Any]:
 
     try:
         # Step 1: Fetch bandi da INPA
-        print(f"\n--- STEP 1: Fetch bandi da INPA API ---")
+        logger.info("--- STEP 1: Fetch bandi da INPA API ---")
         bandi = fetch_bandi_from_inpa()
         result["bandi_fetched"] = len(bandi)
 
         # Step 2: Salva nuovi su Supabase
-        print(f"\n--- STEP 2: Salvataggio nuovi bandi ---")
+        logger.info("--- STEP 2: Salvataggio nuovi bandi ---")
         saved = save_new_bandi_to_supabase(bandi)
         result["bandi_saved"] = saved
 
         # Step 3: Genera articoli per pending
-        print(f"\n--- STEP 3: Generazione articoli ---")
+        logger.info("--- STEP 3: Generazione articoli ---")
         articles = generate_articles_for_pending()
         result["articles_generated"] = articles
 
         result["status"] = "completed"
 
     except Exception as e:
-        print(f"[{datetime.now()}] ERRORE PIPELINE: {e}")
+        logger.error("ERRORE PIPELINE: {}", e)
         result["status"] = "error"
         result["error"] = str(e)
 
-    print(f"\n{'='*60}")
-    print(f"[{datetime.now()}] PIPELINE COMPLETATA: {result}")
-    print(f"{'='*60}\n")
-
-    # Log
-    append_to_log_json(result)
+    logger.info("=" * 60)
+    logger.info("PIPELINE COMPLETATA: {}", result)
+    logger.info("=" * 60)
 
     return result
 

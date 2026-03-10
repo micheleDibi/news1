@@ -28,6 +28,7 @@ import os
 load_dotenv()
 
 from .database import get_supabase_client
+from .logger import logger
 
 # ---------------------------------------------------------------------------
 # Configurazione
@@ -94,7 +95,7 @@ def _llm_json_request(
             fixed = fixed.strip()
         return json.loads(fixed)
     except Exception as fix_err:
-        print(f"  Impossibile fixare JSON: {fix_err}")
+        logger.error("Impossibile fixare JSON: {}", fix_err)
         raise
 
 MESI_ITALIANI = {
@@ -199,17 +200,17 @@ def scrape_daily_links_from_main_page(max_pages: int = 5) -> List[DailyLink]:
 
     for page_num in range(1, max_pages + 1):
         url = BASE_URL if page_num == 1 else f"{BASE_URL}{page_num}/"
-        print(f"[{datetime.now()}] Scraping pagina principale: {url}")
+        logger.info("Scraping pagina principale: {}", url)
         try:
             resp = requests.get(url, headers=HEADERS, timeout=30)
             if resp.status_code != 200:
-                print(f"  Pagina {page_num} non trovata (status {resp.status_code}), fermo paginazione.")
+                logger.info("Pagina {} non trovata (status {}), fermo paginazione.", page_num, resp.status_code)
                 break
             page_links = _extract_daily_links_from_html(resp.text)
-            print(f"  Trovati {len(page_links)} link giornalieri nella pagina {page_num}")
+            logger.info("Trovati {} link giornalieri nella pagina {}", len(page_links), page_num)
             all_links.extend(page_links)
         except Exception as e:
-            print(f"  Errore scraping pagina {page_num}: {e}")
+            logger.error("Errore scraping pagina {}: {}", page_num, e)
             break
 
     # Dedup globale
@@ -225,7 +226,7 @@ def scrape_daily_links_from_main_page(max_pages: int = 5) -> List[DailyLink]:
     yesterday = today - timedelta(days=1)
     allowed = {today.isoformat(), yesterday.isoformat()}
     filtered = [lk for lk in unique if lk.link_date in allowed]
-    print(f"[{datetime.now()}] Link giornalieri unici: {len(unique)}, filtrati (oggi/ieri): {len(filtered)}")
+    logger.info("Link giornalieri unici: {}, filtrati (oggi/ieri): {}", len(unique), len(filtered))
     return filtered
 
 
@@ -247,7 +248,7 @@ def filter_new_daily_links(links: List[DailyLink]) -> List[DailyLink]:
     )
     existing_urls = {row["link_url"] for row in (existing.data or [])}
     new_links = [lk for lk in links if lk.link_url not in existing_urls]
-    print(f"[{datetime.now()}] Link nuovi: {len(new_links)} / {len(links)} totali")
+    logger.info("Link nuovi: {} / {} totali", len(new_links), len(links))
     return new_links
 
 
@@ -269,7 +270,7 @@ def save_daily_links_to_supabase(links: List[DailyLink]) -> int:
         rows, on_conflict="link_url"
     ).execute()
     count = len(resp.data) if resp.data else 0
-    print(f"[{datetime.now()}] Salvati {count} link giornalieri su Supabase")
+    logger.info("Salvati {} link giornalieri su Supabase", count)
     return count
 
 
@@ -346,18 +347,18 @@ def _extract_interpelli_from_html(html: str, date: Optional[str] = None) -> List
 
 def scrape_interpelli_from_daily_page(url: str) -> List[InterpelloEntry]:
     """Scarica una pagina giornaliera e ne estrae gli interpelli."""
-    print(f"[{datetime.now()}] Scraping interpelli da: {url}")
+    logger.info("Scraping interpelli da: {}", url)
     date = _parse_date_from_url(url)
     try:
         resp = requests.get(url, headers=HEADERS, timeout=30)
         if resp.status_code != 200:
-            print(f"  Errore HTTP {resp.status_code} per {url}")
+            logger.error("Errore HTTP {} per {}", resp.status_code, url)
             return []
         entries = _extract_interpelli_from_html(resp.text, date)
-        print(f"  Estratti {len(entries)} interpelli")
+        logger.info("Estratti {} interpelli", len(entries))
         return entries
     except Exception as e:
-        print(f"  Errore scraping pagina giornaliera: {e}")
+        logger.error("Errore scraping pagina giornaliera: {}", e)
         return []
 
 
@@ -379,7 +380,7 @@ def save_interpelli_to_supabase(entries: List[InterpelloEntry], source_url: str)
 
     new_entries = [e for e in entries if e.interpello_link not in existing_links]
     if not new_entries:
-        print(f"[{datetime.now()}] Nessun nuovo interpello da salvare")
+        logger.info("Nessun nuovo interpello da salvare")
         return 0
 
     rows = [
@@ -400,7 +401,7 @@ def save_interpelli_to_supabase(entries: List[InterpelloEntry], source_url: str)
     ]
     resp = supabase.table("interpelli").insert(rows).execute()
     count = len(resp.data) if resp.data else 0
-    print(f"[{datetime.now()}] Salvati {count} nuovi interpelli da {source_url}")
+    logger.info("Salvati {} nuovi interpelli da {}", count, source_url)
     return count
 
 
@@ -426,7 +427,7 @@ def classify_interpello_link(link: str, name: str) -> LinkClassification:
         result = firecrawl.scrape(link, formats=["markdown"])
         content = result.markdown if hasattr(result, "markdown") else ""
         if not content:
-            print(f"  Nessun contenuto Firecrawl per {link}")
+            logger.info("Nessun contenuto Firecrawl per {}", link)
             return LinkClassification(link_type="single")
 
         # Tronca a ~4000 caratteri per il prompt
@@ -442,7 +443,7 @@ def classify_interpello_link(link: str, name: str) -> LinkClassification:
             sub_links=data.get("sub_links", []),
         )
     except Exception as e:
-        print(f"  Errore classificazione {link}: {e}")
+        logger.error("Errore classificazione {}: {}", link, e)
         return LinkClassification(link_type="single")
 
 
@@ -479,7 +480,7 @@ def _scrape_sub_link_details(url: str, parent: dict) -> InterpelloEntry:
         result = firecrawl.scrape(url, formats=["markdown"])
         content = result.markdown if hasattr(result, "markdown") else ""
         if not content:
-            print(f"    Nessun contenuto per sub-link {url}, uso dati parent")
+            logger.info("Nessun contenuto per sub-link {}, uso dati parent", url)
             return fallback
 
         content_trimmed = content[:4000]
@@ -501,16 +502,16 @@ def _scrape_sub_link_details(url: str, parent: dict) -> InterpelloEntry:
             link_type="single",
         )
     except Exception as e:
-        print(f"    Errore scraping sub-link {url}: {e}")
+        logger.error("Errore scraping sub-link {}: {}", url, e)
         return fallback
 
 
 def process_list_interpello(parent: dict, sub_links: List[str]) -> List[InterpelloEntry]:
     """Per un interpello di tipo lista, scrape ogni sub-link per estrarre i dettagli."""
     entries: List[InterpelloEntry] = []
-    print(f"    Scraping {len(sub_links)} sub-link dalla lista...")
+    logger.info("Scraping {} sub-link dalla lista...", len(sub_links))
     for i, sub_url in enumerate(sub_links, 1):
-        print(f"    [{i}/{len(sub_links)}] {sub_url[:80]}...")
+        logger.info("[{}/{}] {}...", i, len(sub_links), sub_url[:80])
         entry = _scrape_sub_link_details(sub_url, parent)
         entries.append(entry)
     return entries
@@ -528,10 +529,10 @@ def classify_and_expand_all() -> int:
     )
     items = pending.data or []
     if not items:
-        print(f"[{datetime.now()}] Nessun interpello da classificare")
+        logger.info("Nessun interpello da classificare")
         return 0
 
-    print(f"[{datetime.now()}] Classificazione di {len(items)} interpelli...")
+    logger.info("Classificazione di {} interpelli...", len(items))
     expanded_count = 0
 
     for item in items:
@@ -540,7 +541,7 @@ def classify_and_expand_all() -> int:
         item_id = item.get("id")
 
         classification = classify_interpello_link(link, name)
-        print(f"  {name[:60]}... -> {classification.link_type}")
+        logger.info("{}... -> {}", name[:60], classification.link_type)
 
         if classification.link_type == "list" and classification.sub_links:
             # Aggiorna parent come lista (completed = no articolo da generare)
@@ -581,7 +582,7 @@ def classify_and_expand_all() -> int:
                 {"link_type": "single", "status": "classified"}
             ).eq("id", item_id).execute()
 
-    print(f"[{datetime.now()}] Classificazione completata. Espansi {expanded_count} sub-link.")
+    logger.info("Classificazione completata. Espansi {} sub-link.", expanded_count)
     return expanded_count
 
 
@@ -633,7 +634,7 @@ def enrich_interpello_metadata(item: dict) -> dict:
             "classe_concorso": data.get("classe_concorso") or item.get("classe_concorso"),
         }
     except Exception as e:
-        print(f"  Errore enrichment per '{item.get('interpello_name', '')}': {e}")
+        logger.error("Errore enrichment per '{}': {}", item.get('interpello_name', ''), e)
         return {}
 
 
@@ -649,10 +650,10 @@ def enrich_all_classified() -> int:
     )
     items = pending.data or []
     if not items:
-        print(f"[{datetime.now()}] Nessun interpello da arricchire")
+        logger.info("Nessun interpello da arricchire")
         return 0
 
-    print(f"[{datetime.now()}] Enrichment metadati per {len(items)} interpelli...")
+    logger.info("Enrichment metadati per {} interpelli...", len(items))
     enriched_count = 0
 
     for item in items:
@@ -668,7 +669,7 @@ def enrich_all_classified() -> int:
                 }
             ).eq("id", item["id"]).execute()
             enriched_count += 1
-            print(f"  Arricchito: {item.get('interpello_name', '')[:50]}... -> {enriched.get('interpello_regione')}/{enriched.get('interpello_provincia')}/{enriched.get('classe_concorso')}")
+            logger.info("Arricchito: {}... -> {}/{}/{}", item.get('interpello_name', '')[:50], enriched.get('interpello_regione'), enriched.get('interpello_provincia'), enriched.get('classe_concorso'))
         else:
             # Segna comunque come enriched per non bloccare la pipeline
             supabase.table("interpelli").update(
@@ -676,7 +677,7 @@ def enrich_all_classified() -> int:
             ).eq("id", item["id"]).execute()
             enriched_count += 1
 
-    print(f"[{datetime.now()}] Enrichment completato: {enriched_count}/{len(items)}")
+    logger.info("Enrichment completato: {}/{}", enriched_count, len(items))
     return enriched_count
 
 
@@ -753,7 +754,7 @@ def generate_interpello_article(
             article_content=data.get("article_content", ""),
         )
     except Exception as e:
-        print(f"  Errore generazione articolo per '{name}': {e}")
+        logger.error("Errore generazione articolo per '{}': {}", name, e)
         return None
 
 
@@ -769,10 +770,10 @@ def generate_articles_for_pending() -> int:
     )
     items = pending.data or []
     if not items:
-        print(f"[{datetime.now()}] Nessun interpello in attesa di articolo")
+        logger.info("Nessun interpello in attesa di articolo")
         return 0
 
-    print(f"[{datetime.now()}] Generazione articoli per {len(items)} interpelli...")
+    logger.info("Generazione articoli per {} interpelli...", len(items))
     success_count = 0
 
     for item in items:
@@ -796,13 +797,13 @@ def generate_articles_for_pending() -> int:
                 }
             ).eq("id", item["id"]).execute()
             success_count += 1
-            print(f"  Articolo generato: {article.article_title[:60]}...")
+            logger.info("Articolo generato: {}...", article.article_title[:60])
         else:
             supabase.table("interpelli").update(
                 {"status": "error"}
             ).eq("id", item["id"]).execute()
 
-    print(f"[{datetime.now()}] Generati {success_count}/{len(items)} articoli")
+    logger.info("Generati {}/{} articoli", success_count, len(items))
     return success_count
 
 
@@ -812,9 +813,9 @@ def generate_articles_for_pending() -> int:
 
 def run_interpelli_pipeline() -> Dict[str, Any]:
     """Esegue la pipeline completa degli interpelli."""
-    print(f"\n{'='*60}")
-    print(f"[{datetime.now()}] AVVIO PIPELINE INTERPELLI")
-    print(f"{'='*60}\n")
+    logger.info("=" * 60)
+    logger.info("AVVIO PIPELINE INTERPELLI")
+    logger.info("=" * 60)
 
     result: Dict[str, Any] = {
         "timestamp": datetime.now().isoformat(),
@@ -823,21 +824,21 @@ def run_interpelli_pipeline() -> Dict[str, Any]:
 
     try:
         # Step 1: Scrape link giornalieri
-        print(f"\n--- STEP 1: Scraping link giornalieri ---")
+        logger.info("--- STEP 1: Scraping link giornalieri ---")
         daily_links = scrape_daily_links_from_main_page()
         result["daily_links_found"] = len(daily_links)
 
         # Step 2: Filtra e salva nuovi
-        print(f"\n--- STEP 2: Filtraggio e salvataggio ---")
+        logger.info("--- STEP 2: Filtraggio e salvataggio ---")
         new_links = filter_new_daily_links(daily_links)
         saved = save_daily_links_to_supabase(new_links)
         result["daily_links_saved"] = saved
 
         if not new_links:
-            print(f"[{datetime.now()}] Nessun nuovo link giornaliero, verifico interpelli pending...")
+            logger.info("Nessun nuovo link giornaliero, verifico interpelli pending...")
 
         # Step 3: Per ogni link giornaliero nuovo, scrape interpelli
-        print(f"\n--- STEP 3: Scraping interpelli ---")
+        logger.info("--- STEP 3: Scraping interpelli ---")
         total_interpelli = 0
         for link in new_links:
             entries = scrape_interpelli_from_daily_page(link.link_url)
@@ -851,30 +852,30 @@ def run_interpelli_pipeline() -> Dict[str, Any]:
         result["interpelli_saved"] = total_interpelli
 
         # Step 4: Classifica e espandi
-        print(f"\n--- STEP 4: Classificazione ---")
+        logger.info("--- STEP 4: Classificazione ---")
         expanded = classify_and_expand_all()
         result["expanded_sub_links"] = expanded
 
         # Step 5: Enrichment metadati
-        print(f"\n--- STEP 5: Enrichment metadati ---")
+        logger.info("--- STEP 5: Enrichment metadati ---")
         enriched = enrich_all_classified()
         result["enriched"] = enriched
 
         # Step 6: Genera articoli
-        print(f"\n--- STEP 6: Generazione articoli ---")
+        logger.info("--- STEP 6: Generazione articoli ---")
         articles = generate_articles_for_pending()
         result["articles_generated"] = articles
 
         result["status"] = "completed"
 
     except Exception as e:
-        print(f"[{datetime.now()}] ERRORE PIPELINE: {e}")
+        logger.error("ERRORE PIPELINE: {}", e)
         result["status"] = "error"
         result["error"] = str(e)
 
-    print(f"\n{'='*60}")
-    print(f"[{datetime.now()}] PIPELINE COMPLETATA: {result}")
-    print(f"{'='*60}\n")
+    logger.info("=" * 60)
+    logger.info("PIPELINE COMPLETATA: {}", result)
+    logger.info("=" * 60)
 
     return result
 

@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../lib/supabase';
 import { categories } from '../../lib/categories';
+import { logger } from '../../lib/logger';
 
 export const GET: APIRoute = async ({ request }) => {
   try {
@@ -75,7 +76,7 @@ export const GET: APIRoute = async ({ request }) => {
       }
     });
   } catch (error) {
-    console.error('Error generating sitemap:', error);
+    logger.error('Error generating sitemap:', error);
     return new Response('Error generating sitemap', { status: 500 });
   }
 }; 

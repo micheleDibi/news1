@@ -7,9 +7,9 @@ Uso: python -m app.interpelli_sender (dalla cartella backend/)
 
 import time
 import schedule
-from datetime import datetime
 
 from .interpelli import run_interpelli_pipeline
+from .logger import logger
 
 
 def schedule_interpelli_pipeline():
@@ -17,7 +17,7 @@ def schedule_interpelli_pipeline():
     for hour in ("00:00", "06:00", "12:00", "18:00"):
         schedule.every().day.at(hour).do(run_interpelli_pipeline)
 
-    print(f"[{datetime.now()}] Pipeline interpelli schedulata: 00:00, 06:00, 12:00, 18:00")
+    logger.info("Pipeline interpelli schedulata: 00:00, 06:00, 12:00, 18:00")
 
     while True:
         schedule.run_pending()
@@ -26,11 +26,11 @@ def schedule_interpelli_pipeline():
 
 if __name__ == "__main__":
     try:
-        print(f"[{datetime.now()}] Avvio immediato della pipeline...")
+        logger.info("Avvio immediato della pipeline...")
         run_interpelli_pipeline()
-        print(f"[{datetime.now()}] Avvio scheduler...")
+        logger.info("Avvio scheduler...")
         schedule_interpelli_pipeline()
     except KeyboardInterrupt:
-        print("\nShutdown scheduler interpelli.")
+        logger.info("Shutdown scheduler interpelli.")
     except Exception as e:
-        print(f"Errore: {e}")
+        logger.error("Errore: {}", e)

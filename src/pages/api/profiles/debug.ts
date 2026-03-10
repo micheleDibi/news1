@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 export const get: APIRoute = async ({ request }) => {
   try {
@@ -73,7 +74,7 @@ export const get: APIRoute = async ({ request }) => {
     );
     
   } catch (error) {
-    console.error('API: Unexpected error debugging profiles:', error);
+    logger.error('API: Unexpected error debugging profiles:', error);
     return new Response(
       JSON.stringify({ success: false, error: 'Internal server error' }),
       { status: 500 }

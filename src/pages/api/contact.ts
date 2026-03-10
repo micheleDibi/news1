@@ -2,6 +2,7 @@ export const prerender = false;
 
 import type { APIRoute } from 'astro';
 import nodemailer from 'nodemailer';
+import { logger } from '../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -95,7 +96,7 @@ Questo messaggio è stato inviato tramite il form di contatto di EduNews24.
     );
 
   } catch (error) {
-    console.error('Error sending contact email:', error);
+    logger.error('Error sending contact email:', error);
     return new Response(
       JSON.stringify({ 
         error: 'Errore durante l\'invio del messaggio. Riprova più tardi.' 

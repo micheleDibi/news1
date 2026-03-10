@@ -1,11 +1,12 @@
 import type { APIRoute } from 'astro';
+import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
     const body = await request.json();
     const { links } = body;
     
-    console.log(`Mock analyze request for links: ${JSON.stringify(links)}`);
+    logger.info(`Mock analyze request for links: ${JSON.stringify(links)}`);
     
     // Simulate a delay
     await new Promise(resolve => setTimeout(resolve, 1500));
@@ -33,7 +34,7 @@ export const POST: APIRoute = async ({ request }) => {
       }
     });
   } catch (error) {
-    console.error('Error in mock analyze endpoint:', error);
+    logger.error('Error in mock analyze endpoint:', error);
     return new Response(JSON.stringify({ 
       success: false,
       message: error instanceof Error ? error.message : 'Unknown error'

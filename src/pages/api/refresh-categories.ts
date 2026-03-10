@@ -1,6 +1,7 @@
 import type { APIContext } from 'astro';
 import { refreshCategories } from '../../lib/categories';
 import { supabase } from '../../lib/supabase'; // Import for auth check
+import { logger } from '../../lib/logger';
 
 export async function POST({ request }: APIContext) {
   // --- Authentication Check --- 
@@ -32,15 +33,15 @@ export async function POST({ request }: APIContext) {
   // --- End Authentication Check ---
 
   try {
-    console.log('API endpoint /api/refresh-categories called.');
+    logger.info('API endpoint /api/refresh-categories called.');
     await refreshCategories();
-    console.log('Categories refresh triggered successfully via API.');
+    logger.info('Categories refresh triggered successfully via API.');
     return new Response(JSON.stringify({ success: true }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    console.error('Error calling refreshCategories from API:', error);
+    logger.error('Error calling refreshCategories from API:', error);
     return new Response(JSON.stringify({ success: false, error: 'Failed to refresh categories' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }

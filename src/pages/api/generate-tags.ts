@@ -1,6 +1,7 @@
 export const prerender = false;
 
 import type { APIRoute } from 'astro';
+import { logger } from '../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   // Authorization check
@@ -71,7 +72,7 @@ Genera 5-8 tags ottimizzati per questo articolo. Rispondi solo con JSON.`;
     }
 
     const data = await response.json();
-    console.log('Tags generation response:', data);
+    logger.info('Tags generation response:', data);
 
     let text = '';
     const messageOutput = data.output?.find((item: any) => item.type === 'message');
@@ -79,7 +80,7 @@ Genera 5-8 tags ottimizzati per questo articolo. Rispondi solo con JSON.`;
       text = messageOutput.content[0].text;
     }
 
-    console.log('Raw OpenAI tags response:', text);
+    logger.info('Raw OpenAI tags response:', text);
 
     let json;
     try {
@@ -106,7 +107,7 @@ Genera 5-8 tags ottimizzati per questo articolo. Rispondi solo con JSON.`;
     });
     
   } catch (error) {
-    console.error('Error in generate-tags API:', error);
+    logger.error('Error in generate-tags API:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

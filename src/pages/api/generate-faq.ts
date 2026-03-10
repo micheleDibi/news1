@@ -1,6 +1,7 @@
 export const prerender = false;
 
 import type { APIRoute } from 'astro';
+import { logger } from '../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   // Authorization check
@@ -96,7 +97,7 @@ Genera 4-6 FAQ pertinenti per questo articolo. Rispondi solo con JSON.`;
     });
 
   } catch (error) {
-    console.error('Error in generate-faq API:', error);
+    logger.error('Error in generate-faq API:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

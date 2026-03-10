@@ -1,6 +1,7 @@
 import type { APIRoute } from "astro";
 import fs from "fs/promises";
 import path from "path";
+import { logger } from "../../../lib/logger";
 
 // Define the path to the EU funding data file
 const dataFilePath = path.resolve(
@@ -37,7 +38,7 @@ interface EUFundingData {
 // Function to trigger the Python scraper
 async function triggerEUScraping(): Promise<EUFundingData | null> {
   try {
-    console.log("Triggering EU funding opportunities scraping...");
+    logger.info("Triggering EU funding opportunities scraping...");
 
     // Import and run the Python scraper
     const { spawn } = require("child_process");
@@ -67,8 +68,8 @@ async function triggerEUScraping(): Promise<EUFundingData | null> {
 
       pythonProcess.on("close", (code: number) => {
         if (code === 0) {
-          console.log("Python scraper completed successfully");
-          console.log("Output:", output);
+          logger.info("Python scraper completed successfully");
+          logger.info("Output:", output);
 
           // Try to read the generated JSON file
           try {
@@ -100,7 +101,7 @@ async function triggerEUScraping(): Promise<EUFundingData | null> {
 
               resolve(transformedData);
             } else {
-              console.log("No data file found, using empty structure");
+              logger.info("No data file found, using empty structure");
               resolve({
                 incentivi_gov_it: [],
 
@@ -114,25 +115,25 @@ async function triggerEUScraping(): Promise<EUFundingData | null> {
               });
             }
           } catch (error) {
-            console.error("Error reading scraped data:", error);
+            logger.error("Error reading scraped data:", error);
             reject(error);
           }
         } else {
-          console.error("Python scraper failed with code:", code);
-          console.error("Error output:", errorOutput);
+          logger.error("Python scraper failed with code:", code);
+          logger.error("Error output:", errorOutput);
           reject(new Error(`Python scraper failed with code ${code}`));
         }
       });
     });
   } catch (error) {
-    console.error("Error triggering EU scraping:", error);
+    logger.error("Error triggering EU scraping:", error);
     return null;
   }
 }
 
 // Astro API Route (GET request to trigger refresh)
 export const GET: APIRoute = async ({ request }) => {
-  console.log("Received request to refresh EU funding opportunities...");
+  logger.info("Received request to refresh EU funding opportunities...");
 
   const euData = await triggerEUScraping();
 
@@ -152,7 +153,7 @@ export const GET: APIRoute = async ({ request }) => {
 
     // Write the fetched data to the JSON file
     await fs.writeFile(dataFilePath, JSON.stringify(euData, null, 2), "utf-8");
-    console.log(`Successfully wrote EU funding data to ${dataFilePath}`);
+    logger.info(`Successfully wrote EU funding data to ${dataFilePath}`);
 
     return new Response(
       JSON.stringify({
@@ -165,7 +166,7 @@ export const GET: APIRoute = async ({ request }) => {
       }
     );
   } catch (error) {
-    console.error("Error writing EU funding data to file:", error);
+    logger.error("Error writing EU funding data to file:", error);
     return new Response(
       JSON.stringify({ message: "Failed to write data to file." }),
       {
@@ -182,7 +183,7 @@ export const POST: APIRoute = async ({ request }) => {
     const body = await request.json();
     const { sources, max_pages } = body;
 
-    console.log(
+    logger.info(
       `Manual EU scraping triggered with sources: ${sources}, max_pages: ${max_pages}`
     );
 
@@ -214,7 +215,7 @@ export const POST: APIRoute = async ({ request }) => {
       }
     );
   } catch (error) {
-    console.error("Error in manual EU scraping:", error);
+    logger.error("Error in manual EU scraping:", error);
     return new Response(
       JSON.stringify({ message: "Failed to process manual scraping request." }),
       {

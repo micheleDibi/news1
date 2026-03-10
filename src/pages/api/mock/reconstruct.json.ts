@@ -1,10 +1,11 @@
 import type { APIRoute } from 'astro';
+import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request, params }) => {
   try {
     const newsId = params.id || '123';
     
-    console.log(`Mock reconstruct request for news ID: ${newsId}`);
+    logger.info(`Mock reconstruct request for news ID: ${newsId}`);
     
     // Simulate a delay
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -38,7 +39,7 @@ export const POST: APIRoute = async ({ request, params }) => {
       }
     });
   } catch (error) {
-    console.error('Error in mock reconstruct endpoint:', error);
+    logger.error('Error in mock reconstruct endpoint:', error);
     return new Response(JSON.stringify({ 
       success: false,
       message: error instanceof Error ? error.message : 'Unknown error'

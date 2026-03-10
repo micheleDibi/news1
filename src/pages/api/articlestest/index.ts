@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 // Helper function to check if an origin is allowed by querying the database
 async function isOriginAllowed(origin: string | null): Promise<boolean> {
@@ -13,13 +14,13 @@ async function isOriginAllowed(origin: string | null): Promise<boolean> {
       .eq('site_url', origin);
     
     if (error) {
-      console.error('Error checking allowed origins:', error);
+      logger.error('Error checking allowed origins:', error);
       return false;
     }
     
     return data && data.length > 0;
   } catch (error) {
-    console.error('Error in origin check:', error);
+    logger.error('Error in origin check:', error);
     return false;
   }
 }
@@ -89,7 +90,7 @@ export const GET: APIRoute = async ({ request }) => {
       .eq('isdraft', false);
 
     if (countError) {
-      console.error('Error counting articles:', countError);
+      logger.error('Error counting articles:', countError);
       return new Response(JSON.stringify({ error: countError.message }), {
         status: 500,
         headers: {
@@ -108,7 +109,7 @@ export const GET: APIRoute = async ({ request }) => {
       .range(offset, offset + limit - 1);
 
     if (error) {
-      console.error('Error fetching articles:', error);
+      logger.error('Error fetching articles:', error);
       return new Response(JSON.stringify({ error: error.message }), {
         status: 500,
         headers: {
@@ -146,7 +147,7 @@ export const GET: APIRoute = async ({ request }) => {
     });
 
   } catch (err) {
-    console.error('Server error fetching articles:', err);
+    logger.error('Server error fetching articles:', err);
     const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred';
     return new Response(JSON.stringify({ error: errorMessage }), {
       status: 500,

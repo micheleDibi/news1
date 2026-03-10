@@ -1,6 +1,7 @@
 export const prerender = false;
 
 import type { APIRoute } from 'astro';
+import { logger } from '../../lib/logger';
 import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -40,7 +41,7 @@ export const POST: APIRoute = async ({ request }) => {
     const buffer = Buffer.from(await chunk.arrayBuffer());
     await writeFile(chunkPath, buffer);
 
-    console.log(`Received chunk ${parseInt(chunkIndex) + 1}/${totalChunks} for upload ${uploadId} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
+    logger.info(`Received chunk ${parseInt(chunkIndex) + 1}/${totalChunks} for upload ${uploadId} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
 
     return new Response(JSON.stringify({
       success: true,
@@ -51,7 +52,7 @@ export const POST: APIRoute = async ({ request }) => {
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    console.error('Error receiving chunk:', error);
+    logger.error('Error receiving chunk:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

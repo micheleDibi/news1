@@ -6,6 +6,7 @@ import { uploadToS3 } from '../../lib/aws'; // Corrected path relative to src/pa
 import sharp from 'sharp';
 import path from 'path';
 import { slugify } from '../../lib/utils';
+import { logger } from '../../lib/logger';
 
 
 const TARGET_WIDTHS = [320, 480, 640, 768, 1024, 1280]; // Define target widths for variants
@@ -43,7 +44,7 @@ function getFilenameAndExtension(url: string, contentType: string | null): { fil
 
   } catch (e) {
     // Fallback if URL parsing fails
-    console.error("Error parsing URL for filename, using UUID:", e);
+    logger.error("Error parsing URL for filename, using UUID:", e);
     const extension = contentType?.split('/')[1] ? `.${contentType.split('/')[1]}` : '.jpg';
     return { filename: `${uuidv4()}${extension}`, extension: extension };
   }
@@ -66,7 +67,7 @@ export const POST: APIRoute = async ({ request }) => {
       return new Response(JSON.stringify({ error: 'Missing or invalid imageUrl or title' }), { status: 400 });
     }
 
-    console.log(`Attempting to download image from: ${imageUrl}`);
+    logger.info(`Attempting to download image from: ${imageUrl}`);
 
     // 1. Download the image
     const downloadResponse = await fetch(imageUrl);
@@ -78,12 +79,12 @@ export const POST: APIRoute = async ({ request }) => {
     const contentType = downloadResponse.headers.get('content-type');
 
     if (!contentType || !contentType.startsWith('image/')) {
-       console.warn(`Content-Type is not an image (${contentType}), proceeding anyway.`);
+       logger.warn(`Content-Type is not an image (${contentType}), proceeding anyway.`);
        // You might want to return an error here depending on requirements
        // return new Response(JSON.stringify({ error: 'Downloaded content is not an image' }), { status: 400 });
     }
 
-    console.log(`Image downloaded successfully. Content-Type: ${contentType}, Size: ${imageBuffer.length} bytes`);
+    logger.info(`Image downloaded successfully. Content-Type: ${contentType}, Size: ${imageBuffer.length} bytes`);
 
     // 2. Determine base filename for WebP conversion
     const { filename } = getFilenameAndExtension(imageUrl, contentType);
@@ -103,7 +104,7 @@ export const POST: APIRoute = async ({ request }) => {
     const primaryWebpFilename = `${baseName}.webp`; // e.g., filename_uuid.webp
     const primaryWebpUrl = await uploadToS3(primaryWebpBuffer, primaryWebpFilename, 'image/webp');
 
-    console.log(`Successfully uploaded primary WebP to S3: ${primaryWebpUrl}`);
+    logger.info(`Successfully uploaded primary WebP to S3: ${primaryWebpUrl}`);
 
     // 4. Create and Upload variants
     for (const width of TARGET_WIDTHS) {
@@ -115,9 +116,9 @@ export const POST: APIRoute = async ({ request }) => {
         
         const variantFilename = `${baseName}-${width}w.webp`; // e.g., filename_uuid-640w.webp
         await uploadToS3(variantBuffer, variantFilename, 'image/webp');
-        console.log(`Uploaded variant: ${variantFilename}`);
+        logger.info(`Uploaded variant: ${variantFilename}`);
       } catch (variantError) {
-        console.error(`Error creating or uploading variant for width ${width}:`, variantError);
+        logger.error(`Error creating or uploading variant for width ${width}:`, variantError);
         // Decide if you want to fail the whole request or just skip this variant
         // For now, it just logs and continues
       }
@@ -135,7 +136,7 @@ export const POST: APIRoute = async ({ request }) => {
     });
 
   } catch (error) {
-    console.error('Error processing image URL upload:', error);
+    logger.error('Error processing image URL upload:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

@@ -2,6 +2,7 @@ export const prerender = false;
 
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 export const DELETE: APIRoute = async ({ params }) => {
   const { id } = params;
@@ -85,7 +86,7 @@ export const PUT: APIRoute = async ({ request, params }) => {
     });
 
   } catch (error) {
-    console.error('Error updating podcast:', error);
+    logger.error('Error updating podcast:', error);
     return new Response(JSON.stringify({ 
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

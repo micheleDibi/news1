@@ -1,6 +1,7 @@
 import type { APIRoute } from "astro";
 import fs from "fs/promises";
 import path from "path";
+import { logger } from "../../../lib/logger";
 
 // Define the path to the EU funding data file
 const dataFilePath = path.resolve(
@@ -37,7 +38,7 @@ async function triggerItaliaDomaniScraping(): Promise<
   ItaliaDomaniBando[] | null
 > {
   try {
-    console.log("Triggering ItaliaDomani scraping...");
+    logger.info("Triggering ItaliaDomani scraping...");
 
     const { spawn } = require("child_process");
     const path = require("path");
@@ -77,7 +78,7 @@ async function triggerItaliaDomaniScraping(): Promise<
 
       pythonProcess.on("close", (code: number) => {
         if (code === 0) {
-          console.log("ItaliaDomani scraper completed successfully");
+          logger.info("ItaliaDomani scraper completed successfully");
 
           // Try to read the generated JSON file
           try {
@@ -129,29 +130,29 @@ async function triggerItaliaDomaniScraping(): Promise<
 
               resolve(transformedData);
             } else {
-              console.log("No output files found");
+              logger.info("No output files found");
               reject(new Error("No output files found"));
             }
           } catch (error) {
-            console.error("Error reading scraped data:", error);
+            logger.error("Error reading scraped data:", error);
             reject(error);
           }
         } else {
-          console.error("ItaliaDomani scraper failed with code:", code);
-          console.error("Error output:", errorOutput);
+          logger.error("ItaliaDomani scraper failed with code:", code);
+          logger.error("Error output:", errorOutput);
           reject(new Error(`ItaliaDomani scraper failed with code ${code}`));
         }
       });
     });
   } catch (error) {
-    console.error("Error triggering ItaliaDomani scraping:", error);
+    logger.error("Error triggering ItaliaDomani scraping:", error);
     return null;
   }
 }
 
 // Astro API Route (GET request to trigger refresh)
 export const GET: APIRoute = async ({ request }) => {
-  console.log("Received request to refresh ItaliaDomani data...");
+  logger.info("Received request to refresh ItaliaDomani data...");
 
   const italiadomaniData = await triggerItaliaDomaniScraping();
 
@@ -196,7 +197,7 @@ export const GET: APIRoute = async ({ request }) => {
 
     // Write the updated data back to the file
     await fs.writeFile(dataFilePath, JSON.stringify(euData, null, 2), "utf-8");
-    console.log(
+    logger.info(
       `Successfully updated ItaliaDomani data. Found ${italiadomaniData.length} opportunities.`
     );
 
@@ -212,7 +213,7 @@ export const GET: APIRoute = async ({ request }) => {
       }
     );
   } catch (error) {
-    console.error("Error updating ItaliaDomani data:", error);
+    logger.error("Error updating ItaliaDomani data:", error);
     return new Response(JSON.stringify({ message: "Failed to update data." }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
@@ -226,7 +227,7 @@ export const POST: APIRoute = async ({ request }) => {
     const body = await request.json();
     const { force_refresh } = body;
 
-    console.log(
+    logger.info(
       `Manual ItaliaDomani scraping triggered with force_refresh: ${force_refresh}`
     );
 
@@ -282,7 +283,7 @@ export const POST: APIRoute = async ({ request }) => {
       }
     );
   } catch (error) {
-    console.error("Error in manual ItaliaDomani scraping:", error);
+    logger.error("Error in manual ItaliaDomani scraping:", error);
     return new Response(
       JSON.stringify({ message: "Failed to process manual scraping request." }),
       {

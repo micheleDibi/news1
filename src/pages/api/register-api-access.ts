@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../lib/supabase';
 import bcrypt from 'bcryptjs';
+import { logger } from '../../lib/logger';
 
 // Function to generate a random verification code
 function generateVerificationCode(): string {
@@ -81,7 +82,7 @@ export const POST: APIRoute = async ({ request }) => {
       .single();
 
     if (error) {
-      console.error('Error inserting API access request:', error);
+      logger.error('Error inserting API access request:', error);
       return new Response(JSON.stringify({ 
         error: 'Failed to submit registration request. Please try again.' 
       }), {
@@ -103,7 +104,7 @@ export const POST: APIRoute = async ({ request }) => {
     });
 
   } catch (error) {
-    console.error('Server error processing API registration:', error);
+    logger.error('Server error processing API registration:', error);
     return new Response(JSON.stringify({ 
       error: 'Internal server error. Please try again later.' 
     }), {

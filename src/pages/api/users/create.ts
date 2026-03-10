@@ -1,11 +1,12 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   // Check authorization
   const authHeader = request.headers.get('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    console.error('Authorization header missing or invalid', { authHeader });
+    logger.error('Authorization header missing or invalid', { authHeader });
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
       headers: {
@@ -56,7 +57,7 @@ export const POST: APIRoute = async ({ request }) => {
     const { data: { user: tokenUser }, error: tokenError } = await supabase.auth.getUser(token);
     
     if (tokenError || !tokenUser) {
-      console.error('Token validation failed', { tokenError });
+      logger.error('Token validation failed', { tokenError });
       return new Response(JSON.stringify({ error: 'Invalid token' }), {
         status: 401,
         headers: {
@@ -93,7 +94,7 @@ export const POST: APIRoute = async ({ request }) => {
     });
 
     if (signUpError) {
-      console.error('Error creating user:', signUpError);
+      logger.error('Error creating user:', signUpError);
       return new Response(JSON.stringify({ error: signUpError.message }), {
         status: 500,
         headers: {
@@ -125,7 +126,7 @@ export const POST: APIRoute = async ({ request }) => {
       ]);
 
     if (profileError) {
-      console.error('Error creating profile:', profileError);
+      logger.error('Error creating profile:', profileError);
       
       // Try to clean up auth user if profile creation fails
       await supabase.auth.admin.deleteUser(authData.user.id);
@@ -153,7 +154,7 @@ export const POST: APIRoute = async ({ request }) => {
       }
     });
   } catch (error) {
-    console.error('Error in create user endpoint:', error);
+    logger.error('Error in create user endpoint:', error);
     return new Response(JSON.stringify({ 
       error: error instanceof Error ? error.message : 'Unknown error' 
     }), {

@@ -3,6 +3,7 @@ export const prerender = false;
 import type { APIRoute } from 'astro';
 import Anthropic from '@anthropic-ai/sdk';
 import { supabase } from '../../lib/supabase';
+import { logger } from '../../lib/logger';
 
 const STOP_WORDS_IT = new Set([
   "di", "a", "da", "in", "con", "su", "per", "tra", "fra", "il", "lo", "la",
@@ -30,7 +31,7 @@ async function findRelatedArticles(prompt: string): Promise<{ title: string; slu
       .eq('isdraft', false);
 
     if (error || !data || data.length === 0) {
-      console.log('No articles found for interlinking');
+      logger.info('No articles found for interlinking');
       return [];
     }
 
@@ -86,15 +87,15 @@ async function findRelatedArticles(prompt: string): Promise<{ title: string; slu
     const top = scored.slice(0, 3);
 
     if (top.length > 0) {
-      console.log(`Found ${top.length} related articles for interlinking:`);
+      logger.info(`Found ${top.length} related articles for interlinking:`);
       for (const a of top) {
-        console.log(`  - ${a.title} (score: ${a.score.toFixed(3)}) -> /${a.category_slug}/${a.slug}`);
+        logger.info(`  - ${a.title} (score: ${a.score.toFixed(3)}) -> /${a.category_slug}/${a.slug}`);
       }
     }
 
     return top;
   } catch (e) {
-    console.error('Error finding related articles:', e);
+    logger.error('Error finding related articles:', e);
     return [];
   }
 }
@@ -122,7 +123,7 @@ async function fetchUrlContent(url: string): Promise<string> {
     // Limit to ~8000 chars to avoid bloating the prompt
     return cleaned.substring(0, 8000);
   } catch (e) {
-    console.error(`Failed to fetch source URL ${url}:`, e);
+    logger.error(`Failed to fetch source URL ${url}:`, e);
     return '';
   }
 }
@@ -195,12 +196,12 @@ export const POST: APIRoute = async ({ request }) => {
     // Fetch source URL content if provided
     let sourceContent = '';
     if (sourceUrl) {
-      console.log(`Fetching source URL: ${sourceUrl}`);
+      logger.info(`Fetching source URL: ${sourceUrl}`);
       sourceContent = await fetchUrlContent(sourceUrl);
       if (sourceContent) {
-        console.log(`Fetched ${sourceContent.length} chars from source URL`);
+        logger.info(`Fetched ${sourceContent.length} chars from source URL`);
       } else {
-        console.warn(`Could not fetch content from source URL: ${sourceUrl}`);
+        logger.warn(`Could not fetch content from source URL: ${sourceUrl}`);
       }
     }
 
@@ -229,9 +230,9 @@ Rispondi SOLO con il JSON, senza blocchi di codice o altro testo.`;
     const textBlock = message.content.find((block: any) => block.type === 'text');
     const text = textBlock ? (textBlock as any).text : '';
 
-    console.log('--- Raw Claude Response Text Start ---');
-    console.log(text);
-    console.log('--- Raw Claude Response Text End ---');
+    logger.info('--- Raw Claude Response Text Start ---');
+    logger.info(text);
+    logger.info('--- Raw Claude Response Text End ---');
 
     let json;
     try {
@@ -259,7 +260,7 @@ Rispondi SOLO con il JSON, senza blocchi di codice o altro testo.`;
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    console.error('Error in generate-article API:', error);
+    logger.error('Error in generate-article API:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

@@ -1,11 +1,12 @@
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
+import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   // Check authorization
   const authHeader = request.headers.get('Authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    console.error('Authorization header missing or invalid', { authHeader });
+    logger.error('Authorization header missing or invalid', { authHeader });
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
       headers: {
@@ -36,7 +37,7 @@ export const POST: APIRoute = async ({ request }) => {
     const { data: { user: tokenUser }, error: tokenError } = await supabase.auth.getUser(token);
     
     if (tokenError || !tokenUser) {
-      console.error('Token validation failed', { tokenError });
+      logger.error('Token validation failed', { tokenError });
       return new Response(JSON.stringify({ error: 'Invalid token' }), {
         status: 401,
         headers: {
@@ -62,7 +63,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     // Skip auth deletion since it requires admin privileges
     // Instead, just delete from profiles table
-    console.log('Attempting to delete user profile from database:', user_id);
+    logger.info('Attempting to delete user profile from database:', user_id);
     
     try {
       // First, check if the profile exists
@@ -73,7 +74,7 @@ export const POST: APIRoute = async ({ request }) => {
         .single();
         
       if (checkError) {
-        console.error('Error checking if profile exists:', checkError);
+        logger.error('Error checking if profile exists:', checkError);
         return new Response(JSON.stringify({ 
           error: `Error checking profile: ${checkError.message}`,
           code: checkError.code 
@@ -84,7 +85,7 @@ export const POST: APIRoute = async ({ request }) => {
       }
       
       if (!existingProfile) {
-        console.warn('Profile not found for deletion:', user_id);
+        logger.warn('Profile not found for deletion:', user_id);
         return new Response(JSON.stringify({ 
           success: true,
           message: 'No profile found to delete' 
@@ -94,7 +95,7 @@ export const POST: APIRoute = async ({ request }) => {
         });
       }
       
-      console.log('Found profile to delete:', existingProfile.full_name, existingProfile.id);
+      logger.info('Found profile to delete:', existingProfile.full_name, existingProfile.id);
       
       // Now actually delete the profile
       const { error: deleteError } = await supabase
@@ -103,7 +104,7 @@ export const POST: APIRoute = async ({ request }) => {
         .eq('id', user_id);
       
       if (deleteError) {
-        console.error('Error during profile deletion:', deleteError);
+        logger.error('Error during profile deletion:', deleteError);
         
         return new Response(JSON.stringify({ 
           error: `Failed to delete: ${deleteError.message}`, 
@@ -114,7 +115,7 @@ export const POST: APIRoute = async ({ request }) => {
         });
       }
       
-      console.log('Successfully deleted profile:', user_id);
+      logger.info('Successfully deleted profile:', user_id);
       return new Response(JSON.stringify({ 
         success: true,
         message: 'User deleted successfully' 
@@ -124,7 +125,7 @@ export const POST: APIRoute = async ({ request }) => {
       });
       
     } catch (deleteError) {
-      console.error('Unexpected error during deletion process:', deleteError);
+      logger.error('Unexpected error during deletion process:', deleteError);
       return new Response(JSON.stringify({ 
         error: 'Unexpected error during deletion',
         details: deleteError instanceof Error ? deleteError.message : String(deleteError)
@@ -134,7 +135,7 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
   } catch (error) {
-    console.error('Error in delete user endpoint:', error);
+    logger.error('Error in delete user endpoint:', error);
     return new Response(JSON.stringify({ 
       error: error instanceof Error ? error.message : 'Unknown error' 
     }), {

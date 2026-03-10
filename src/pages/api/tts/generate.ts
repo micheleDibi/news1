@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { slugify } from '../../../lib/utils';
-import { error } from 'console';
+import { logger } from '../../../lib/logger';
 
 // Get the directory name of the current module
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -26,18 +26,18 @@ let credentialsPath = possibleCredentialPaths.find(p => {
   try {
     return fs.existsSync(p);
   } catch (error) {
-    console.error(`Error checking path ${p}:`, error);
+    logger.error(`Error checking path ${p}:`, error);
     return false;
   }
 });
 
 if (!credentialsPath) {
-  console.error("Google credentials file not found in any of the expected locations");
+  logger.error("Google credentials file not found in any of the expected locations");
   // Fallback to the first path and let it fail with a clear error if needed
   credentialsPath = possibleCredentialPaths[0];
 }
 
-console.log("Using credentials file at:", credentialsPath);
+logger.info("Using credentials file at:", credentialsPath);
 
 // Initialize the client
 const client = new TextToSpeechClient({
@@ -68,9 +68,9 @@ export const POST: APIRoute = async ({ request }) => {
     }
     
     // Log the received content for debugging
-    console.log('--- TTS Generation --- Received Title:', title);
-    console.log('--- TTS Generation --- Received Excerpt:', excerpt);
-    console.log('--- TTS Generation --- Received Content:', content);
+    logger.info('--- TTS Generation --- Received Title:', title);
+    logger.info('--- TTS Generation --- Received Excerpt:', excerpt);
+    logger.info('--- TTS Generation --- Received Content:', content);
     
     // Prepare the text - include excerpt
     const fullText = `${title}. ${excerpt}. ${content}`;
@@ -157,7 +157,7 @@ export const POST: APIRoute = async ({ request }) => {
     });
 
   } catch (error) {
-    console.error('Error generating audio:', error);
+    logger.error('Error generating audio:', error);
     return new Response(JSON.stringify({ 
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

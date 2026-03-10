@@ -3,6 +3,7 @@ export const prerender = false;
 import type { APIRoute } from 'astro';
 import { supabase } from '../../lib/supabase';
 import { categories } from '../../lib/categories';
+import { logger } from '../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
   let query = '';
@@ -35,7 +36,7 @@ export const POST: APIRoute = async ({ request }) => {
     const { data: articles, error } = await supabaseQuery;
 
     if (error) {
-      console.error('Search query error:', error);
+      logger.error('Search query error:', error);
       throw error;
     }
 
@@ -55,7 +56,7 @@ export const POST: APIRoute = async ({ request }) => {
     });
 
   } catch (error) {
-    console.error('Search error:', error);
+    logger.error('Search error:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error',
       query,

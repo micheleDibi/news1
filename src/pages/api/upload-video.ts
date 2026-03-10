@@ -4,6 +4,7 @@ import type { APIRoute } from 'astro';
 import { uploadToS3 } from '../../lib/aws';
 import { slugify } from '../../lib/utils';
 import { compressAndConvertVideo } from '../../lib/video-compress';
+import { logger } from '../../lib/logger';
 import { readFile, unlink, readdir, writeFile, rmdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -33,7 +34,7 @@ export const POST: APIRoute = async ({ request }) => {
     const title = (formData.get('title') as string) || '';
     const originalFilename = formData.get('filename') as string;
 
-    console.log('Assembly request:', { uploadId, title, originalFilename });
+    logger.info('Assembly request:', { uploadId, title, originalFilename });
 
     if (!uploadId || !originalFilename) {
       return new Response(JSON.stringify({ error: 'Missing uploadId or filename' }), {
@@ -71,7 +72,7 @@ export const POST: APIRoute = async ({ request }) => {
     await rmdir(chunkDir).catch(() => {});
 
     const buffer = Buffer.concat(chunks);
-    console.log(`Reassembled ${chunkFiles.length} chunks: ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
+    logger.info(`Reassembled ${chunkFiles.length} chunks: ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
 
     // Validate file type by extension
     const ext = originalFilename.split('.').pop()?.toLowerCase();
@@ -90,18 +91,18 @@ export const POST: APIRoute = async ({ request }) => {
     // Run compression + upload in the background (not awaited)
     (async () => {
       try {
-        console.log(`Compressing video: ${originalFilename} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
+        logger.info(`Compressing video: ${originalFilename} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
         const compressedBuffer = await compressAndConvertVideo(buffer, originalFilename);
-        console.log(`Compressed video: ${(compressedBuffer.length / 1024 / 1024).toFixed(1)}MB`);
+        logger.info(`Compressed video: ${(compressedBuffer.length / 1024 / 1024).toFixed(1)}MB`);
 
         const contentType = 'video/mp4';
         const videoFilename = `${slugify(title || originalFilename.replace(/\.[^.]+$/, ''))}.mp4`;
         const videoUrl = await uploadToS3(compressedBuffer, videoFilename, contentType);
 
-        console.log(`Video uploaded successfully: ${videoUrl}`);
+        logger.info(`Video uploaded successfully: ${videoUrl}`);
         jobs.set(uploadId, { status: 'done', url: videoUrl });
       } catch (err) {
-        console.error('Background compression/upload error:', err);
+        logger.error('Background compression/upload error:', err);
         jobs.set(uploadId, { status: 'error', error: err instanceof Error ? err.message : 'Compression failed' });
       }
     })();
@@ -116,7 +117,7 @@ export const POST: APIRoute = async ({ request }) => {
       headers: { 'Content-Type': 'application/json' }
     });
   } catch (error) {
-    console.error('Error in upload-video:', error);
+    logger.error('Error in upload-video:', error);
     return new Response(JSON.stringify({
       error: error instanceof Error ? error.message : 'Internal Server Error'
     }), {

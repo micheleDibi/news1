@@ -63,6 +63,8 @@ backend/test.db
 
 # Log files
 *.log
+logs/*.log
+!logs/.gitkeep
 log.txt
 backend/log.txt
 backend/logs/*.log
