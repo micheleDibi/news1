@@ -75,11 +75,26 @@ export const POST: APIRoute = async ({ request }) => {
     // Prepare the text - include excerpt
     const fullText = `${title}. ${excerpt}. ${content}`;
 
-    // Split text into 3 parts
+    // Split text into chunks that stay under 5000 bytes (Google TTS limit)
+    const MAX_BYTES = 4800; // margine di sicurezza
     const textParts: string[] = [];
-    const partLength = Math.ceil(fullText.length / 3);
-    for (let i = 0; i < 3; i++) {
-      textParts.push(fullText.substring(i * partLength, (i + 1) * partLength));
+    let remaining = fullText;
+    while (remaining.length > 0) {
+      let end = remaining.length;
+      // Shrink until the chunk fits in MAX_BYTES
+      while (new TextEncoder().encode(remaining.substring(0, end)).length > MAX_BYTES) {
+        // Try to cut at a sentence boundary
+        const cut = remaining.lastIndexOf('. ', end - 1);
+        if (cut > 0 && cut > end * 0.3) {
+          end = cut + 1; // include the period
+        } else {
+          // Fallback: cut at space
+          const spaceCut = remaining.lastIndexOf(' ', end - 1);
+          end = spaceCut > 0 ? spaceCut : Math.floor(end * 0.8);
+        }
+      }
+      textParts.push(remaining.substring(0, end));
+      remaining = remaining.substring(end).trimStart();
     }
 
     const audioContents: Buffer[] = [];

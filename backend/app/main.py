@@ -253,7 +253,6 @@ async def convert_text_to_audio(text: str, id: int):
 
     full_text = processed_text
 
-    part_length = math.ceil(len(full_text) / 3)
     text_parts: list[str] = []
     if not full_text: # Handle empty text case
         # Or decide to return an error or a silent audio
@@ -278,10 +277,21 @@ async def convert_text_to_audio(text: str, id: int):
         return s3_url
 
 
-    for i in range(3):
-        start_index = i * part_length
-        end_index = (i + 1) * part_length
-        text_parts.append(full_text[start_index:end_index])
+    # Split text into chunks that stay under 5000 bytes (Google TTS limit)
+    MAX_BYTES = 4800  # margine di sicurezza
+    remaining = full_text
+    while remaining:
+        end = len(remaining)
+        while len(remaining[:end].encode('utf-8')) > MAX_BYTES:
+            # Try to cut at a sentence boundary
+            cut = remaining.rfind('. ', 0, end)
+            if cut > 0 and cut > end * 0.3:
+                end = cut + 1
+            else:
+                space_cut = remaining.rfind(' ', 0, end)
+                end = space_cut if space_cut > 0 else int(end * 0.8)
+        text_parts.append(remaining[:end])
+        remaining = remaining[end:].lstrip()
 
     audio_contents: list[bytes] = []
 
