@@ -962,7 +962,7 @@ export default function ArticleForm({ article }: ArticleFormProps) {
       title_summary: '',
       content: '',
       category: '',
-      image_url: `https://picsum.photos/seed/${Math.random()}/800/600`,
+      image_url: '/edunews24_immagine_da_sostituire.png',
       video_url: '',
       video_duration: null,
       thumbnail_url: '',
@@ -1044,38 +1044,49 @@ export default function ArticleForm({ article }: ArticleFormProps) {
         
         // Determine allowed categories based on permissions
         const allowedSlugs: string[] = normalizedPermissions.category_permissions || [];
-        let filteredCategories = categories.filter(cat => 
-          allowedSlugs.includes(cat.slug)
-        );
 
-        // Ensure the article category is available in the select even if not in allowedSlugs
-        if (article) {
-          const articleCat = {
-            id: article.category_slug ?? article.category ?? 'article-category',
-            name: article.category,
-            slug: article.category_slug ?? slugify(article.category || '')
-          };
-          if (articleCat.slug && !filteredCategories.some(cat => cat.slug === articleCat.slug)) {
-            filteredCategories = [articleCat, ...filteredCategories];
+        // Wait for categories to be populated (async fetch may not be done yet)
+        const loadAllowedCategories = async (slugs: string[]) => {
+          let attempts = 0;
+          while (categories.length === 0 && attempts < 10) {
+            await new Promise(r => setTimeout(r, 200));
+            attempts++;
           }
-        }
 
-        setAllowedCategories(filteredCategories);
-        console.log('Allowed categories:', filteredCategories);
-        
-        const matchedCategory = filteredCategories.find(
-          (cat) =>
-            (article?.category_slug && cat.slug === article.category_slug) ||
-            (article?.category && (cat.slug === slugify(article.category) || cat.name === article.category))
-        );
+          let filteredCategories = categories.filter(cat =>
+            slugs.includes(cat.slug)
+          );
 
-        if (article && matchedCategory) {
-          setValue('category', matchedCategory.name);
-        } else if (filteredCategories.length === 1) {
-          setValue('category', filteredCategories[0].name);
-        } else if (filteredCategories.length > 0 && !getValues('category')) {
-          // lascia vuoto per forzare la selezione
-        }
+          // Ensure the article category is available in the select even if not in allowedSlugs
+          if (article) {
+            const articleCat = {
+              id: article.category_slug ?? article.category ?? 'article-category',
+              name: article.category,
+              slug: article.category_slug ?? slugify(article.category || '')
+            };
+            if (articleCat.slug && !filteredCategories.some(cat => cat.slug === articleCat.slug)) {
+              filteredCategories = [articleCat, ...filteredCategories];
+            }
+          }
+
+          setAllowedCategories(filteredCategories);
+          console.log('Allowed categories:', filteredCategories);
+
+          const matchedCategory = filteredCategories.find(
+            (cat) =>
+              (article?.category_slug && cat.slug === article.category_slug) ||
+              (article?.category && (cat.slug === slugify(article.category) || cat.name === article.category))
+          );
+
+          if (article && matchedCategory) {
+            setValue('category', matchedCategory.name);
+          } else if (filteredCategories.length === 1) {
+            setValue('category', filteredCategories[0].name);
+          } else if (filteredCategories.length > 0 && !getValues('category')) {
+            // lascia vuoto per forzare la selezione
+          }
+        };
+        loadAllowedCategories(allowedSlugs);
 
         // Vecchia logica di default category (tenuta come riferimento)
         // if (article?.category) {
