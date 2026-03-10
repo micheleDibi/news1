@@ -902,6 +902,9 @@ export default function ArticleForm({ article }: ArticleFormProps) {
   const [creatorOptions, setCreatorOptions] = useState<{ value: string; label: string }[]>([]);
   const [selectedCreator, setSelectedCreator] = useState<string>('');
   const [editorContent, setEditorContent] = useState('');
+  const [audioGenerating, setAudioGenerating] = useState(false);
+  const [audioProgress, setAudioProgress] = useState(0);
+  const [audioMessage, setAudioMessage] = useState('');
   const [allowedCategories, setAllowedCategories] = useState<any[]>([]);
   const [showAiModal, setShowAiModal] = useState(false);
   const [aiParams, setAiParams] = useState({
@@ -1920,16 +1923,28 @@ const cancelContactForm = () => {
   };
 
   const generateAudioUrl = async (articleId: string, title: string, content: string) => {
-    console.time('audioGen'); // Timing generazione audio
+    console.time('audioGen');
+    setAudioGenerating(true);
+    setAudioProgress(0);
+    setAudioMessage('Preparazione testo...');
+
+    // Simulated progress timer
+    const progressSteps = [
+      { at: 500, pct: 10, msg: 'Invio al servizio TTS...' },
+      { at: 3000, pct: 25, msg: 'Generazione audio in corso...' },
+      { at: 6000, pct: 40, msg: 'Generazione audio in corso...' },
+      { at: 9000, pct: 55, msg: 'Generazione audio in corso...' },
+      { at: 12000, pct: 70, msg: 'Generazione audio in corso...' },
+      { at: 15000, pct: 80, msg: 'Generazione audio in corso...' },
+      { at: 18000, pct: 85, msg: 'Upload su S3...' },
+    ];
+    const timers = progressSteps.map(s =>
+      setTimeout(() => { setAudioProgress(s.pct); setAudioMessage(s.msg); }, s.at)
+    );
+
     try {
-      setLoading(true);
-      
-      // Process content to handle long sentences
       const processedContent = splitLongSentences(content, 200);
-      
-      console.log('Original content length:', content.length);
-      console.log('Processed content length:', processedContent.length);
-      
+
       const response = await fetch('/api/tts/generate', {
         method: 'POST',
         headers: {
@@ -1939,8 +1954,8 @@ const cancelContactForm = () => {
         body: JSON.stringify({
           articleId,
           title,
-          content: processedContent, // Send processed content with split sentences
-          excerpt: getValues('excerpt') // Add excerpt here
+          content: processedContent,
+          excerpt: getValues('excerpt')
         }),
       });
 
@@ -1949,16 +1964,36 @@ const cancelContactForm = () => {
         throw new Error(error.error || 'Failed to generate audio');
       }
 
-      const { jobId } = await response.json();
-      return jobId;
-      
+      const { audioUrl } = await response.json();
+
+      // Update the form field
+      setValue('audio_url', audioUrl);
+
+      // Auto-save audio_url to DB
+      const res = await fetch(`/api/articles/${articleId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
+        },
+        body: JSON.stringify({ audio_url: audioUrl }),
+      });
+      if (!res.ok) {
+        console.error('Failed to save audio_url to DB');
+      }
+
+      setAudioProgress(100);
+      setAudioMessage('Audio generato con successo!');
+      setTimeout(() => { setAudioGenerating(false); }, 2000);
+
     } catch (error) {
       console.error('Errore nella generazione dell\'audio:', error);
-      alert('Errore nella generazione dell\'audio file: ' + (error as Error).message);
-      return null;
+      setAudioMessage(`Errore: ${(error as Error).message}`);
+      setAudioProgress(0);
+      setTimeout(() => { setAudioGenerating(false); setAudioMessage(''); }, 3000);
     } finally {
-      console.timeEnd('audioGen'); // Fine timing audio
-      setLoading(false);
+      timers.forEach(clearTimeout);
+      console.timeEnd('audioGen');
     }
   };
 
@@ -2972,58 +3007,65 @@ const cancelContactForm = () => {
 
 
 
-                    {/* Add back the Audio section */}
+                    {/* Audio section */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700">Audio</label>
+                      <input type="hidden" {...register('audio_url')} />
                       <div className="mt-1">
-                    <input
-                      type="text"
-                      {...register('audio_url')} // Register the audio URL field
-                      className="block w-full rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
-                  placeholder="L'URL dell'audio verrà generato"
-                  readOnly
-                />
-                <button
-                  type="button"
-                  onClick={async () => {
-                            const currentTitle = getValues('title'); // Use getValues to ensure latest title
-                            const htmlContent = getValues('content'); // Get HTML content
-                            const articleId = article?.id || savedArticle?.id;
-
-                            if (!articleId) {
-                              alert('Salva prima l\'articolo per generare l\'audio.');
-                              return;
-                            }
-
-                            // Convert HTML to plain text for TTS
-                            const tempDiv = document.createElement('div');
-                            tempDiv.innerHTML = htmlContent;
-                            const plainTextContent = tempDiv.textContent || tempDiv.innerText || '';
-
-                            // Call generateAudioUrl with plain text
-                            const jobId = await generateAudioUrl(articleId, currentTitle, plainTextContent);
-                            if (jobId) {
-                              alert('Generazione audio avviata. L\'audio verra\' salvato automaticamente.');
-                            }
-                          }}
-                          className="mt-2 w-full inline-flex items-center justify-center px-3 sm:px-4 py-2 border border-transparent rounded-md shadow-sm text-xs sm:text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50"
-                          disabled={loading}
-                        >
-                          {loading ? 'Generazione...' : 'Genera Audio'}
-                        </button>
-                        {/* Optional: Add manual upload button if needed */}
-                        {/* 
-                        <label htmlFor="audioFile" className="mt-2 w-full inline-flex items-center justify-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 cursor-pointer">
-                          Carica File Audio
-                        </label>
-                        <input
-                          id="audioFile"
-                          type="file"
-                          accept="audio/*"
-                          onChange={handleAudioUpload} 
-                          className="sr-only"
-                        />
-                        */}
+                        {audioGenerating ? (
+                          <div className="rounded-md border border-gray-200 p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm text-gray-600">{audioMessage}</span>
+                              <span className="text-sm font-medium text-gray-900">{audioProgress}%</span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-2.5">
+                              <div
+                                className="bg-primary h-2.5 rounded-full transition-all duration-500"
+                                style={{ width: `${audioProgress}%` }}
+                              />
+                            </div>
+                          </div>
+                        ) : watch('audio_url') ? (
+                          <div className="rounded-md border border-gray-200 p-3 flex items-center gap-3">
+                            <audio controls src={watch('audio_url')} className="h-8 flex-1 min-w-0" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const currentTitle = getValues('title');
+                                const htmlContent = getValues('content');
+                                const articleId = article?.id || savedArticle?.id;
+                                if (!articleId) { alert('Salva prima l\'articolo.'); return; }
+                                const tempDiv = document.createElement('div');
+                                tempDiv.innerHTML = htmlContent;
+                                const plainText = tempDiv.textContent || tempDiv.innerText || '';
+                                generateAudioUrl(articleId, currentTitle, plainText);
+                              }}
+                              className="shrink-0 inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50"
+                            >
+                              Rigenera audio
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="rounded-md border border-dashed border-gray-300 p-4 text-center">
+                            <p className="text-sm text-gray-500 mb-2">Nessun audio generato</p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const currentTitle = getValues('title');
+                                const htmlContent = getValues('content');
+                                const articleId = article?.id || savedArticle?.id;
+                                if (!articleId) { alert('Salva prima l\'articolo per generare l\'audio.'); return; }
+                                const tempDiv = document.createElement('div');
+                                tempDiv.innerHTML = htmlContent;
+                                const plainText = tempDiv.textContent || tempDiv.innerText || '';
+                                generateAudioUrl(articleId, currentTitle, plainText);
+                              }}
+                              className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary"
+                            >
+                              Genera Audio
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

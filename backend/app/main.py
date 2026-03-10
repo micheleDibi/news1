@@ -1,4 +1,5 @@
 import os
+import asyncio
 from typing import List, Union
 import json
 import instructor
@@ -266,10 +267,11 @@ async def convert_text_to_audio(text: str, id: int):
         # Upload an empty or minimal MP3 file, or handle this case as an error
         # For now, let's assume we upload an empty Body, which might be invalid for S3/MP3
         # A better approach would be to have a pre-generated silent MP3 file.
-        s3_client.put_object(
+        await asyncio.to_thread(
+            s3_client.put_object,
             Bucket=os.getenv('AWS_BUCKET_NAME'),
             Key=file_key,
-            Body=b'', # Empty byte string
+            Body=b'',
             ContentType='audio/mpeg'
         )
         s3_url = f"https://{os.getenv('AWS_BUCKET_NAME')}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{file_key}"
@@ -304,7 +306,8 @@ async def convert_text_to_audio(text: str, id: int):
 
         # 6️⃣ Request text-to-speech conversion
         print(f"Sending request to Google Cloud Text-to-Speech API for part: '{text_part[:30]}...'")
-        response = client.synthesize_speech(
+        response = await asyncio.to_thread(
+            client.synthesize_speech,
             input=input_text_segment,
             voice=voice,
             audio_config=audio_config
@@ -330,7 +333,8 @@ async def convert_text_to_audio(text: str, id: int):
 
 
     # 7️⃣ Upload to S3
-    s3_client.put_object(
+    await asyncio.to_thread(
+        s3_client.put_object,
         Bucket=os.getenv('AWS_BUCKET_NAME'),
         Key=file_key,
         Body=combined_audio_buffer,
@@ -637,6 +641,27 @@ async def upload_dalle_to_s3(dalle_url: str, title: str) -> str:
         raise Exception(f"Upload failed: {resp.status_code} {resp.text}")
 
 
+async def generate_and_save_audio(article_id: int, text: str):
+    """Genera audio TTS e salva audio_url nel DB via API."""
+    try:
+        audio_url = await convert_text_to_audio(text, article_id)
+        if audio_url:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {os.getenv('API_SECRET_KEY')}"
+            }
+            update_url = f"{os.getenv('FRONTEND_URL', 'http://localhost:4321')}/api/articles/{article_id}"
+            response = await asyncio.to_thread(
+                requests.put, update_url, headers=headers, json={"audio_url": audio_url}
+            )
+            if response.status_code == 200:
+                print(f"[TTS] Audio salvato per articolo {article_id}: {audio_url}")
+            else:
+                print(f"[TTS] Errore salvataggio audio_url per articolo {article_id}: {response.text}")
+    except Exception as e:
+        print(f"[TTS] Errore generazione audio per articolo {article_id}: {e}")
+
+
 @app.post("/api/news/publish/{news_id}")
 async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
     """Publish news to CMS API"""
@@ -696,6 +721,13 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
             # Update local database with published status
             news_item.is_published = True
             db.commit()
+
+            # Lancia generazione audio in background (non blocca la pubblicazione)
+            cms_article = response.json().get("article", {})
+            cms_article_id = cms_article.get("id")
+            if cms_article_id:
+                asyncio.create_task(generate_and_save_audio(cms_article_id, text_to_audio))
+
             return {
                 "success": True,
                 "message": "Article published successfully",
