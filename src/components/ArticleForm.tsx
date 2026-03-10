@@ -905,6 +905,8 @@ export default function ArticleForm({ article }: ArticleFormProps) {
   const [audioGenerating, setAudioGenerating] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
   const [audioMessage, setAudioMessage] = useState('');
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [allowedCategories, setAllowedCategories] = useState<any[]>([]);
   const [showAiModal, setShowAiModal] = useState(false);
   const [aiParams, setAiParams] = useState({
@@ -3027,10 +3029,37 @@ const cancelContactForm = () => {
                           </div>
                         ) : watch('audio_url') ? (
                           <div className="rounded-md border border-gray-200 p-3 flex items-center gap-3">
-                            <audio controls src={watch('audio_url')} className="h-8 flex-1 min-w-0" />
+                            <audio
+                              ref={audioRef}
+                              src={watch('audio_url')}
+                              onEnded={() => setAudioPlaying(false)}
+                              className="hidden"
+                            />
                             <button
                               type="button"
                               onClick={() => {
+                                if (!audioRef.current) return;
+                                if (audioPlaying) {
+                                  audioRef.current.pause();
+                                  setAudioPlaying(false);
+                                } else {
+                                  audioRef.current.play();
+                                  setAudioPlaying(true);
+                                }
+                              }}
+                              className="inline-flex items-center gap-2 px-3 py-1.5 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+                            >
+                              {audioPlaying ? (
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+                              ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                              )}
+                              {audioPlaying ? 'Pausa' : 'Ascolta'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; setAudioPlaying(false); }
                                 const currentTitle = getValues('title');
                                 const htmlContent = getValues('content');
                                 const articleId = article?.id || savedArticle?.id;
