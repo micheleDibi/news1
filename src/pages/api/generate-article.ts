@@ -99,6 +99,34 @@ async function findRelatedArticles(prompt: string): Promise<{ title: string; slu
   }
 }
 
+async function fetchUrlContent(url: string): Promise<string> {
+  try {
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; EduNews24Bot/1.0)' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) return '';
+    const html = await response.text();
+    // Strip HTML tags, scripts, styles to get plain text
+    const cleaned = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+      .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+      .replace(/<header[\s\S]*?<\/header>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&[a-z]+;/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Limit to ~8000 chars to avoid bloating the prompt
+    return cleaned.substring(0, 8000);
+  } catch (e) {
+    console.error(`Failed to fetch source URL ${url}:`, e);
+    return '';
+  }
+}
+
 const SYSTEM_PROMPT = `Sei un generatore AI di articoli giornalistici di alta qualita. DEVI restituire SOLO un JSON valido, senza testo prima o dopo, con la struttura esatta:
 {"article": {"title": string, "excerpt": string, "content": string, "keywords": string[]}}
 
@@ -164,11 +192,27 @@ export const POST: APIRoute = async ({ request }) => {
       }
     }
 
+    // Fetch source URL content if provided
+    let sourceContent = '';
+    if (sourceUrl) {
+      console.log(`Fetching source URL: ${sourceUrl}`);
+      sourceContent = await fetchUrlContent(sourceUrl);
+      if (sourceContent) {
+        console.log(`Fetched ${sourceContent.length} chars from source URL`);
+      } else {
+        console.warn(`Could not fetch content from source URL: ${sourceUrl}`);
+      }
+    }
+
+    const sourceSection = sourceContent
+      ? `\nSource URL: ${sourceUrl}\n\nContenuto della fonte (usa queste informazioni come base per l'articolo):\n${sourceContent}`
+      : sourceUrl ? `\nSource URL: ${sourceUrl}` : '';
+
     const userContent = `Topic: ${prompt}
 Numero di paragrafi: ${paragraphs}
 Parole per paragrafo: ${wordsPerParagraph}
 Tono: ${tone}
-Persona: ${persona}${sourceUrl ? `\nSource URL: ${sourceUrl}` : ''}${interlinksText}
+Persona: ${persona}${sourceSection}${interlinksText}
 
 Rispondi SOLO con il JSON, senza blocchi di codice o altro testo.`;
 
