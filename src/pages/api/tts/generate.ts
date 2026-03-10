@@ -77,12 +77,14 @@ export const POST: APIRoute = async ({ request }) => {
 
     // Split text into chunks that stay under 5000 bytes (Google TTS limit)
     const MAX_BYTES = 4800; // margine di sicurezza
+    const encoder = new TextEncoder();
     const textParts: string[] = [];
     let remaining = fullText;
     while (remaining.length > 0) {
       let end = remaining.length;
       // Shrink until the chunk fits in MAX_BYTES
-      while (new TextEncoder().encode(remaining.substring(0, end)).length > MAX_BYTES) {
+      while (encoder.encode(remaining.substring(0, end)).length > MAX_BYTES) {
+        const prevEnd = end;
         // Try to cut at a sentence boundary
         const cut = remaining.lastIndexOf('. ', end - 1);
         if (cut > 0 && cut > end * 0.3) {
@@ -91,6 +93,14 @@ export const POST: APIRoute = async ({ request }) => {
           // Fallback: cut at space
           const spaceCut = remaining.lastIndexOf(' ', end - 1);
           end = spaceCut > 0 ? spaceCut : Math.floor(end * 0.8);
+        }
+        // Safety: force progress to avoid infinite loop
+        if (end >= prevEnd) {
+          end = Math.floor(prevEnd * 0.8);
+        }
+        if (end <= 0) {
+          end = 1;
+          break;
         }
       }
       textParts.push(remaining.substring(0, end));

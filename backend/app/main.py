@@ -283,6 +283,7 @@ async def convert_text_to_audio(text: str, id: int):
     while remaining:
         end = len(remaining)
         while len(remaining[:end].encode('utf-8')) > MAX_BYTES:
+            prev_end = end
             # Try to cut at a sentence boundary
             cut = remaining.rfind('. ', 0, end)
             if cut > 0 and cut > end * 0.3:
@@ -290,6 +291,12 @@ async def convert_text_to_audio(text: str, id: int):
             else:
                 space_cut = remaining.rfind(' ', 0, end)
                 end = space_cut if space_cut > 0 else int(end * 0.8)
+            # Safety: force progress to avoid infinite loop
+            if end >= prev_end:
+                end = int(prev_end * 0.8)
+            if end <= 0:
+                end = 1
+                break
         text_parts.append(remaining[:end])
         remaining = remaining[end:].lstrip()
 
