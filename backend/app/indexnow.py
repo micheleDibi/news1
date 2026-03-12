@@ -39,12 +39,11 @@ def submit_to_indexnow(urls: List[str]) -> None:
             "keyLocation": f"https://{SITE_HOST}/{api_key}.txt",
             "urlList": valid_urls,
         }
-        logger.debug("[IndexNow] Invio URL: {}", valid_urls)
         resp = requests.post(
             INDEXNOW_ENDPOINT,
             json=body,
             timeout=10,
         )
-        logger.info("[IndexNow] POST batch ({} URL) → {} | body: {}", len(urls), resp.status_code, resp.text)
+        logger.info("[IndexNow] POST batch ({} URL) → {}", len(valid_urls), resp.status_code)
     except Exception as e:
         logger.error("[IndexNow] Errore invio: {}", e)
