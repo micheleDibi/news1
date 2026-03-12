@@ -47,9 +47,21 @@ export const GET: APIRoute = async ({ params }) => {
     .single<Article>(); // Assume Supabase client allows specifying type
 
   if (articleError || !article) {
-    console.error('Error fetching article or article not found:', articleError?.message);
-    // Redirect to a 404 page or return a 404 response
-    // For AMP, returning a 404 status might be better than redirecting
+    // Fallback: l'articolo potrebbe aver cambiato categoria
+    const { data: movedArticle } = await supabase
+      .from('articles')
+      .select('category_slug, slug')
+      .eq('slug', slug)
+      .eq('isdraft', false)
+      .single();
+
+    if (movedArticle) {
+      return Response.redirect(
+        `https://edunews24.it/amp/${movedArticle.category_slug}/${movedArticle.slug}`,
+        301
+      );
+    }
+
     return new Response('Article not found', { status: 404 });
   }
 
