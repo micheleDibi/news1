@@ -4,7 +4,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 const MAX_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
-const FFMPEG_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const FFMPEG_BASE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes base
+const FFMPEG_TIMEOUT_PER_100MB_MS = 5 * 60 * 1000; // +5 min per 100MB extra
 
 function getVideoDuration(filePath: string): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -19,7 +20,7 @@ function getFileSize(filePath: string): Promise<number> {
   return import('fs/promises').then(fs => fs.stat(filePath)).then(s => s.size);
 }
 
-function runFfmpeg(inputPath: string, outputPath: string, options: { targetBitrate?: number }): Promise<void> {
+function runFfmpeg(inputPath: string, outputPath: string, options: { targetBitrate?: number; inputSize: number }): Promise<void> {
   return new Promise((resolve, reject) => {
     let cmd = ffmpeg(inputPath)
       .output(outputPath)
@@ -42,11 +43,12 @@ function runFfmpeg(inputPath: string, outputPath: string, options: { targetBitra
       cmd = cmd.outputOptions(['-crf', '23']);
     }
 
-    // Timeout: kill ffmpeg if it takes too long
+    // Timeout: scale with file size (10min base + 5min per 100MB)
+    const timeoutMs = FFMPEG_BASE_TIMEOUT_MS + Math.ceil(options.inputSize / MAX_SIZE_BYTES) * FFMPEG_TIMEOUT_PER_100MB_MS;
     const timer = setTimeout(() => {
       cmd.kill('SIGTERM');
-      reject(new Error(`ffmpeg timed out after ${FFMPEG_TIMEOUT_MS / 1000}s`));
-    }, FFMPEG_TIMEOUT_MS);
+      reject(new Error(`ffmpeg timed out after ${timeoutMs / 1000}s`));
+    }, timeoutMs);
 
     cmd
       .on('end', () => { clearTimeout(timer); resolve(); })
@@ -71,7 +73,7 @@ export async function compressAndConvertVideo(inputPath: string): Promise<string
     targetBitrate = Math.floor((MAX_SIZE_BYTES * 8) / (duration * 1024));
   }
 
-  await runFfmpeg(inputPath, outputPath, { targetBitrate });
+  await runFfmpeg(inputPath, outputPath, { targetBitrate, inputSize });
 
   return outputPath;
 }

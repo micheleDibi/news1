@@ -1415,29 +1415,41 @@ const cancelContactForm = () => {
 
       console.log(`🎥 Splitting into ${totalChunks} chunks (${(CHUNK_SIZE / 1024 / 1024)}MB each), uploadId: ${uploadId}`);
 
-      // Send each chunk sequentially (0% - 70% of progress)
+      // Send each chunk sequentially (0% - 70% of progress) with retry
+      const MAX_CHUNK_RETRIES = 3;
       for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, file.size);
         const chunkBlob = file.slice(start, end);
 
-        const chunkForm = new FormData();
-        chunkForm.append('chunk', chunkBlob);
-        chunkForm.append('uploadId', uploadId);
-        chunkForm.append('chunkIndex', String(i));
-        chunkForm.append('totalChunks', String(totalChunks));
-
         console.log(`🎥 Sending chunk ${i + 1}/${totalChunks} (${((end - start) / 1024 / 1024).toFixed(1)}MB)`);
 
-        const chunkRes = await fetch('/api/upload-video-chunk', {
-          method: 'POST',
-          headers: { 'Authorization': authHeader },
-          body: chunkForm
-        });
+        let chunkSuccess = false;
+        for (let attempt = 1; attempt <= MAX_CHUNK_RETRIES; attempt++) {
+          try {
+            const chunkForm = new FormData();
+            chunkForm.append('chunk', chunkBlob);
+            chunkForm.append('uploadId', uploadId);
+            chunkForm.append('chunkIndex', String(i));
+            chunkForm.append('totalChunks', String(totalChunks));
 
-        if (!chunkRes.ok) {
-          const errPayload = await chunkRes.json().catch(() => null);
-          throw new Error(errPayload?.error || `Chunk ${i + 1} upload failed`);
+            const chunkRes = await fetch('/api/upload-video-chunk', {
+              method: 'POST',
+              headers: { 'Authorization': authHeader },
+              body: chunkForm
+            });
+
+            if (!chunkRes.ok) {
+              const errPayload = await chunkRes.json().catch(() => null);
+              throw new Error(errPayload?.error || `Chunk ${i + 1} upload failed`);
+            }
+            chunkSuccess = true;
+            break;
+          } catch (err) {
+            console.warn(`🎥 Chunk ${i + 1} attempt ${attempt}/${MAX_CHUNK_RETRIES} failed:`, err);
+            if (attempt === MAX_CHUNK_RETRIES) throw err;
+            await new Promise(r => setTimeout(r, 2000 * attempt));
+          }
         }
 
         setVideoUploadProgress(Math.round(((i + 1) / totalChunks) * 70));
@@ -1466,21 +1478,36 @@ const cancelContactForm = () => {
         throw new Error(errorPayload?.error || 'Video assembly failed');
       }
 
-      // Poll for compression status
+      // Poll for compression status with retry on transient errors
       console.log('🎥 Compression started, polling for status...');
       let videoUrl = '';
+      let pollFailures = 0;
+      const MAX_POLL_FAILURES = 10;
       while (true) {
         await new Promise(r => setTimeout(r, 3000)); // Poll every 3 seconds
 
-        const statusRes = await fetch(`/api/upload-video-status?uploadId=${uploadId}`, {
-          headers: { 'Authorization': authHeader }
-        });
+        let statusData;
+        try {
+          const statusRes = await fetch(`/api/upload-video-status?uploadId=${uploadId}`, {
+            headers: { 'Authorization': authHeader }
+          });
 
-        if (!statusRes.ok) {
-          throw new Error('Failed to check compression status');
+          if (!statusRes.ok) {
+            throw new Error(`Status ${statusRes.status}`);
+          }
+
+          statusData = await statusRes.json();
+          pollFailures = 0; // Reset on success
+        } catch (err) {
+          pollFailures++;
+          console.warn(`🎥 Poll attempt failed (${pollFailures}/${MAX_POLL_FAILURES}):`, err);
+          if (pollFailures >= MAX_POLL_FAILURES) {
+            throw new Error('Connessione persa durante l\'elaborazione del video');
+          }
+          setVideoStatusMessage('Riconnessione in corso...');
+          continue;
         }
 
-        const statusData = await statusRes.json();
         console.log('🎥 Compression status:', statusData.status, statusData.message);
 
         if (statusData.status === 'done') {
