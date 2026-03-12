@@ -11,7 +11,6 @@ from .logger import logger
 
 INDEXNOW_ENDPOINT = "https://api.indexnow.org/indexnow"
 SITE_HOST = "edunews24.it"
-KEY_LOCATION = f"https://{SITE_HOST}/api/indexnow-key"
 
 
 def submit_to_indexnow(urls: List[str]) -> None:
@@ -27,13 +26,20 @@ def submit_to_indexnow(urls: List[str]) -> None:
     if not urls:
         return
 
+    # Filtra solo URL del dominio corretto
+    valid_urls = [u for u in urls if u.startswith(f"https://{SITE_HOST}/")]
+    if not valid_urls:
+        logger.warning("[IndexNow] Nessun URL valido per {}: {}", SITE_HOST, urls)
+        return
+
     try:
         body = {
             "host": SITE_HOST,
             "key": api_key,
-            "keyLocation": KEY_LOCATION,
-            "urlList": urls,
+            "keyLocation": f"https://{SITE_HOST}/{api_key}.txt",
+            "urlList": valid_urls,
         }
+        logger.debug("[IndexNow] Invio URL: {}", valid_urls)
         resp = requests.post(
             INDEXNOW_ENDPOINT,
             json=body,

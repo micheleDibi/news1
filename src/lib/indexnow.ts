@@ -5,7 +5,6 @@
 
 const INDEXNOW_ENDPOINT = 'https://api.indexnow.org/indexnow';
 const SITE_HOST = 'edunews24.it';
-const KEY_LOCATION = `https://${SITE_HOST}/api/indexnow-key`;
 
 /**
  * Submits one or more URLs to IndexNow for indexing.
@@ -35,7 +34,7 @@ export async function submitToIndexNow(urls: string | string[]): Promise<void> {
       const body = {
         host: SITE_HOST,
         key: apiKey,
-        keyLocation: KEY_LOCATION,
+        keyLocation: `https://${SITE_HOST}/${apiKey}.txt`,
         urlList,
       };
       const res = await fetch(INDEXNOW_ENDPOINT, {
