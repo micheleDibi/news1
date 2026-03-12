@@ -234,7 +234,7 @@ export const GET: APIRoute = async ({ params }) => {
           <p>Universo S.r.l. ©2022-${new Date().getFullYear()}. Tutti i diritti riservati.</p>
           <p>P.IVA. 03930330794, Via del Tritone 132, 00187 Roma</p>
           <p>Depositata al Tribunale di Lamezia Terme(CZ) - Prot.llo 189/2025 in data 3 Marzo 2025.</p>
-          <p>Iscrizione ROC Pratica n° 1436921 - Direttore Responsabile: Dott. Torchia Antonello | <a href="/privacy" class="footer-link">Privacy</a> | <a href="/chi-siamo" class="footer-link">Chi Siamo</a></p>
+          <p>Iscrizione ROC Pratica n° 1436921 - Direttore Responsabile: Dott. Torchia Antonello | <a href="/privacy" class="footer-link">Privacy</a> | <a href="/chi-siamo" class="footer-link">Chi Siamo</a> | <a href="/termini-di-servizio" class="footer-link">Termini di Servizio</a> | <a href="/team" class="footer-link">Redazione</a></p>
         </div>
 
         <!-- Right Column -->

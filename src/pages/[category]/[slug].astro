@@ -8,7 +8,7 @@ import ContactForm from '../../components/ContactForm';
 import { categories } from '../../lib/categories';
 import { generateArticleStructuredData, generateBreadcrumbStructuredData, generateFAQStructuredData } from '../../lib/seo';
 import type { SecondaryCategory, Article } from '../../lib/supabase';
-import { slugify } from '../../lib/utils';
+import { slugify, truncateAtDot } from '../../lib/utils';
 
 const { category, slug } = Astro.params;
 
@@ -308,11 +308,17 @@ const imageSrcset = article.image_url ? generateSrcset(article.image_url, [320, 
 // Adjust these to the typical aspect ratio of your LCP images.
 const imageWidth = 1280;
 const imageHeight = 720;
+
+const suffix = ' - EduNews24';
+const metaTitle = article.title.length + suffix.length <= 70
+  ? article.title + suffix
+  : truncateAtDot(article.title, 70);
+const metaDescription = truncateAtDot(article.excerpt || '', 160);
 ---
 
 <Layout
-  title={`${article.title} - EduNews24`}
-  description={`${article.excerpt} Leggi di più.`}
+  title={metaTitle}
+  description={metaDescription}
   canonicalUrl={`https://edunews24.it/${article.category_slug}/${article.slug}`}
   image={article.image_url}
   ogType="article"

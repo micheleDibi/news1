@@ -14,7 +14,7 @@ if (!slugParam) {
 // Recupera l'articolo che corrisponde allo slug e ha un video
 const { data: article, error } = await supabase
   .from('articles')
-  .select('title, summary, excerpt, video_url, thumbnail_url, image_url, published_at, video_duration, slug, category_slug, isdraft')
+  .select('title, summary, excerpt, video_url, thumbnail_url, image_url, published_at, video_duration, slug, category_slug, isdraft, creator')
   .eq('slug', slugParam)
   .eq('isdraft', false)
   .maybeSingle();
@@ -31,6 +31,25 @@ const thumb = (article as any).thumbnail_url?.trim?.() || (article as any).image
 const uploadDate = article.published_at ? new Date(article.published_at).toISOString() : '2024-01-01T00:00:00Z';
 const durationSeconds = typeof (article as any).video_duration === 'number' ? Math.round((article as any).video_duration) : NaN;
 const durationIso = Number.isFinite(durationSeconds) && durationSeconds > 0 ? `PT${Math.round(durationSeconds)}S` : undefined;
+
+// Fetch creator profile name
+let creatorName: string | undefined;
+if ((article as any).creator) {
+  let { data: profile } = await supabase
+    .from('profiles')
+    .select('public_name')
+    .eq('id', (article as any).creator)
+    .single();
+  if (!profile) {
+    const { data: nameProfile } = await supabase
+      .from('profiles')
+      .select('public_name')
+      .eq('full_name', (article as any).creator)
+      .single();
+    profile = nameProfile;
+  }
+  creatorName = profile?.public_name || undefined;
+}
 
 const canonicalUrl = `${siteUrl}/video/videomaker-${encodeURIComponent(article.slug)}`;
 const articleUrl = article.category_slug ? `/${article.category_slug}/${article.slug}` : '/';
@@ -53,12 +72,11 @@ const structuredData = JSON.stringify(
 );
 ---
 
-<Layout title={title} description={description} canonicalUrl={canonicalUrl}>
+<Layout title={title} description={description} canonicalUrl={canonicalUrl} author={creatorName}>
   <script type="application/ld+json" slot="head" set:html={structuredData} />
 
   <main class="max-w-3xl mx-auto px-4 py-10 space-y-8">
     <header class="space-y-3">
-      <p class="text-sm text-sport-600 font-semibold uppercase">Videomaker EduNews24</p>
       <h1 class="text-3xl font-bold text-gray-900">{title}</h1>
       <p class="text-lg text-gray-600">{description}</p>
       <div class="flex flex-wrap items-center gap-4 text-sm text-gray-500">

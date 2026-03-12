@@ -26,6 +26,19 @@ export const secondsToIsoDuration = (totalSeconds: number): string => {
   return `PT${minutePart}${secondPart || '0S'}`; //concatenazione
 };
 
+/**
+ * Truncate text at the last dot within maxLen, or at a word boundary.
+ */
+export function truncateAtDot(text: string, maxLen: number): string {
+  if (!text || text.length <= maxLen) return text || '';
+  const sub = text.substring(0, maxLen);
+  const lastDot = sub.lastIndexOf('.');
+  if (lastDot > 0) return sub.substring(0, lastDot + 1);
+  const lastSpace = sub.lastIndexOf(' ');
+  if (lastSpace > 0) return sub.substring(0, lastSpace);
+  return sub;
+}
+
 export function filenameToIsoDate (filename: string): string | null {
   const match= filename.match(/(\d{4})-(\d{2})-(\d{2}) at (\d{2}).(\d{2}).(\d{2})/);
   if (!match) return null;

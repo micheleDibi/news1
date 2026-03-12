@@ -85,10 +85,11 @@ const formattedDescription = profile.description
   : '';
 ---
 
-<Layout 
+<Layout
   title={`${profile.public_name} - Team EduNews24`}
   description={profile.description ? `Scopri di più su ${profile.public_name}, membro del team di EduNews24. ${profile.description.substring(0, 150)}...` : `Conosci ${profile.public_name}, membro del team di EduNews24.`}
   canonicalUrl={`https://edunews24.it/team/${slug}`}
+  author={profile.public_name}
 >
   <main class="bg-gray-50 min-h-screen py-8">
     <div class="container mx-auto px-4">

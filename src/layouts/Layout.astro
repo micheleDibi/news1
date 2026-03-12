@@ -13,6 +13,7 @@ interface Props {
   publishedTime?: string;
   modifiedTime?: string;
   section?: string;
+  robots?: string;
 }
 
 const {
@@ -25,7 +26,8 @@ const {
   author,
   publishedTime,
   modifiedTime,
-  section
+  section,
+  robots
 } = Astro.props;
 
 // Fetch latest articles for breaking news
@@ -50,12 +52,12 @@ const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content={description.replace(/"/g, '&quot;')} />
     {keywords && <meta name="keywords" content={keywords.replace(/"/g, '&quot;')} />}
-    <meta name="author" content="EduNews24" />
+    <meta name="author" content={author || "EduNews24"} />
     <meta name="msvalidate.01" content="4941256B9C3CAD614EE85E23F2053749" />
     <meta name="facebook-domain-verification" content="q6kx042o2rngwqeemuxv2bod9xdsub" />
     
     <!-- Robots and Indexing -->
-    <meta name="robots" content="index, follow" />
+    <meta name="robots" content={robots || "index, follow"} />
     <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
     <meta name="bingbot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
     <meta name="yandex-verification" content="963c8f839c31d2f5" />
@@ -193,7 +195,7 @@ const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
               Depositata al Tribunale di Lamezia Terme(CZ) - Prot.llo 189/2025 in data 3 Marzo 2025.
             </p>
             <p>
-              Iscrizione ROC Pratica n° 1436921 - Direttore Responsabile: Dott. Torchia Antonello | <a href="/privacy" class="text-white underline hover:text-gray-200">Privacy</a> | <a href="/chi-siamo" class="text-white underline hover:text-gray-200">Chi Siamo</a> | <a href="/termini-di-servizio" class="text-white underline hover:text-gray-200">Termini di Servizio</a>
+              Iscrizione ROC Pratica n° 1436921 - Direttore Responsabile: Dott. Torchia Antonello | <a href="/privacy" class="text-white underline hover:text-gray-200">Privacy</a> | <a href="/chi-siamo" class="text-white underline hover:text-gray-200">Chi Siamo</a> | <a href="/termini-di-servizio" class="text-white underline hover:text-gray-200">Termini di Servizio</a> | <a href="/team" class="text-white underline hover:text-gray-200">Redazione</a>
             </p>
           </div>
 

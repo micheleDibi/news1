@@ -8,6 +8,7 @@ import { getCategoryBySlug, categories as allCategories } from '../lib/categorie
 import CategorySidebar from '../components/CategorySidebar.astro';
 import { generateItemListStructuredData, generateBreadcrumbStructuredData } from '../lib/seo';
 import type { Category, SecondaryCategory, Article } from '../lib/supabase';
+import { truncateAtDot } from '../lib/utils';
 
 // page size + helpers ---------------------------------
 const PER_PAGE = 21;
@@ -280,17 +281,19 @@ const metaKeywords = uniqueKeywords.join(', ');
 // --- End Meta Keywords --- //
 
 // Define the meta description
-const metaDescription = (category.description 
-  ? `${category.description} - EduNews24 - Il portale online gratuito con tante notizie provenienti dal ${category.name}`
-  : `EduNews24 - Il portale online gratuito con tante notizie provenienti dal ${category.name}`);
+const metaDescription = truncateAtDot(
+  category.description
+    ? `${category.description} - EduNews24 - Il portale online gratuito con tante notizie provenienti dal ${category.name}`
+    : `EduNews24 - Il portale online gratuito con tante notizie provenienti dal ${category.name}`,
+  160
+);
 
 // --- Generate Structured Data ---
 const pageUrl = categorySlug === ultimOraSlug ? `https://edunews24.it/ultim-ora` : `https://edunews24.it/${category.slug}`;
 
-const canonicalUrl =
-  page === 1
-    ? pageUrl                                   // first page keeps the clean URL
-    : `${pageUrl}?page=${page}${currentSecondaryFilter ? `&secondary_filter=${currentSecondaryFilter}` : ''}`;
+const canonicalUrl = pageUrl; // always point to the base URL without ?page=X
+
+const shouldNoIndex = !!currentSecondaryFilter;
 
 // Generate ItemList for the articles displayed
 const itemListStructuredData = generateItemListStructuredData(
@@ -309,13 +312,15 @@ const breadcrumbData = {
 const breadcrumbStructuredData = generateBreadcrumbStructuredData(breadcrumbData);
 // --- End Structured Data ---
 
+const categoryMetaTitle = truncateAtDot(`${category.name} - EduNews24`, 60);
 ---
 
 <Layout
-  title={`${category.name} - EduNews24`}
+  title={categoryMetaTitle}
   description={metaDescription}
   keywords={metaKeywords}
   canonicalUrl={canonicalUrl}
+  robots={shouldNoIndex ? "noindex, follow" : undefined}
 >
   <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />
   <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
