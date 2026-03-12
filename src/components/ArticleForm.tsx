@@ -924,6 +924,7 @@ export default function ArticleForm({ article }: ArticleFormProps) {
   const [sidebarVideoUrl, setSidebarVideoUrl] = useState<string>(article?.video_url || '');
   const [isUploadingVideo, setIsUploadingVideo] = useState(false);
   const [videoUploadProgress, setVideoUploadProgress] = useState(0);
+  const [videoStatusMessage, setVideoStatusMessage] = useState('');
   const [videoDuration, setVideoDuration]= useState <number|null>(article?.video_duration??null);
 
   const [showContactConfirm, setShowContactConfirm] = useState(false);
@@ -1397,6 +1398,7 @@ const cancelContactForm = () => {
     try {
       setIsUploadingVideo(true);
       setVideoUploadProgress(0);
+      setVideoStatusMessage('');
 
       const articleSlug = slugify(getValues('title') || 'articolo');
       const ext = file.name.split('.').pop() || 'mp4';
@@ -1469,7 +1471,6 @@ const cancelContactForm = () => {
       let videoUrl = '';
       while (true) {
         await new Promise(r => setTimeout(r, 3000)); // Poll every 3 seconds
-        setVideoUploadProgress(prev => Math.min(prev + 1, 95)); // Slowly increment 75→95
 
         const statusRes = await fetch(`/api/upload-video-status?uploadId=${uploadId}`, {
           headers: { 'Authorization': authHeader }
@@ -1480,15 +1481,25 @@ const cancelContactForm = () => {
         }
 
         const statusData = await statusRes.json();
-        console.log('🎥 Compression status:', statusData.status);
+        console.log('🎥 Compression status:', statusData.status, statusData.message);
 
         if (statusData.status === 'done') {
           videoUrl = statusData.url;
           break;
         } else if (statusData.status === 'error') {
           throw new Error(statusData.error || 'Video compression failed');
+        } else if (statusData.status === 'queued') {
+          // In queue — hold progress at 75%
+          setVideoUploadProgress(75);
+          setVideoStatusMessage(statusData.message || 'In coda...');
+        } else if (statusData.status === 'uploading') {
+          setVideoUploadProgress(prev => Math.min(prev + 2, 95));
+          setVideoStatusMessage(statusData.message || 'Salvataggio...');
+        } else {
+          // processing
+          setVideoUploadProgress(prev => Math.min(prev + 1, 90));
+          setVideoStatusMessage(statusData.message || 'Compressione in corso...');
         }
-        // status === 'processing' → continue polling
       }
 
       setVideoUploadProgress(100);
@@ -2866,7 +2877,11 @@ const cancelContactForm = () => {
                               <div className="mt-3 w-full px-2">
                                 <div className="flex items-center justify-between mb-1">
                                   <span className="text-xs font-medium text-primary">
-                                    {videoUploadProgress < 70 ? 'Caricamento...' : videoUploadProgress < 100 ? 'Compressione in corso...' : 'Completato!'}
+                                    {videoUploadProgress < 70
+                                      ? 'Caricamento...'
+                                      : videoUploadProgress >= 100
+                                        ? 'Completato!'
+                                        : videoStatusMessage || 'Elaborazione...'}
                                   </span>
                                   <span className="text-xs font-medium text-primary">{videoUploadProgress}%</span>
                                 </div>

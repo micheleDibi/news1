@@ -11,7 +11,13 @@ import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 
 // In-memory job status store
-const jobs = new Map<string, { status: 'processing' | 'done' | 'error'; url?: string; error?: string }>();
+type JobStatus = {
+  status: 'queued' | 'processing' | 'uploading' | 'done' | 'error';
+  message: string;
+  url?: string;
+  error?: string;
+};
+const jobs = new Map<string, JobStatus>();
 
 // Cleanup old jobs after 30 minutes
 function scheduleJobCleanup(uploadId: string) {
@@ -103,8 +109,8 @@ export const POST: APIRoute = async ({ request }) => {
     await writeFile(inputPath, buffer);
     buffer = null; // Allow GC to free ~500MB
 
-    // Mark job as processing and respond immediately
-    jobs.set(uploadId, { status: 'processing' });
+    // Mark job as queued and respond immediately
+    jobs.set(uploadId, { status: 'queued', message: 'In coda — un altro video è in fase di elaborazione...' });
     scheduleJobCleanup(uploadId);
 
     // Run compression + upload in the background (not awaited)
@@ -114,19 +120,25 @@ export const POST: APIRoute = async ({ request }) => {
       let outputPath: string | undefined;
       try {
         await withFfmpegLock(async () => {
+          jobs.set(uploadId, { status: 'processing', message: 'Compressione del video in corso...' });
           logger.info(`Compressing video: ${originalFilename}`);
           outputPath = await compressAndConvertVideo(inputPath);
           logger.info(`Compression complete: ${outputPath}`);
         });
 
         // Stream upload to S3 (no buffer needed)
+        jobs.set(uploadId, { status: 'uploading', message: 'Salvataggio del video...' });
         const videoUrl = await streamUploadToS3(outputPath!, videoFilename, 'video/mp4');
 
         logger.info(`Video uploaded successfully: ${videoUrl}`);
-        jobs.set(uploadId, { status: 'done', url: videoUrl });
+        jobs.set(uploadId, { status: 'done', message: 'Video pronto!', url: videoUrl });
       } catch (err) {
         logger.error('Background compression/upload error:', err);
-        jobs.set(uploadId, { status: 'error', error: err instanceof Error ? err.message : 'Compression failed' });
+        jobs.set(uploadId, {
+          status: 'error',
+          message: 'Si è verificato un errore durante l\'elaborazione del video.',
+          error: err instanceof Error ? err.message : 'Compression failed',
+        });
       } finally {
         // Cleanup temp files
         await unlink(inputPath).catch(() => {});
