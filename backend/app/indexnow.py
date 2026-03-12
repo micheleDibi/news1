@@ -39,6 +39,6 @@ def submit_to_indexnow(urls: List[str]) -> None:
             json=body,
             timeout=10,
         )
-        logger.info("[IndexNow] POST batch ({} URL) → {}", len(urls), resp.status_code)
+        logger.info("[IndexNow] POST batch ({} URL) → {} | body: {}", len(urls), resp.status_code, resp.text)
     except Exception as e:
         logger.error("[IndexNow] Errore invio: {}", e)
