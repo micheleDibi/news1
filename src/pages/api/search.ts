@@ -23,7 +23,7 @@ export const POST: APIRoute = async ({ request }) => {
     if (query) {
       const searchTerm = query.replace(/%/g, '\\%').replace(/_/g, '\\_');
       supabaseQuery = supabaseQuery.or(
-        `title.ilike.%${searchTerm}%,excerpt.ilike.%${searchTerm}%,content.ilike.%${searchTerm}%`
+        `title.ilike.%${searchTerm}%,excerpt.ilike.%${searchTerm}%,tags.cs.{${searchTerm}}`
       );
     }
 
