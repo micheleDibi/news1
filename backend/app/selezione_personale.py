@@ -24,6 +24,7 @@ load_dotenv()
 
 from .database import get_supabase_client
 from .indexnow import submit_to_indexnow
+from .google_indexing import notify_google_indexing
 from .logger import logger
 
 # ---------------------------------------------------------------------------
@@ -399,6 +400,9 @@ def generate_articles_for_pending() -> int:
                 f"https://edunews24.it/selezione-personale/{slug}",
                 "https://edunews24.it/selezione-personale",
             ])
+
+            # Notify Google Indexing API (JobPosting)
+            notify_google_indexing([f"https://edunews24.it/selezione-personale/{slug}"])
         else:
             supabase.table("selezione_personale").update(
                 {"status": "error", "updated_at": datetime.now().isoformat()}

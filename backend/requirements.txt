@@ -20,6 +20,7 @@ anthropic
 boto3
 cloudscraper
 google-cloud-texttospeech
+google-auth
 pandas
 urllib3
 Pillow
