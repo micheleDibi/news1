@@ -6,36 +6,6 @@ import { secondsToIsoDuration } from './utils';
 import { randomVideos } from './randomVideos';
 
 /**
- * Pings search engines to notify them of new content
- * @param url The URL of the new content
- */
-export async function pingSearchEngines(url: string): Promise<void> {
-  const searchEngines = [
-    `https://www.google.com/ping?sitemap=${encodeURIComponent(url)}`,
-    `https://www.bing.com/ping?sitemap=${encodeURIComponent(url)}`
-  ];
-
-  try {
-    await Promise.all(
-      searchEngines.map(engine => 
-        fetch(engine, { method: 'GET' })
-          .then(response => {
-            if (!response.ok) {
-              console.warn(`Failed to ping search engine: ${engine}`);
-            }
-          })
-          .catch(error => {
-            console.error(`Error pinging search engine: ${engine}`, error);
-          })
-      )
-    );
-    console.log('Successfully pinged search engines');
-  } catch (error) {
-    console.error('Error pinging search engines:', error);
-  }
-}
-
-/**
  * Generates structured data for an article
  * @param article The article data
  * @returns JSON-LD structured data as a string

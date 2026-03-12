@@ -23,6 +23,7 @@ if (fetchError) {
 }
 
 // Removed article count logic as we are switching to a table
+const apiSecretKey = import.meta.env.API_SECRET_KEY;
 ---
 
 <AdminLayout title="Gestione Categorie">
@@ -275,6 +276,9 @@ if (fetchError) {
   </div>
 </div>
 
+<script define:vars={{ apiSecretKey }}>
+  window.__API_SECRET_KEY = apiSecretKey;
+</script>
 <script>
   import { supabase } from '../../../lib/supabase';
   import type { Category, SecondaryCategory } from '../../../lib/supabase'; // Import SecondaryCategory type again for script scope
@@ -623,6 +627,7 @@ if (fetchError) {
           // alert('Categoria eliminata con successo!'); // Optional: Less intrusive
           row.remove();
           await triggerCategoryRefresh(); // <<< CALL REFRESH API HERE
+          await notifyIndexNowCategory(categoryId);
           // Check if table is now empty
           if (categoriesTableBody?.querySelectorAll('tr').length === 0) {
             addEmptyStateRow();
@@ -631,6 +636,24 @@ if (fetchError) {
       }
     }
   });
+
+  // Notify IndexNow about category URL changes
+  async function notifyIndexNowCategory(slug: string) {
+    try {
+      const key = (window as any).__API_SECRET_KEY;
+      if (!key) return;
+      await fetch('/api/indexnow-notify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${key}`,
+        },
+        body: JSON.stringify({ urls: [`https://edunews24.it/${slug}`] }),
+      });
+    } catch (e) {
+      console.error('IndexNow notify error:', e);
+    }
+  }
 
   // Function to trigger the category refresh API
   async function triggerCategoryRefresh() {
@@ -751,6 +774,7 @@ if (fetchError) {
         closeModal();
         updateTableRow(savedData);
         await triggerCategoryRefresh(); // <<< CALL REFRESH API HERE
+        await notifyIndexNowCategory(savedData.slug);
       }
     } catch (err) {
        console.error('Unexpected error saving category:', err);

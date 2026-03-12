@@ -23,6 +23,7 @@ import os
 load_dotenv()
 
 from .database import get_supabase_client
+from .indexnow import submit_to_indexnow
 from .logger import logger
 
 # ---------------------------------------------------------------------------
@@ -392,6 +393,12 @@ def generate_articles_for_pending() -> int:
             ).eq("id", item["id"]).execute()
             success_count += 1
             logger.info("Articolo generato: {}...", article['article_title'][:60])
+
+            # Notify IndexNow
+            submit_to_indexnow([
+                f"https://edunews24.it/selezione-personale/{slug}",
+                "https://edunews24.it/selezione-personale",
+            ])
         else:
             supabase.table("selezione_personale").update(
                 {"status": "error", "updated_at": datetime.now().isoformat()}

@@ -28,6 +28,7 @@ import os
 load_dotenv()
 
 from .database import get_supabase_client
+from .indexnow import submit_to_indexnow
 from .logger import logger
 
 # ---------------------------------------------------------------------------
@@ -39,6 +40,22 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 
 CLAUDE_MODEL = "claude-opus-4-6"
+
+
+def _generate_interpello_slug(item: dict) -> str:
+    """Genera slug URL-friendly per un interpello (replica della logica frontend)."""
+    import re
+    parts = [
+        item.get("interpello_name", ""),
+        item.get("interpello_provincia") or item.get("interpello_citta", ""),
+        item.get("interpello_regione", ""),
+        str(item.get("id", "")),
+    ]
+    parts = [p for p in parts if p]
+    raw = "-".join(parts).lower()
+    raw = re.sub(r"[^a-z0-9\-]", "-", raw)
+    raw = re.sub(r"-+", "-", raw)
+    return raw.strip("-")
 
 
 def _llm_json_request(
@@ -798,6 +815,13 @@ def generate_articles_for_pending() -> int:
             ).eq("id", item["id"]).execute()
             success_count += 1
             logger.info("Articolo generato: {}...", article.article_title[:60])
+
+            # Notify IndexNow
+            slug = _generate_interpello_slug(item)
+            submit_to_indexnow([
+                f"https://edunews24.it/interpelli/{slug}",
+                "https://edunews24.it/interpelli",
+            ])
         else:
             supabase.table("interpelli").update(
                 {"status": "error"}

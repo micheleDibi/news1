@@ -3,7 +3,7 @@ export const prerender = false;
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
 import { slugify } from '../../../lib/utils';
-import { pingSearchEngines } from '../../../lib/seo';
+import { submitToIndexNow } from '../../../lib/indexnow';
 import { logger } from '../../../lib/logger';
 
 export const POST: APIRoute = async ({ request }) => {
@@ -92,13 +92,16 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
-    // Ping search engines if article is published
+    // Notify IndexNow if article is published
     if (!data.isdraft) {
       try {
-        await pingSearchEngines(`https://edunews24.it/${data.category_slug}/${data.slug}`);
+        await submitToIndexNow([
+          `https://edunews24.it/${data.category_slug}/${data.slug}`,
+          `https://edunews24.it/${data.category_slug}`,
+          'https://edunews24.it/',
+        ]);
       } catch (error) {
-        logger.error('Error pinging search engines:', error);
-        // Don't fail the request if pinging fails
+        logger.error('Error notifying IndexNow:', error);
       }
     }
 
