@@ -1,4 +1,6 @@
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
+import { createReadStream } from "fs";
 
 // Initialize S3 Client
 const s3Client = new S3Client({
@@ -31,5 +33,35 @@ export const uploadToS3 = async (
   await s3Client.send(command);
 
   // Return the public URL
+  return `https://${import.meta.env.AWS_BUCKET_NAME}.s3.${import.meta.env.AWS_REGION}.amazonaws.com/audios/${filename}`;
+};
+
+/**
+ * Stream-upload a file from disk to S3 without loading it into memory.
+ * Uses multipart upload under the hood via @aws-sdk/lib-storage.
+ */
+export const streamUploadToS3 = async (
+  filePath: string,
+  filename: string,
+  contentType: string
+): Promise<string> => {
+  const normalizedContentType =
+    contentType ||
+    (filename.toLowerCase().endsWith('.mov') ? 'video/quicktime' : 'video/mp4');
+
+  const upload = new Upload({
+    client: s3Client,
+    params: {
+      Bucket: import.meta.env.AWS_BUCKET_NAME,
+      Key: `audios/${filename}`,
+      Body: createReadStream(filePath),
+      ContentType: normalizedContentType,
+      ContentDisposition: 'inline',
+      CacheControl: 'public, max-age=31536000',
+    },
+  });
+
+  await upload.done();
+
   return `https://${import.meta.env.AWS_BUCKET_NAME}.s3.${import.meta.env.AWS_REGION}.amazonaws.com/audios/${filename}`;
 };

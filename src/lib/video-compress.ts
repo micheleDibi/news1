@@ -2,9 +2,9 @@ import ffmpeg from 'fluent-ffmpeg';
 import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { writeFile, readFile, unlink } from 'fs/promises';
 
 const MAX_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
+const FFMPEG_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 function getVideoDuration(filePath: string): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -15,6 +15,10 @@ function getVideoDuration(filePath: string): Promise<number> {
   });
 }
 
+function getFileSize(filePath: string): Promise<number> {
+  return import('fs/promises').then(fs => fs.stat(filePath)).then(s => s.size);
+}
+
 function runFfmpeg(inputPath: string, outputPath: string, options: { targetBitrate?: number }): Promise<void> {
   return new Promise((resolve, reject) => {
     let cmd = ffmpeg(inputPath)
@@ -22,7 +26,11 @@ function runFfmpeg(inputPath: string, outputPath: string, options: { targetBitra
       .videoCodec('libx264')
       .audioCodec('aac')
       .format('mp4')
-      .outputOptions(['-movflags', '+faststart']);
+      .outputOptions([
+        '-movflags', '+faststart',
+        '-threads', '2',
+        '-preset', 'veryfast',
+      ]);
 
     if (options.targetBitrate) {
       const br = `${options.targetBitrate}k`;
@@ -34,37 +42,36 @@ function runFfmpeg(inputPath: string, outputPath: string, options: { targetBitra
       cmd = cmd.outputOptions(['-crf', '23']);
     }
 
+    // Timeout: kill ffmpeg if it takes too long
+    const timer = setTimeout(() => {
+      cmd.kill('SIGTERM');
+      reject(new Error(`ffmpeg timed out after ${FFMPEG_TIMEOUT_MS / 1000}s`));
+    }, FFMPEG_TIMEOUT_MS);
+
     cmd
-      .on('end', () => resolve())
-      .on('error', (err: Error) => reject(err))
+      .on('end', () => { clearTimeout(timer); resolve(); })
+      .on('error', (err: Error) => { clearTimeout(timer); reject(err); })
       .run();
   });
 }
 
-export async function compressAndConvertVideo(inputBuffer: Buffer, originalFilename: string): Promise<Buffer> {
+/**
+ * Compresses a video file on disk and returns the path to the compressed output.
+ * The caller is responsible for cleaning up both inputPath and the returned outputPath.
+ */
+export async function compressAndConvertVideo(inputPath: string): Promise<string> {
   const id = randomUUID();
-  const ext = originalFilename.includes('.') ? '.' + originalFilename.split('.').pop()!.toLowerCase() : '.mp4';
-  const inputPath = join(tmpdir(), `${id}-input${ext}`);
   const outputPath = join(tmpdir(), `${id}-output.mp4`);
 
-  try {
-    await writeFile(inputPath, inputBuffer);
+  const inputSize = await getFileSize(inputPath);
+  const duration = await getVideoDuration(inputPath);
 
-    const duration = await getVideoDuration(inputPath);
-    const inputSize = inputBuffer.length;
-
-    let targetBitrate: number | undefined;
-    if (inputSize > MAX_SIZE_BYTES) {
-      // Calculate bitrate to fit in 100MB: (100MB in kbits) / duration
-      targetBitrate = Math.floor((MAX_SIZE_BYTES * 8) / (duration * 1024));
-    }
-
-    await runFfmpeg(inputPath, outputPath, { targetBitrate });
-
-    const outputBuffer = await readFile(outputPath);
-    return outputBuffer;
-  } finally {
-    await unlink(inputPath).catch(() => {});
-    await unlink(outputPath).catch(() => {});
+  let targetBitrate: number | undefined;
+  if (inputSize > MAX_SIZE_BYTES) {
+    targetBitrate = Math.floor((MAX_SIZE_BYTES * 8) / (duration * 1024));
   }
+
+  await runFfmpeg(inputPath, outputPath, { targetBitrate });
+
+  return outputPath;
 }

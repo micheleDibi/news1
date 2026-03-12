@@ -1,13 +1,14 @@
 export const prerender = false;
 
 import type { APIRoute } from 'astro';
-import { uploadToS3 } from '../../lib/aws';
+import { streamUploadToS3 } from '../../lib/aws';
 import { slugify } from '../../lib/utils';
 import { compressAndConvertVideo } from '../../lib/video-compress';
 import { logger } from '../../lib/logger';
 import { readFile, unlink, readdir, writeFile, rmdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 
 // In-memory job status store
 const jobs = new Map<string, { status: 'processing' | 'done' | 'error'; url?: string; error?: string }>();
@@ -15,6 +16,15 @@ const jobs = new Map<string, { status: 'processing' | 'done' | 'error'; url?: st
 // Cleanup old jobs after 30 minutes
 function scheduleJobCleanup(uploadId: string) {
   setTimeout(() => jobs.delete(uploadId), 30 * 60 * 1000);
+}
+
+// Semaphore: max 1 ffmpeg process at a time
+let ffmpegQueue: Promise<void> = Promise.resolve();
+function withFfmpegLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = ffmpegQueue;
+  let releaseFn: () => void;
+  ffmpegQueue = new Promise<void>(resolve => { releaseFn = resolve; });
+  return prev.then(fn).finally(() => releaseFn!());
 }
 
 export const POST: APIRoute = async ({ request }) => {
@@ -62,19 +72,7 @@ export const POST: APIRoute = async ({ request }) => {
       return idxA - idxB;
     });
 
-    // Read and concatenate all chunks
-    const chunks: Buffer[] = [];
-    for (const chunkFile of chunkFiles) {
-      const chunkPath = join(chunkDir, chunkFile);
-      chunks.push(await readFile(chunkPath));
-      await unlink(chunkPath).catch(() => {});
-    }
-    await rmdir(chunkDir).catch(() => {});
-
-    const buffer = Buffer.concat(chunks);
-    logger.info(`Reassembled ${chunkFiles.length} chunks: ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
-
-    // Validate file type by extension
+    // Read chunks, concatenate, and write to a single temp file (then release buffer)
     const ext = originalFilename.split('.').pop()?.toLowerCase();
     const allowedExts = ['mp4', 'webm', 'ogg', 'avi', 'mov'];
     if (!ext || !allowedExts.includes(ext)) {
@@ -84,26 +82,55 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
+    const inputPath = join(tmpdir(), `${randomUUID()}-input.${ext}`);
+
+    // Reassemble chunks into a temp file, then free the buffer
+    const chunks: Buffer[] = [];
+    for (const chunkFile of chunkFiles) {
+      const chunkPath = join(chunkDir, chunkFile);
+      chunks.push(await readFile(chunkPath));
+      await unlink(chunkPath).catch(() => {});
+    }
+    await rmdir(chunkDir).catch(() => {});
+
+    let buffer: Buffer | null = Buffer.concat(chunks);
+    // Free individual chunk references
+    chunks.length = 0;
+
+    logger.info(`Reassembled ${chunkFiles.length} chunks: ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
+
+    // Write reassembled buffer to disk and release it from memory
+    await writeFile(inputPath, buffer);
+    buffer = null; // Allow GC to free ~500MB
+
     // Mark job as processing and respond immediately
     jobs.set(uploadId, { status: 'processing' });
     scheduleJobCleanup(uploadId);
 
     // Run compression + upload in the background (not awaited)
-    (async () => {
-      try {
-        logger.info(`Compressing video: ${originalFilename} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)`);
-        const compressedBuffer = await compressAndConvertVideo(buffer, originalFilename);
-        logger.info(`Compressed video: ${(compressedBuffer.length / 1024 / 1024).toFixed(1)}MB`);
+    const videoFilename = `${slugify(title || originalFilename.replace(/\.[^.]+$/, ''))}.mp4`;
 
-        const contentType = 'video/mp4';
-        const videoFilename = `${slugify(title || originalFilename.replace(/\.[^.]+$/, ''))}.mp4`;
-        const videoUrl = await uploadToS3(compressedBuffer, videoFilename, contentType);
+    (async () => {
+      let outputPath: string | undefined;
+      try {
+        await withFfmpegLock(async () => {
+          logger.info(`Compressing video: ${originalFilename}`);
+          outputPath = await compressAndConvertVideo(inputPath);
+          logger.info(`Compression complete: ${outputPath}`);
+        });
+
+        // Stream upload to S3 (no buffer needed)
+        const videoUrl = await streamUploadToS3(outputPath!, videoFilename, 'video/mp4');
 
         logger.info(`Video uploaded successfully: ${videoUrl}`);
         jobs.set(uploadId, { status: 'done', url: videoUrl });
       } catch (err) {
         logger.error('Background compression/upload error:', err);
         jobs.set(uploadId, { status: 'error', error: err instanceof Error ? err.message : 'Compression failed' });
+      } finally {
+        // Cleanup temp files
+        await unlink(inputPath).catch(() => {});
+        if (outputPath) await unlink(outputPath).catch(() => {});
       }
     })();
 
