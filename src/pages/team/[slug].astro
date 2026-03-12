@@ -78,19 +78,38 @@ function processInlineMarkdown(text: string): string {
 }
 
 // Process description with markdown if it exists
-const formattedDescription = profile.description 
-  ? profile.description.split('\n').map((paragraph: string) => 
+const formattedDescription = profile.description
+  ? profile.description.split('\n').map((paragraph: string) =>
       paragraph.trim() ? `<p class="text-gray-700 leading-relaxed mb-4">${processInlineMarkdown(paragraph.trim())}</p>` : ''
     ).join('')
   : '';
+
+const siteUrl = 'https://edunews24.it';
+const personStructuredData = JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "Person",
+  "name": profile.public_name,
+  "url": `${siteUrl}/team/${slug}`,
+  ...(profile.profile_pic_link ? { "image": profile.profile_pic_link } : {}),
+  ...(profile.description ? { "description": profile.description.substring(0, 300) } : {}),
+  "jobTitle": "Giornalista",
+  "worksFor": {
+    "@type": "NewsMediaOrganization",
+    "name": "EduNews24",
+    "url": siteUrl
+  },
+  "sameAs": `${siteUrl}/team/${slug}`
+}, null, 2);
 ---
 
 <Layout
   title={`${profile.public_name} - Team EduNews24`}
   description={profile.description ? `Scopri di più su ${profile.public_name}, membro del team di EduNews24. ${profile.description.substring(0, 150)}...` : `Conosci ${profile.public_name}, membro del team di EduNews24.`}
-  canonicalUrl={`https://edunews24.it/team/${slug}`}
+  canonicalUrl={`${siteUrl}/team/${slug}`}
   author={profile.public_name}
+  ogType="profile"
 >
+  <script type="application/ld+json" set:html={personStructuredData} slot="head" />
   <main class="bg-gray-50 min-h-screen py-8">
     <div class="container mx-auto px-4">
       <div class="flex flex-col lg:flex-row gap-8">
