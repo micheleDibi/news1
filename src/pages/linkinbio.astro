@@ -32,99 +32,296 @@ const categoriesWithArticles = results.filter((r) => r.articles.length > 0);
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex, nofollow" />
     <title>EduNews24 - Link in Bio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
+
       body {
         min-height: 100vh;
-        background: linear-gradient(to bottom, #004e9c, #001a3a);
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #0a0f1a;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        overflow-x: hidden;
       }
+
+      .bg-glow {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        overflow: hidden;
+      }
+      .bg-glow::before {
+        content: '';
+        position: absolute;
+        top: -40%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 140%;
+        height: 60%;
+        background: radial-gradient(ellipse at center, rgba(6, 76, 153, 0.35) 0%, transparent 70%);
+      }
+      .bg-glow::after {
+        content: '';
+        position: absolute;
+        bottom: -20%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 100%;
+        height: 40%;
+        background: radial-gradient(ellipse at center, rgba(6, 76, 153, 0.15) 0%, transparent 70%);
+      }
+
       .container {
-        max-width: 32rem;
+        position: relative;
+        z-index: 1;
+        max-width: 28rem;
         margin: 0 auto;
-        padding: 2rem 1rem;
+        padding: 3rem 1.25rem 2rem;
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 1.5rem;
+        gap: 1.75rem;
       }
-      .logo {
-        width: 5rem;
-        height: 5rem;
+
+      /* Header */
+      .profile {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+      }
+      .logo-wrap {
+        width: 5.5rem;
+        height: 5.5rem;
+        border-radius: 9999px;
+        background: linear-gradient(135deg, #064C99 0%, #0a7aff 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 0 40px rgba(6, 76, 153, 0.5), 0 0 80px rgba(6, 76, 153, 0.2);
+      }
+      .logo-wrap img {
+        width: 4.5rem;
+        height: 4.5rem;
         border-radius: 9999px;
         object-fit: cover;
       }
-      h1 {
-        color: white;
-        font-size: 1.5rem;
-        font-weight: 700;
+      .brand-name {
+        margin-top: 0.25rem;
       }
+      .brand-name svg {
+        filter: brightness(0) invert(1);
+        height: 2rem;
+        width: auto;
+      }
+      .tagline {
+        color: rgba(255,255,255,0.5);
+        font-size: 0.8rem;
+        font-weight: 500;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+      }
+
+      /* CTA button */
       .btn-site {
-        display: block;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
         width: 100%;
         text-align: center;
-        padding: 0.875rem 1.5rem;
-        background: white;
-        color: #004e9c;
+        padding: 1rem 1.5rem;
+        background: linear-gradient(135deg, #064C99, #0a6dd6);
+        color: #fff;
         font-weight: 700;
         font-size: 1rem;
-        border-radius: 9999px;
+        border-radius: 1rem;
         text-decoration: none;
-        transition: opacity 0.2s;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 20px rgba(6, 76, 153, 0.4);
+        letter-spacing: 0.02em;
       }
-      .btn-site:hover { opacity: 0.9; }
+      .btn-site:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(6, 76, 153, 0.55);
+      }
+      .btn-site svg {
+        width: 1.1rem;
+        height: 1.1rem;
+        transition: transform 0.3s ease;
+      }
+      .btn-site:hover svg {
+        transform: translateX(3px);
+      }
+
+      /* Category sections */
       .category-section {
         width: 100%;
         display: flex;
         flex-direction: column;
-        gap: 0.5rem;
+        gap: 0.625rem;
       }
       .category-header {
-        text-transform: uppercase;
-        font-size: 0.75rem;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        text-align: center;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0 0.25rem;
+        margin-bottom: 0.125rem;
       }
-      .btn-article {
-        display: block;
-        width: 100%;
-        text-align: center;
-        padding: 0.75rem 1.5rem;
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(4px);
-        color: white;
-        border: 1px solid rgba(255, 255, 255, 0.2);
+      .category-dot {
+        width: 0.5rem;
+        height: 0.5rem;
         border-radius: 9999px;
+        flex-shrink: 0;
+      }
+      .category-name {
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .category-line {
+        flex: 1;
+        height: 1px;
+        opacity: 0.25;
+      }
+
+      /* Article buttons */
+      .btn-article {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        padding: 0.875rem 1rem;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 0.875rem;
         text-decoration: none;
-        font-size: 0.875rem;
-        transition: background 0.2s;
+        transition: all 0.25s ease;
+        gap: 0.75rem;
+        backdrop-filter: blur(8px);
+      }
+      .btn-article:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.15);
+        transform: translateY(-1px);
+      }
+      .article-color-bar {
+        width: 3px;
+        height: 1.75rem;
+        border-radius: 2px;
+        flex-shrink: 0;
+      }
+      .article-title {
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 0.84rem;
+        font-weight: 500;
+        line-height: 1.35;
         overflow: hidden;
         display: -webkit-box;
-        -webkit-line-clamp: 1;
+        -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        flex: 1;
       }
-      .footer {
-        margin-top: 1rem;
+      .article-arrow {
+        flex-shrink: 0;
+        width: 1rem;
+        height: 1rem;
+        color: rgba(255, 255, 255, 0.25);
+        transition: all 0.25s ease;
+      }
+      .btn-article:hover .article-arrow {
+        color: rgba(255, 255, 255, 0.6);
+        transform: translateX(2px);
+      }
+
+      /* Social bar */
+      .social-bar {
+        display: flex;
+        gap: 1rem;
+        margin-top: 0.5rem;
+      }
+      .social-link {
+        width: 2.5rem;
+        height: 2.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0.75rem;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.08);
         color: rgba(255, 255, 255, 0.5);
-        font-size: 0.75rem;
+        transition: all 0.25s ease;
+        text-decoration: none;
+      }
+      .social-link:hover {
+        background: rgba(255, 255, 255, 0.12);
+        color: white;
+        transform: translateY(-2px);
+      }
+      .social-link svg {
+        width: 1.15rem;
+        height: 1.15rem;
+      }
+
+      /* Footer */
+      .footer {
+        margin-top: 0.5rem;
+        color: rgba(255, 255, 255, 0.2);
+        font-size: 0.7rem;
         text-align: center;
+        letter-spacing: 0.03em;
+      }
+
+      /* Fade-in animation */
+      @keyframes fadeUp {
+        from { opacity: 0; transform: translateY(12px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .animate-in {
+        animation: fadeUp 0.5s ease-out both;
       }
     </style>
   </head>
   <body>
+    <div class="bg-glow"></div>
     <div class="container">
-      <img src="/logo.png" alt="EduNews24" class="logo" />
-      <h1>EduNews24</h1>
 
-      <a href="https://edunews24.it" class="btn-site">Vai al sito</a>
+      <!-- Profile -->
+      <div class="profile animate-in">
+        <div class="logo-wrap">
+          <img src="/logo.png" alt="EduNews24" />
+        </div>
+        <div class="brand-name">
+          <svg width="209" height="41" viewBox="0 0 209 41" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <g>
+              <rect width="85.7172" height="38.335" transform="matrix(1 0 -0.13191 0.991262 5.05679 3)" fill="#064C99"/>
+              <path d="M20.1533 23.9583L19.4479 27.7939H31.0279L30.1706 32.4558H12.9806L16.8438 11.448H33.7338L32.8928 16.0214H21.6128L20.978 19.4735H30.878L30.0533 23.9583H20.1533ZM37.088 11.448H46.088C49.408 11.448 51.7716 12.3529 53.1788 14.1625C54.586 15.9722 54.9785 18.5686 54.3564 21.9519C53.7451 25.2762 52.4394 27.8628 50.4394 29.7118C48.443 31.5411 45.8448 32.4558 42.6448 32.4558H33.2248L37.088 11.448ZM39.6866 27.8235H42.5366C45.9566 27.8235 48.0265 25.8663 48.7464 21.9519C49.1189 19.9259 48.9539 18.4309 48.2511 17.4671C47.572 16.4836 46.2924 15.9918 44.4124 15.9918H41.8624L39.6866 27.8235ZM64.3984 33.1344C61.4584 33.1344 59.3232 32.4558 57.9928 31.0985C56.6624 29.7413 56.2305 27.7939 56.6971 25.2565L59.2364 11.448H64.8464L62.3017 25.286C61.8929 27.5087 62.8786 28.6201 65.2586 28.6201C67.6186 28.6201 69.0029 27.5087 69.4117 25.286L71.9564 11.448H77.5664L75.0271 25.2565C74.5569 27.8136 73.407 29.7708 71.5774 31.128C69.7514 32.4656 67.3584 33.1344 64.3984 33.1344Z" fill="white"/>
+            </g>
+            <g>
+              <rect x="0.901028" y="0.99509" width="124.417" height="28.148" transform="matrix(1 0 -0.0989724 0.99509 82.0823 7.00489)" fill="white" stroke="#064C99" stroke-width="2"/>
+              <path d="M109.202 22.9167L110.226 14.7003H113.906L112.144 28.8308H108.404L104.484 20.6542L103.464 28.8308H99.7638L101.526 14.7003H105.226L109.202 22.9167ZM119.1 23.1151L118.778 25.6951H126.498L126.107 28.8308H114.647L116.409 14.7003H127.669L127.285 17.7765H119.765L119.476 20.0985H126.076L125.7 23.1151H119.1ZM142.25 20.9122L144.605 14.7003H148.345L142.443 28.8308H138.843L138.069 19.8008L135.123 28.8308H131.443L129.065 14.7003H132.845L133.65 20.9122L133.892 24.2662L134.89 20.9122L137.005 14.7003H140.445L141.05 20.9122L141.2 24.2067L142.25 20.9122ZM153.944 29.2873C152.037 29.2873 150.591 28.8573 149.605 27.9973C148.62 27.1241 148.188 25.887 148.308 24.286H152.008C151.933 25.6356 152.729 26.3104 154.395 26.3104C155.849 26.3104 156.634 25.8407 156.751 24.9013C156.797 24.5308 156.699 24.2464 156.457 24.0479C156.231 23.8362 155.82 23.651 155.227 23.4922L152.508 22.8373C150.126 22.2683 149.067 20.9254 149.331 18.8085C149.493 17.5119 150.099 16.4468 151.15 15.6133C152.2 14.7797 153.665 14.3629 155.545 14.3629C157.345 14.3629 158.703 14.7599 159.617 15.5537C160.533 16.3343 160.941 17.4457 160.841 18.8879H157.221C157.2 17.7765 156.516 17.2208 155.169 17.2208C154.582 17.2208 154.101 17.3399 153.724 17.578C153.363 17.803 153.158 18.1073 153.111 18.491C153.036 19.0863 153.438 19.4965 154.317 19.7214L157.153 20.3962C159.715 21.018 160.859 22.4337 160.583 24.6433C160.402 26.0987 159.72 27.2365 158.537 28.0568C157.355 28.8771 155.824 29.2873 153.944 29.2873ZM178.666 28.8308H167.386C167.542 27.5739 167.947 26.5221 168.599 25.6753C169.248 24.855 170.361 23.9487 171.938 22.9564L174.332 21.4083C174.939 21.0247 175.378 20.6608 175.648 20.3168C175.931 19.9728 176.099 19.5825 176.154 19.1459C176.225 18.577 176.107 18.1337 175.8 17.8162C175.494 17.4854 175.041 17.32 174.441 17.32C173.081 17.32 172.303 18.1073 172.107 19.6817L172.07 19.9794H168.69L168.744 19.5428C168.947 17.9154 169.586 16.6453 170.66 15.7323C171.733 14.8194 173.15 14.3629 174.91 14.3629C176.59 14.3629 177.873 14.7665 178.759 15.5736C179.657 16.3939 180.018 17.5119 179.841 18.9276C179.727 19.8405 179.385 20.6608 178.814 21.3885C178.257 22.1162 177.417 22.8108 176.294 23.4724L173.641 25.0204C173.136 25.3247 172.851 25.5827 172.784 25.7944H179.044L178.666 28.8308ZM192.971 14.6805L191.929 23.0357L194.014 22.996L193.665 25.7944L191.572 25.7348L191.183 28.8507H187.703L188.092 25.7348L181.505 25.7944L181.906 22.5793L189.331 14.6805H192.971ZM184.669 23.0357H188.429L188.988 18.5505H188.928L184.669 23.0357Z" fill="#064C99"/>
+            </g>
+          </svg>
+        </div>
+        <span class="tagline">Notizie per il mondo della scuola</span>
+      </div>
 
-      {categoriesWithArticles.map(({ category: cat, articles }) => (
-        <div class="category-section">
-          <div class="category-header" style={`color: ${cat.color}`}>
-            {cat.name}
+      <!-- CTA -->
+      <a href="https://edunews24.it" class="btn-site animate-in" style="animation-delay: 0.1s">
+        Vai al sito
+        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+        </svg>
+      </a>
+
+      <!-- Categories -->
+      {categoriesWithArticles.map(({ category: cat, articles }, i) => (
+        <div class="category-section animate-in" style={`animation-delay: ${0.15 + i * 0.05}s`}>
+          <div class="category-header">
+            <div class="category-dot" style={`background: ${cat.color}`}></div>
+            <span class="category-name" style={`color: ${cat.color}`}>{cat.name}</span>
+            <div class="category-line" style={`background: ${cat.color}`}></div>
           </div>
           {articles.map((article) => (
             <a
@@ -132,19 +329,36 @@ const categoriesWithArticles = results.filter((r) => r.articles.length > 0);
               target="_blank"
               rel="noopener noreferrer"
               class="btn-article"
-              style={`--hover-bg: ${cat.color}`}
-              onmouseover={`this.style.background='${cat.color}'`}
-              onmouseout={`this.style.background='rgba(255,255,255,0.1)'`}
             >
-              {article.title}
+              <div class="article-color-bar" style={`background: ${cat.color}`}></div>
+              <span class="article-title">{article.title}</span>
+              <svg class="article-arrow" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+              </svg>
             </a>
           ))}
         </div>
       ))}
 
-      <div class="footer">
+      <!-- Social -->
+      <div class="social-bar animate-in" style={`animation-delay: ${0.15 + categoriesWithArticles.length * 0.05 + 0.05}s`}>
+        <a href="https://www.facebook.com/EduNews24.it" target="_blank" rel="noopener noreferrer" class="social-link" aria-label="Facebook">
+          <svg fill="currentColor" viewBox="0 0 24 24">
+            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+          </svg>
+        </a>
+        <a href="https://www.instagram.com/edunews_24/" target="_blank" rel="noopener noreferrer" class="social-link" aria-label="Instagram">
+          <svg fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z"/>
+          </svg>
+        </a>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer animate-in" style={`animation-delay: ${0.15 + categoriesWithArticles.length * 0.05 + 0.1}s`}>
         &copy; {new Date().getFullYear()} EduNews24. Tutti i diritti riservati.
       </div>
+
     </div>
   </body>
 </html>
