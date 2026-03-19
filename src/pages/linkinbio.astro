@@ -22,6 +22,14 @@ const results = await Promise.all(
   })
 );
 
+// Fetch latest 15 articles across all categories ("Ultima Ora")
+const { data: latestArticles } = await supabase
+  .from('articles')
+  .select('id, title, slug, category, category_slug, image_url, published_at')
+  .eq('isdraft', false)
+  .order('published_at', { ascending: false })
+  .limit(15);
+
 // Filter out categories with no articles
 const categoriesWithArticles = results.filter((r) => r.articles.length > 0);
 
@@ -312,9 +320,34 @@ function getHexColor(color: string): string {
         </svg>
       </a>
 
+      <!-- Ultima Ora -->
+      {latestArticles && latestArticles.length > 0 && (
+        <div class="category-section animate-in" style="animation-delay: 0.15s">
+          <div class="category-header">
+            <div class="category-dot" style="background: #cc0000"></div>
+            <span class="category-name" style="color: #cc0000">Ultima Ora</span>
+            <div class="category-line" style="background: #cc0000"></div>
+          </div>
+          {latestArticles.map((article) => (
+            <a
+              href={`https://edunews24.it${getArticleUrl(article)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="btn-article"
+            >
+              <div class="article-color-bar" style="background: #cc0000"></div>
+              <span class="article-title">{article.title}</span>
+              <svg class="article-arrow" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+              </svg>
+            </a>
+          ))}
+        </div>
+      )}
+
       <!-- Categories -->
       {categoriesWithArticles.map(({ category: cat, articles }, i) => (
-        <div class="category-section animate-in" style={`animation-delay: ${0.15 + i * 0.05}s`}>
+        <div class="category-section animate-in" style={`animation-delay: ${0.2 + i * 0.05}s`}>
           <div class="category-header">
             <div class="category-dot" style={`background: ${getHexColor(cat.color)}`}></div>
             <span class="category-name" style={`color: ${getHexColor(cat.color)}`}>{cat.name}</span>
