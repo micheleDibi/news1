@@ -167,7 +167,8 @@ Genera **10 parole chiave** ottimizzate per SEO. Possono essere anche composte d
 - Rispetta il numero di paragrafi e parole per paragrafo richiesti dall'utente
 - Rispetta il tono e la persona richiesti
 - Il contenuto deve essere originale, accurato e pronto per la pubblicazione
-- Se viene fornito un Source URL, basati su quelle informazioni come fonte principale`;
+- Se viene fornito un Source URL, basati su quelle informazioni come fonte principale
+- NON usare MAI il trattino lungo "—" (em dash). Al suo posto usa una virgola`;
 
 export const POST: APIRoute = async ({ request }) => {
   const authHeader = request.headers.get('Authorization');
