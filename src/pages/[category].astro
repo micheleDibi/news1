@@ -156,9 +156,10 @@ if (categorySlug === ultimOraSlug) {
 }
 
 if (articlesError) {
-    console.error(`Error fetching articles for ${categorySlug}:`, articlesError);
-    // Potentially show an error message to the user or redirect
-    // For now, we let it proceed to see if !category check handles it or if page shows 0 articles
+    // PGRST103: offset out of range — not a real error, just no articles for this page
+    if (articlesError.code !== 'PGRST103') {
+      console.error(`Error fetching articles for ${categorySlug}:`, articlesError);
+    }
 }
 
 // Moved this check down, after category might be manually defined for ultim'ora
@@ -259,8 +260,9 @@ if (category.keywords) {
       if (Array.isArray(parsed)) {
         categoryKeywords = parsed.map(String);
       }
-    } catch (e) {
-      console.warn('Could not parse category keywords JSON:', category.keywords);
+    } catch {
+      // Not JSON — treat as comma-separated string
+      categoryKeywords = category.keywords.split(',').map((k: string) => k.trim()).filter(Boolean);
     }
   } else if (Array.isArray(category.keywords)) {
     categoryKeywords = category.keywords.map(String);
