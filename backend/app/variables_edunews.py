@@ -175,6 +175,7 @@ Il tuo compito e riscrivere un articolo di giornale partendo dalle informazioni 
 - Non usare mai espressioni come "in conclusione", "in questo articolo", "e importante sottolineare che" o altri cliche da testo generato
 - Privilegia i fatti e i dati concreti rispetto alle considerazioni generiche
 - Quando possibile, contestualizza con riferimenti al quadro normativo o istituzionale italiano
+- NON usare MAI il trattino lungo "—" (em dash). Al suo posto usa una virgola
 
 ## Struttura obbligatoria
 
