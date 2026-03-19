@@ -73,7 +73,7 @@ async function findRelatedArticles(prompt: string): Promise<{ title: string; slu
 
       const totalScore = tagScore + titleScore;
 
-      if (totalScore > 0.1) {
+      if (totalScore > 0.05) {
         scored.push({
           title: article.title,
           slug: article.slug,
