@@ -2003,15 +2003,19 @@ const cancelContactForm = () => {
     setAudioProgress(0);
     setAudioMessage('Preparazione testo...');
 
-    // Simulated progress timer
+    // Simulated progress timer - extends further for long articles
     const progressSteps = [
-      { at: 500, pct: 10, msg: 'Invio al servizio TTS...' },
-      { at: 3000, pct: 25, msg: 'Generazione audio in corso...' },
-      { at: 6000, pct: 40, msg: 'Generazione audio in corso...' },
-      { at: 9000, pct: 55, msg: 'Generazione audio in corso...' },
-      { at: 12000, pct: 70, msg: 'Generazione audio in corso...' },
-      { at: 15000, pct: 80, msg: 'Generazione audio in corso...' },
-      { at: 18000, pct: 85, msg: 'Upload su S3...' },
+      { at: 500, pct: 5, msg: 'Invio al servizio TTS...' },
+      { at: 3000, pct: 15, msg: 'Generazione audio in corso...' },
+      { at: 6000, pct: 25, msg: 'Generazione audio in corso...' },
+      { at: 10000, pct: 35, msg: 'Generazione audio in corso...' },
+      { at: 15000, pct: 45, msg: 'Generazione audio in corso...' },
+      { at: 20000, pct: 52, msg: 'Generazione audio in corso...' },
+      { at: 30000, pct: 60, msg: 'Generazione audio in corso...' },
+      { at: 45000, pct: 68, msg: 'Generazione audio in corso...' },
+      { at: 60000, pct: 74, msg: 'Ancora in corso, articolo lungo...' },
+      { at: 80000, pct: 80, msg: 'Upload su S3...' },
+      { at: 100000, pct: 85, msg: 'Upload su S3...' },
     ];
     const timers = progressSteps.map(s =>
       setTimeout(() => { setAudioProgress(s.pct); setAudioMessage(s.msg); }, s.at)
@@ -2019,6 +2023,10 @@ const cancelContactForm = () => {
 
     try {
       const processedContent = splitLongSentences(content, 200);
+
+      // 2-minute timeout to handle long articles with many TTS chunks
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => controller.abort(), 120000);
 
       const response = await fetch('/api/tts/generate', {
         method: 'POST',
@@ -2032,7 +2040,9 @@ const cancelContactForm = () => {
           content: processedContent,
           excerpt: getValues('excerpt')
         }),
+        signal: controller.signal,
       });
+      clearTimeout(fetchTimeout);
 
       if (!response.ok) {
         const error = await response.json();
@@ -2063,9 +2073,12 @@ const cancelContactForm = () => {
 
     } catch (error) {
       console.error('Errore nella generazione dell\'audio:', error);
-      setAudioMessage(`Errore: ${(error as Error).message}`);
+      const errMsg = (error as any)?.name === 'AbortError'
+        ? 'Timeout: la generazione ha impiegato troppo tempo. Riprova con un articolo più corto.'
+        : `Errore: ${(error as Error).message}`;
+      setAudioMessage(errMsg);
       setAudioProgress(0);
-      setTimeout(() => { setAudioGenerating(false); setAudioMessage(''); }, 3000);
+      setTimeout(() => { setAudioGenerating(false); setAudioMessage(''); }, 5000);
     } finally {
       timers.forEach(clearTimeout);
       console.timeEnd('audioGen');

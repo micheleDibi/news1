@@ -108,8 +108,10 @@ export const POST: APIRoute = async ({ request }) => {
     }
 
     const audioContents: Buffer[] = [];
+    logger.info(`--- TTS Generation --- Processing ${textParts.length} chunk(s)`);
 
-    for (const textPart of textParts) {
+    for (let i = 0; i < textParts.length; i++) {
+      const textPart = textParts[i];
       if (textPart.trim().length === 0) continue; // Skip empty parts
 
       // Configure the request
@@ -123,11 +125,17 @@ export const POST: APIRoute = async ({ request }) => {
         audioConfig: { audioEncoding: protos.google.cloud.texttospeech.v1.AudioEncoding.MP3 }
       };
 
-      // Generate speech
-      const [response] = await client.synthesizeSpeech(ttsRequest);
+      // Generate speech with a 30-second timeout per chunk
+      logger.info(`--- TTS Generation --- Chunk ${i + 1}/${textParts.length} (${textPart.length} chars)`);
+      const ttsPromise = client.synthesizeSpeech(ttsRequest);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`TTS timeout on chunk ${i + 1}/${textParts.length}`)), 30000)
+      );
+      const [response] = await Promise.race([ttsPromise, timeoutPromise]) as any;
       if (response.audioContent) {
         audioContents.push(Buffer.from(response.audioContent as Uint8Array));
       }
+      logger.info(`--- TTS Generation --- Chunk ${i + 1}/${textParts.length} done`);
     }
 
     // Concatenate audio buffers
@@ -139,12 +147,14 @@ export const POST: APIRoute = async ({ request }) => {
     const baseName = slugify(title);
     const filename= `${baseName}.mp3`;
 
-    // Upload to S3
-    const audioUrl = await uploadToS3(
-      combinedAudioBuffer,
-      filename,
-      'audio/mpeg'
+    // Upload to S3 with a 60-second timeout
+    logger.info(`--- TTS Generation --- Uploading to S3 (${(combinedAudioBuffer.length / 1024).toFixed(1)} KB)`);
+    const uploadPromise = uploadToS3(combinedAudioBuffer, filename, 'audio/mpeg');
+    const uploadTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('S3 upload timeout after 60 seconds')), 60000)
     );
+    const audioUrl = await Promise.race([uploadPromise, uploadTimeout]);
+    logger.info(`--- TTS Generation --- Upload complete: ${audioUrl}`);
 
     return new Response(JSON.stringify({ 
       success: true,
