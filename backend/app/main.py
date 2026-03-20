@@ -182,7 +182,8 @@ async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_d
 
 from google.cloud import texttospeech
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv("CREDENTIALS_GOOGLE_SPEECH", "google-credentials.json")
+_default_creds = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "google-credentials.json")
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv("CREDENTIALS_GOOGLE_SPEECH", _default_creds)
 
 async def convert_text_to_audio(text: str, id: int):
     """
