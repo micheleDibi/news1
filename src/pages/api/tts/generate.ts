@@ -125,13 +125,19 @@ export const POST: APIRoute = async ({ request }) => {
         audioConfig: { audioEncoding: protos.google.cloud.texttospeech.v1.AudioEncoding.MP3 }
       };
 
-      // Generate speech with a 30-second timeout per chunk
+      // Generate speech with a 90-second timeout per chunk
       logger.info(`--- TTS Generation --- Chunk ${i + 1}/${textParts.length} (${textPart.length} chars)`);
       const ttsPromise = client.synthesizeSpeech(ttsRequest);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`TTS timeout on chunk ${i + 1}/${textParts.length}`)), 30000)
-      );
-      const [response] = await Promise.race([ttsPromise, timeoutPromise]) as any;
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`TTS timeout on chunk ${i + 1}/${textParts.length}`)), 90000);
+      });
+      let response: any;
+      try {
+        [response] = await Promise.race([ttsPromise, timeoutPromise]) as any;
+      } finally {
+        clearTimeout(timeoutId!);
+      }
       if (response.audioContent) {
         audioContents.push(Buffer.from(response.audioContent as Uint8Array));
       }

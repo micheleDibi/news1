@@ -304,13 +304,16 @@ async def convert_text_to_audio(text: str, id: int):
             audio_encoding=texttospeech.AudioEncoding.MP3
         )
 
-        # 6️⃣ Request text-to-speech conversion
+        # 6️⃣ Request text-to-speech conversion (90s timeout per chunk)
         logger.info("Sending request to Google Cloud Text-to-Speech API for part: '{}...'", text_part[:30])
-        response = await asyncio.to_thread(
-            client.synthesize_speech,
-            input=input_text_segment,
-            voice=voice,
-            audio_config=audio_config
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                client.synthesize_speech,
+                input=input_text_segment,
+                voice=voice,
+                audio_config=audio_config
+            ),
+            timeout=90
         )
         if response.audio_content:
             audio_contents.append(response.audio_content)
