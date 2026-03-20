@@ -67,10 +67,8 @@ async function sendFacebookPost(articleUrl: string, title: string, tags: string[
     access_token: ACCESS_TOKEN
   };
 
-  // Explicitly set the preview image to avoid Facebook picking up the journalist's profile pic
-  if (imageUrl) {
-    payload.picture = imageUrl;
-  }
+  // Note: do NOT set payload.picture — Facebook restricts that param to verified URL owners.
+  // The image is picked up automatically from the page's og:image meta tag after forceFacebookScrape.
 
   try {
     const response = await fetch(url, {
