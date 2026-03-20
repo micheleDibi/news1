@@ -76,9 +76,9 @@ const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
     <meta property="og:description" content={description} />
     <meta property="og:locale" content="it_IT" />
     <meta property="og:site_name" content="EduNews24" />
-    {image && <meta property="og:image" content={image} />}
-    {image && <meta property="og:image:width" content="1200" />}
-    {image && <meta property="og:image:height" content="800" />}
+    <meta property="og:image" content={image || "https://edunews24.it/logo.png"} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="800" />
     {publishedTime && <meta property="article:published_time" content={publishedTime} />}
     {modifiedTime && <meta property="article:modified_time" content={modifiedTime} />}
     {author && <meta property="article:author" content={author} />}
@@ -88,7 +88,7 @@ const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
-    {image && <meta name="twitter:image" content={image} />}
+    <meta name="twitter:image" content={image || "https://edunews24.it/logo.png"} />
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

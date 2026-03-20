@@ -23,12 +23,30 @@ interface ArticleFormProps {
   article?: any;
 }
 
+// Force Facebook to re-scrape OG tags for a URL
+async function forceFacebookScrape(articleUrl: string) {
+  const ACCESS_TOKEN = import.meta.env.PUBLIC_FACEBOOK_ACCESS_TOKEN;
+  try {
+    const response = await fetch(`https://graph.facebook.com/v22.0/?id=${encodeURIComponent(articleUrl)}&scrape=true&access_token=${ACCESS_TOKEN}`, {
+      method: 'POST',
+    });
+    const data = await response.json();
+    console.log('Facebook scrape response:', data);
+    return data;
+  } catch (error) {
+    console.warn('Facebook scrape failed (non-blocking):', error);
+  }
+}
+
 // Facebook posting function
-async function sendFacebookPost(articleUrl: string, title: string, tags: string[] = []) {
+async function sendFacebookPost(articleUrl: string, title: string, tags: string[] = [], imageUrl?: string) {
   const PAGE_ID = import.meta.env.PUBLIC_FACEBOOK_PAGE_ID;
   const ACCESS_TOKEN = import.meta.env.PUBLIC_FACEBOOK_ACCESS_TOKEN;
   const url = `https://graph.facebook.com/v22.0/${PAGE_ID}/feed`;
   const PAGE_NAME = "EduNews24.it";
+
+  // Force Facebook to re-scrape the article page so OG tags are fresh
+  await forceFacebookScrape(articleUrl);
 
   // Format tags into hashtags
   const hashtags = tags.map(tag => `#${tag.replace(/\s+/g, '')}`).join(' '); // Remove spaces within tags
@@ -39,7 +57,7 @@ async function sendFacebookPost(articleUrl: string, title: string, tags: string[
     message += `\n\n${hashtags}`;
   }
 
-  const payload = {
+  const payload: Record<string, string> = {
     message: message,
     // Use the link parameter for Facebook's link preview functionality
     link: articleUrl,
@@ -49,6 +67,11 @@ async function sendFacebookPost(articleUrl: string, title: string, tags: string[
     access_token: ACCESS_TOKEN
   };
 
+  // Explicitly set the preview image to avoid Facebook picking up the journalist's profile pic
+  if (imageUrl) {
+    payload.picture = imageUrl;
+  }
+
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -57,11 +80,12 @@ async function sendFacebookPost(articleUrl: string, title: string, tags: string[
       },
       body: new URLSearchParams(payload),
     });
-    
+
     const data = await response.json();
     console.log('Facebook post response:', data);
     console.log('Sent message:', message);
     console.log('Sent link URL:', articleUrl);
+    console.log('Sent picture URL:', imageUrl || '(none, relying on OG tags)');
     return data;
   } catch (error) {
     console.error('Error posting to Facebook:', error);
@@ -1849,8 +1873,8 @@ const cancelContactForm = () => {
             slug: articleData.slug
           });
           
-          // Pass tags to the Facebook post function
-          const fbResponse = await sendFacebookPost(fullArticleUrl, data.title, articleData.tags);
+          // Pass tags and image to the Facebook post function
+          const fbResponse = await sendFacebookPost(fullArticleUrl, data.title, articleData.tags, data.image_url);
           
           if (fbResponse && fbResponse.id) {
             setFbPostStatus({
