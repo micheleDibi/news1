@@ -66,116 +66,77 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
           </div>
         </div>
 
-        <div class="bg-gradient-to-br from-sport-50 to-white shadow-lg rounded-lg mb-6">
-          <div class="p-6 border-b border-sport-100">
-            <h2 class="text-xl font-semibold text-sport-800 mb-4 flex items-center">
-              <svg class="h-6 w-6 mr-2 text-sport-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              Ricerca e Filtri
-            </h2>
-            <div class="space-y-6">
-              <!-- Search Input -->
-              <div class="col-span-1 md:col-span-3 mb-4">
-                <label for="search" class="block text-sm font-medium text-sport-700 mb-1">Cerca Articoli</label>
-                <div class="relative rounded-md shadow-sm">
-                  <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                    <svg class="h-5 w-5 text-sport-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                    </svg>
-                  </div>
-                  <input
-                    type="search"
-                    name="search"
-                    id="search"
-                    class="focus:ring-sport-500 focus:border-sport-500 block w-full pl-12 pr-4 py-3 text-base border-sport-300 rounded-lg shadow-sm bg-white hover:border-sport-400 transition-colors"
-                    placeholder="Cerca articoli per titolo, contenuto o parole chiave..."
-                  />
-                </div>
+        <!-- Search & Filters -->
+        <div class="bg-white shadow rounded-lg mb-6">
+          <div class="p-4">
+            <!-- Search bar -->
+            <div class="relative">
+              <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <input
+                type="search"
+                id="search"
+                class="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-lg text-sm placeholder-gray-400 focus:ring-2 focus:ring-primary focus:border-primary transition-colors"
+                placeholder="Cerca per titolo..."
+              />
+            </div>
+
+            <!-- Filters row -->
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <select
+                id="status"
+                class="pl-3 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
+              >
+                <option value="all">Tutti gli stati</option>
+                <option value="published">Pubblicato</option>
+                <option value="draft">Bozza</option>
+              </select>
+
+              <select
+                id="category"
+                class="pl-3 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
+              >
+                <option value="all">Tutte le categorie</option>
+                {categories.map(category => (
+                  <option value={category.name}>{category.name}</option>
+                ))}
+              </select>
+
+              <select
+                id="creator"
+                class="pl-3 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
+              >
+                <option value="all">Tutti gli autori</option>
+              </select>
+
+              <div class="flex items-center gap-1.5">
+                <input
+                  type="date"
+                  id="date-from"
+                  class="pl-3 pr-2 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors cursor-pointer"
+                />
+                <span class="text-xs text-gray-400">-</span>
+                <input
+                  type="date"
+                  id="date-to"
+                  class="pl-3 pr-2 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors cursor-pointer"
+                />
               </div>
 
-              <!-- Filters Grid -->
-              <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <!-- Category Filter -->
-                <div>
-                  <label for="category" class="block text-sm font-medium text-sport-700 mb-1">Categoria</label>
-                  <select
-                    id="category"
-                    name="category"
-                    class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
-                  >
-                    <option value="all">Tutte le Categorie</option>
-                    {categories.map(category => (
-                      <option value={category.name}>{category.name}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <!-- Status Filter -->
-                <div>
-                  <label for="status" class="block text-sm font-medium text-sport-700 mb-1">Stato</label>
-                  <select
-                    id="status"
-                    name="status"
-                    class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
-                  >
-                    <option value="all">Tutti gli Stati</option>
-                    <option value="published">Pubblicato</option>
-                    <option value="draft">Bozza</option>
-                  </select>
-                </div>
-
-                <!-- Creator Filter -->
-                <div>
-                  <label for="creator" class="block text-sm font-medium text-sport-700 mb-1">Autore</label>
-                  <select
-                    id="creator"
-                    name="creator"
-                    class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
-                  >
-                    <option value="all">Tutti gli Autori</option>
-                    <!-- Will be populated dynamically with JavaScript -->
-                  </select>
-                </div>
-
-                <!-- Date Range -->
-                <div class="md:col-span-1">
-                  <label class="block text-sm font-medium text-sport-700 mb-1">Intervallo Date</label>
-                  <div class="grid grid-cols-2 gap-2">
-                    <input
-                      type="date"
-                      id="date-from"
-                      name="date-from"
-                      class="block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
-                    />
-                    <input
-                      type="date"
-                      id="date-to"
-                      name="date-to"
-                      class="block w-full pl-3 pr-10 py-2 text-base border-sport-300 focus:outline-none focus:ring-sport-500 focus:border-sport-500 sm:text-sm rounded-md bg-white hover:border-sport-400 transition-colors"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <!-- Action Buttons -->
-              <div class="flex justify-end space-x-4 pt-4 border-t border-sport-200">
+              <div class="flex items-center gap-2 ml-auto">
                 <button
                   id="reset-filters"
-                  class="inline-flex items-center px-4 py-2 border border-sport-300 shadow-sm text-sm font-medium rounded-md text-sport-700 bg-white hover:bg-sport-50 hover:border-sport-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sport-500 transition-colors"
+                  class="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
                 >
-                  <svg class="mr-2 h-5 w-5 text-sport-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  Reimposta Filtri
+                  Reimposta
                 </button>
                 <button
                   id="search-button"
-                  class="inline-flex items-center px-6 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-sport-500 hover:bg-sport-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-sport-500 transition-colors"
+                  class="px-4 py-1.5 text-sm font-medium text-white bg-primary hover:bg-sport-700 rounded-full transition-colors"
                 >
-                  <svg class="mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
                   Cerca
                 </button>
               </div>
