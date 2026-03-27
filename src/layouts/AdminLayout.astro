@@ -87,6 +87,19 @@ const currentPath = Astro.url.pathname;
             
             <!-- Mobile admin links - hidden by default -->
             <a
+              id="mobile-published-articles-link"
+              href="/admin"
+              class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
+                </svg>
+                Articoli
+              </div>
+            </a>
+
+            <a
               id="mobile-pending-articles-link"
               href="/admin/articles/pending"
               class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
@@ -205,6 +218,18 @@ const currentPath = Astro.url.pathname;
               </a>
               
               {/* Desktop admin links - hidden by default */}
+              <a
+                id="published-articles-link"
+                href="/admin"
+                class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-md hidden"
+              >
+                <svg class="text-gray-400 group-hover:text-gray-500 mr-2 xl:mr-3 h-5 xl:h-6 w-5 xl:w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z" />
+                </svg>
+                <span class="hidden xl:inline">Articoli</span>
+                <span class="xl:hidden">Articoli</span>
+              </a>
+
               <a
                 id="pending-articles-link"
                 href="/admin/articles/pending"
@@ -327,12 +352,13 @@ const currentPath = Astro.url.pathname;
 
             if (profile && profile.role === 'admin') {
               // Desktop links
-              // Desktop links
+              const publishedArticlesLink = document.getElementById('published-articles-link');
               const pendingArticlesLink = document.getElementById('pending-articles-link');
               const logsLink = document.getElementById('logs-link');
               const settingsDropdown = document.getElementById('settings-dropdown');
 
               // Mobile links
+              const mobilePublishedArticlesLink = document.getElementById('mobile-published-articles-link');
               const mobilePendingArticlesLink = document.getElementById('mobile-pending-articles-link');
               const mobileLogsLink = document.getElementById('mobile-logs-link');
               const mobileApiRequestsLink = document.getElementById('mobile-api-requests-link');
@@ -342,11 +368,13 @@ const currentPath = Astro.url.pathname;
               const mobileProfilesLink = document.getElementById('mobile-profiles-link');
 
               // Show desktop links
+              if (publishedArticlesLink) publishedArticlesLink.classList.remove('hidden');
               if (pendingArticlesLink) pendingArticlesLink.classList.remove('hidden');
               if (logsLink) logsLink.classList.remove('hidden');
               if (settingsDropdown) settingsDropdown.classList.remove('hidden');
 
               // Show mobile links
+              if (mobilePublishedArticlesLink) mobilePublishedArticlesLink.classList.remove('hidden');
               if (mobilePendingArticlesLink) mobilePendingArticlesLink.classList.remove('hidden');
               if (mobileLogsLink) mobileLogsLink.classList.remove('hidden');
               if (mobileApiRequestsLink) mobileApiRequestsLink.classList.remove('hidden');
@@ -443,9 +471,11 @@ const currentPath = Astro.url.pathname;
       // Optional: Re-run if auth state changes (e.g., user logs in/out on the same page)
       supabase.auth.onAuthStateChange((_event, _session) => {
          // Clear previous state first
+         const publishedArticlesLink = document.getElementById('published-articles-link');
          const pendingArticlesLink = document.getElementById('pending-articles-link');
          const logsLink = document.getElementById('logs-link');
          const settingsDropdown = document.getElementById('settings-dropdown');
+         const mobilePublishedArticlesLink = document.getElementById('mobile-published-articles-link');
          const mobilePendingArticlesLink = document.getElementById('mobile-pending-articles-link');
          const mobileLogsLink = document.getElementById('mobile-logs-link');
          const mobileApiRequestsLink = document.getElementById('mobile-api-requests-link');
@@ -455,9 +485,11 @@ const currentPath = Astro.url.pathname;
          const mobileProfilesLink = document.getElementById('mobile-profiles-link');
 
          // Hide all links first
+         if (publishedArticlesLink) publishedArticlesLink.classList.add('hidden');
          if (pendingArticlesLink) pendingArticlesLink.classList.add('hidden');
          if (logsLink) logsLink.classList.add('hidden');
          if (settingsDropdown) settingsDropdown.classList.add('hidden');
+         if (mobilePublishedArticlesLink) mobilePublishedArticlesLink.classList.add('hidden');
          if (mobilePendingArticlesLink) mobilePendingArticlesLink.classList.add('hidden');
          if (mobileLogsLink) mobileLogsLink.classList.add('hidden');
          if (mobileApiRequestsLink) mobileApiRequestsLink.classList.add('hidden');
