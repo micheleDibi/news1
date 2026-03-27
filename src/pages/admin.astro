@@ -220,6 +220,25 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
                             {article.creator}
                           </span>
                         )}
+                        {article.source && article.source !== 'NULL' && (
+                          <a
+                            href={article.source}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="inline-flex items-center hover:text-primary transition-colors"
+                          >
+                            <svg class="mr-1 h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                            </svg>
+                            {(() => {
+                              try {
+                                return new URL(article.source).hostname;
+                              } catch {
+                                return 'Fonte';
+                              }
+                            })()}
+                          </a>
+                        )}
                       </div>
                     </div>
                     <div class="flex items-center gap-2 flex-shrink-0 pt-1">
@@ -492,6 +511,14 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
                           </svg>
                           ${article.creator}
                         </span>
+                      ` : ''}
+                      ${article.source && article.source !== 'NULL' ? `
+                        <a href="${article.source}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center hover:text-primary transition-colors">
+                          <svg class="mr-1 h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                          </svg>
+                          ${(() => { try { return new URL(article.source).hostname; } catch { return 'Fonte'; } })()}
+                        </a>
                       ` : ''}
                     </div>
                   </div>
