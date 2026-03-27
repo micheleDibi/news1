@@ -163,7 +163,7 @@ export default function PendingArticleReview({ newsId }: Props) {
   return (
     <div className="max-w-4xl mx-auto">
       <div className="mb-6">
-        <a href="/admin/articles" className="text-indigo-600 hover:text-indigo-800 text-sm">
+        <a href="/admin/articles/pending" className="text-indigo-600 hover:text-indigo-800 text-sm">
           &larr; Torna alla lista articoli
         </a>
       </div>

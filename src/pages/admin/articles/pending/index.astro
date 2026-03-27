@@ -99,8 +99,8 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
       if (!list) return;
 
       list.innerHTML = pending.map((item: any) => `
-        <li>
-          <a href="/admin/articles/0/edit?newsId=${item.id}" class="block hover:bg-gray-50 px-4 py-4 sm:px-6">
+        <li class="flex items-center hover:bg-gray-50 px-4 py-4 sm:px-6">
+          <a href="/admin/articles/0/edit?newsId=${item.id}" class="block flex-1 min-w-0">
             <div class="flex items-center justify-between">
               <p class="text-sm font-medium text-primary truncate">${item.title || 'Senza titolo'}</p>
               <div class="ml-2 flex-shrink-0 flex gap-2">
@@ -126,8 +126,41 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
               </div>
             </div>
           </a>
+          <button
+            data-news-id="${item.id}"
+            class="discard-btn ml-4 flex-shrink-0 p-2 text-gray-400 hover:text-red-600 rounded-full hover:bg-red-50 transition-colors"
+            title="Scarta articolo"
+          >
+            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
         </li>
       `).join('');
+
+      // Setup discard buttons
+      document.querySelectorAll('.discard-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const newsId = (e.currentTarget as HTMLElement).dataset.newsId;
+          if (!newsId || !confirm('Sei sicuro di voler scartare questo articolo?')) return;
+          try {
+            const res = await fetch(`/api/news/${newsId}`, { method: 'DELETE' });
+            if (res.ok) {
+              (e.currentTarget as HTMLElement).closest('li')?.remove();
+              // Check if list is now empty
+              const remaining = document.querySelectorAll('#pending-list li');
+              if (remaining.length === 0) {
+                document.getElementById('empty-state')?.classList.remove('hidden');
+                document.getElementById('pending-list-container')?.classList.add('hidden');
+              }
+            }
+          } catch (err) {
+            console.error('Error discarding article:', err);
+          }
+        });
+      });
     } catch (err) {
       console.error('Error loading pending articles:', err);
     }
