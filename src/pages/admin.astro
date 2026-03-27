@@ -5,6 +5,20 @@ import AdminLayout from '../layouts/AdminLayout.astro';
 import { supabase } from '../lib/supabase';
 import { categories } from '../lib/categories';
 
+const categoryColorMap: Record<string, string> = {
+  calcio: '#4CAF50', motori: '#A55800', tennis: '#1A78C2', basket: '#9C27B0',
+  editoriali: '#616161', commenti: '#E91E63', cultura: '#8E44AD', lavoro: '#3E4A61',
+  bandi: '#795548', ricerca: '#137177', universita: '#2F7D31', scuola: '#F4B400',
+  tecnologia: '#3A01A2', mondo: '#03A9F4', formazione: '#FB8C00',
+};
+
+function getCategoryColor(categoryName: string): string {
+  const cat = categories.find(c => c.name === categoryName);
+  if (cat?.color && categoryColorMap[cat.color]) return categoryColorMap[cat.color];
+  if (cat?.color) return cat.color;
+  return '#6B7280';
+}
+
 // Set cache control headers
 Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
 Astro.response.headers.set('Pragma', 'no-cache');
@@ -173,6 +187,11 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
           </div>
         </div>
 
+        <!-- Category color map for JS -->
+        <script id="category-colors" type="application/json" set:html={JSON.stringify(
+          Object.fromEntries(categories.map(c => [c.name, getCategoryColor(c.name)]))
+        )} />
+
         <div class="bg-white shadow overflow-hidden sm:rounded-md">
           <ul class="divide-y divide-gray-200" id="articles-list">
             {articles?.map((article) => {
@@ -190,7 +209,7 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
                           ? <span class="px-2 py-0.5 inline-flex text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">Bozza</span>
                           : <span class="px-2 py-0.5 inline-flex text-xs font-semibold rounded-full bg-green-100 text-green-800">Pubblicato</span>
                         }
-                        <span class="px-2 py-0.5 inline-flex text-xs font-medium rounded-full bg-gray-100 text-gray-600">{article.category}</span>
+                        <span class="px-2 py-0.5 inline-flex text-xs font-medium rounded-full text-white" style={`background-color: ${getCategoryColor(article.category)}`}>{article.category}</span>
                       </div>
                       <a href={`/admin/articles/${article.id}/edit`} class="block group">
                         <p class="text-sm font-semibold text-gray-900 group-hover:text-primary truncate">{article.title}</p>
@@ -464,10 +483,12 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
 
       // Render articles
       if (!articlesList) return;
+      const catColors = JSON.parse(document.getElementById('category-colors')?.textContent || '{}');
       articlesList.innerHTML = (articles || [])
         .map(article => {
           const isDraft = article.isdraft;
           const hasPublished = !!article.published_at;
+          const catColor = catColors[article.category] || '#6B7280';
           const dateValue = (isDraft || !hasPublished) ? article.created_at : article.published_at;
           const formattedDate = dateValue ? new Date(dateValue).toLocaleDateString('it-IT') : '-';
 
@@ -482,7 +503,7 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
                   <div class="min-w-0 flex-1">
                     <div class="flex items-center gap-3 mb-1">
                       ${statusBadge}
-                      <span class="px-2 py-0.5 inline-flex text-xs font-medium rounded-full bg-gray-100 text-gray-600">${article.category}</span>
+                      <span class="px-2 py-0.5 inline-flex text-xs font-medium rounded-full text-white" style="background-color: ${catColor}">${article.category}</span>
                     </div>
                     <a href="/admin/articles/${article.id}/edit" class="block group">
                       <p class="text-sm font-semibold text-gray-900 group-hover:text-primary truncate">${article.title}</p>
