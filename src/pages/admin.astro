@@ -86,57 +86,86 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
 
             <!-- Filters row -->
             <div class="mt-3 flex flex-wrap items-center gap-2">
-              <select
-                id="status"
-                class="pl-3 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
-              >
-                <option value="all">Tutti gli stati</option>
-                <option value="published">Pubblicato</option>
-                <option value="draft">Bozza</option>
-              </select>
+              <!-- Status -->
+              <div class="relative inline-flex items-center">
+                <svg class="absolute left-2.5 h-3.5 w-3.5 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <select
+                  id="status"
+                  class="pl-8 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white hover:bg-gray-50 focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
+                >
+                  <option value="all">Tutti gli stati</option>
+                  <option value="published">Pubblicato</option>
+                  <option value="draft">Bozza</option>
+                </select>
+              </div>
 
-              <select
-                id="category"
-                class="pl-3 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
-              >
-                <option value="all">Tutte le categorie</option>
-                {categories.map(category => (
-                  <option value={category.name}>{category.name}</option>
-                ))}
-              </select>
+              <!-- Category -->
+              <div class="relative inline-flex items-center">
+                <svg class="absolute left-2.5 h-3.5 w-3.5 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                </svg>
+                <select
+                  id="category"
+                  class="pl-8 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white hover:bg-gray-50 focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
+                >
+                  <option value="all">Tutte le categorie</option>
+                  {categories.map(category => (
+                    <option value={category.name}>{category.name}</option>
+                  ))}
+                </select>
+              </div>
 
-              <select
-                id="creator"
-                class="pl-3 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
-              >
-                <option value="all">Tutti gli autori</option>
-              </select>
+              <!-- Creator -->
+              <div class="relative inline-flex items-center">
+                <svg class="absolute left-2.5 h-3.5 w-3.5 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <select
+                  id="creator"
+                  class="pl-8 pr-8 py-1.5 text-sm border border-gray-300 rounded-full bg-white hover:bg-gray-50 focus:ring-2 focus:ring-primary focus:border-primary transition-colors appearance-none cursor-pointer"
+                >
+                  <option value="all">Tutti gli autori</option>
+                </select>
+              </div>
 
-              <div class="flex items-center gap-1.5">
+              <!-- Date range -->
+              <div class="inline-flex items-center gap-1.5 border border-gray-300 rounded-full px-2.5 py-1 bg-white hover:bg-gray-50 transition-colors">
+                <svg class="h-3.5 w-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
                 <input
                   type="date"
                   id="date-from"
-                  class="pl-3 pr-2 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors cursor-pointer"
+                  class="py-0 px-0 text-sm border-0 bg-transparent focus:ring-0 w-[110px] cursor-pointer"
                 />
-                <span class="text-xs text-gray-400">-</span>
+                <span class="text-xs text-gray-300">|</span>
                 <input
                   type="date"
                   id="date-to"
-                  class="pl-3 pr-2 py-1.5 text-sm border border-gray-300 rounded-full bg-white focus:ring-2 focus:ring-primary focus:border-primary transition-colors cursor-pointer"
+                  class="py-0 px-0 text-sm border-0 bg-transparent focus:ring-0 w-[110px] cursor-pointer"
                 />
               </div>
 
+              <!-- Actions -->
               <div class="flex items-center gap-2 ml-auto">
                 <button
                   id="reset-filters"
-                  class="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                  class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
                 >
+                  <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
                   Reimposta
                 </button>
                 <button
                   id="search-button"
-                  class="px-4 py-1.5 text-sm font-medium text-white bg-primary hover:bg-sport-700 rounded-full transition-colors"
+                  class="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium text-white bg-primary hover:bg-sport-700 rounded-full transition-colors shadow-sm"
                 >
+                  <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
                   Cerca
                 </button>
               </div>
