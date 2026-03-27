@@ -2108,7 +2108,7 @@ const cancelContactForm = () => {
       const originalOverflow = textarea.style.overflowY;
       textarea.style.overflowY = 'hidden'; // Prevent scrollbar flash during resize
       textarea.style.height = 'auto'; // Reset height to accurately calculate scrollHeight
-      textarea.style.height = `${textarea.scrollHeight}px`; // Set height to scrollHeight
+      textarea.style.height = `${textarea.scrollHeight + 4}px`; // Set height to scrollHeight + buffer
       textarea.style.overflowY = originalOverflow; // Restore original overflow style
     }
   };
@@ -2576,7 +2576,7 @@ const cancelContactForm = () => {
                     ref={combinedTitleRefCallback}   // Use the combined ref
                     rows={1}
                     onInput={() => autoResizeTextarea(titleTextareaRef.current)} // Resize immediately on user input
-                    className={`block w-full border-0 border-b-2 ${errors.title ? 'border-red-500' : 'border-gray-200'} focus:ring-0 focus:border-primary text-xl sm:text-2xl lg:text-3xl font-bold placeholder-gray-400 px-0 resize-none overflow-y-hidden min-h-12`}
+                    className={`block w-full border-0 border-b-2 ${errors.title ? 'border-red-500' : 'border-gray-200'} focus:ring-0 focus:border-primary text-xl sm:text-2xl lg:text-3xl font-bold placeholder-gray-400 px-0 py-3 resize-none overflow-hidden leading-snug`}
                     placeholder="Titolo Articolo"
                   />
                   {errors.title && <p className="mt-1 text-xs sm:text-sm text-red-600">{errors.title.message as string}</p>}
