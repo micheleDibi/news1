@@ -474,11 +474,10 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
       window.history.pushState({}, '', url);
 
       // Fetch pending articles from backend and prepend them on page 1
-      const backendUrl = import.meta.env.PUBLIC_BACKEND_URL || 'http://localhost:8000';
       let pendingHtml = '';
       if (page === 1 && !filters.searchTerm && filters.status === 'all' && filters.category === 'all' && filters.creator === 'all' && !filters.dateFrom && !filters.dateTo) {
         try {
-          const pendingRes = await fetch(`${backendUrl}/api/news/pending-review`);
+          const pendingRes = await fetch('/api/news/pending-review');
           if (pendingRes.ok) {
             const pending = await pendingRes.json();
             pendingHtml = (pending || []).map((item: any) => `
