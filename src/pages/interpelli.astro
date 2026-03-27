@@ -4,7 +4,6 @@ import { format, parseISO, isValid } from 'date-fns';
 import { it } from 'date-fns/locale';
 import { createClient } from '@supabase/supabase-js';
 
-// Define the Interpello type
 interface Interpello {
   id?: number;
   interpello_name: string;
@@ -20,7 +19,6 @@ interface Interpello {
   created_at?: string;
 }
 
-// Function to generate URL-friendly slug from interpello data
 function generateInterpelloSlug(interpello: Interpello): string {
   const parts = [
     interpello.interpello_name,
@@ -37,87 +35,42 @@ function generateInterpelloSlug(interpello: Interpello): string {
     .replace(/^-|-$/g, '');
 }
 
-// Initialize Supabase client
 const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
 const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
-
 const PAGE_SIZE = 20;
 
-// Function to fetch interpelli data directly from Supabase
 async function loadInterpelliData(): Promise<{ items: Interpello[], total: number }> {
   try {
-    if (!supabaseUrl || !supabaseKey) {
-      console.error('Missing Supabase environment variables');
-      return { items: [], total: 0 };
-    }
-
+    if (!supabaseUrl || !supabaseKey) return { items: [], total: 0 };
     const supabase = createClient(supabaseUrl, supabaseKey);
-
-    const { count } = await supabase
-      .from('interpelli')
-      .select('*', { count: 'exact', head: true })
-      .eq('link_type', 'single');
-
-    const { data, error } = await supabase
-      .from('interpelli')
-      .select('*')
-      .eq('link_type', 'single')
-      .order('interpello_date', { ascending: false })
-      .range(0, PAGE_SIZE - 1);
-
-    if (error) {
-      console.error('Supabase error:', error);
-      return { items: [], total: 0 };
-    }
-
+    const { count } = await supabase.from('interpelli').select('*', { count: 'exact', head: true }).eq('link_type', 'single');
+    const { data, error } = await supabase.from('interpelli').select('*').eq('link_type', 'single').order('interpello_date', { ascending: false }).range(0, PAGE_SIZE - 1);
+    if (error) return { items: [], total: 0 };
     return { items: data || [], total: count || 0 };
-  } catch (error) {
-    console.error('Error fetching interpelli data:', error);
-    return { items: [], total: 0 };
-  }
+  } catch { return { items: [], total: 0 }; }
 }
 
-// Load filter options (all unique regioni, province, classi)
 async function loadFilterOptions() {
   try {
     if (!supabaseUrl || !supabaseKey) return { regioni: [], provinceByRegione: {}, classi: [] };
     const supabase = createClient(supabaseUrl, supabaseKey);
-    const { data } = await supabase
-      .from('interpelli')
-      .select('interpello_regione, interpello_provincia, classe_concorso')
-      .eq('link_type', 'single');
-
+    const { data } = await supabase.from('interpelli').select('interpello_regione, interpello_provincia, classe_concorso').eq('link_type', 'single');
     const regioni = new Set<string>();
     const provinceByRegione: Record<string, Set<string>> = {};
     const classi = new Set<string>();
-
     (data || []).forEach((row: any) => {
       if (row.interpello_regione) {
         regioni.add(row.interpello_regione);
-        if (!provinceByRegione[row.interpello_regione]) {
-          provinceByRegione[row.interpello_regione] = new Set();
-        }
-        if (row.interpello_provincia) {
-          provinceByRegione[row.interpello_regione].add(row.interpello_provincia);
-        }
+        if (!provinceByRegione[row.interpello_regione]) provinceByRegione[row.interpello_regione] = new Set();
+        if (row.interpello_provincia) provinceByRegione[row.interpello_regione].add(row.interpello_provincia);
       }
       if (row.classe_concorso) classi.add(row.classe_concorso);
     });
-
     const sortedRegioni = [...regioni].sort();
     const sortedProvinceByRegione: Record<string, string[]> = {};
-    for (const r of sortedRegioni) {
-      sortedProvinceByRegione[r] = [...(provinceByRegione[r] || [])].sort();
-    }
-
-    return {
-      regioni: sortedRegioni,
-      provinceByRegione: sortedProvinceByRegione,
-      classi: [...classi].sort(),
-    };
-  } catch {
-    return { regioni: [], provinceByRegione: {}, classi: [] };
-  }
+    for (const r of sortedRegioni) { sortedProvinceByRegione[r] = [...(provinceByRegione[r] || [])].sort(); }
+    return { regioni: sortedRegioni, provinceByRegione: sortedProvinceByRegione, classi: [...classi].sort() };
+  } catch { return { regioni: [], provinceByRegione: {}, classi: [] }; }
 }
 
 const { items: interpelliData, total: totalCount } = await loadInterpelliData();
@@ -129,19 +82,7 @@ const formatDate = (dateString: string): string => {
     const parsedDate = parseISO(dateString);
     if (!isValid(parsedDate)) return "Data non valida";
     return format(parsedDate, 'dd MMMM yyyy', { locale: it });
-  } catch {
-    return "Data non valida";
-  }
-};
-
-const formatDateForDataAttr = (dateString: string): string => {
-  try {
-    const parsedDate = parseISO(dateString);
-    if (!isValid(parsedDate)) return "";
-    return format(parsedDate, 'yyyy-MM-dd');
-  } catch {
-    return "";
-  }
+  } catch { return "Data non valida"; }
 };
 
 const pageTitle = "Interpelli Scuola - EduNews24";
@@ -149,55 +90,74 @@ const pageDescription = "Trova tutti gli interpelli per la scuola divisi per reg
 const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli insegnanti, opportunità scuola, lavoro pubblico scuola";
 ---
 <Layout title={pageTitle} description={pageDescription} keywords={pageKeywords}>
-  <main class="bg-gray-50 py-12">
-    <div class="container mx-auto px-4 max-w-6xl">
-      <div class="mb-10 border-b pb-4">
-        <h1 class="text-3xl md:text-4xl font-bold text-primary">Interpelli Scuola</h1>
-        <p class="text-gray-600 mt-2">Trova opportunità di lavoro nella scuola pubblica italiana</p>
+  <main class="bg-gray-50 min-h-screen">
+    {/* Hero header */}
+    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
+      <div class="container mx-auto max-w-6xl">
+        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
+          <ol class="inline-flex items-center space-x-1">
+            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
+            <li class="flex items-center">
+              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <span class="text-white font-medium">Interpelli Scuola</span>
+            </li>
+          </ol>
+        </nav>
+        <h1 class="text-3xl md:text-4xl font-bold mb-2">Interpelli Scuola</h1>
+        <p class="text-blue-100 text-lg max-w-2xl">Trova opportunità di lavoro nella scuola pubblica italiana, divise per regione, provincia e classe di concorso.</p>
+        <div class="mt-4 flex items-center gap-4 text-sm">
+          <span class="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <span id="hero-count">{totalCount}</span> interpelli disponibili
+          </span>
+        </div>
       </div>
+    </div>
 
+    <div class="container mx-auto px-4 max-w-6xl -mt-6">
       {/* Filter Controls */}
-      <div class="mb-8 p-4 bg-white rounded-md shadow-sm">
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
+      <div class="mb-6 p-5 bg-white rounded-xl shadow-md border border-gray-100">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
           {/* Search */}
           <div class="lg:col-span-2">
-            <label for="search-filter" class="block text-sm font-medium text-gray-700 mb-1">Cerca</label>
-            <input type="text" id="search-filter" placeholder="Nome interpello, descrizione..." class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm">
+            <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Cerca</label>
+            <div class="relative">
+              <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+              <input type="text" id="search-filter" placeholder="Nome interpello, descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
+            </div>
           </div>
 
-          {/* Regione Filter */}
+          {/* Regione */}
           <div>
-            <label for="regione-filter" class="block text-sm font-medium text-gray-700 mb-1">Regione</label>
-            <select id="regione-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
+            <label for="regione-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Regione</label>
+            <select id="regione-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
-              {filterOptions.regioni.map(r => (
-                <option value={r}>{r}</option>
-              ))}
+              {filterOptions.regioni.map(r => <option value={r}>{r}</option>)}
             </select>
           </div>
 
-          {/* Provincia Filter */}
+          {/* Provincia */}
           <div>
-            <label for="provincia-filter" class="block text-sm font-medium text-gray-700 mb-1">Provincia</label>
-            <select id="provincia-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white" disabled>
+            <label for="provincia-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Provincia</label>
+            <select id="provincia-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50" disabled>
               <option value="">Tutte</option>
             </select>
           </div>
 
-          {/* Classe Concorso Filter */}
+          {/* Classe Concorso */}
           <div>
-            <label for="classe-filter" class="block text-sm font-medium text-gray-700 mb-1">Classe Concorso</label>
-            <select id="classe-filter" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-primary focus:border-primary text-sm bg-white">
+            <label for="classe-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Classe Concorso</label>
+            <select id="classe-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
-              {filterOptions.classi.map(c => (
-                <option value={c}>{c}</option>
-              ))}
+              {filterOptions.classi.map(c => <option value={c}>{c}</option>)}
             </select>
           </div>
 
-          {/* Reset Button */}
-          <div class="flex items-end">
-            <button id="reset-filters" class="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+          {/* Reset */}
+          <div>
+            <label class="block text-xs font-semibold text-transparent mb-1.5">Reset</label>
+            <button id="reset-filters" class="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-1.5">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
               Resetta
             </button>
           </div>
@@ -205,78 +165,102 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
       </div>
 
       {/* Results Count */}
-      <div class="mb-4">
-        <p id="results-count" class="text-sm text-gray-600">
-          Trovati <span id="visible-count">{totalCount}</span> interpelli
+      <div class="mb-4 flex items-center justify-between">
+        <p id="results-count" class="text-sm text-gray-500">
+          <span id="visible-count" class="font-semibold text-gray-700">{totalCount}</span> interpelli trovati
         </p>
+        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-blue-600">
+          <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          Caricamento...
+        </div>
       </div>
 
-      <div id="interpelli-list" class="space-y-5">
+      <div id="interpelli-list" class="space-y-4">
         {interpelliData.length === 0 ? (
-          <p id="no-results-message" class="text-center text-gray-500 text-lg py-10">Nessun interpello trovato al momento.</p>
+          <div id="no-results-message" class="text-center py-16 bg-white rounded-xl shadow-sm">
+            <svg class="mx-auto w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <p class="text-gray-500 text-lg font-medium">Nessun interpello trovato</p>
+            <p class="text-gray-400 text-sm mt-1">Prova a modificare i filtri di ricerca</p>
+          </div>
         ) : (
-          <>
+          <Fragment>
             {interpelliData.map((interpello: Interpello) => (
-              <a href={`/interpelli/${generateInterpelloSlug(interpello)}`} class="interpello-item block bg-white rounded-md border border-gray-200 overflow-hidden transition-all duration-200 hover:border-gray-300 hover:shadow-md">
-                <div class="p-5">
-                  <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-3">
-                    <div class="flex-1">
-                      <h2 class="text-lg font-semibold text-gray-800 mb-2 hover:text-primary transition-colors">
-                        {interpello.article_title || interpello.interpello_name}
-                      </h2>
-                      <div class="flex flex-wrap items-center gap-2 text-sm text-gray-500 mb-3">
+              <article class="interpello-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200">
+                <a href={`/interpelli/${generateInterpelloSlug(interpello)}`} class="block">
+                  <div class="p-5 sm:p-6">
+                    <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
+                      <div class="flex-1 min-w-0">
+                        <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">
+                          {interpello.article_title || interpello.interpello_name}
+                        </h2>
+                      </div>
+                    </div>
+
+                    {(interpello.interpello_regione || interpello.interpello_provincia || interpello.interpello_citta) && (
+                      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
                         {interpello.interpello_regione && (
-                          <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
-                            📍 {interpello.interpello_regione}
+                          <span class="inline-flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                            <span>{interpello.interpello_regione}</span>
                           </span>
                         )}
                         {interpello.interpello_provincia && (
-                          <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">
-                            🏛️ {interpello.interpello_provincia}
+                          <span class="inline-flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                            <span>{interpello.interpello_provincia}</span>
                           </span>
                         )}
                         {interpello.interpello_citta && (
-                          <span class="inline-flex items-center px-2 py-1 bg-teal-100 text-teal-800 rounded-md text-xs font-medium">
-                            🏙️ {interpello.interpello_citta}
-                          </span>
-                        )}
-                        {interpello.classe_concorso && (
-                          <span class="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-medium">
-                            🎓 {interpello.classe_concorso}
-                          </span>
-                        )}
-                        {interpello.interpello_date && (
-                          <span class="inline-flex items-center px-2 py-1 bg-gray-100 text-gray-800 rounded-md text-xs font-medium">
-                            📅 {formatDate(interpello.interpello_date)}
+                          <span class="inline-flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+                            <span>{interpello.interpello_citta}</span>
                           </span>
                         )}
                       </div>
+                    )}
+
+                    <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
+                      {interpello.classe_concorso && (
+                        <span class="inline-flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+                          <span class="font-medium">{interpello.classe_concorso}</span>
+                        </span>
+                      )}
+                      {interpello.interpello_date && (
+                        <span class="inline-flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                          {formatDate(interpello.interpello_date)}
+                        </span>
+                      )}
                     </div>
+
+                    {(interpello.article_subtitle || interpello.interpello_description) && (
+                      <p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">
+                        {interpello.article_subtitle || interpello.interpello_description}
+                      </p>
+                    )}
                   </div>
-                  {(interpello.article_subtitle || interpello.interpello_description) && (
-                    <p class="text-gray-700 text-sm leading-relaxed">
-                      {interpello.article_subtitle || interpello.interpello_description}
-                    </p>
-                  )}
-                </div>
-              </a>
+                </a>
+              </article>
             ))}
             <p id="no-filtered-results-message" class="text-center text-gray-500 text-lg py-10 hidden">Nessun interpello corrisponde ai filtri selezionati.</p>
-          </>
+          </Fragment>
         )}
       </div>
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <nav id="pagination" class="mt-8 flex justify-center items-center gap-2" data-total-pages={totalPages} data-page-size={PAGE_SIZE}>
-          <button id="prev-page" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
-            ← Precedente
+        <nav id="pagination" class="mt-8 mb-12 flex justify-center items-center gap-3" data-total-pages={totalPages} data-page-size={PAGE_SIZE}>
+          <button id="prev-page" class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm" disabled>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+            Precedente
           </button>
-          <span class="px-4 py-2 text-sm text-gray-600">
-            Pagina <span id="current-page-num">1</span> di <span id="total-pages-num">{totalPages}</span>
+          <span class="px-4 py-2 text-sm text-gray-500 bg-white border border-gray-200 rounded-lg shadow-sm">
+            <span id="current-page-num" class="font-semibold text-gray-700">1</span> / <span id="total-pages-num">{totalPages}</span>
           </span>
-          <button id="next-page" class="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
-            Successiva →
+          <button id="next-page" class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm">
+            Successiva
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
           </button>
         </nav>
       )}
@@ -285,7 +269,6 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
 </Layout>
 
 <script is:inline define:vars={{ supabaseUrl, supabaseKey, PAGE_SIZE, provinceByRegione: filterOptions.provinceByRegione }}>
-  // Supabase REST query helper
   async function supabaseFetch(table, params) {
     const url = new URL(`${supabaseUrl}/rest/v1/${table}`);
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
@@ -309,6 +292,8 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
   const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
   const resetButton = document.getElementById('reset-filters');
   const visibleCountSpan = document.getElementById('visible-count');
+  const heroCountSpan = document.getElementById('hero-count');
+  const loadingIndicator = document.getElementById('loading-indicator');
   const prevBtn = document.getElementById('prev-page');
   const nextBtn = document.getElementById('next-page');
   const currentPageNum = document.getElementById('current-page-num');
@@ -317,7 +302,6 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
   let currentPage = 1;
   let isLoading = false;
 
-  // Cascading: aggiorna province quando cambia regione
   regioneSelect.addEventListener('change', () => {
     const regione = regioneSelect.value;
     provinciaSelect.innerHTML = '<option value="">Tutte</option>';
@@ -337,12 +321,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
 
   function generateSlug(item) {
     return [item.interpello_name, item.interpello_provincia || item.interpello_citta, item.interpello_regione, item.id?.toString()]
-      .filter(Boolean)
-      .join('-')
-      .toLowerCase()
-      .replace(/[^a-z0-9\-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
+      .filter(Boolean).join('-').toLowerCase().replace(/[^a-z0-9\-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   }
 
   function formatDateDisplay(dateString) {
@@ -365,30 +344,35 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
 
     const fragment = document.createDocumentFragment();
     items.forEach(item => {
-      const a = document.createElement('a');
-      a.href = `/interpelli/${generateSlug(item)}`;
-      a.className = 'interpello-item block bg-white rounded-md border border-gray-200 overflow-hidden transition-all duration-200 hover:border-gray-300 hover:shadow-md';
+      const article = document.createElement('article');
+      article.className = 'interpello-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200';
+
       const dateFormatted = item.interpello_date ? formatDateDisplay(item.interpello_date) : '';
 
-      a.innerHTML = `
-        <div class="p-5">
-          <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-3 mb-3">
-            <div class="flex-1">
-              <h2 class="text-lg font-semibold text-gray-800 mb-2 hover:text-primary transition-colors">
-                ${item.article_title || item.interpello_name || ''}
-              </h2>
-              <div class="flex flex-wrap items-center gap-2 text-sm text-gray-500 mb-3">
-                ${item.interpello_regione ? `<span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">📍 ${item.interpello_regione}</span>` : ''}
-                ${item.interpello_provincia ? `<span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">🏛️ ${item.interpello_provincia}</span>` : ''}
-                ${item.interpello_citta ? `<span class="inline-flex items-center px-2 py-1 bg-teal-100 text-teal-800 rounded-md text-xs font-medium">🏙️ ${item.interpello_citta}</span>` : ''}
-                ${item.classe_concorso ? `<span class="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-medium">🎓 ${item.classe_concorso}</span>` : ''}
-                ${dateFormatted ? `<span class="inline-flex items-center px-2 py-1 bg-gray-100 text-gray-800 rounded-md text-xs font-medium">📅 ${dateFormatted}</span>` : ''}
+      const locationHtml = (item.interpello_regione || item.interpello_provincia || item.interpello_citta) ? `
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
+          ${item.interpello_regione ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg><span>${item.interpello_regione}</span></span>` : ''}
+          ${item.interpello_provincia ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg><span>${item.interpello_provincia}</span></span>` : ''}
+          ${item.interpello_citta ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg><span>${item.interpello_citta}</span></span>` : ''}
+        </div>` : '';
+
+      article.innerHTML = `
+        <a href="/interpelli/${generateSlug(item)}" class="block">
+          <div class="p-5 sm:p-6">
+            <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
+              <div class="flex-1 min-w-0">
+                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">${item.article_title || item.interpello_name || ''}</h2>
               </div>
             </div>
+            ${locationHtml}
+            <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
+              ${item.classe_concorso ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg><span class="font-medium">${item.classe_concorso}</span></span>` : ''}
+              ${dateFormatted ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>${dateFormatted}</span>` : ''}
+            </div>
+            ${(item.article_subtitle || item.interpello_description) ? `<p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">${item.article_subtitle || item.interpello_description}</p>` : ''}
           </div>
-          ${(item.article_subtitle || item.interpello_description) ? `<p class="text-gray-700 text-sm leading-relaxed">${item.article_subtitle || item.interpello_description}</p>` : ''}
-        </div>`;
-      fragment.appendChild(a);
+        </a>`;
+      fragment.appendChild(article);
     });
 
     if (noFilteredResultsMessage) {
@@ -411,6 +395,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
   async function loadPage() {
     if (isLoading) return;
     isLoading = true;
+    if (loadingIndicator) { loadingIndicator.classList.remove('hidden'); loadingIndicator.classList.add('flex'); }
 
     const searchTerm = searchInput?.value?.trim() || '';
     const regione = regioneSelect?.value || '';
@@ -430,39 +415,29 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
     if (searchTerm) {
       params['or'] = `(article_title.ilike.*${searchTerm}*,article_subtitle.ilike.*${searchTerm}*,interpello_name.ilike.*${searchTerm}*,interpello_description.ilike.*${searchTerm}*)`;
     }
-    if (regione) {
-      params['interpello_regione'] = `eq.${regione}`;
-    }
-    if (provincia) {
-      params['interpello_provincia'] = `eq.${provincia}`;
-    }
-    if (classe) {
-      params['classe_concorso'] = `eq.${classe}`;
-    }
+    if (regione) params['interpello_regione'] = `eq.${regione}`;
+    if (provincia) params['interpello_provincia'] = `eq.${provincia}`;
+    if (classe) params['classe_concorso'] = `eq.${classe}`;
 
     try {
       const { data, total } = await supabaseFetch('interpelli', params);
       renderItems(data || []);
       if (visibleCountSpan) visibleCountSpan.textContent = total;
+      if (heroCountSpan) heroCountSpan.textContent = total;
       updatePagination(total);
     } catch (e) {
       console.error('Errore caricamento interpelli:', e);
     } finally {
       isLoading = false;
+      if (loadingIndicator) { loadingIndicator.classList.add('hidden'); loadingIndicator.classList.remove('flex'); }
     }
   }
 
-  function resetAndLoad() {
-    currentPage = 1;
-    loadPage();
-  }
+  function resetAndLoad() { currentPage = 1; loadPage(); }
 
   function debounce(func, wait) {
     let timeout;
-    return (...args) => {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => func(...args), wait);
-    };
+    return (...args) => { clearTimeout(timeout); timeout = setTimeout(() => func(...args), wait); };
   }
 
   const debouncedLoad = debounce(resetAndLoad, 300);
@@ -472,11 +447,10 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
   if (classeSelect) classeSelect.addEventListener('change', resetAndLoad);
 
   if (prevBtn) prevBtn.addEventListener('click', () => {
-    if (currentPage > 1) { currentPage--; loadPage(); }
+    if (currentPage > 1) { currentPage--; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
   });
   if (nextBtn) nextBtn.addEventListener('click', () => {
-    currentPage++;
-    loadPage();
+    currentPage++; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
   if (resetButton) {
