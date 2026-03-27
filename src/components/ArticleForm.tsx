@@ -2672,37 +2672,62 @@ const cancelContactForm = () => {
               {/* Sidebar - Right column */}
               <div className="col-span-1 space-y-4 lg:space-y-6">
                 {/* Publish Settings Card */}
-                <div className="bg-gray-50 rounded-lg p-4 lg:p-6">
-                  <h3 className="text-base lg:text-lg font-medium text-gray-900 mb-3 lg:mb-4">Impostazioni di Pubblicazione</h3>
-                  
-                  <div className="space-y-3 lg:space-y-4">
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 lg:px-5 lg:py-4 bg-gray-50 border-b border-gray-200">
+                    <h3 className="text-sm font-semibold text-gray-800 uppercase tracking-wide flex items-center gap-2">
+                      <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      </svg>
+                      Pubblicazione
+                    </h3>
+                  </div>
+
+                  <div className="p-4 lg:p-5 space-y-4">
+                    {/* Categoria */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Categoria</label>
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                        </svg>
+                        Categoria
+                      </label>
                       <select
                         {...register('category', { required: "La categoria è obbligatoria" })}
-                        className={`mt-1 block w-full rounded-md ${errors.category ? 'border-red-500' : 'border-gray-300'} shadow-sm focus:border-primary focus:ring-primary text-sm`}
+                        className={`block w-full rounded-lg ${errors.category ? 'border-red-400 ring-1 ring-red-400' : 'border-gray-300'} shadow-sm focus:border-primary focus:ring-2 focus:ring-primary/20 text-sm py-2`}
                         disabled={allowedCategories.length === 0}
                       >
-                        { !article && <option value="">-- Seleziona Categoria --</option>}
+                        { !article && <option value="">Seleziona categoria</option>}
                         {allowedCategories.map(category => (
                           <option key={category.id} value={category.name}>
                             {category.name}
                           </option>
                         ))}
                       </select>
-                      {errors.category && <p className="mt-1 text-xs sm:text-sm text-red-600">{errors.category.message as string}</p>}
-                      {allowedCategories.length === 0 && <p className="mt-1 text-xs sm:text-sm text-red-600">Non hai permessi per nessuna categoria.</p>}
+                      {errors.category && <p className="mt-1 text-xs text-red-500">{errors.category.message as string}</p>}
+                      {allowedCategories.length === 0 && <p className="mt-1 text-xs text-red-500">Non hai permessi per nessuna categoria.</p>}
                     </div>
 
-                    {/* Secondary Categories Section */}
+                    {/* Categorie Secondarie */}
                     {availableSecondaryCategories.length > 0 && (
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Categorie Secondarie</label>
-                        <div className="mt-2 space-y-2">
+                        <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">
+                          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14v6m-3-3h6M6 10h2a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v2a2 2 0 002 2zm10 0h2a2 2 0 002-2V6a2 2 0 00-2-2h-2a2 2 0 00-2 2v2a2 2 0 002 2zM6 20h2a2 2 0 002-2v-2a2 2 0 00-2-2H6a2 2 0 00-2 2v2a2 2 0 002 2z" />
+                          </svg>
+                          Categorie secondarie
+                        </label>
+                        <div className="flex flex-wrap gap-2">
                           {availableSecondaryCategories.map(secCat => (
-                            <div key={secCat.slug} className="flex items-center">
+                            <label
+                              key={secCat.slug}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium cursor-pointer border transition-colors ${
+                                selectedSecondaryCategories.includes(secCat.slug)
+                                  ? 'bg-primary/10 border-primary text-primary'
+                                  : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'
+                              }`}
+                            >
                               <input
-                                id={`sec-cat-${secCat.slug}`}
                                 type="checkbox"
                                 value={secCat.slug}
                                 checked={selectedSecondaryCategories.includes(secCat.slug)}
@@ -2717,57 +2742,79 @@ const cancelContactForm = () => {
                                   setSelectedSecondaryCategories(updatedSelection);
                                   setValue('secondary_category_slugs', updatedSelection);
                                 }}
-                                className="h-4 w-4 text-primary border-gray-300 rounded focus:ring-primary"
+                                className="sr-only"
                               />
-                              <label htmlFor={`sec-cat-${secCat.slug}`} className="ml-2 block text-sm text-gray-700">
-                                {secCat.name}
-                              </label>
-                            </div>
+                              {secCat.name}
+                            </label>
                           ))}
                         </div>
                       </div>
                     )}
 
-                    {/* Only show featured checkbox if user has permission */}
+                    {/* Divider */}
+                    {(canFeatureArticles || canModifyCreator) && <hr className="border-gray-200" />}
+
+                    {/* Articolo in Evidenza */}
                     {canFeatureArticles && (
-                      <div className="flex items-center">
+                      <label htmlFor="is_featured" className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 cursor-pointer transition-colors">
                         <input
                           type="checkbox"
                           id="is_featured"
                           {...register('is_featured')}
                           className="h-4 w-4 text-primary border-gray-300 rounded focus:ring-primary"
                         />
-                        <label htmlFor="is_featured" className="ml-2 block text-sm text-gray-700">
-                          Articolo in Evidenza
-                        </label>
-                      </div>
+                        <div>
+                          <span className="text-sm font-medium text-gray-700 block">In Evidenza</span>
+                          <span className="text-xs text-gray-500">Mostra l'articolo nella sezione in evidenza</span>
+                        </div>
+                      </label>
                     )}
 
+                    {/* Modifica Creatore */}
                     {canModifyCreator && (
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Modifica Creatore</label>
+                        <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">
+                          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                          </svg>
+                          Autore
+                        </label>
                         <select
                           value={selectedCreator}
                           onChange={(e) => setSelectedCreator(e.target.value)}
-                          className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary focus:ring-primary text-sm"
+                          className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary focus:ring-2 focus:ring-primary/20 text-sm py-2"
                         >
-                          <option value="">-- Seleziona Creatore --</option>
+                          <option value="">Seleziona autore</option>
                           {creatorOptions.map((opt) => (
                             <option key={opt.value} value={opt.value}>{opt.label}</option>
                           ))}
                         </select>
                       </div>
                     )}
+                  </div>
+                </div>
 
-                
+
                 {/* Media Card */}
-                <div className="bg-gray-50 rounded-lg p-4 lg:p-6">
-                  <h3 className="text-base lg:text-lg font-medium text-gray-900 mb-3 lg:mb-4">Media</h3>
-                  
-                  <div className="space-y-3 lg:space-y-4">
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 lg:px-5 lg:py-4 bg-gray-50 border-b border-gray-200">
+                    <h3 className="text-sm font-semibold text-gray-800 uppercase tracking-wide flex items-center gap-2">
+                      <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                      Media
+                    </h3>
+                  </div>
+
+                  <div className="p-4 lg:p-5 space-y-4">
                     {/* Featured Image */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Immagine in Evidenza</label>
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        Immagine in evidenza
+                      </label>
                       <div className="mt-1 space-y-3 lg:space-y-4">
                         {/* Image Preview */}
                         <img
@@ -2877,9 +2924,16 @@ const cancelContactForm = () => {
                       </div>
                     </div>
 
+                    <hr className="border-gray-200" />
+
                     {/* Sidebar Video */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Video barra laterale</label>
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        Video
+                      </label>
                       <div className="mt-1 space-y-3 lg:space-y-4">
                         {/* Video Preview */}
                         {sidebarVideoUrl && (
@@ -2995,9 +3049,16 @@ const cancelContactForm = () => {
                     />
 
 
+                  <hr className="border-gray-200" />
+
                   {/* Cover video (mobile) */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700"> Thumbnail </label>
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                      Thumbnail
+                    </label>
                     <div className="mt-1 space-y-3 lg:space-y-4">
                       {/*{watch('thumbnail_url') && (
                         <img
@@ -3097,9 +3158,16 @@ const cancelContactForm = () => {
 
 
 
+                    <hr className="border-gray-200" />
+
                     {/* Audio section */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Audio</label>
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                        </svg>
+                        Audio
+                      </label>
                       <input type="hidden" {...register('audio_url')} />
                       <div className="mt-1">
                         {audioGenerating ? (
@@ -3189,21 +3257,35 @@ const cancelContactForm = () => {
                 </div>
 
                 {/* Excerpt Card */}
-                <div className="bg-gray-50 rounded-lg p-4 lg:p-6">
-                  <h3 className="text-base lg:text-lg font-medium text-gray-900 mb-3 lg:mb-4">Estratto</h3>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 lg:px-5 lg:py-4 bg-gray-50 border-b border-gray-200">
+                    <h3 className="text-sm font-semibold text-gray-800 uppercase tracking-wide flex items-center gap-2">
+                      <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h8m-8 6h16" />
+                      </svg>
+                      Estratto
+                    </h3>
+                  </div>
+                  <div className="p-4 lg:p-5">
                   <textarea
                     {...register('excerpt', { required: "L'estratto è obbligatorio" })}
                     rows={4}
                     className={`block w-full rounded-md ${errors.excerpt ? 'border-red-500' : 'border-gray-300'} shadow-sm focus:border-primary focus:ring-primary text-sm`}
                     placeholder="Scrivi un breve estratto..."
                   />
-                  {errors.excerpt && <p className="mt-1 text-xs sm:text-sm text-red-600">{errors.excerpt.message as string}</p>}
+                  {errors.excerpt && <p className="mt-1 text-xs text-red-500">{errors.excerpt.message as string}</p>}
+                  </div>
                 </div>
 
                 {/* Summary Section Card */}
-                <div className="bg-gray-50 rounded-lg p-4 lg:p-6">
-                  <div className="flex items-center justify-between mb-3 lg:mb-4">
-                    <h3 className="text-base lg:text-lg font-medium text-gray-900">Sezione Riassunto</h3>
+                <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 lg:px-5 lg:py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-gray-800 uppercase tracking-wide flex items-center gap-2">
+                      <svg className="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      Riassunto
+                    </h3>
                     <button
                       type="button"
                       onClick={handleGenerateAiSummary}
@@ -3231,11 +3313,11 @@ const cancelContactForm = () => {
                       )}
                     </button>
                   </div>
-                  
-                  <div className="space-y-4">
+
+                  <div className="p-4 lg:p-5 space-y-4">
                     {/* Title Summary */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Titolo del Riassunto</label>
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">Titolo del Riassunto</label>
                       <input
                         type="text"
                         {...register('title_summary')}
@@ -3249,7 +3331,7 @@ const cancelContactForm = () => {
 
                     {/* Summary */}
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Contenuto del Riassunto</label>
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">Contenuto del Riassunto</label>
                       <textarea
                         {...register('summary')}
                         rows={6}
