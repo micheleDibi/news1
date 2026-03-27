@@ -87,7 +87,20 @@ const currentPath = Astro.url.pathname;
             
             <!-- Mobile admin links - hidden by default -->
             <a
-              id="mobile-logs-link" 
+              id="mobile-pending-articles-link"
+              href="/admin/articles/pending"
+              class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                Articoli da Generare
+              </div>
+            </a>
+
+            <a
+              id="mobile-logs-link"
               href="/admin/news-automation"
               class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
             >
@@ -193,7 +206,19 @@ const currentPath = Astro.url.pathname;
               
               {/* Desktop admin links - hidden by default */}
               <a
-                id="logs-link" 
+                id="pending-articles-link"
+                href="/admin/articles/pending"
+                class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-md hidden"
+              >
+                <svg class="text-gray-400 group-hover:text-gray-500 mr-2 xl:mr-3 h-5 xl:h-6 w-5 xl:w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span class="hidden xl:inline">Da Generare</span>
+                <span class="xl:hidden">Genera</span>
+              </a>
+
+              <a
+                id="logs-link"
                 href="/admin/news-automation"
                 class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-md hidden"
               >
@@ -312,30 +337,34 @@ const currentPath = Astro.url.pathname;
 
             if (profile && profile.role === 'admin') {
               // Desktop links
+              const pendingArticlesLink = document.getElementById('pending-articles-link');
               const logsLink = document.getElementById('logs-link');
               const apiRequestsLink = document.getElementById('api-requests-link');
               const usersLink = document.getElementById('users-link');
               const sourcesLink = document.getElementById('sources-link');
               const categoriesLink = document.getElementById('categories-link');
               const profilesLink = document.getElementById('profiles-link');
-              
+
               // Mobile links
+              const mobilePendingArticlesLink = document.getElementById('mobile-pending-articles-link');
               const mobileLogsLink = document.getElementById('mobile-logs-link');
               const mobileApiRequestsLink = document.getElementById('mobile-api-requests-link');
               const mobileUsersLink = document.getElementById('mobile-users-link');
               const mobileSourcesLink = document.getElementById('mobile-sources-link');
               const mobileCategoriesLink = document.getElementById('mobile-categories-link');
               const mobileProfilesLink = document.getElementById('mobile-profiles-link');
-              
+
               // Show desktop links
+              if (pendingArticlesLink) pendingArticlesLink.classList.remove('hidden');
               if (logsLink) logsLink.classList.remove('hidden');
               if (apiRequestsLink) apiRequestsLink.classList.remove('hidden');
               if (usersLink) usersLink.classList.remove('hidden');
               if (sourcesLink) sourcesLink.classList.remove('hidden');
               if (categoriesLink) categoriesLink.classList.remove('hidden');
               if (profilesLink) profilesLink.classList.remove('hidden');
-              
+
               // Show mobile links
+              if (mobilePendingArticlesLink) mobilePendingArticlesLink.classList.remove('hidden');
               if (mobileLogsLink) mobileLogsLink.classList.remove('hidden');
               if (mobileApiRequestsLink) mobileApiRequestsLink.classList.remove('hidden');
               if (mobileUsersLink) mobileUsersLink.classList.remove('hidden');
@@ -431,26 +460,30 @@ const currentPath = Astro.url.pathname;
       // Optional: Re-run if auth state changes (e.g., user logs in/out on the same page)
       supabase.auth.onAuthStateChange((_event, _session) => {
          // Clear previous state first
+         const pendingArticlesLink = document.getElementById('pending-articles-link');
          const logsLink = document.getElementById('logs-link');
          const apiRequestsLink = document.getElementById('api-requests-link');
          const usersLink = document.getElementById('users-link');
          const sourcesLink = document.getElementById('sources-link');
          const categoriesLink = document.getElementById('categories-link');
          const profilesLink = document.getElementById('profiles-link');
+         const mobilePendingArticlesLink = document.getElementById('mobile-pending-articles-link');
          const mobileLogsLink = document.getElementById('mobile-logs-link');
          const mobileApiRequestsLink = document.getElementById('mobile-api-requests-link');
          const mobileUsersLink = document.getElementById('mobile-users-link');
          const mobileSourcesLink = document.getElementById('mobile-sources-link');
          const mobileCategoriesLink = document.getElementById('mobile-categories-link');
          const mobileProfilesLink = document.getElementById('mobile-profiles-link');
-         
+
          // Hide all links first
+         if (pendingArticlesLink) pendingArticlesLink.classList.add('hidden');
          if (logsLink) logsLink.classList.add('hidden');
          if (apiRequestsLink) apiRequestsLink.classList.add('hidden');
          if (usersLink) usersLink.classList.add('hidden');
          if (sourcesLink) sourcesLink.classList.add('hidden');
          if (categoriesLink) categoriesLink.classList.add('hidden');
          if (profilesLink) profilesLink.classList.add('hidden');
+         if (mobilePendingArticlesLink) mobilePendingArticlesLink.classList.add('hidden');
          if (mobileLogsLink) mobileLogsLink.classList.add('hidden');
          if (mobileApiRequestsLink) mobileApiRequestsLink.classList.add('hidden');
          if (mobileUsersLink) mobileUsersLink.classList.add('hidden');
