@@ -66,23 +66,6 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
           </div>
         </div>
 
-        <!-- Pending Articles Section -->
-        <div id="pending-section" class="hidden mb-6">
-          <div class="bg-amber-50 border border-amber-200 shadow rounded-lg overflow-hidden">
-            <div class="px-4 py-4 border-b border-amber-200 flex items-center justify-between">
-              <div class="flex items-center">
-                <svg class="h-5 w-5 text-amber-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                <h3 class="text-lg font-semibold text-gray-900">Articoli da generare</h3>
-              </div>
-              <span id="pending-count" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"></span>
-            </div>
-            <ul id="pending-list" class="divide-y divide-amber-100">
-            </ul>
-          </div>
-        </div>
-
         <div class="bg-gradient-to-br from-sport-50 to-white shadow-lg rounded-lg mb-6">
           <div class="p-6 border-b border-sport-100">
             <h2 class="text-xl font-semibold text-sport-800 mb-4 flex items-center">
@@ -358,7 +341,6 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
     adminContent?.classList.remove('hidden');
 
     // Initialize the page
-    loadPendingArticles();
     await fetchUniqueCreators();
     await fetchAndRenderArticles(currentPage);
   }
@@ -491,9 +473,58 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
       url.searchParams.set('page', page.toString());
       window.history.pushState({}, '', url);
 
+      // Fetch pending articles from backend and prepend them on page 1
+      let pendingHtml = '';
+      if (page === 1 && !filters.searchTerm && filters.status === 'all' && filters.category === 'all' && filters.creator === 'all' && !filters.dateFrom && !filters.dateTo) {
+        try {
+          const pendingRes = await fetch('${import.meta.env.PUBLIC_BACKEND_URL || 'http://localhost:8000'}/api/news/pending-review');
+          if (pendingRes.ok) {
+            const pending = await pendingRes.json();
+            pendingHtml = (pending || []).map((item: any) => `
+              <li class="px-4 py-4 flex items-center justify-between sm:px-6 hover:bg-amber-50 bg-amber-50/30 border-l-4 border-amber-400">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center justify-between">
+                    <p class="text-sm font-medium text-primary truncate">
+                      ${item.title || 'Senza titolo'}
+                    </p>
+                    <div class="ml-2 flex-shrink-0 flex gap-2">
+                      <p class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-amber-100 text-amber-800">
+                        Da generare
+                      </p>
+                      <p class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-sport-100 text-sport-700">
+                        ${item.category || '-'}
+                      </p>
+                    </div>
+                  </div>
+                  <div class="mt-2 flex items-center text-sm text-gray-500">
+                    <svg class="flex-shrink-0 mr-1.5 h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    <p>raccolto il ${item.date_scraped ? new Date(item.date_scraped).toLocaleDateString('it-IT') : '-'}</p>
+                  </div>
+                </div>
+                <div class="ml-5 flex-shrink-0 flex items-center space-x-4">
+                  <a
+                    href="/admin/articles/0/edit?newsId=${item.id}"
+                    class="inline-flex items-center text-sm font-medium text-sport-700 hover:text-sport-900"
+                  >
+                    <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    Modifica
+                  </a>
+                </div>
+              </li>
+            `).join('');
+          }
+        } catch (err) {
+          console.error('Error loading pending articles:', err);
+        }
+      }
+
       // Render articles
       if (!articlesList) return;
-      articlesList.innerHTML = (articles || [])
+      articlesList.innerHTML = pendingHtml + (articles || [])
         .map(article => {
           const isDraft = article.isdraft;
           const hasPublished = !!article.published_at;
@@ -712,58 +743,6 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
         }
       });
     });
-  }
-
-  // Fetch pending articles from backend pipeline
-  async function loadPendingArticles() {
-    try {
-      const res = await fetch('http://localhost:8000/api/news/pending-review');
-      if (!res.ok) return;
-      const pending = await res.json();
-      if (!pending || pending.length === 0) return;
-
-      const section = document.getElementById('pending-section');
-      const list = document.getElementById('pending-list');
-      const count = document.getElementById('pending-count');
-      if (!section || !list || !count) return;
-
-      count.textContent = `${pending.length} in attesa`;
-
-      list.innerHTML = pending.map((item: any) => `
-        <li class="px-4 py-4 flex items-center justify-between sm:px-6 hover:bg-amber-50">
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center justify-between">
-              <p class="text-sm font-medium text-gray-900 truncate">
-                ${item.title || 'Senza titolo'}
-              </p>
-              <div class="ml-2 flex-shrink-0 flex">
-                <p class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-indigo-100 text-indigo-800">
-                  ${item.category || '-'}
-                </p>
-              </div>
-            </div>
-            <div class="mt-1 text-xs text-gray-500">
-              ${item.facts && item.facts.length > 0 ? item.facts[0].substring(0, 120) + (item.facts[0].length > 120 ? '...' : '') : ''}
-            </div>
-          </div>
-          <div class="ml-5 flex-shrink-0">
-            <a
-              href="/admin/articles/0/edit?newsId=${item.id}"
-              class="inline-flex items-center text-sm font-medium text-amber-700 hover:text-amber-900"
-            >
-              <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-              Modifica
-            </a>
-          </div>
-        </li>
-      `).join('');
-
-      section.classList.remove('hidden');
-    } catch (err) {
-      console.error('Error loading pending articles:', err);
-    }
   }
 
   // Initialize the page
