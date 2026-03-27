@@ -66,11 +66,20 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
           </div>
         </div>
 
-        <!-- Loading message for articles -->
-        <div id="articles-loading" class="bg-white shadow rounded-lg p-4 mb-6">
-          <div class="flex items-center justify-center">
-            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-sport-500 mr-3"></div>
-            <p class="text-gray-600">Verifica degli articoli in corso...</p>
+        <!-- Pending Articles Section -->
+        <div id="pending-section" class="hidden mb-6">
+          <div class="bg-amber-50 border border-amber-200 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-4 border-b border-amber-200 flex items-center justify-between">
+              <div class="flex items-center">
+                <svg class="h-5 w-5 text-amber-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <h3 class="text-lg font-semibold text-gray-900">Articoli da generare</h3>
+              </div>
+              <span id="pending-count" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"></span>
+            </div>
+            <ul id="pending-list" class="divide-y divide-amber-100">
+            </ul>
           </div>
         </div>
 
@@ -325,11 +334,9 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
   const articlesList = document.getElementById('articles-list');
   const loadingScreen = document.getElementById('loading-screen');
   const adminContent = document.getElementById('admin-content');
-  const articlesLoading = document.getElementById('articles-loading');
-
   async function checkAuth() {
     const { data: { session } } = await supabase.auth.getSession();
-    
+
     if (!session) {
       window.location.href = '/login';
       return;
@@ -340,33 +347,10 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
       .select('role, permissions, full_name')
       .eq('id', session.user.id)
       .single();
-    
+
     if (error || !(profile?.role === 'docente' || profile?.role === 'insegnante' || profile?.role === 'admin' || profile?.role === 'redattore' || profile?.role === 'giornalista' || profile?.role === 'direttore')) {
       window.location.href = '/login';
       return;
-    }
-
-    // Update loading message based on permissions
-    if (articlesLoading) {
-      if (profile?.permissions?.read_all_articles) {
-        articlesLoading.innerHTML = `
-          <div class="flex items-center justify-center text-green-600">
-            <svg class="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-            </svg>
-            <p>Visualizzazione di tutti gli articoli attiva</p>
-          </div>
-        `;
-      } else {
-        articlesLoading.innerHTML = `
-          <div class="flex items-center justify-center text-blue-600">
-            <svg class="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-            </svg>
-            <p>Visualizzazione limitata ai tuoi articoli</p>
-          </div>
-        `;
-      }
     }
 
     // If we get here, user is authenticated and authorized
@@ -374,6 +358,7 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
     adminContent?.classList.remove('hidden');
 
     // Initialize the page
+    loadPendingArticles();
     await fetchUniqueCreators();
     await fetchAndRenderArticles(currentPage);
   }
@@ -496,18 +481,6 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
       // Apply pagination
       const { data: articles, count, error } = await query.range(start, end);
       if (error) throw error;
-
-      // Update loading message based on permissions
-      if (articlesLoading) {
-        articlesLoading.innerHTML = `
-          <div class="flex items-center justify-center text-blue-600">
-            <svg class="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-            </svg>
-            <p>${profile?.permissions?.read_all_articles ? 'Visualizzazione di tutti gli articoli attiva' : 'Visualizzazione limitata ai tuoi articoli'}</p>
-          </div>
-        `;
-      }
 
       // Update pagination state
       totalPages = Math.ceil((count ?? 0) / itemsPerPage);
@@ -739,6 +712,58 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
         }
       });
     });
+  }
+
+  // Fetch pending articles from backend pipeline
+  async function loadPendingArticles() {
+    try {
+      const res = await fetch('http://localhost:8000/api/news/pending-review');
+      if (!res.ok) return;
+      const pending = await res.json();
+      if (!pending || pending.length === 0) return;
+
+      const section = document.getElementById('pending-section');
+      const list = document.getElementById('pending-list');
+      const count = document.getElementById('pending-count');
+      if (!section || !list || !count) return;
+
+      count.textContent = `${pending.length} in attesa`;
+
+      list.innerHTML = pending.map((item: any) => `
+        <li class="px-4 py-4 flex items-center justify-between sm:px-6 hover:bg-amber-50">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center justify-between">
+              <p class="text-sm font-medium text-gray-900 truncate">
+                ${item.title || 'Senza titolo'}
+              </p>
+              <div class="ml-2 flex-shrink-0 flex">
+                <p class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-indigo-100 text-indigo-800">
+                  ${item.category || '-'}
+                </p>
+              </div>
+            </div>
+            <div class="mt-1 text-xs text-gray-500">
+              ${item.facts && item.facts.length > 0 ? item.facts[0].substring(0, 120) + (item.facts[0].length > 120 ? '...' : '') : ''}
+            </div>
+          </div>
+          <div class="ml-5 flex-shrink-0">
+            <a
+              href="/admin/articles/0/edit?newsId=${item.id}"
+              class="inline-flex items-center text-sm font-medium text-amber-700 hover:text-amber-900"
+            >
+              <svg class="mr-1.5 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              Modifica
+            </a>
+          </div>
+        </li>
+      `).join('');
+
+      section.classList.remove('hidden');
+    } catch (err) {
+      console.error('Error loading pending articles:', err);
+    }
   }
 
   // Initialize the page
