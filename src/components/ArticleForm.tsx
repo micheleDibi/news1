@@ -3485,25 +3485,26 @@ const cancelContactForm = () => {
                   )}
                 </div>
 
-                    {/* Show contact form checkbox */}
-                    {canEditContactForm &&(
-                      <div className="flex items-center">
-                        <input
-                          type="checkbox"
-                          id="show_contact_form"
-                          {...register('show_contact_form')}
-                          checked={!!showContactForm}
-                          onChange={(e) => handleContactToggle(e.target.checked)}
-                          disabled={!canEditContactForm}
-                          className="h-4 w-4 text-primary border-gray-300 rounded focus:ring-primary"
-                        />
-                        <label htmlFor="show_contact_form" className="ml-2 block text-sm text-gray-700">
-                          Mostra Form Contatti in Articolo
-                        </label>
+                {/* Show contact form checkbox */}
+                {canEditContactForm && (
+                  <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 lg:p-5">
+                    <label htmlFor="show_contact_form" className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="show_contact_form"
+                        {...register('show_contact_form')}
+                        checked={!!showContactForm}
+                        onChange={(e) => handleContactToggle(e.target.checked)}
+                        disabled={!canEditContactForm}
+                        className="h-4 w-4 text-primary border-gray-300 rounded focus:ring-primary"
+                      />
+                      <div>
+                        <span className="text-sm font-medium text-gray-700 block">Form Contatti</span>
+                        <span className="text-xs text-gray-500">Mostra il form contatti nell'articolo</span>
                       </div>
-                    )}
+                    </label>
                   </div>
-                </div>
+                )}
 
               </div>
             </div>
