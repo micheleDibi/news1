@@ -66,6 +66,35 @@ const { data: articles } = await articlesQuery;
           </div>
         </div>
 
+        <!-- Pending Articles Section -->
+        <div id="pending-section" class="hidden mb-8">
+          <div class="bg-amber-50 border border-amber-200 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-4 border-b border-amber-200 flex items-center justify-between">
+              <div class="flex items-center">
+                <svg class="h-5 w-5 text-amber-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <h3 class="text-lg font-semibold text-gray-900">Articoli da generare</h3>
+              </div>
+              <span id="pending-count" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800"></span>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="min-w-full divide-y divide-amber-200">
+                <thead class="bg-amber-50">
+                  <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Titolo</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Categoria</th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Data</th>
+                    <th scope="col" class="relative px-6 py-3"><span class="sr-only">Azioni</span></th>
+                  </tr>
+                </thead>
+                <tbody id="pending-body" class="bg-white divide-y divide-gray-200">
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         <!-- Filters -->
         <div class="bg-white shadow rounded-lg mb-6">
           <div class="p-4 border-b border-gray-200">
@@ -207,6 +236,51 @@ const { data: articles } = await articlesQuery;
 
   // Run auth check immediately
   checkAuth();
+
+  // Fetch pending articles from backend
+  async function loadPendingArticles() {
+    try {
+      const res = await fetch('http://localhost:8000/api/news/pending-review');
+      if (!res.ok) return;
+      const pending = await res.json();
+      if (!pending || pending.length === 0) return;
+
+      const section = document.getElementById('pending-section');
+      const body = document.getElementById('pending-body');
+      const count = document.getElementById('pending-count');
+      if (!section || !body || !count) return;
+
+      count.textContent = `${pending.length} in attesa`;
+
+      body.innerHTML = pending.map((item: any) => `
+        <tr>
+          <td class="px-6 py-4">
+            <div class="text-sm font-medium text-gray-900">${item.title || 'Senza titolo'}</div>
+            ${item.facts && item.facts.length > 0 ? `<div class="text-xs text-gray-500 mt-1">${item.facts[0].substring(0, 100)}${item.facts[0].length > 100 ? '...' : ''}</div>` : ''}
+          </td>
+          <td class="px-6 py-4 whitespace-nowrap">
+            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-indigo-100 text-indigo-800">
+              ${item.category || '-'}
+            </span>
+          </td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+            ${item.date_scraped ? new Date(item.date_scraped).toLocaleDateString('it-IT') : '-'}
+          </td>
+          <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+            <a href="/admin/articles/0/edit?newsId=${item.id}" class="text-indigo-600 hover:text-indigo-900 font-semibold">
+              Modifica
+            </a>
+          </td>
+        </tr>
+      `).join('');
+
+      section.classList.remove('hidden');
+    } catch (err) {
+      console.error('Error loading pending articles:', err);
+    }
+  }
+
+  loadPendingArticles();
 
   // Search functionality
   const searchInput = document.getElementById('search') as HTMLInputElement;

@@ -415,24 +415,11 @@ def run_news_pipeline(source_list: List[Dict[str, str]] = None):
             return
         
         pipeline_state["summarized_ids"] = summarized_ids
-        
-        # Step 4: Reconstruct articles
-        if not reconstruct_articles(summarized_ids, pipeline_state):
-            logger.info("No articles reconstructed, stopping pipeline")
-            pipeline_state["status"] = "no-news"
-            pipeline_state["message"] = "No articles reconstructed"
-            return
-        
-        # Step 5: Publish
-        published_count = publish_news(summarized_ids, pipeline_state)
-        pipeline_state["published_count"] = published_count
-        
-        # Update pipeline status based on publishing results
-        if published_count > 0:
-            pipeline_state["status"] = "completed"
-        else:
-            pipeline_state["status"] = "no-news"
-            pipeline_state["message"] = "No articles published"
+
+        # Pipeline stops here — articles await manual review in admin panel
+        pipeline_state["status"] = "awaiting_review"
+        pipeline_state["message"] = f"{len(summarized_ids)} articoli pronti per la revisione"
+        send_telegram_notification(f"📋 {len(summarized_ids)} articoli pronti per la revisione nel pannello admin")
         
         logger.info("=" * 50)
         logger.info("=" * 50)

@@ -52,7 +52,7 @@ firecrawl_app = Firecrawl(api_key=FIRECRAWL_API_KEY)
 firecrawl_app_extract = Firecrawl(api_key=FIRECRAWL_API_KEY_EXTRACT)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:4321"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -178,6 +178,55 @@ async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_d
     article_response: schemas.NewsArticle = get_reconstructed_article_via_claude(news_item)
     update_news_item_with_reconstruction(news_item, article_response, db)
     return article_response
+
+@app.get("/api/news/pending-review")
+async def get_pending_review_news(db: Session = Depends(get_db)):
+    """Get summarized articles that haven't been reconstructed yet"""
+    pending = db.query(models.New).filter(
+        models.New.title.isnot(None),
+        models.New.proposed_response.is_(None),
+        models.New.is_published == False
+    ).order_by(models.New.date_scraped.desc()).all()
+
+    return [{
+        "id": n.id,
+        "title": n.title,
+        "facts": n.facts,
+        "context": n.context,
+        "category": n.category,
+        "location": n.location,
+        "published_date": n.published_date,
+        "date_scraped": str(n.date_scraped) if n.date_scraped else None,
+        "url": n.url,
+    } for n in pending]
+
+@app.get("/api/news/{news_id}")
+async def get_news_detail(news_id: int, db: Session = Depends(get_db)):
+    """Get a single news article by ID"""
+    news_item = get_new_with_id(news_id, db)
+    if not news_item:
+        raise HTTPException(status_code=404, detail="News item not found")
+    return {
+        "id": news_item.id,
+        "title": news_item.title,
+        "facts": news_item.facts,
+        "context": news_item.context,
+        "category": news_item.category,
+        "location": news_item.location,
+        "published_date": news_item.published_date,
+        "date_scraped": str(news_item.date_scraped) if news_item.date_scraped else None,
+        "url": news_item.url,
+    }
+
+@app.delete("/api/news/{news_id}")
+async def discard_news(news_id: int, db: Session = Depends(get_db)):
+    """Discard a pending news article"""
+    news_item = db.query(models.New).filter(models.New.id == news_id).first()
+    if not news_item:
+        raise HTTPException(status_code=404, detail="News item not found")
+    db.delete(news_item)
+    db.commit()
+    return {"success": True, "message": "Article discarded"}
 
 
 from google.cloud import texttospeech

@@ -3,19 +3,28 @@ export const prerender = false;
 
 import AdminLayout from '../../../../layouts/AdminLayout.astro';
 import ArticleForm from '../../../../components/ArticleForm';
+import PendingArticleReview from '../../../../components/automation/PendingArticleReview';
 import { supabase } from '../../../../lib/supabase';
 
-// Get the article data for this specific ID
-const { id } = Astro.params;
-const { data: article } = await supabase
-  .from('articles')
-  .select('*')
-  .eq('id', id)
-  .single();
+// Check if this is a pending article review (from backend pipeline)
+const newsId = Astro.url.searchParams.get('newsId');
+const isPending = !!newsId;
 
-// Redirect if article not found
-if (!article) {
-  return Astro.redirect('/admin');
+let article = null;
+if (!isPending) {
+  // Normal flow: load article from Supabase
+  const { id } = Astro.params;
+  const { data } = await supabase
+    .from('articles')
+    .select('*')
+    .eq('id', id)
+    .single();
+  article = data;
+
+  // Redirect if article not found
+  if (!article) {
+    return Astro.redirect('/admin');
+  }
 }
 ---
 
@@ -31,8 +40,14 @@ if (!article) {
     data-article-category-slug={article?.category_slug || ''}
     data-article-category-name={article?.category || ''}
 >
-  <AdminLayout title="Edit Article">
-    <ArticleForm article={article} client:load />
+  <AdminLayout title={isPending ? "Revisione Articolo" : "Edit Article"}>
+    {isPending ? (
+      <div class="py-6">
+        <PendingArticleReview newsId={newsId!} client:load />
+      </div>
+    ) : (
+      <ArticleForm article={article} client:load />
+    )}
   </AdminLayout>
 </div>
 
@@ -50,6 +65,10 @@ if (!article) {
       }
 
       console.log('User authenticated, checking permissions');
+
+      // For pending articles (from backend pipeline), skip category-based permission checks
+      const urlParams = new URLSearchParams(window.location.search);
+      const isPendingReview = urlParams.has('newsId');
 
       // Get article category info from data attribute
       const adminContentDiv = document.getElementById('admin-content');
@@ -97,8 +116,11 @@ if (!article) {
         role: profile.role
       });
 
-      // Allow edit if they have 'edit_all_articles' OR ('write_articles' AND permission for this specific category)
-      const canEditThisArticle = isTeacher && (canEditArticles || (canWriteArticles && hasPermissionForThisCategory));
+      // For pending articles, allow access if user has write_articles or edit_all_articles
+      // For regular articles, also check category-specific permissions
+      const canEditThisArticle = isPendingReview
+        ? isTeacher && (canEditArticles || canWriteArticles)
+        : isTeacher && (canEditArticles || (canWriteArticles && hasPermissionForThisCategory));
       console.log('Can edit this article?', canEditThisArticle);
 
       if (!canEditThisArticle) {
