@@ -224,6 +224,18 @@ const permissions = [
             Modifica Creatore
           </label>
         </div>
+        <div class="flex items-center">
+          <input type="checkbox" id="contact_form_in_article" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="contact_form_in_article" class="ml-2 block text-sm text-gray-900">
+            Form Contatti negli Articoli
+          </label>
+        </div>
+        <div class="flex items-center">
+          <input type="checkbox" id="generate_articles" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="generate_articles" class="ml-2 block text-sm text-gray-900">
+            Generare Articoli
+          </label>
+        </div>
       </div>
 
       <hr class="my-4">
@@ -377,6 +389,13 @@ const permissions = [
               {permissions.find(p => p.id === 'contact_form_in_article')?.description}
             </p>
 
+            <div class="flex items-center">
+              <input type="checkbox" id="user_generate_articles" name="user_permissions" value="generate_articles"
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_generate_articles" class="ml-2 block text-sm text-gray-900">Generare Articoli</label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'generate_articles')?.description}</p>
+
           </div>
         </div>
 
@@ -490,6 +509,7 @@ const permissions = [
   modify_creator?: boolean;
   category_permissions?: string[];
   contact_form_in_article?: boolean;
+  generate_articles?: boolean;
 }
 
   interface RolePermissions {
@@ -519,6 +539,7 @@ const permissions = [
       feature_articles: true,
       modify_creator: true,
       contact_form_in_article: false,
+      generate_articles: true,
     },
     direttore: {
       write_articles: true,
@@ -528,6 +549,7 @@ const permissions = [
       feature_articles: true,
       modify_creator: true,
       contact_form_in_article: false,
+      generate_articles: false,
     },
     redattore: {
       write_articles: true,
@@ -536,6 +558,7 @@ const permissions = [
       read_all_articles: false,
       modify_creator: false,
       contact_form_in_article: false,
+      generate_articles: false,
     },
     giornalista: {
       write_articles: true,
@@ -544,6 +567,7 @@ const permissions = [
       read_all_articles: true,
       modify_creator: false,
       contact_form_in_article: false,
+      generate_articles: false,
     }
   };
   
