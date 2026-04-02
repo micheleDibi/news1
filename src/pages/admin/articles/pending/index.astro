@@ -177,7 +177,11 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
             <p class="mt-1 text-sm text-gray-500 line-clamp-1">
               ${item.facts && item.facts.length > 0 ? item.facts[0] : (item.context ? item.context.substring(0, 120) + '...' : '')}
             </p>
-            <p class="mt-1 text-xs text-gray-400">${item.date_scraped ? new Date(item.date_scraped).toLocaleDateString('it-IT') : ''}</p>
+            <div class="mt-1 flex items-center gap-3 flex-wrap">
+              ${item.category ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">${item.category}</span>` : ''}
+              ${item.url ? `<a href="${item.url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-xs text-gray-500 hover:text-indigo-600 flex items-center gap-1"><svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>${(() => { try { return new URL(item.url).hostname.replace(/^www\\./, ''); } catch { return item.url; } })()}</a>` : ''}
+              <span class="text-xs text-gray-400">${item.date_scraped ? new Date(item.date_scraped).toLocaleDateString('it-IT') : ''}</span>
+            </div>
           </a>
           <a
             href="/admin/articles/0/edit?newsId=${item.id}"

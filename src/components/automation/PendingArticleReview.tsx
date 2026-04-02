@@ -212,9 +212,13 @@ export default function PendingArticleReview({ newsId }: Props) {
         )}
 
         {article.url && (
-          <div className="px-6 py-3 border-b border-gray-200">
-            <a href={article.url} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-600 hover:text-indigo-800">
-              Fonte originale &rarr;
+          <div className="px-6 py-3 border-b border-gray-200 flex items-center gap-2">
+            <span className="text-sm text-gray-500">Fonte:</span>
+            <a href={article.url} target="_blank" rel="noopener noreferrer" className="text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+              {(() => { try { return new URL(article.url).hostname.replace(/^www\./, ''); } catch { return article.url; } })()}
             </a>
           </div>
         )}
