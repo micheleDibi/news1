@@ -341,7 +341,7 @@ const currentPath = Astro.url.pathname;
           try {
             const { data: profile, error } = await supabase
               .from('profiles')
-              .select('role, full_name, profile_pic_link')
+              .select('role, full_name, profile_pic_link, permissions')
               .eq('id', session.user.id)
               .single();
             
@@ -350,39 +350,48 @@ const currentPath = Astro.url.pathname;
               return;
             }
 
-            if (profile && profile.role === 'admin') {
-              // Desktop links
+            if (profile) {
+              const isAdmin = profile.role === 'admin';
+              const userPermissions = profile.permissions || {};
+              const canGenerateArticles = isAdmin || !!userPermissions['generate_articles'];
+
+              // "Articoli" visibile a tutti
               const publishedArticlesLink = document.getElementById('published-articles-link');
-              const pendingArticlesLink = document.getElementById('pending-articles-link');
-              const logsLink = document.getElementById('logs-link');
-              const settingsDropdown = document.getElementById('settings-dropdown');
-
-              // Mobile links
               const mobilePublishedArticlesLink = document.getElementById('mobile-published-articles-link');
-              const mobilePendingArticlesLink = document.getElementById('mobile-pending-articles-link');
-              const mobileLogsLink = document.getElementById('mobile-logs-link');
-              const mobileApiRequestsLink = document.getElementById('mobile-api-requests-link');
-              const mobileUsersLink = document.getElementById('mobile-users-link');
-              const mobileSourcesLink = document.getElementById('mobile-sources-link');
-              const mobileCategoriesLink = document.getElementById('mobile-categories-link');
-              const mobileProfilesLink = document.getElementById('mobile-profiles-link');
-
-              // Show desktop links
               if (publishedArticlesLink) publishedArticlesLink.classList.remove('hidden');
-              if (pendingArticlesLink) pendingArticlesLink.classList.remove('hidden');
-              if (logsLink) logsLink.classList.remove('hidden');
-              if (settingsDropdown) settingsDropdown.classList.remove('hidden');
-
-              // Show mobile links
               if (mobilePublishedArticlesLink) mobilePublishedArticlesLink.classList.remove('hidden');
-              if (mobilePendingArticlesLink) mobilePendingArticlesLink.classList.remove('hidden');
-              if (mobileLogsLink) mobileLogsLink.classList.remove('hidden');
-              if (mobileApiRequestsLink) mobileApiRequestsLink.classList.remove('hidden');
-              if (mobileUsersLink) mobileUsersLink.classList.remove('hidden');
-              if (mobileSourcesLink) mobileSourcesLink.classList.remove('hidden');
-              if (mobileCategoriesLink) mobileCategoriesLink.classList.remove('hidden');
-              if (mobileProfilesLink) mobileProfilesLink.classList.remove('hidden');
-            } else if (profile) {
+
+              // "Da Generare" visibile solo con permesso
+              if (canGenerateArticles) {
+                const pendingArticlesLink = document.getElementById('pending-articles-link');
+                const mobilePendingArticlesLink = document.getElementById('mobile-pending-articles-link');
+                if (pendingArticlesLink) pendingArticlesLink.classList.remove('hidden');
+                if (mobilePendingArticlesLink) mobilePendingArticlesLink.classList.remove('hidden');
+              }
+
+              if (isAdmin) {
+                // Links solo admin
+                const logsLink = document.getElementById('logs-link');
+                const settingsDropdown = document.getElementById('settings-dropdown');
+                const mobileLogsLink = document.getElementById('mobile-logs-link');
+                const mobileApiRequestsLink = document.getElementById('mobile-api-requests-link');
+                const mobileUsersLink = document.getElementById('mobile-users-link');
+                const mobileSourcesLink = document.getElementById('mobile-sources-link');
+                const mobileCategoriesLink = document.getElementById('mobile-categories-link');
+                const mobileProfilesLink = document.getElementById('mobile-profiles-link');
+
+                if (logsLink) logsLink.classList.remove('hidden');
+                if (settingsDropdown) settingsDropdown.classList.remove('hidden');
+                if (mobileLogsLink) mobileLogsLink.classList.remove('hidden');
+                if (mobileApiRequestsLink) mobileApiRequestsLink.classList.remove('hidden');
+                if (mobileUsersLink) mobileUsersLink.classList.remove('hidden');
+                if (mobileSourcesLink) mobileSourcesLink.classList.remove('hidden');
+                if (mobileCategoriesLink) mobileCategoriesLink.classList.remove('hidden');
+                if (mobileProfilesLink) mobileProfilesLink.classList.remove('hidden');
+              }
+            }
+
+            if (profile && profile.role !== 'admin') {
               // Not admin: hide Profili link, show user profile nav item
               const profilesLink = document.getElementById('profiles-link');
               const mobileProfilesLink = document.getElementById('mobile-profiles-link');
