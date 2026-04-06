@@ -12,7 +12,7 @@ interface ArticleGroup {
 export async function GET() {
   try {
     // Get all published articles with pagination
-    let allArticles: Pick<Article, 'title' | 'slug' | 'category_slug' | 'published_at' | 'updated_at'>[] = [];
+    let allArticles: Pick<Article, 'title' | 'slug' | 'category_slug' | 'published_at'>[] = [];
     let page = 0;
     const pageSize = 1000;
     let hasMoreData = true;
@@ -20,7 +20,7 @@ export async function GET() {
     while (hasMoreData) {
       const { data: articles, error } = await supabase
         .from('articles')
-        .select('title, slug, category_slug, published_at, updated_at')
+        .select('title, slug, category_slug, published_at')
         .eq('isdraft', false)
         .order('published_at', { ascending: false })
         .range(page * pageSize, (page + 1) * pageSize - 1);
@@ -63,9 +63,9 @@ export async function GET() {
           
           // Aggiorna lastmod se questo articolo è più recente
           const currentLastmod = new Date(group.lastmod);
-          const thisArticleDate = new Date(article.updated_at || article.published_at);
+          const thisArticleDate = new Date(article.published_at);
           if (thisArticleDate > currentLastmod) {
-            group.lastmod = article.updated_at || article.published_at;
+            group.lastmod = article.published_at;
           }
         } else {
           // Crea un nuovo gruppo
@@ -74,7 +74,7 @@ export async function GET() {
             month,
             day,
             count: 1,
-            lastmod: article.updated_at || article.published_at
+            lastmod: article.published_at
           });
         }
       });

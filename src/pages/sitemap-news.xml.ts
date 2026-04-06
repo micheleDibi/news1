@@ -35,7 +35,7 @@ export async function GET() {
     // Get published articles from the last 48 hours
     const { data: articles, error } = await supabase
       .from('articles')
-      .select('title, slug, category_slug, published_at, updated_at, image_url')
+      .select('title, slug, category_slug, published_at, image_url')
       .eq('isdraft', false)
       .gte('published_at', fortyEightHoursAgoISO) // Filter by date
       .order('published_at', { ascending: false });
@@ -51,13 +51,13 @@ xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
 xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`;
 
     // Add article URLs
-    (articles as Pick<Article, 'title' | 'slug' | 'image_url' | 'category_slug' | 'published_at' | 'updated_at'>[]).forEach(article => {
+    (articles as Pick<Article, 'title' | 'slug' | 'image_url' | 'category_slug' | 'published_at'>[]).forEach(article => {
       // const lastmod = new Date(article.published_at).toISOString();
       // Use category_slug if available, otherwise handle potential missing value
       const categorySlug = article.category_slug || 'general'; // Provide a default or handle error
             
 
-    const lastModIso = isoWithOffset(article.updated_at || article.published_at, 1);
+    const lastModIso = isoWithOffset(article.published_at, 1);
       xml += `
   <url>
     <loc>https://edunews24.it/${categorySlug}/${article.slug}</loc>

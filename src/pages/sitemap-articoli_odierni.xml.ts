@@ -78,7 +78,7 @@ xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`;
     if (articles && articles.length > 0) {
       console.log(`Found ${articles.length} articles for today`);
       (articles as Article[]).forEach(article => {
-        const lastmod = isoWithOffset(article.updated_at || article.published_at, 1);
+        const lastmod = isoWithOffset(article.published_at, 1);
         const categorySlug = article.category_slug || 'general'; // Fornisce un valore di default se manca
         xml += `
   <url>

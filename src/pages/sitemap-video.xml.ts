@@ -27,7 +27,7 @@ export async function GET() {
   // Articoli con video (da includere solo se hai una pagina di view per quel video)
   const { data: articles, error } = await supabase
     .from('articles')
-    .select('video_url, video_duration, thumbnail_url, image_url, published_at, updated_at, category_slug, slug, isdraft, title, excerpt, summary')
+    .select('video_url, video_duration, thumbnail_url, image_url, published_at, category_slug, slug, isdraft, title, excerpt, summary')
     .eq('isdraft', false)
     .not('video_url', 'is', null)
     .order('published_at', { ascending: false })
@@ -95,7 +95,7 @@ export async function GET() {
 
       return {
         loc: videoPageUrl, // pagina video dedicata
-        lastmod: new Date(a.updated_at || a.published_at).toISOString(),
+        lastmod: a.published_at ? new Date(a.published_at).toISOString() : undefined,
         title: a.title||'Video dell’articolo',
         description: (a as any).summary || a.excerpt||'Video incluso nell’articolo.',
         thumbnail: thumb,

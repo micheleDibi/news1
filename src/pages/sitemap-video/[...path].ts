@@ -34,7 +34,7 @@ export async function GET({ params }: { params: { path: string } }) {
     // Query articoli con video per il mese specificato
     const { data: articles, error } = await supabase
       .from('articles')
-      .select('video_url, video_duration, thumbnail_url, image_url, published_at, updated_at, category_slug, slug, isdraft, title, excerpt, summary')
+      .select('video_url, video_duration, thumbnail_url, image_url, published_at, category_slug, slug, isdraft, title, excerpt, summary')
       .eq('isdraft', false)
       .not('video_url', 'is', null)
       .gte('published_at', startOfMonth.toISOString())
@@ -64,7 +64,7 @@ export async function GET({ params }: { params: { path: string } }) {
         const fallbackThumb = fileUrl.replace(/\.(mp4|mov|m4v|avi|mpeg|mpg)$/i, '.webp');
         const thumb = (thumbDb && thumbDb.trim()) || (imageUrl && imageUrl.trim()) || fallbackThumb;
         const duration = typeof (a as any).video_duration === 'number' ? Math.round((a as any).video_duration) : undefined;
-        const lastmod = a.updated_at || a.published_at;
+        const lastmod = a.published_at;
 
         return {
           loc: videoPageUrl,

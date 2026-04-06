@@ -43,7 +43,7 @@ export async function GET({ url }: { url: URL }) {
     console.log(`Fetching articles for ${anno}-${mese}, from ${startOfMonth.toISOString()} to ${endOfMonth.toISOString()}`);
 
     // Get all published articles with pagination
-    let allArticles: Pick<Article, 'title' | 'slug' | 'category_slug' | 'published_at' | 'updated_at' | 'image_url'>[] = [];
+    let allArticles: Pick<Article, 'title' | 'slug' | 'category_slug' | 'published_at' | 'image_url'>[] = [];
     let page = 0;
     const pageSize = 1000;
     let hasMoreData = true;
@@ -51,7 +51,7 @@ export async function GET({ url }: { url: URL }) {
     while (hasMoreData) {
       const { data: articles, error } = await supabase
         .from('articles')
-        .select('title, slug, category_slug, published_at, updated_at, image_url')
+        .select('title, slug, category_slug, published_at, image_url')
         .eq('isdraft', false)
         .gte('published_at', startOfMonth.toISOString())
         .lte('published_at', endOfMonth.toISOString())
@@ -89,7 +89,7 @@ xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`;
     if (allArticles && allArticles.length > 0) {
       console.log(`Found ${allArticles.length} articles for ${anno}-${mese}`);
       allArticles.forEach(article => {
-        const lastmod = isoWithOffset(article.updated_at || article.published_at, 1);
+        const lastmod = isoWithOffset(article.published_at, 1);
         const categorySlug = article.category_slug || 'general'; // Fornisce un valore di default se manca
         
         xml += `

@@ -36,7 +36,7 @@ export async function GET({ params }: { params: { date: string } }) {
 
     const { data: articles, error } = await supabase
       .from('articles')
-      .select('title, slug, category_slug, published_at, updated_at, image_url')
+      .select('title, slug, category_slug, published_at, image_url')
       .eq('isdraft', false)
       .gte('published_at', startOfDay.toISOString())
       .lte('published_at', endOfDay.toISOString())
@@ -51,8 +51,8 @@ export async function GET({ params }: { params: { date: string } }) {
 xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`;
 
     if (articles && articles.length > 0) {
-      (articles as Pick<Article, 'title' | 'slug' | 'category_slug' | 'published_at' | 'updated_at' | 'image_url'>[]).forEach(article => {
-        const lastmod = isoWithOffset(article.updated_at || article.published_at, 1);
+      (articles as Pick<Article, 'title' | 'slug' | 'category_slug' | 'published_at' | 'image_url'>[]).forEach(article => {
+        const lastmod = isoWithOffset(article.published_at, 1);
         const categorySlug = article.category_slug || 'general';
 
         xml += `
