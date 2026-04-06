@@ -29,31 +29,31 @@ export async function GET() {
     let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
    <sitemap>
-      <loc>https://www.edunews24.it/sitemap-articoli.xml</loc>
+      <loc>https://edunews24.it/sitemap-articoli.xml</loc>
       <lastmod>${today}</lastmod>
    </sitemap>
    <sitemap>
-      <loc>https://www.edunews24.it/sitemap-pagine.xml</loc>
+      <loc>https://edunews24.it/sitemap-pagine.xml</loc>
       <lastmod>${today}</lastmod>
    </sitemap>
    <sitemap>
-      <loc>https://www.edunews24.it/sitemap-news.xml</loc>
+      <loc>https://edunews24.it/sitemap-news.xml</loc>
       <lastmod>${today}</lastmod>
    </sitemap>
    <sitemap>
-      <loc>https://www.edunews24.it/sitemap-selezione-personale.xml</loc>
+      <loc>https://edunews24.it/sitemap-selezione-personale.xml</loc>
       <lastmod>${today}</lastmod>
    </sitemap>
    <sitemap>
-      <loc>https://www.edunews24.it/sitemap-interpelli.xml</loc>
+      <loc>https://edunews24.it/sitemap-interpelli.xml</loc>
       <lastmod>${today}</lastmod>
    </sitemap>
    <sitemap>
-      <loc>https://www.edunews24.it/sitemap-categorie.xml</loc>
+      <loc>https://edunews24.it/sitemap-categorie.xml</loc>
       <lastmod>${today}</lastmod>
    </sitemap>
     <sitemap>
-      <loc>https://www.edunews24.it/sitemap-video.xml</loc>
+      <loc>https://edunews24.it/sitemap-video-index.xml</loc>
       <lastmod>${today}</lastmod>
    </sitemap>
 </sitemapindex>`;

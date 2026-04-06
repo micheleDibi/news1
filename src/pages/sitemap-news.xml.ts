@@ -11,19 +11,18 @@ function isoWithOffset(isoUtc: string, offsetHours = 1): string {
     return `${base}${sign}${pad(offsetHours)}:00`;
 }
 
-// Add XML escaping function with CDATA handling
 function escapeXml(unsafe: string): string {
-    // First replace any existing CDATA sections to prevent double escaping
-    const withoutCDATA = unsafe.replace(/<!\[CDATA\[(.*?)\]\]>/g, '$1');
-    
-    // Then escape special characters
-    return withoutCDATA
+    return unsafe
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&apos;')
-        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); // Remove control characters
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+}
+
+function stripControlChars(text: string): string {
+    return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 }
 
 export async function GET() {
@@ -36,7 +35,7 @@ export async function GET() {
     // Get published articles from the last 48 hours
     const { data: articles, error } = await supabase
       .from('articles')
-      .select('title, slug, category_slug, published_at, image_url') // Select only needed fields
+      .select('title, slug, category_slug, published_at, updated_at, image_url')
       .eq('isdraft', false)
       .gte('published_at', fortyEightHoursAgoISO) // Filter by date
       .order('published_at', { ascending: false });
@@ -52,23 +51,23 @@ xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
 xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">`;
 
     // Add article URLs
-    (articles as Pick<Article, 'title' | 'slug' | 'image_url' | 'category_slug' | 'published_at'>[]).forEach(article => {
+    (articles as Pick<Article, 'title' | 'slug' | 'image_url' | 'category_slug' | 'published_at' | 'updated_at'>[]).forEach(article => {
       // const lastmod = new Date(article.published_at).toISOString();
       // Use category_slug if available, otherwise handle potential missing value
       const categorySlug = article.category_slug || 'general'; // Provide a default or handle error
             
 
-    const lastModIso = isoWithOffset(article.published_at, 1);
+    const lastModIso = isoWithOffset(article.updated_at || article.published_at, 1);
       xml += `
   <url>
     <loc>https://edunews24.it/${categorySlug}/${article.slug}</loc>
     <news:news>
       <news:publication>
-        <news:name>Edunews24</news:name>
+        <news:name>EduNews24</news:name>
         <news:language>it</news:language>
       </news:publication>
       <news:publication_date>${lastModIso}</news:publication_date>
-      <news:title><![CDATA[${escapeXml(article.title)}]]></news:title>
+      <news:title><![CDATA[${stripControlChars(article.title).trim()}]]></news:title>
     </news:news>
     <image:image>
       <image:loc>${escapeXml(article.image_url)}</image:loc>

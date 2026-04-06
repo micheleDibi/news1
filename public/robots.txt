@@ -4,12 +4,13 @@ Allow: /
 
 # Sitemaps
 Sitemap: https://edunews24.it/sitemap-index.xml
-Sitemap: https://edunews24.it/sitemap-articoli.xml
-Sitemap: https://edunews24.it/sitemap-pagine.xml
 Sitemap: https://edunews24.it/sitemap-news.xml
-Sitemap: https://edunews24.it/sitemap-bandi.xml
-Sitemap: https://edunews24.it/sitemap-iterpelli.xml
+Sitemap: https://edunews24.it/sitemap-articoli.xml
+Sitemap: https://edunews24.it/sitemap-video-index.xml
 Sitemap: https://edunews24.it/sitemap-categorie.xml
+Sitemap: https://edunews24.it/sitemap-interpelli.xml
+Sitemap: https://edunews24.it/sitemap-pagine.xml
+Sitemap: https://edunews24.it/sitemap-selezione-personale.xml
 
 # Disallow admin and private areas
 Disallow: /admin/
@@ -22,7 +23,7 @@ User-agent: AhrefsBot
 Crawl-delay: 10
 
 User-agent: SemrushBot
-Crawl-delay: 10 
+Crawl-delay: 10
 
 User-agent: msnbot
 Crawl-delay: 5

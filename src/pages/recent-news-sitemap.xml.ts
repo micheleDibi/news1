@@ -12,7 +12,7 @@ export async function GET() {
     // Get published articles from the last 48 hours
     const { data: articles, error } = await supabase
       .from('articles')
-      .select('slug, category_slug, published_at') // Select only needed fields
+      .select('slug, category_slug, published_at, updated_at')
       .eq('isdraft', false)
       .gte('published_at', fortyEightHoursAgoISO) // Filter by date
       .order('published_at', { ascending: false });
@@ -26,16 +26,14 @@ export async function GET() {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`;
 
     // Add article URLs
-    (articles as Pick<Article, 'slug' | 'category_slug' | 'published_at'>[]).forEach(article => {
-      const lastmod = new Date(article.published_at).toISOString();
+    (articles as Pick<Article, 'slug' | 'category_slug' | 'published_at' | 'updated_at'>[]).forEach(article => {
+      const lastmod = new Date(article.updated_at || article.published_at).toISOString();
       // Use category_slug if available, otherwise handle potential missing value
       const categorySlug = article.category_slug || 'general'; // Provide a default or handle error
       xml += `
   <url>
     <loc>https://edunews24.it/${categorySlug}/${article.slug}</loc>
     <lastmod>${lastmod}</lastmod>
-    <changefreq>weekly</changefreq> 
-    <priority>0.5</priority>
   </url>`;
     });
 

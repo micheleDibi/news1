@@ -34,6 +34,7 @@ export interface Article {
   image_url: string;
   audio_url?: string;
   published_at: string;
+  updated_at?: string | null;
   created_at: string;
   category: string;
   category_slug: string;
@@ -42,6 +43,7 @@ export interface Article {
   tags: string[];
   summary: string;
   secondary_category_slugs?: string[] | null;
+  thumbnail_url?: string | null;
   video_url?: string | null;
   video_duration?: number | null;
   faqs?: { question: string; answer: string }[] | null;
