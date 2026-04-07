@@ -540,11 +540,15 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
   }
 
   async function loadAuthors() {
-    const { data } = await supabase.from('articles').select('creator').eq('isdraft', false);
+    const { data } = await supabase.from('profiles').select('full_name, public_name').order('full_name');
     if (!data) return;
-    const authors = [...new Set(data.map(a => a.creator).filter(Boolean))].sort();
+    const authors = data
+      .map(p => p.public_name || p.full_name)
+      .filter(Boolean)
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .sort();
     const select = $('article-author-filter') as HTMLSelectElement;
-    select.innerHTML = '<option value="">Tutti gli autori</option>' + authors.map(a => `<option value="${a}">${a}</option>`).join('');
+    select.innerHTML = '<option value="">Tutti gli autori</option>' + authors.map(a => '<option value="' + a + '">' + a + '</option>').join('');
   }
 
   function updateFieldVisibility() {
