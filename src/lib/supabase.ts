@@ -86,6 +86,7 @@ export interface LinkinbioItem {
   icon: string | null;
   color: string | null;
   description: string | null;
+  show_author: boolean;
   open_in_new_tab: boolean;
   is_active: boolean;
   position: number;

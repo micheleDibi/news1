@@ -75,33 +75,6 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
           </div>
         </div>
 
-        <!-- Right: Live Preview -->
-        <div class="w-[380px] flex-shrink-0 border-l border-gray-200 bg-gray-100 flex flex-col overflow-hidden hidden lg:flex">
-          <div class="px-4 py-2.5 bg-white border-b border-gray-200 flex items-center justify-between flex-shrink-0">
-            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Anteprima</span>
-            <div class="flex items-center gap-1.5">
-              <div class="w-2 h-2 rounded-full bg-green-400"></div>
-              <span class="text-xs text-gray-400">Live</span>
-            </div>
-          </div>
-          <div class="flex-1 overflow-y-auto flex justify-center py-4">
-            <div class="w-[320px]">
-              <!-- Phone frame -->
-              <div class="bg-[#0a0f1a] rounded-[2rem] p-1 shadow-2xl">
-                <div class="rounded-[1.75rem] overflow-hidden">
-                  <!-- Notch -->
-                  <div class="bg-[#0a0f1a] flex justify-center pt-2 pb-1">
-                    <div class="w-20 h-5 bg-black rounded-full"></div>
-                  </div>
-                  <!-- Content -->
-                  <div id="preview-content" class="bg-[#0a0f1a] px-5 pb-6 min-h-[500px]" style="font-family: 'Inter', sans-serif;">
-                    <!-- Preview will be rendered here -->
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   </AdminLayout>
@@ -168,10 +141,16 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
                 </button>
               </div>
               <input type="hidden" id="item-article-id">
-              <div class="relative">
-                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                <input type="text" id="article-search" placeholder="Cerca articolo per titolo..."
-                  class="block w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm bg-gray-50 focus:bg-white transition-colors">
+              <div class="flex gap-2">
+                <div class="relative flex-1">
+                  <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                  <input type="text" id="article-search" placeholder="Cerca per titolo..."
+                    class="block w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm bg-gray-50 focus:bg-white transition-colors">
+                </div>
+                <select id="article-author-filter"
+                  class="rounded-xl border border-gray-200 shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-sm bg-gray-50 focus:bg-white transition-colors px-3 py-2.5">
+                  <option value="">Tutti gli autori</option>
+                </select>
               </div>
               <div id="article-results" class="mt-2 max-h-56 overflow-y-auto border border-gray-200 rounded-xl bg-white shadow-sm hidden"></div>
             </div>
@@ -234,6 +213,13 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
               </div>
             </div>
             <div class="space-y-3">
+              <div class="flex items-center justify-between" id="show-author-field">
+                <label for="item-show-author" class="text-sm text-gray-700">Mostra autore</label>
+                <button type="button" id="item-show-author-toggle" class="relative inline-flex h-6 w-11 items-center rounded-full bg-indigo-600 transition-colors">
+                  <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform translate-x-6"></span>
+                </button>
+                <input type="checkbox" id="item-show-author" checked class="hidden">
+              </div>
               <div class="flex items-center justify-between" id="new-tab-field">
                 <label for="item-new-tab" class="text-sm text-gray-700">Apri in nuova scheda</label>
                 <button type="button" id="item-new-tab-toggle" class="relative inline-flex h-6 w-11 items-center rounded-full bg-indigo-600 transition-colors">
@@ -373,6 +359,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     // Toggle switches
     setupToggle('item-new-tab');
     setupToggle('item-active');
+    setupToggle('item-show-author');
 
     // Article search
     $i('article-search').addEventListener('input', () => {
@@ -380,6 +367,11 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       searchTimeout = setTimeout(() => loadArticlesList($i('article-search').value), 300);
     });
     $i('article-search').addEventListener('focus', () => { if (!$i('article-search').value) loadArticlesList(); });
+
+    // Author filter
+    const authorFilter = $('article-author-filter') as HTMLSelectElement;
+    authorFilter.addEventListener('change', () => loadArticlesList($i('article-search').value));
+    loadAuthors();
     $('clear-article').addEventListener('click', () => {
       selectedArticleId = null;
       $i('item-article-id').value = '';
@@ -419,6 +411,14 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     });
   }
 
+  async function loadAuthors() {
+    const { data } = await supabase.from('articles').select('creator').eq('isdraft', false);
+    if (!data) return;
+    const authors = [...new Set(data.map(a => a.creator).filter(Boolean))].sort();
+    const select = $('article-author-filter') as HTMLSelectElement;
+    select.innerHTML = '<option value="">Tutti gli autori</option>' + authors.map(a => `<option value="${a}">${a}</option>`).join('');
+  }
+
   function updateFieldVisibility() {
     ['section-article', 'section-link', 'section-social', 'section-header'].forEach(s => $(s).classList.add('hidden'));
     if (currentType === 'article') $('section-article').classList.remove('hidden');
@@ -426,6 +426,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     if (currentType === 'social') $('section-social').classList.remove('hidden');
     if (currentType === 'header') $('section-header').classList.remove('hidden');
     $('color-field').classList.toggle('hidden', currentType !== 'link' && currentType !== 'header');
+    $('show-author-field').classList.toggle('hidden', currentType !== 'article');
     $('new-tab-field').classList.toggle('hidden', currentType !== 'link' && currentType !== 'social');
     $('section-common').classList.toggle('hidden', currentType === 'separator');
   }
@@ -449,6 +450,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       $('color-value').textContent = item.color || '#064C99';
       $i('item-new-tab').checked = item.open_in_new_tab;
       $i('item-active').checked = item.is_active;
+      $i('item-show-author').checked = item.show_author !== false;
     } else {
       $('modal-title').textContent = 'Nuovo Elemento';
       $i('item-id').value = '';
@@ -459,12 +461,14 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       $i('item-header-title').value = '';
       $i('item-color').value = '#064C99'; $('color-value').textContent = '#064C99';
       $i('item-new-tab').checked = true; $i('item-active').checked = true;
+      $i('item-show-author').checked = true;
       if (type === 'article') loadArticlesList();
     }
 
     // Update toggle UIs
     updateToggleUI($('item-new-tab-toggle'), $i('item-new-tab').checked);
     updateToggleUI($('item-active-toggle'), $i('item-active').checked);
+    updateToggleUI($('item-show-author-toggle'), $i('item-show-author').checked);
     // Update social icon selection
     document.querySelectorAll('.social-icon-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-icon') === $i('item-icon').value));
 
@@ -485,8 +489,10 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     const results = $('article-results');
     results.classList.remove('hidden');
     results.innerHTML = '<div class="p-4 text-sm text-gray-400 text-center">Caricamento...</div>';
-    let query = supabase.from('articles').select('id, title, category, category_slug, published_at').eq('isdraft', false).order('published_at', { ascending: false }).range(0, ARTICLES_PER_PAGE - 1);
+    const authorFilter = ($('article-author-filter') as HTMLSelectElement).value;
+    let query = supabase.from('articles').select('id, title, category, category_slug, published_at, creator').eq('isdraft', false).order('published_at', { ascending: false }).range(0, ARTICLES_PER_PAGE - 1);
     if (search) query = query.ilike('title', `%${search}%`);
+    if (authorFilter) query = query.eq('creator', authorFilter);
     const { data: articles } = await query;
     if (!articles?.length) { results.innerHTML = '<div class="p-4 text-sm text-gray-400 text-center">Nessun articolo trovato</div>'; return; }
     results.innerHTML = articles.map(a => `
@@ -495,7 +501,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
         <div class="w-1.5 h-8 rounded-full flex-shrink-0" style="background: ${categoryColorMap[a.category_slug] || '#064C99'}"></div>
         <div class="flex-1 min-w-0">
           <p class="text-sm font-medium text-gray-900 truncate">${a.title}</p>
-          <p class="text-xs text-gray-400 mt-0.5">${a.category} &middot; ${new Date(a.published_at).toLocaleDateString('it-IT')}</p>
+          <p class="text-xs text-gray-400 mt-0.5">${a.category} &middot; ${a.creator || ''} &middot; ${new Date(a.published_at).toLocaleDateString('it-IT')}</p>
         </div>
       </div>
     `).join('');
@@ -517,11 +523,11 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
   async function saveItem() {
     const type = currentType;
     const id = $i('item-id').value;
-    const data: any = { type, is_active: $i('item-active').checked, description: null, updated_at: new Date().toISOString() };
+    const data: any = { type, is_active: $i('item-active').checked, description: null, show_author: $i('item-show-author').checked, updated_at: new Date().toISOString() };
 
     if (type === 'article') {
       if (!$i('item-article-id').value) { alert('Seleziona un articolo'); return; }
-      Object.assign(data, { article_id: parseInt($i('item-article-id').value), title: null, url: null, icon: null, color: null, open_in_new_tab: true });
+      Object.assign(data, { article_id: parseInt($i('item-article-id').value), title: null, url: null, icon: null, color: null, open_in_new_tab: true, show_author: $i('item-show-author').checked });
     } else if (type === 'link') {
       if (!$i('item-title').value || !$i('item-url').value) { alert('Inserisci titolo e URL'); return; }
       Object.assign(data, { article_id: null, title: $i('item-title').value, url: $i('item-url').value, icon: null, color: $i('item-color').value, open_in_new_tab: $i('item-new-tab').checked });
@@ -550,10 +556,9 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
   }
 
   async function loadItems() {
-    const { data } = await supabase.from('linkinbio_items').select('*, articles(id, title, slug, category, category_slug, image_url)').order('position', { ascending: true });
+    const { data } = await supabase.from('linkinbio_items').select('*, articles(id, title, slug, category, category_slug, image_url, creator)').order('position', { ascending: true });
     allItems = data || [];
     renderItems();
-    renderPreview();
     const active = allItems.filter(i => i.is_active).length;
     $('item-count').textContent = `${allItems.length} elementi (${active} attivi)`;
   }
@@ -671,45 +676,6 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     const updates = allItems.map((item, i) => supabase.from('linkinbio_items').update({ position: i }).eq('id', item.id));
     await Promise.all(updates);
     await loadItems();
-  }
-
-  function renderPreview() {
-    const preview = $('preview-content');
-    if (!preview) return;
-    const activeItems = allItems.filter(i => i.is_active);
-
-    let html = `
-      <div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding-top:16px;">
-        <div style="color:rgba(255,255,255,0.5);font-size:10px;font-weight:500;letter-spacing:0.15em;text-transform:uppercase;">Notizie per il mondo della scuola</div>
-        <a style="display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px;background:linear-gradient(135deg,#064C99,#0a6dd6);color:#fff;font-weight:700;font-size:12px;border-radius:10px;text-decoration:none;">Vai al sito <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg></a>
-    `;
-
-    let inSocialGroup = false;
-    for (let i = 0; i < activeItems.length; i++) {
-      const item = activeItems[i];
-      const nextIsSocial = i + 1 < activeItems.length && activeItems[i + 1].type === 'social';
-
-      if (item.type === 'social') {
-        if (!inSocialGroup) { html += '<div style="display:flex;gap:8px;justify-content:center;margin-top:4px;">'; inSocialGroup = true; }
-        const iconPath = socialIconPaths[item.icon || 'globe'] || socialIconPaths.globe;
-        html += `<a href="#" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:rgba(255,255,255,0.5);text-decoration:none;"><svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24"><path d="${iconPath}"/></svg></a>`;
-        if (!nextIsSocial) { html += '</div>'; inSocialGroup = false; }
-      } else if (item.type === 'header') {
-        const c = item.color || '#064C99';
-        html += `<div style="width:100%;display:flex;align-items:center;gap:8px;margin-top:8px;"><div style="width:6px;height:6px;border-radius:50%;background:${c};"></div><span style="font-size:9px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:${c};">${item.title || ''}</span><div style="flex:1;height:1px;background:${c};opacity:0.25;"></div></div>`;
-      } else if (item.type === 'separator') {
-        html += '<div style="height:8px;"></div>';
-      } else if (item.type === 'article' && item.articles) {
-        const c = getItemColor(item);
-        html += `<a href="#" style="display:flex;align-items:center;width:100%;padding:8px 10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;text-decoration:none;gap:8px;"><div style="width:3px;height:20px;border-radius:2px;background:${c};"></div><span style="color:rgba(255,255,255,0.9);font-size:11px;font-weight:500;line-height:1.3;flex:1;">${item.articles.title}</span><svg width="10" height="10" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg></a>`;
-      } else if (item.type === 'link') {
-        const c = item.color || '#064C99';
-        html += `<a href="#" style="display:flex;align-items:center;width:100%;padding:8px 10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;text-decoration:none;gap:8px;"><div style="width:3px;height:20px;border-radius:2px;background:${c};"></div><span style="color:rgba(255,255,255,0.9);font-size:11px;font-weight:500;line-height:1.3;flex:1;">${item.title || ''}</span><svg width="10" height="10" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg></a>`;
-      }
-    }
-
-    html += `<div style="margin-top:8px;color:rgba(255,255,255,0.2);font-size:9px;text-align:center;">&copy; ${new Date().getFullYear()} EduNews24</div></div>`;
-    preview.innerHTML = html;
   }
 
   document.addEventListener('DOMContentLoaded', checkAuth);

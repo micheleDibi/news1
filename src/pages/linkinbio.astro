@@ -36,7 +36,7 @@ for (const cat of categories) {
 
 const { data: items } = await supabase
   .from('linkinbio_items')
-  .select('*, articles(id, title, slug, category, category_slug, image_url)')
+  .select('*, articles(id, title, slug, category, category_slug, image_url, creator)')
   .eq('is_active', true)
   .order('position', { ascending: true });
 
@@ -308,6 +308,20 @@ const socialIcons: Record<string, string> = {
         letter-spacing: 0.03em;
       }
 
+      /* Article content with author */
+      .article-content {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+      }
+      .article-author {
+        color: rgba(255, 255, 255, 0.4);
+        font-size: 0.7rem;
+        font-weight: 400;
+      }
+
       /* Fade-in animation */
       @keyframes fadeUp {
         from { opacity: 0; transform: translateY(12px); }
@@ -382,13 +396,19 @@ const socialIcons: Record<string, string> = {
         }
 
         if (rawItem.type === 'article' && rawItem.articles) {
-          const art = rawItem.articles as { id: number; title: string; slug: string; category: string; category_slug: string; image_url: string };
+          const art = rawItem.articles as { id: number; title: string; slug: string; category: string; category_slug: string; image_url: string; creator: string };
           const artColor = categoryColorMap[art.category_slug] || '#064C99';
+          const showAuthor = rawItem.show_author !== false;
           return (
             <a href={`https://edunews24.it${getArticleUrl(art)}`} target="_blank" rel="noopener noreferrer"
               class="btn-article animate-in" style={`animation-delay: ${0.15 + i * 0.05}s`}>
               <div class="article-color-bar" style={`background: ${artColor}`}></div>
-              <span class="article-title">{art.title}</span>
+              <div class="article-content">
+                <span class="article-title">{art.title}</span>
+                {showAuthor && art.creator && (
+                  <span class="article-author">{art.creator}</span>
+                )}
+              </div>
               <svg class="article-arrow" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
               </svg>
