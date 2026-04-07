@@ -70,6 +70,31 @@ if (socialBuffer.length > 0) {
   groupedItems.push({ type: 'social_group', items: socialBuffer });
 }
 
+// Fetch articles for breaking/category items
+type DynamicArticle = { id: number; title: string; slug: string; category: string; category_slug: string; image_url: string; creator: string };
+const dynamicArticlesMap: Record<string, DynamicArticle[]> = {};
+
+for (const item of linkinbioItems) {
+  if (item.type === 'breaking') {
+    const { data } = await supabase
+      .from('articles')
+      .select('id, title, slug, category, category_slug, image_url, creator')
+      .eq('isdraft', false)
+      .order('published_at', { ascending: false })
+      .limit(item.article_count || 15);
+    dynamicArticlesMap[item.id] = (data || []) as DynamicArticle[];
+  } else if (item.type === 'category' && item.category_slug) {
+    const { data } = await supabase
+      .from('articles')
+      .select('id, title, slug, category, category_slug, image_url, creator')
+      .eq('category_slug', item.category_slug)
+      .eq('isdraft', false)
+      .order('published_at', { ascending: false })
+      .limit(item.article_count || 3);
+    dynamicArticlesMap[item.id] = (data || []) as DynamicArticle[];
+  }
+}
+
 // Social icon SVG paths
 const socialIcons: Record<string, string> = {
   facebook: 'M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z',
@@ -426,6 +451,38 @@ const socialIcons: Record<string, string> = {
                 <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
               </svg>
             </a>
+          );
+        }
+
+        if (rawItem.type === 'breaking' || rawItem.type === 'category') {
+          const dynArticles = dynamicArticlesMap[rawItem.id] || [];
+          const sectionColor = rawItem.color || '#064C99';
+          const showAuth = rawItem.show_author !== false;
+          return (
+            <div class="category-section animate-in" style={`animation-delay: ${0.15 + i * 0.05}s`}>
+              <div class="category-header">
+                <div class="category-dot" style={`background: ${sectionColor}`}></div>
+                <span class="category-name" style={`color: ${sectionColor}`}>{rawItem.title}</span>
+                <div class="category-line" style={`background: ${sectionColor}`}></div>
+              </div>
+              {dynArticles.map((da) => {
+                const daColor = categoryColorMap[da.category_slug] || sectionColor;
+                return (
+                  <a href={`https://edunews24.it${getArticleUrl(da)}`} target="_blank" rel="noopener noreferrer" class="btn-article">
+                    <div class="article-color-bar" style={`background: ${daColor}`}></div>
+                    <div class="article-content">
+                      <span class="article-title">{da.title}</span>
+                      {showAuth && da.creator && (
+                        <span class="article-author">{da.creator}</span>
+                      )}
+                    </div>
+                    <svg class="article-arrow" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                    </svg>
+                  </a>
+                );
+              })}
+            </div>
           );
         }
 

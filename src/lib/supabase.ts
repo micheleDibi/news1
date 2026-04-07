@@ -79,7 +79,7 @@ export interface ForumMessage {
 
 export interface LinkinbioItem {
   id: string;
-  type: 'article' | 'link' | 'social' | 'header' | 'separator';
+  type: 'article' | 'link' | 'social' | 'header' | 'separator' | 'breaking' | 'category';
   article_id: number | null;
   title: string | null;
   url: string | null;
@@ -87,6 +87,8 @@ export interface LinkinbioItem {
   color: string | null;
   description: string | null;
   show_author: boolean;
+  article_count: number | null;
+  category_slug: string | null;
   open_in_new_tab: boolean;
   is_active: boolean;
   position: number;
