@@ -237,6 +237,12 @@ const permissions = [
             Generare Articoli
           </label>
         </div>
+        <div class="flex items-center">
+          <input type="checkbox" id="manage_linkinbio" class="permission-checkbox h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+          <label for="manage_linkinbio" class="ml-2 block text-sm text-gray-900">
+            Gestione Link in Bio
+          </label>
+        </div>
       </div>
 
       <hr class="my-4">
@@ -396,6 +402,13 @@ const permissions = [
               <label for="user_generate_articles" class="ml-2 block text-sm text-gray-900">Generare Articoli</label>
             </div>
             <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'generate_articles')?.description}</p>
+
+            <div class="flex items-center">
+              <input type="checkbox" id="user_manage_linkinbio" name="user_permissions" value="manage_linkinbio"
+                     class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded user-general-permission-checkbox">
+              <label for="user_manage_linkinbio" class="ml-2 block text-sm text-gray-900">Gestione Link in Bio</label>
+            </div>
+            <p class="ml-6 text-xs text-gray-500 -mt-1">{permissions.find(p => p.id === 'manage_linkinbio')?.description}</p>
 
           </div>
         </div>
