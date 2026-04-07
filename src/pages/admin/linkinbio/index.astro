@@ -154,12 +154,6 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
             </div>
           </div>
 
-          <div class="mb-4" id="description-field">
-            <label for="item-description" class="block text-sm font-medium text-gray-700">Descrizione (opzionale)</label>
-            <textarea id="item-description" rows="2" placeholder="Breve descrizione..."
-              class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"></textarea>
-          </div>
-
           <div class="flex items-center gap-6 mb-4">
             <div class="flex items-center" id="new-tab-field">
               <input type="checkbox" id="item-new-tab" checked
@@ -243,7 +237,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
   let itemHeaderTitle: HTMLInputElement;
   let itemColor: HTMLInputElement;
   let colorValue: HTMLElement;
-  let itemDescription: HTMLTextAreaElement;
+
   let itemNewTab: HTMLInputElement;
   let itemActive: HTMLInputElement;
 
@@ -297,7 +291,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     itemHeaderTitle = document.getElementById('item-header-title') as HTMLInputElement;
     itemColor = document.getElementById('item-color') as HTMLInputElement;
     colorValue = document.getElementById('color-value')!;
-    itemDescription = document.getElementById('item-description') as HTMLTextAreaElement;
+
     itemNewTab = document.getElementById('item-new-tab') as HTMLInputElement;
     itemActive = document.getElementById('item-active') as HTMLInputElement;
   }
@@ -372,11 +366,9 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
 
     // Common fields visibility
     const showColor = type === 'link' || type === 'header';
-    const showDescription = type !== 'separator';
     const showNewTab = type === 'link' || type === 'social';
 
     document.getElementById('color-field')!.classList.toggle('hidden', !showColor);
-    document.getElementById('description-field')!.classList.toggle('hidden', !showDescription);
     document.getElementById('new-tab-field')!.classList.toggle('hidden', !showNewTab);
     document.getElementById('section-common')!.classList.toggle('hidden', type === 'separator');
   }
@@ -466,7 +458,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       itemHeaderTitle.value = item.title || '';
       itemColor.value = item.color || '#064C99';
       colorValue.textContent = item.color || '#064C99';
-      itemDescription.value = item.description || '';
+
       itemNewTab.checked = item.open_in_new_tab;
       itemActive.checked = item.is_active;
     } else {
@@ -485,7 +477,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       itemHeaderTitle.value = '';
       itemColor.value = '#064C99';
       colorValue.textContent = '#064C99';
-      itemDescription.value = '';
+
       itemNewTab.checked = true;
       itemActive.checked = true;
       loadArticlesList();
@@ -510,7 +502,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     const data: any = {
       type,
       is_active: itemActive.checked,
-      description: itemDescription.value || null,
+      description: null,
       updated_at: new Date().toISOString(),
     };
 
