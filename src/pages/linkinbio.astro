@@ -1,6 +1,17 @@
 ---
 import { supabase } from '../lib/supabase';
 import { slugify } from '../lib/utils';
+import { categories, refreshCategories } from '../lib/categories';
+
+if (categories.length === 0) {
+  await refreshCategories();
+}
+
+// Build category color map
+const categoryColorMap: Record<string, string> = {};
+for (const cat of categories) {
+  categoryColorMap[cat.slug] = cat.color;
+}
 
 const { data: items } = await supabase
   .from('linkinbio_items')
@@ -351,10 +362,11 @@ const socialIcons: Record<string, string> = {
 
         if (rawItem.type === 'article' && rawItem.articles) {
           const art = rawItem.articles as { id: number; title: string; slug: string; category: string; category_slug: string; image_url: string };
+          const artColor = categoryColorMap[art.category_slug] || '#064C99';
           return (
             <a href={`https://edunews24.it${getArticleUrl(art)}`} target="_blank" rel="noopener noreferrer"
               class="btn-article animate-in" style={`animation-delay: ${0.15 + i * 0.05}s`}>
-              <div class="article-color-bar" style={`background: ${rawItem.color || '#064C99'}`}></div>
+              <div class="article-color-bar" style={`background: ${artColor}`}></div>
               <span class="article-title">{art.title}</span>
               <svg class="article-arrow" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
