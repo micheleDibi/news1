@@ -25,7 +25,8 @@ const permissions = [
   { id: 'feature_articles', name: 'Mettere Articoli in Evidenza', description: 'Permette di mettere articoli in evidenza' },
   { id: 'modify_creator', name: 'Modifica Creatore', description: 'Permette di cambiare il creatore associato a un articolo' },
   { id: 'contact_form_in_article', name: 'Form Contatti negli Articoli', description: "Permette di attivare il form di contatto dentro l'articolo" },
-  { id: 'generate_articles', name: 'Generare Articoli', description: 'Permette di accedere alla sezione articoli da generare' }
+  { id: 'generate_articles', name: 'Generare Articoli', description: 'Permette di accedere alla sezione articoli da generare' },
+  { id: 'manage_linkinbio', name: 'Gestione Link in Bio', description: 'Permette di gestire i link della pagina Link in Bio' }
 ];
 ---
 
@@ -540,6 +541,7 @@ const permissions = [
       modify_creator: true,
       contact_form_in_article: false,
       generate_articles: true,
+      manage_linkinbio: true,
     },
     direttore: {
       write_articles: true,
@@ -550,6 +552,7 @@ const permissions = [
       modify_creator: true,
       contact_form_in_article: false,
       generate_articles: false,
+      manage_linkinbio: false,
     },
     redattore: {
       write_articles: true,
@@ -559,6 +562,7 @@ const permissions = [
       modify_creator: false,
       contact_form_in_article: false,
       generate_articles: false,
+      manage_linkinbio: false,
     },
     giornalista: {
       write_articles: true,
@@ -568,6 +572,7 @@ const permissions = [
       modify_creator: false,
       contact_form_in_article: false,
       generate_articles: false,
+      manage_linkinbio: false,
     }
   };
   

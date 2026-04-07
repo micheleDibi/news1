@@ -177,6 +177,18 @@ const currentPath = Astro.url.pathname;
               </div>
             </a>
 
+            <a
+              id="mobile-linkinbio-link"
+              href="/admin/linkinbio"
+              class="hidden block px-3 py-2 rounded-md text-base font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-50"
+            >
+              <div class="flex items-center">
+                <svg class="mr-3 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+                Link in Bio
+              </div>
+            </a>
 
           </div>
         </div>
@@ -275,6 +287,7 @@ const currentPath = Astro.url.pathname;
                     <a id="api-requests-link" href="/admin/plugin-requests" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Gestione Plug-In</a>
                     <a id="categories-link" href="/admin/categories" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Gestione Categorie</a>
                     <a id="sources-link" href="/admin/sources" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Gestione Fonti</a>
+                    <a id="linkinbio-link" href="/admin/linkinbio" class="hidden block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Link in Bio</a>
                   </div>
                 </div>
               </div>
@@ -354,6 +367,7 @@ const currentPath = Astro.url.pathname;
               const isAdmin = profile.role === 'admin';
               const userPermissions = profile.permissions || {};
               const canGenerateArticles = isAdmin || !!userPermissions['generate_articles'];
+              const canManageLinkinbio = isAdmin || !!userPermissions['manage_linkinbio'];
 
               // "Articoli" visibile a tutti
               const publishedArticlesLink = document.getElementById('published-articles-link');
@@ -367,6 +381,12 @@ const currentPath = Astro.url.pathname;
                 const mobilePendingArticlesLink = document.getElementById('mobile-pending-articles-link');
                 if (pendingArticlesLink) pendingArticlesLink.classList.remove('hidden');
                 if (mobilePendingArticlesLink) mobilePendingArticlesLink.classList.remove('hidden');
+              }
+
+              // "Link in Bio" visibile solo con permesso
+              if (canManageLinkinbio) {
+                document.getElementById('linkinbio-link')?.classList.remove('hidden');
+                document.getElementById('mobile-linkinbio-link')?.classList.remove('hidden');
               }
 
               if (isAdmin) {

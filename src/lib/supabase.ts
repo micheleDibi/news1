@@ -77,6 +77,22 @@ export interface ForumMessage {
   };
 }
 
+export interface LinkinbioItem {
+  id: string;
+  type: 'article' | 'link' | 'social' | 'header' | 'separator';
+  article_id: number | null;
+  title: string | null;
+  url: string | null;
+  icon: string | null;
+  color: string | null;
+  description: string | null;
+  open_in_new_tab: boolean;
+  is_active: boolean;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Podcast {
   id: number;
   title: string;
