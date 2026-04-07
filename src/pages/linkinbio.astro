@@ -7,10 +7,31 @@ if (categories.length === 0) {
   await refreshCategories();
 }
 
-// Build category color map
+// Map color names to hex values
+const colorHexMap: Record<string, string> = {
+  'sport-500': '#00529F',
+  'calcio': '#4CAF50',
+  'motori': '#FF9800',
+  'tennis': '#2196F3',
+  'cultura': '#8E44AD',
+  'lavoro': '#3E4A61',
+  'bandi': '#795548',
+  'red-500': '#ef4444',
+  'blue-500': '#3b82f6',
+  'green-500': '#22c55e',
+  'ricerca': '#137177',
+  'universita': '#2F7D31',
+  'scuola': '#F4B400',
+  'tecnologia': '#3A01A2',
+  'mondo': '#03A9F4',
+  'formazione': '#FB8C00',
+  'editoriali': '#616161',
+};
+
+// Build category slug -> hex color map
 const categoryColorMap: Record<string, string> = {};
 for (const cat of categories) {
-  categoryColorMap[cat.slug] = cat.color;
+  categoryColorMap[cat.slug] = colorHexMap[cat.color] || cat.color || '#064C99';
 }
 
 const { data: items } = await supabase
