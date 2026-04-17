@@ -220,6 +220,7 @@ async def _run_skill_and_save_background(news_id: int) -> None:
         if keyword and keyword not in combined_tags:
             combined_tags.append(keyword)
 
+        now_iso = datetime.now(ITALY_TZ).isoformat()
         article_row = {
             "title": title,
             "slug": proposed_slug,
@@ -232,7 +233,8 @@ async def _run_skill_and_save_background(news_id: int) -> None:
             "tags": combined_tags,
             "source": news_item.url,
             "image_url": "/edunews24_immagine_da_sostituire.png",
-            "published_at": datetime.now(ITALY_TZ).isoformat(),
+            "created_at": now_iso,
+            "published_at": now_iso,
             "isdraft": True,
             "creator": "AI News Generator (skill)",
             "skill_generated_at": payload.get("generated_at"),
