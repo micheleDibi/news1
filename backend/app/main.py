@@ -258,9 +258,14 @@ async def _run_skill_and_save_background(news_id: int) -> None:
             news_item.tags or [],
             news_item.category or "",
         )
-        frontend_base = os.getenv("FRONTEND_URL", "http://localhost:4321")
+        # URL pubblico del sito per gli interlink: sull'articolo finale non
+        # devono mai comparire URL localhost. Default al dominio di produzione
+        # edunews24.it (stesso pattern usato in indexnow.py / interpelli.py /
+        # selezione_personale.py); override via env PUBLIC_SITE_URL se serve
+        # in staging.
+        site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
         interlink_urls = [
-            f"{frontend_base}/{a['category_slug']}/{a['slug']}"
+            f"{site_base}/{a['category_slug']}/{a['slug']}"
             for a in related
             if a.get("category_slug") and a.get("slug")
         ]
