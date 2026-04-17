@@ -18,14 +18,30 @@ interface Props {
   newsId: string;
 }
 
-const PROGRESS_STEPS = [
-  { pct: 10, msg: 'Avvio generazione...' },
-  { pct: 30, msg: 'Generazione keywords SEO...' },
-  { pct: 50, msg: 'Ricerca articoli correlati...' },
-  { pct: 70, msg: 'Ricostruzione articolo...' },
-  { pct: 85, msg: 'Finalizzazione...' },
-  { pct: 95, msg: 'Quasi fatto...' },
+// Stage della skill news-angle-rewriter mappati sui tempi medi osservati (~6 min).
+// `t` = secondi dall'avvio in cui tipicamente si raggiunge lo stage.
+const PROGRESS_STAGES: { t: number; pct: number; msg: string }[] = [
+  { t: 0,   pct: 2,  msg: 'Avvio generazione...' },
+  { t: 8,   pct: 6,  msg: 'Lettura guide reference (SEO, angolo, blacklist)...' },
+  { t: 25,  pct: 12, msg: 'Scraping articolo sorgente con Firecrawl...' },
+  { t: 60,  pct: 22, msg: 'Ricerca articoli correlati per interlinking...' },
+  { t: 90,  pct: 32, msg: 'Analisi copertura competitor...' },
+  { t: 150, pct: 45, msg: 'Ricerca dati ufficiali e fonti primarie...' },
+  { t: 210, pct: 58, msg: 'Fact-check dei dati citati...' },
+  { t: 270, pct: 70, msg: 'Generazione articolo strutturato...' },
+  { t: 330, pct: 80, msg: 'Validazione SEO (title, meta, keyword)...' },
+  { t: 360, pct: 86, msg: 'Finalizzazione...' },
+  { t: 420, pct: 90, msg: 'Quasi fatto, ancora qualche secondo...' },
 ];
+
+function stageForElapsed(elapsedSec: number) {
+  let current = PROGRESS_STAGES[0];
+  for (const s of PROGRESS_STAGES) {
+    if (elapsedSec >= s.t) current = s;
+    else break;
+  }
+  return current;
+}
 
 export default function PendingArticleReview({ newsId }: Props) {
   const [article, setArticle] = useState<NewsItem | null>(null);
@@ -57,24 +73,26 @@ export default function PendingArticleReview({ newsId }: Props) {
     setProgress(0);
     setProgressMsg('Avvio generazione...');
 
-    // Simulate progress steps while waiting for the API
-    let stepIndex = 0;
+    // Aggiorna la barra ogni 2s mappando l'elapsed sui PROGRESS_STAGES.
+    const startedAt = Date.now();
     const interval = setInterval(() => {
-      if (stepIndex < PROGRESS_STEPS.length) {
-        setProgress(PROGRESS_STEPS[stepIndex].pct);
-        setProgressMsg(PROGRESS_STEPS[stepIndex].msg);
-        stepIndex++;
-      }
-    }, 5000);
+      const elapsed = (Date.now() - startedAt) / 1000;
+      const stage = stageForElapsed(elapsed);
+      setProgress(stage.pct);
+      setProgressMsg(stage.msg);
+    }, 2000);
 
     try {
-      // Step 1: Reconstruct with Claude
+      // Step 1: skill news-angle-rewriter (Firecrawl + Claude Agent SDK + fact-check).
+      // La generazione puo' richiedere 5-7 minuti: non applichiamo AbortController
+      // lato browser (default infinito). Il timeout effettivo e' gestito dal proxy
+      // Astro in src/pages/api/news/reconstruct/[id].ts.
       const reconstructRes = await fetch(`${BACKEND_URL}/api/news/reconstruct/${article.id}`, {
         method: 'POST',
       });
       if (!reconstructRes.ok) throw new Error('Errore nella generazione dell\'articolo');
 
-      setProgress(90);
+      setProgress(92);
       setProgressMsg('Pubblicazione bozza...');
 
       // Step 2: Publish as draft to Supabase via CMS API
