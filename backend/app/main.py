@@ -208,32 +208,42 @@ async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_d
     article_block = payload.get("article") or {}
     keyword = payload.get("keyword") or news_item.title or f"articolo-{news_id}"
 
-    proposed_slug, category_slug = generate_slugs(keyword, news_item.category or "")
+    # title = H1 dell'articolo; slug prodotto dal title.
+    title = article_block.get("h1") or seo.get("h1") or news_item.title or f"articolo-{news_id}"
+    proposed_slug, category_slug = generate_slugs(title, news_item.category or "")
     content_markdown = sections_to_markdown(article_block.get("sections") or [])
-    plain_preview = article_block.get("plain_text_preview")
+
+    # excerpt / summary / title_summary: stesso trattamento del publish_to_cms
+    # legacy. La skill non produce un "subtitle", quindi usiamo meta_description
+    # come proxy semantico per l'excerpt; summary e title_summary via OpenAI.
+    excerpt = seo.get("meta_description")
+    summary, title_summary = await generate_summary(content_markdown)
+
+    # tags: come prima + keyword principale della skill
+    combined_tags = list(news_item.tags or [])
+    if keyword and keyword not in combined_tags:
+        combined_tags.append(keyword)
 
     article_row = {
-        "title": seo.get("meta_title") or article_block.get("h1") or news_item.title,
+        "title": title,
         "slug": proposed_slug,
         "content": content_markdown,
-        "excerpt": plain_preview,
-        "summary": plain_preview,
-        "title_summary": seo.get("h1"),
+        "excerpt": excerpt,
+        "summary": summary,
+        "title_summary": title_summary,
         "category": news_item.category,
         "category_slug": category_slug,
-        "tags": [keyword] if keyword else [],
+        "tags": combined_tags,
         "source": news_item.url,
         "image_url": "/edunews24_immagine_da_sostituire.png",
         "published_at": datetime.now(ITALY_TZ).isoformat(),
         "isdraft": True,
         "creator": "AI News Generator (skill)",
         "skill_generated_at": payload.get("generated_at"),
-        "skill_source_url": payload.get("source_url") or news_item.url,
         "skill_livello": payload.get("livello"),
         "skill_keyword": keyword,
         "skill_meta_title": seo.get("meta_title"),
         "skill_meta_description": seo.get("meta_description"),
-        "skill_h1": seo.get("h1"),
         "skill_angolo": payload.get("angolo"),
         "skill_competitor_report": payload.get("competitor_report") or [],
         "skill_factcheck_report": payload.get("factcheck_report") or [],
@@ -241,7 +251,6 @@ async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_d
         "skill_fonti": payload.get("fonti") or [],
         "skill_validation": payload.get("validation") or {},
         "skill_raw_payload": payload,
-        "source_news_id": news_item.id,
     }
 
     try:
@@ -819,35 +828,36 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
     if not news_item:
         raise HTTPException(status_code=404, detail="News item not found")
 
-    # Idempotenza: se la skill ha gia' creato la bozza articles, non duplicare.
-    try:
-        supabase = get_supabase_client()
-        existing = supabase.table("articles").select(
-            "id, slug"
-        ).eq("source_news_id", news_id).limit(1).execute()
-    except Exception as e:
-        logger.warning("Idempotency check on articles failed: {}", e)
-        existing = None
+    # Idempotenza: se reconstruct (skill) ha gia' marcato la news come pubblicata
+    # e ha generato lo slug, recupera la bozza articles via slug e salta l'INSERT.
+    if news_item.is_published and news_item.proposed_slug:
+        try:
+            supabase = get_supabase_client()
+            existing = supabase.table("articles").select(
+                "id, slug, title, content"
+            ).eq("slug", news_item.proposed_slug).limit(1).execute()
+        except Exception as e:
+            logger.warning("Idempotency lookup on articles failed: {}", e)
+            existing = None
 
-    if existing and existing.data:
-        article_row = existing.data[0]
-        article_id = article_row.get("id")
-        logger.info(
-            "publish_to_cms: skill draft gia' presente (article_id={}), salto INSERT",
-            article_id,
-        )
-        # Avvia comunque la generazione audio sulla bozza esistente
-        text_to_audio = (
-            f"Titolo: {news_item.proposed_title or ''}\n\n"
-            f"{news_item.proposed_response or ''}"
-        )
-        if article_id:
-            asyncio.create_task(generate_and_save_audio(article_id, text_to_audio))
-        return {
-            "success": True,
-            "message": "Article draft already exists from skill; audio generation scheduled.",
-            "data": {"article": article_row},
-        }
+        if existing and existing.data:
+            article_row = existing.data[0]
+            article_id = article_row.get("id")
+            logger.info(
+                "publish_to_cms: bozza skill gia' presente (article_id={}, slug={}), salto INSERT",
+                article_id, article_row.get("slug"),
+            )
+            text_to_audio = (
+                f"Titolo: {article_row.get('title') or ''}\n\n"
+                f"{article_row.get('content') or ''}"
+            )
+            if article_id:
+                asyncio.create_task(generate_and_save_audio(article_id, text_to_audio))
+            return {
+                "success": True,
+                "message": "Article draft already exists from skill; audio generation scheduled.",
+                "data": {"article": article_row},
+            }
 
     logger.debug("news_item.proposed_title = {}", news_item.proposed_title)
     logger.debug("news_item.proposed_response = {}", news_item.proposed_response)
