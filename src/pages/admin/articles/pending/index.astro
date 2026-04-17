@@ -292,11 +292,33 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
     });
   }
 
+  async function fetchWithRetry(url: string, attempts = 3, timeoutMs = 10000): Promise<any[]> {
+    // Retry con backoff 500ms, 1500ms. Timeout per tentativo via AbortController
+    // per evitare che il fetch resti appeso quando il proxy / reverse proxy
+    // chiude la connessione.
+    let lastErr: any;
+    for (let i = 0; i < attempts; i++) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+        clearTimeout(t);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return (await res.json()) || [];
+      } catch (err) {
+        clearTimeout(t);
+        lastErr = err;
+        if (i < attempts - 1) {
+          await new Promise(r => setTimeout(r, 500 * (i + 1) * (i + 1)));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
   async function loadPendingArticles(isPoll = false) {
     try {
-      const res = await fetch('/api/news/pending-review', { cache: 'no-store' });
-      if (!res.ok) return;
-      const newData = await res.json() || [];
+      const newData = await fetchWithRetry('/api/news/pending-review');
 
       // Al primo load popoliamo anche il filtro categorie. In polling non lo tocchiamo.
       if (!isPoll) {
@@ -314,8 +336,25 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
 
       allArticles = newData;
       renderPage();
-    } catch (err) {
+    } catch (err: any) {
+      // In polling non alarmiamo: il fetch ha gia' provato 3 volte, manteniamo
+      // i dati precedenti in lista e riproviamo al prossimo tick.
+      if (isPoll) {
+        console.warn('Polling pending-review failed (keeping previous data):', err?.message || err);
+        return;
+      }
       console.error('Error loading pending articles:', err);
+      // Primo load fallito: mostra stato vuoto con invito a ricaricare
+      const list = document.getElementById('pending-list');
+      const container = document.getElementById('pending-list-container');
+      if (container && list) {
+        container.classList.remove('hidden');
+        list.innerHTML = `
+          <li class="px-4 py-8 text-center">
+            <p class="text-sm text-gray-600">Impossibile caricare gli articoli. Riprova.</p>
+            <button onclick="window.location.reload()" class="mt-2 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded hover:bg-indigo-700">Ricarica</button>
+          </li>`;
+      }
     }
   }
 
