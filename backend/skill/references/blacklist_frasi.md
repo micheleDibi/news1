@@ -63,3 +63,12 @@ Non servono frasi di transizione elaborate.
 - Se un dato è importante, presentalo senza annunciarlo.
 - ❌ "È importante sottolineare che la dispersione è al 16,8% in Campania"
 - ✅ "In Campania la dispersione è al 16,8%"
+
+## Caratteri tipografici VIETATI
+
+- **Em-dash** (`—`, U+2014) → NON usarlo MAI. Sostituiscilo con una virgola, una parentesi, o un trattino breve (`-`) a seconda del contesto.
+  - ❌ "Aprile 2026 — un'azienda di Cantù usa un finto WhatsApp"
+  - ✅ "Aprile 2026: un'azienda di Cantù usa un finto WhatsApp"
+  - ✅ "Aprile 2026, un'azienda di Cantù usa un finto WhatsApp"
+
+Questa regola vale per tutti i campi testuali dell'articolo (`article.sections`, `angolo`, `meta_title`, `meta_description`, `seo.h1`).

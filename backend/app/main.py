@@ -177,6 +177,27 @@ async def summarize_news(db: Session = Depends(get_db)):
 _generating_news_ids: set[int] = set()
 
 
+def _strip_em_dashes(value):
+    """Rimuove l'em-dash (U+2014 `—`) dai contenuti generati dalla skill.
+
+    La redazione non vuole questo carattere nei testi. Sostituisce:
+    - " — " (con spazi attorno) -> ", "  (preserva la pausa grammaticale)
+    - "—"   (attaccato o solo)   -> "-"   (hyphen)
+
+    Applicato ricorsivamente su dict/list cosi' da coprire le sections
+    strutturate e i report annidati del payload skill.
+    """
+    if isinstance(value, str):
+        s = value.replace(" — ", ", ")
+        s = s.replace("—", "-")
+        return s
+    if isinstance(value, list):
+        return [_strip_em_dashes(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_em_dashes(v) for k, v in value.items()}
+    return value
+
+
 def generate_seo_keywords(news_item: models.New) -> list[str]:
     """Genera 10 keyword SEO via Claude (stesso prompt del vecchio flusso).
 
@@ -245,6 +266,8 @@ async def _run_skill_and_save_background(news_id: int) -> None:
         ]
 
         payload = await skill_runner.generate_article_for_news(news_item, interlink_urls)
+        # Safety net: rimuovi em-dash dall'intero payload prima del mapping su articles.
+        payload = _strip_em_dashes(payload)
 
         seo = payload.get("seo") or {}
         article_block = payload.get("article") or {}
