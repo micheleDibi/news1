@@ -19,9 +19,11 @@ nell'ambiente shell.
 import anyio
 import argparse
 import json
+import logging
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
@@ -29,6 +31,40 @@ from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBl
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = SKILL_DIR / "output"
+
+# Logger: usa loguru se disponibile (quando invocata dal backend), altrimenti
+# ricade sul logging stdlib per l'uso CLI.
+try:
+    from loguru import logger as _logger  # type: ignore
+except ImportError:  # pragma: no cover
+    _logger = logging.getLogger("news_angle_rewriter")
+    if not _logger.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+        _logger.addHandler(_h)
+        _logger.setLevel(logging.INFO)
+
+
+def _log_tool_use(block) -> None:
+    """Logga una ToolUseBlock della Claude Agent SDK, evidenziando Firecrawl."""
+    name = getattr(block, "name", None) or getattr(block, "tool", None) or "?"
+    raw_input = getattr(block, "input", None)
+    try:
+        input_str = json.dumps(raw_input, ensure_ascii=False) if raw_input is not None else ""
+    except (TypeError, ValueError):
+        input_str = str(raw_input)
+
+    preview = input_str[:300] + ("..." if len(input_str) > 300 else "")
+    lowered = input_str.lower()
+
+    if "firecrawl" in lowered:
+        _logger.info("[SKILL][FIRECRAWL] tool={} input={}", name, preview)
+    elif name in ("WebFetch", "WebSearch"):
+        _logger.info("[SKILL][WEB] tool={} input={}", name, preview)
+    elif name == "Bash":
+        _logger.info("[SKILL][BASH] input={}", preview)
+    else:
+        _logger.debug("[SKILL][TOOL] tool={} input={}", name, preview)
 
 
 def _build_system_override(output_path: str) -> str:
@@ -108,6 +144,16 @@ async def run_skill(
     # Path stile unix anche su Windows per non confondere la shell del modello
     tmp_path_posix = Path(tmp_path).as_posix()
 
+    start_ts = time.monotonic()
+    firecrawl_calls = 0
+    webfetch_calls = 0
+    websearch_calls = 0
+    bash_calls = 0
+    _logger.info(
+        "[SKILL] start url={} livello={} interlink_count={} target={}",
+        url, livello, len(interlink), target,
+    )
+
     try:
         options = ClaudeAgentOptions(
             cwd=str(SKILL_DIR),
@@ -128,6 +174,29 @@ async def run_skill(
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         print(block.text)
+                        continue
+
+                    # Duck typing: ogni block non-text con `name`+`input` e' una ToolUseBlock
+                    if hasattr(block, "name") and hasattr(block, "input"):
+                        name = getattr(block, "name", "")
+                        raw_input = getattr(block, "input", None)
+                        input_str = ""
+                        try:
+                            input_str = json.dumps(raw_input, ensure_ascii=False) if raw_input else ""
+                        except (TypeError, ValueError):
+                            input_str = str(raw_input)
+
+                        lowered = input_str.lower()
+                        if "firecrawl" in lowered:
+                            firecrawl_calls += 1
+                        if name == "WebFetch":
+                            webfetch_calls += 1
+                        elif name == "WebSearch":
+                            websearch_calls += 1
+                        elif name == "Bash":
+                            bash_calls += 1
+
+                        _log_tool_use(block)
 
         if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
             raise RuntimeError(
@@ -135,7 +204,23 @@ async def run_skill(
             )
 
         with open(tmp_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            payload = json.load(f)
+
+        elapsed = time.monotonic() - start_ts
+        _logger.info(
+            "[SKILL] done in {:.1f}s | firecrawl={} webfetch={} websearch={} bash={} | livello={} keyword={!r}",
+            elapsed,
+            firecrawl_calls, webfetch_calls, websearch_calls, bash_calls,
+            payload.get("livello"), payload.get("keyword"),
+        )
+        if firecrawl_calls == 0:
+            _logger.warning(
+                "[SKILL] Firecrawl NON invocato: la skill potrebbe essere ricaduta "
+                "su WebFetch/WebSearch (webfetch={}, websearch={}). "
+                "Verifica FIRECRAWL_API_KEY e la disponibilita' del CLI firecrawl.",
+                webfetch_calls, websearch_calls,
+            )
+        return payload
 
     finally:
         if os.path.exists(tmp_path):
