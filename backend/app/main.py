@@ -177,6 +177,47 @@ async def summarize_news(db: Session = Depends(get_db)):
 _generating_news_ids: set[int] = set()
 
 
+def generate_seo_keywords(news_item: models.New) -> list[str]:
+    """Genera 10 keyword SEO via Claude (stesso prompt del vecchio flusso).
+
+    Usato dal background task della skill per popolare il campo articles.tags
+    con la varieta' di keyword che il vecchio flusso produceva, cosi' da non
+    regredire rispetto a come la redazione era abituata a vederle.
+    Ritorna una lista (eventualmente vuota in caso di errore).
+    """
+    if news_item is None:
+        return []
+    try:
+        news_info = (
+            f"Titolo: {news_item.title}\n"
+            f"Fatti: {news_item.facts}\n"
+            f"Contesto: {news_item.context}\n"
+            f"Categoria: {news_item.category}\n"
+            f"Luogo: {news_item.location}\n"
+            f"Data pubblicazione: {news_item.published_date}"
+        )
+        response = claude_client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": f"{CLAUDE_KEYWORDS_PROMPT}\n\nInformazioni:\n{news_info}",
+            }],
+        )
+        text = response.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        data = json.loads(text)
+        tags = data.get("tags", []) or []
+        return [t for t in tags if isinstance(t, str) and t.strip()]
+    except Exception as e:
+        logger.warning("generate_seo_keywords fallita: {}", e)
+        return []
+
+
 async def _run_skill_and_save_background(news_id: int) -> None:
     """Task di background: esegue la skill e crea la bozza articles su Supabase.
 
@@ -216,9 +257,18 @@ async def _run_skill_and_save_background(news_id: int) -> None:
         excerpt = seo.get("meta_description")
         summary, title_summary = await generate_summary(content_markdown)
 
-        combined_tags = list(news_item.tags or [])
-        if keyword and keyword not in combined_tags:
+        # Tag: 10 keyword SEO via Claude (come prima della skill) + keyword
+        # della skill come primo elemento (dedup case-insensitive).
+        seo_tags = generate_seo_keywords(news_item)
+        combined_tags: list[str] = []
+        if keyword:
             combined_tags.append(keyword)
+        seen_lower = {t.lower() for t in combined_tags}
+        for t in seo_tags:
+            if t.lower() not in seen_lower:
+                combined_tags.append(t)
+                seen_lower.add(t.lower())
+        logger.debug("tag finali (skill keyword first): {}", combined_tags)
 
         now_iso = datetime.now(ITALY_TZ).isoformat()
         article_row = {
