@@ -53,13 +53,19 @@ Usa lo strumento Read per leggerli tutti prima di procedere.
 
 **Strategia di scraping a 3 livelli (fallback):**
 
-1. **Firecrawl** (prioritario): Usa `firecrawl scrape [URL]` per estrarre il contenuto. Firecrawl gestisce JavaScript, Cloudflare e la maggior parte dei blocchi anti-bot dei siti di news italiani.
-2. **Web search ricostruttivo**: Se Firecrawl fallisce o non è disponibile, usa `web_search` con keyword estratte dall'URL per ricostruire i fatti principali dell'articolo da più fonti.
+1. **Firecrawl** (prioritario): Usa lo script helper dedicato tramite il tool Bash:
+
+   ```bash
+   python scripts/firecrawl_scrape.py "[URL]" --format markdown --max-chars 6000
+   ```
+
+   Lo script stampa su stdout il contenuto Markdown estratto da Firecrawl (gestisce JavaScript, Cloudflare e la maggior parte dei blocchi anti-bot). Il comando shell `firecrawl scrape` NON esiste: usa sempre lo script.
+2. **Web search ricostruttivo**: Se lo script Firecrawl esce con errore o produce output vuoto, ricadi su `WebFetch`/`WebSearch` con keyword estratte dall'URL per ricostruire i fatti principali da più fonti.
 3. **Testo dall'utente**: Se anche il web search non restituisce dati sufficienti, chiedi all'utente di incollare il testo dell'articolo direttamente.
 
 **Scraping PDF istituzionali (priorità massima):**
 
-Se l'articolo cita ordinanze, decreti, circolari o bandi, cerca il PDF originale sul sito istituzionale (MIM, GU, INPS, ecc.) e scrapalo con Firecrawl. Il PDF è la fonte primaria assoluta: contiene scadenze esatte, articoli di legge, eccezioni. Non fidarti mai di come le testate li riportano — estrai i dati direttamente dal documento ufficiale.
+Se l'articolo cita ordinanze, decreti, circolari o bandi, cerca il PDF originale sul sito istituzionale (MIM, GU, INPS, ecc.) e scrapalo con lo script `firecrawl_scrape.py`. Il PDF è la fonte primaria assoluta: contiene scadenze esatte, articoli di legge, eccezioni. Non fidarti mai di come le testate li riportano — estrai i dati direttamente dal documento ufficiale.
 
 Dall'articolo recuperato, estrai:
 

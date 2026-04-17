@@ -100,8 +100,23 @@ Esegui lo script tramite il tool Bash, ad esempio:
     )
     "
 
+SCRAPING OBBLIGATORIO VIA FIRECRAWL: il comando shell `firecrawl scrape`
+NON esiste nel sistema. Per leggere l'URL della notizia (Step 1 di SKILL.md)
+e qualunque PDF/pagina istituzionale citata, DEVI usare lo script helper
+dedicato:
+
+    python scripts/firecrawl_scrape.py "<URL>" [--format markdown] [--max-chars 4000]
+
+Esempio via Bash tool:
+
+    python scripts/firecrawl_scrape.py "https://www.esempio.it/notizia" --max-chars 6000
+
+Usa Firecrawl tramite questo script come PRIMA SCELTA per lo scraping.
+Solo se Firecrawl fallisce (exit code != 0 o output vuoto) ricadi su
+WebFetch/WebSearch. NON usare mai `firecrawl scrape` come comando diretto.
+
 Tutto il resto del workflow (step 0-4 di SKILL.md) resta invariato:
-lettura references, scraping, analisi competitor, fact-check.
+lettura references, scraping via Firecrawl, analisi competitor, fact-check.
 
 Al termine comunica SOLO il percorso del file JSON generato.
 """.strip()
