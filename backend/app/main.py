@@ -171,116 +171,144 @@ async def summarize_news(db: Session = Depends(get_db)):
         "summarized_urls": summarized_urls  # Return the URLs with their IDs
     }
 
+# Set di news_id attualmente in generazione (skill in background).
+# In-memory: si resetta al riavvio uvicorn (accettabile: la riga news resta con
+# is_published=False e riappare in "Da generare", l'utente puo' rilanciare).
+_generating_news_ids: set[int] = set()
+
+
+async def _run_skill_and_save_background(news_id: int) -> None:
+    """Task di background: esegue la skill e crea la bozza articles su Supabase.
+
+    Non bloccha la risposta HTTP del client: il frontend puo' navigare altrove
+    mentre la skill (5-7 min) completa lato server. Al termine la riga news
+    viene marcata is_published=True cosi' sparisce da "Da generare".
+    """
+    db = database.SessionLocal()
+    try:
+        news_item = db.query(models.New).filter(models.New.id == news_id).first()
+        if news_item is None:
+            logger.error("[bg] news {} non trovata", news_id)
+            return
+
+        related = find_related_articles(
+            news_item.title or "",
+            news_item.tags or [],
+            news_item.category or "",
+        )
+        frontend_base = os.getenv("FRONTEND_URL", "http://localhost:4321")
+        interlink_urls = [
+            f"{frontend_base}/{a['category_slug']}/{a['slug']}"
+            for a in related
+            if a.get("category_slug") and a.get("slug")
+        ]
+
+        payload = await skill_runner.generate_article_for_news(news_item, interlink_urls)
+
+        seo = payload.get("seo") or {}
+        article_block = payload.get("article") or {}
+        keyword = payload.get("keyword") or news_item.title or f"articolo-{news_id}"
+
+        title = article_block.get("h1") or seo.get("h1") or news_item.title or f"articolo-{news_id}"
+        proposed_slug, category_slug = generate_slugs(title, news_item.category or "")
+        content_markdown = sections_to_markdown(article_block.get("sections") or [])
+
+        excerpt = seo.get("meta_description")
+        summary, title_summary = await generate_summary(content_markdown)
+
+        combined_tags = list(news_item.tags or [])
+        if keyword and keyword not in combined_tags:
+            combined_tags.append(keyword)
+
+        article_row = {
+            "title": title,
+            "slug": proposed_slug,
+            "content": content_markdown,
+            "excerpt": excerpt,
+            "summary": summary,
+            "title_summary": title_summary,
+            "category": news_item.category,
+            "category_slug": category_slug,
+            "tags": combined_tags,
+            "source": news_item.url,
+            "image_url": "/edunews24_immagine_da_sostituire.png",
+            "published_at": datetime.now(ITALY_TZ).isoformat(),
+            "isdraft": True,
+            "creator": "AI News Generator (skill)",
+            "skill_generated_at": payload.get("generated_at"),
+            "skill_livello": payload.get("livello"),
+            "skill_keyword": keyword,
+            "skill_meta_title": seo.get("meta_title"),
+            "skill_meta_description": seo.get("meta_description"),
+            "skill_angolo": payload.get("angolo"),
+            "skill_competitor_report": payload.get("competitor_report") or [],
+            "skill_factcheck_report": payload.get("factcheck_report") or [],
+            "skill_article_sections": article_block.get("sections") or [],
+            "skill_fonti": payload.get("fonti") or [],
+            "skill_validation": payload.get("validation") or {},
+            "skill_raw_payload": payload,
+        }
+
+        supabase = get_supabase_client()
+        result = supabase.table("articles").insert(article_row).execute()
+
+        if not result.data:
+            logger.error("[bg] Supabase insert senza dati per news {}", news_id)
+            return
+
+        inserted = result.data[0]
+        news_item.is_published = True
+        news_item.proposed_slug = inserted.get("slug") or proposed_slug
+        db.commit()
+        logger.info(
+            "[bg] skill article salvato: news_id={}, article_id={}, slug={}",
+            news_id, inserted.get("id"), inserted.get("slug"),
+        )
+    except Exception as e:
+        logger.exception("[bg] generazione skill fallita per news {}: {}", news_id, e)
+    finally:
+        _generating_news_ids.discard(news_id)
+        db.close()
+
+
 @app.post("/api/news/reconstruct/{news_id}")
 async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_db)):
-    """Genera l'articolo via skill news-angle-rewriter e crea la bozza su Supabase articles.
+    """Avvia in background la generazione via skill news-angle-rewriter.
 
-    Sostituisce la vecchia ricostruzione Claude inline: ora il contenuto e' prodotto
-    dalla skill (Firecrawl + Claude Agent SDK + reference guides) e la bozza e'
-    scritta direttamente nella tabella `articles` di Supabase con tutti i campi
-    strutturati (seo, angolo, competitor_report, factcheck_report, fonti, ...).
-    La riga news SQLite viene marcata come processata per farla sparire da
-    "Da generare".
+    Risposta immediata 202 Accepted: la skill (5-7 min) gira in background
+    e il frontend puo' navigare altrove. L'avanzamento e' esposto dalla
+    lista pending-review tramite il campo `is_generating`.
     """
     news_item: models.New = get_new_with_id(news_id, db)
     if news_item is None:
         raise HTTPException(status_code=404, detail="News item not found")
+    if news_item.is_published:
+        raise HTTPException(status_code=409, detail="Article already generated")
+    if news_id in _generating_news_ids:
+        return JSONResponse(
+            status_code=202,
+            content={"status": "in_progress", "news_id": news_id},
+        )
 
-    related = find_related_articles(
-        news_item.title or "",
-        news_item.tags or [],
-        news_item.category or "",
-    )
-    frontend_base = os.getenv("FRONTEND_URL", "http://localhost:4321")
-    interlink_urls = [
-        f"{frontend_base}/{a['category_slug']}/{a['slug']}"
-        for a in related
-        if a.get("category_slug") and a.get("slug")
-    ]
+    _generating_news_ids.add(news_id)
+    asyncio.create_task(_run_skill_and_save_background(news_id))
 
-    try:
-        payload = await skill_runner.generate_article_for_news(news_item, interlink_urls)
-    except Exception as e:
-        logger.error("Skill generation failed for news {}: {}", news_id, e)
-        raise HTTPException(status_code=500, detail=f"Skill generation failed: {e}")
-
-    seo = payload.get("seo") or {}
-    article_block = payload.get("article") or {}
-    keyword = payload.get("keyword") or news_item.title or f"articolo-{news_id}"
-
-    # title = H1 dell'articolo; slug prodotto dal title.
-    title = article_block.get("h1") or seo.get("h1") or news_item.title or f"articolo-{news_id}"
-    proposed_slug, category_slug = generate_slugs(title, news_item.category or "")
-    content_markdown = sections_to_markdown(article_block.get("sections") or [])
-
-    # excerpt / summary / title_summary: stesso trattamento del publish_to_cms
-    # legacy. La skill non produce un "subtitle", quindi usiamo meta_description
-    # come proxy semantico per l'excerpt; summary e title_summary via OpenAI.
-    excerpt = seo.get("meta_description")
-    summary, title_summary = await generate_summary(content_markdown)
-
-    # tags: come prima + keyword principale della skill
-    combined_tags = list(news_item.tags or [])
-    if keyword and keyword not in combined_tags:
-        combined_tags.append(keyword)
-
-    article_row = {
-        "title": title,
-        "slug": proposed_slug,
-        "content": content_markdown,
-        "excerpt": excerpt,
-        "summary": summary,
-        "title_summary": title_summary,
-        "category": news_item.category,
-        "category_slug": category_slug,
-        "tags": combined_tags,
-        "source": news_item.url,
-        "image_url": "/edunews24_immagine_da_sostituire.png",
-        "published_at": datetime.now(ITALY_TZ).isoformat(),
-        "isdraft": True,
-        "creator": "AI News Generator (skill)",
-        "skill_generated_at": payload.get("generated_at"),
-        "skill_livello": payload.get("livello"),
-        "skill_keyword": keyword,
-        "skill_meta_title": seo.get("meta_title"),
-        "skill_meta_description": seo.get("meta_description"),
-        "skill_angolo": payload.get("angolo"),
-        "skill_competitor_report": payload.get("competitor_report") or [],
-        "skill_factcheck_report": payload.get("factcheck_report") or [],
-        "skill_article_sections": article_block.get("sections") or [],
-        "skill_fonti": payload.get("fonti") or [],
-        "skill_validation": payload.get("validation") or {},
-        "skill_raw_payload": payload,
-    }
-
-    try:
-        supabase = get_supabase_client()
-        result = supabase.table("articles").insert(article_row).execute()
-    except Exception as e:
-        logger.error("Supabase insert failed for news {}: {}", news_id, e)
-        raise HTTPException(status_code=500, detail=f"Supabase insert failed: {e}")
-
-    if not result.data:
-        raise HTTPException(status_code=500, detail="Supabase insert returned no data")
-
-    inserted = result.data[0]
-    news_item.is_published = True
-    news_item.proposed_slug = inserted.get("slug") or proposed_slug
-    db.commit()
-    logger.info(
-        "Skill-generated article saved to Supabase: news_id={}, article_id={}, slug={}",
-        news_id, inserted.get("id"), inserted.get("slug"),
+    logger.info("reconstruct: avviata skill in background per news_id={}", news_id)
+    return JSONResponse(
+        status_code=202,
+        content={"status": "accepted", "news_id": news_id},
     )
 
-    return {
-        "supabaseId": inserted.get("id"),
-        "slug": inserted.get("slug"),
-        **payload,
-    }
 
 @app.get("/api/news/pending-review")
 async def get_pending_review_news(db: Session = Depends(get_db)):
-    """Get summarized articles that haven't been reconstructed yet"""
+    """Get summarized articles that haven't been reconstructed yet.
+
+    Il campo `is_generating` segnala che la skill e' attualmente in corso
+    per quella news (background task avviato da reconstruct_specific_article),
+    cosi' che il frontend possa disabilitare il link di modifica ed evitare
+    doppie generazioni.
+    """
     pending = db.query(models.New).filter(
         models.New.title.isnot(None),
         models.New.proposed_response.is_(None),
@@ -297,6 +325,7 @@ async def get_pending_review_news(db: Session = Depends(get_db)):
         "published_date": n.published_date,
         "date_scraped": str(n.date_scraped) if n.date_scraped else None,
         "url": n.url,
+        "is_generating": n.id in _generating_news_ids,
     } for n in pending]
 
 @app.get("/api/news/{news_id}")
