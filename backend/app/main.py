@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Depends
 import uvicorn
-from . import schemas, models, database
+from . import schemas, models, database, skill_runner
 from .database import engine, get_db, get_supabase_client
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse, urljoin
@@ -173,11 +173,101 @@ async def summarize_news(db: Session = Depends(get_db)):
 
 @app.post("/api/news/reconstruct/{news_id}")
 async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_db)):
+    """Genera l'articolo via skill news-angle-rewriter e crea la bozza su Supabase articles.
 
+    Sostituisce la vecchia ricostruzione Claude inline: ora il contenuto e' prodotto
+    dalla skill (Firecrawl + Claude Agent SDK + reference guides) e la bozza e'
+    scritta direttamente nella tabella `articles` di Supabase con tutti i campi
+    strutturati (seo, angolo, competitor_report, factcheck_report, fonti, ...).
+    La riga news SQLite viene marcata come processata per farla sparire da
+    "Da generare".
+    """
     news_item: models.New = get_new_with_id(news_id, db)
-    article_response: schemas.NewsArticle = get_reconstructed_article_via_claude(news_item)
-    update_news_item_with_reconstruction(news_item, article_response, db)
-    return article_response
+    if news_item is None:
+        raise HTTPException(status_code=404, detail="News item not found")
+
+    related = find_related_articles(
+        news_item.title or "",
+        news_item.tags or [],
+        news_item.category or "",
+    )
+    frontend_base = os.getenv("FRONTEND_URL", "http://localhost:4321")
+    interlink_urls = [
+        f"{frontend_base}/{a['category_slug']}/{a['slug']}"
+        for a in related
+        if a.get("category_slug") and a.get("slug")
+    ]
+
+    try:
+        payload = await skill_runner.generate_article_for_news(news_item, interlink_urls)
+    except Exception as e:
+        logger.error("Skill generation failed for news {}: {}", news_id, e)
+        raise HTTPException(status_code=500, detail=f"Skill generation failed: {e}")
+
+    seo = payload.get("seo") or {}
+    article_block = payload.get("article") or {}
+    keyword = payload.get("keyword") or news_item.title or f"articolo-{news_id}"
+
+    proposed_slug, category_slug = generate_slugs(keyword, news_item.category or "")
+    content_markdown = sections_to_markdown(article_block.get("sections") or [])
+    plain_preview = article_block.get("plain_text_preview")
+
+    article_row = {
+        "title": seo.get("meta_title") or article_block.get("h1") or news_item.title,
+        "slug": proposed_slug,
+        "content": content_markdown,
+        "excerpt": plain_preview,
+        "summary": plain_preview,
+        "title_summary": seo.get("h1"),
+        "category": news_item.category,
+        "category_slug": category_slug,
+        "tags": [keyword] if keyword else [],
+        "source": news_item.url,
+        "image_url": "/edunews24_immagine_da_sostituire.png",
+        "published_at": datetime.now(ITALY_TZ).isoformat(),
+        "isdraft": True,
+        "creator": "AI News Generator (skill)",
+        "skill_generated_at": payload.get("generated_at"),
+        "skill_source_url": payload.get("source_url") or news_item.url,
+        "skill_livello": payload.get("livello"),
+        "skill_keyword": keyword,
+        "skill_meta_title": seo.get("meta_title"),
+        "skill_meta_description": seo.get("meta_description"),
+        "skill_h1": seo.get("h1"),
+        "skill_angolo": payload.get("angolo"),
+        "skill_competitor_report": payload.get("competitor_report") or [],
+        "skill_factcheck_report": payload.get("factcheck_report") or [],
+        "skill_article_sections": article_block.get("sections") or [],
+        "skill_fonti": payload.get("fonti") or [],
+        "skill_validation": payload.get("validation") or {},
+        "skill_raw_payload": payload,
+        "source_news_id": news_item.id,
+    }
+
+    try:
+        supabase = get_supabase_client()
+        result = supabase.table("articles").insert(article_row).execute()
+    except Exception as e:
+        logger.error("Supabase insert failed for news {}: {}", news_id, e)
+        raise HTTPException(status_code=500, detail=f"Supabase insert failed: {e}")
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Supabase insert returned no data")
+
+    inserted = result.data[0]
+    news_item.is_published = True
+    news_item.proposed_slug = inserted.get("slug") or proposed_slug
+    db.commit()
+    logger.info(
+        "Skill-generated article saved to Supabase: news_id={}, article_id={}, slug={}",
+        news_id, inserted.get("id"), inserted.get("slug"),
+    )
+
+    return {
+        "supabaseId": inserted.get("id"),
+        "slug": inserted.get("slug"),
+        **payload,
+    }
 
 @app.get("/api/news/pending-review")
 async def get_pending_review_news(db: Session = Depends(get_db)):
@@ -716,17 +806,51 @@ async def generate_and_save_audio(article_id: int, text: str):
 
 @app.post("/api/news/publish/{news_id}")
 async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
-    """Publish news to CMS API"""
+    """Publish news to CMS API.
+
+    Se la bozza esiste gia' in Supabase (creata da reconstruct_specific_article
+    tramite la skill news-angle-rewriter), evita l'INSERT duplicato e avvia solo
+    la generazione audio in background. Altrimenti mantiene il flusso legacy
+    basato sui campi proposed_* della riga news SQLite.
+    """
     # Fetch the news item from database
     news_item = db.query(models.New).filter(models.New.id == news_id).first()
 
-    logger.debug("news_item = {}", news_item)
+    if not news_item:
+        raise HTTPException(status_code=404, detail="News item not found")
+
+    # Idempotenza: se la skill ha gia' creato la bozza articles, non duplicare.
+    try:
+        supabase = get_supabase_client()
+        existing = supabase.table("articles").select(
+            "id, slug"
+        ).eq("source_news_id", news_id).limit(1).execute()
+    except Exception as e:
+        logger.warning("Idempotency check on articles failed: {}", e)
+        existing = None
+
+    if existing and existing.data:
+        article_row = existing.data[0]
+        article_id = article_row.get("id")
+        logger.info(
+            "publish_to_cms: skill draft gia' presente (article_id={}), salto INSERT",
+            article_id,
+        )
+        # Avvia comunque la generazione audio sulla bozza esistente
+        text_to_audio = (
+            f"Titolo: {news_item.proposed_title or ''}\n\n"
+            f"{news_item.proposed_response or ''}"
+        )
+        if article_id:
+            asyncio.create_task(generate_and_save_audio(article_id, text_to_audio))
+        return {
+            "success": True,
+            "message": "Article draft already exists from skill; audio generation scheduled.",
+            "data": {"article": article_row},
+        }
 
     logger.debug("news_item.proposed_title = {}", news_item.proposed_title)
     logger.debug("news_item.proposed_response = {}", news_item.proposed_response)
-
-    if not news_item:
-        raise HTTPException(status_code=404, detail="News item not found")
 
     try:
         text_to_audio = f"Titolo: {news_item.proposed_title}\n\n{news_item.proposed_response}"
@@ -850,6 +974,55 @@ def generate_slugs(proposed_title: str, category: str):
     logger.debug("Category slug: {}", category_slug)
 
     return proposed_slug, category_slug
+
+
+def _render_segments(segments) -> str:
+    """Converte una lista di segmenti inline (text/bold/link) in markdown."""
+    if not segments:
+        return ""
+    parts = []
+    for seg in segments:
+        kind = (seg or {}).get("kind")
+        text = (seg or {}).get("text", "")
+        if kind == "bold":
+            parts.append(f"**{text}**")
+        elif kind == "link":
+            parts.append(f"[{text}]({(seg or {}).get('url', '')})")
+        else:
+            parts.append(text)
+    return "".join(parts)
+
+
+def sections_to_markdown(sections) -> str:
+    """Converte l'array `article.sections` della skill in markdown unificato.
+
+    Gestisce i tipi emessi da `generate_json_output._normalize_sections`:
+    paragraph (con segments), h2, h3, bullet_list, numbered_list.
+    """
+    if not sections:
+        return ""
+    out = []
+    for s in sections:
+        stype = (s or {}).get("type", "paragraph")
+        if stype == "h2":
+            out.append(f"## {s.get('text', '')}")
+        elif stype == "h3":
+            out.append(f"### {s.get('text', '')}")
+        elif stype == "paragraph":
+            out.append(_render_segments(s.get("segments")))
+        elif stype == "bullet_list":
+            for item in s.get("items") or []:
+                out.append(f"- {_render_segments(item)}")
+        elif stype == "numbered_list":
+            for idx, item in enumerate(s.get("items") or [], start=1):
+                out.append(f"{idx}. {_render_segments(item)}")
+        else:
+            # fallback: raw text se presente
+            text = s.get("text")
+            if text:
+                out.append(text if isinstance(text, str) else " ".join(text))
+    return "\n\n".join(p for p in out if p)
+
 
 def get_content_and_root_url(url: str):
     try:
@@ -1214,7 +1387,8 @@ def find_related_articles(title: str, tags: List[str], category: str) -> List[di
 
 
 def get_reconstructed_article_via_claude(news_item: models.New) -> schemas.NewsArticle:
-    """Ricostruisce un articolo usando Claude Opus 4.6 con interlinking."""
+    """DEPRECATED: sostituita da skill_runner.generate_article_for_news.
+    Ricostruisce un articolo usando Claude Opus 4.6 con interlinking."""
     if news_item is None:
         return None
     try:
@@ -1337,7 +1511,8 @@ async def generate_summary(content: str) -> str:
         return None
 
 def update_news_item_with_reconstruction(news_item: models.New, article_response: schemas.NewsArticle, db: Session) -> None:
-
+    """DEPRECATED: il flusso skill scrive direttamente su Supabase articles,
+    non aggiorna piu' i campi proposed_* sulla riga news SQLite."""
     if article_response is None:
         return None
     logger.debug("Article received: title={}, subtitle={}, content={}, tags={}", article_response.proposed_title, article_response.proposed_subtitle, article_response.proposed_content, article_response.tags)
