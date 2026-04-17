@@ -2127,6 +2127,19 @@ const cancelContactForm = () => {
     }
   }, [title]); // Runs when title (from watch) changes
 
+  // ResizeObserver: quando il textarea passa da display:none (loading screen)
+  // a visibile, il suo width diventa > 0 e scatta un re-resize per coprire
+  // il caso in cui l'autoResize iniziale aveva letto scrollHeight=0.
+  useEffect(() => {
+    const el = titleTextareaRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      autoResizeTextarea(titleTextareaRef.current);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // Load creators list if allowed
   useEffect(() => {
     if (!canModifyCreator) return;
