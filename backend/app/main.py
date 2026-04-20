@@ -1,6 +1,6 @@
 import os
 import asyncio
-from typing import List, Union
+from typing import List, Union, Optional
 import json
 import instructor
 from openai import OpenAI
@@ -149,17 +149,21 @@ async def summarize_news(db: Session = Depends(get_db)):
             continue
         try:
             logger.info("Summarizing news from {}", url)
-            parsed_content: schemas.News = get_news_from_link_via_firecrawl(url)
-            logger.debug("Parsed content: {}", parsed_content)
+            parsed_content = get_news_from_link_via_firecrawl(url)
+            logger.debug("Parsed content length: {}", len(parsed_content) if parsed_content else 0)
             summary: schemas.News = summarize_news_content_via_openai(parsed_content)
             logger.debug("Summary: {}", summary)
+            if summary is None:
+                logger.warning("Skipping {} — scraping/summary failed", url)
+                to_scrape[url] = "failed"
+                continue
             summarized_news.append(summary)
             id = store_summarized_news(db, url, summary)
             logger.info("Summarized news ID: {}", id)
             summarized_news_ids.append(id)
             summarized_urls.append(url)  # Store the URL for this ID
             logger.debug("Summarized news ID: {}, until now {}", id, summarized_news_ids)
-            to_scrape[url] = "summarized" if summary is not None else None
+            to_scrape[url] = "summarized"
             logger.debug("URL {} = {}", url, to_scrape[url])
         except Exception as e:
             return {"error": str(e)}
@@ -1211,41 +1215,91 @@ def update_to_scrape_file(to_scrape: dict, file_path: str = 'to_scrape.json') ->
     with open(file_path, 'w') as f:
         json.dump(to_scrape, f, indent=2)
 
-def get_news_from_link_via_firecrawl(link: str) -> str:
+def _scrape_via_firecrawl(link: str, **scrape_kwargs) -> Optional[str]:
+    """Single Firecrawl scrape attempt. Returns markdown string or None."""
     try:
-        logger.info("Scraping URL: {}", link)
-        logger.debug("extract api key: {}", firecrawl_app_extract.api_key)
-
-        # Define the JSON schema for the News model
-        news_schema = {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "facts": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                },
-                "context": {"type": "string"},
-                "length_in_paragraphs": {"type": "number"},
-                "location": {"type": "string"},
-                "date": {"type": "string"},
-                "language": {"type": "string"}
-            },
-            "required": ["title", "facts", "context"]
-        }
-        data = firecrawl_app_extract.extract(
-           urls=[link],
-            prompt=SUMMARIZING_PROMPT,
-            schema=news_schema
-        )
-        logger.debug("Extract response: {}", data)
-        # Extract the actual data from the response
-        extracted_data = data.data if hasattr(data, 'data') else data
-        logger.debug("Extracted data: {}", extracted_data)
-        return extracted_data
+        result = firecrawl_app.scrape(link, formats=['markdown'], **scrape_kwargs)
+    except TypeError as e:
+        # SDK version may not accept some kwargs (e.g. proxy); retry without them
+        logger.warning("Firecrawl scrape rejected kwargs {}: {} — retrying plain", scrape_kwargs, e)
+        try:
+            result = firecrawl_app.scrape(link, formats=['markdown'])
+        except Exception as e2:
+            logger.error("Firecrawl scrape plain retry failed for {}: {}", link, e2)
+            return None
     except Exception as e:
-        logger.error("Error getting news from link via firecrawl: {}", e)
+        logger.error("Firecrawl scrape exception for {} (opts={}): {}", link, scrape_kwargs, e)
         return None
+
+    success = getattr(result, 'success', True)
+    if not success:
+        logger.warning("Firecrawl scrape unsuccessful for {} (opts={}): {}",
+                       link, scrape_kwargs, getattr(result, 'error', 'unknown'))
+        return None
+
+    markdown = getattr(result, 'markdown', None)
+    if not markdown or len(markdown.strip()) < 100:
+        logger.warning("Firecrawl scrape empty/short markdown for {} (opts={}, len={})",
+                       link, scrape_kwargs, len(markdown or ''))
+        return None
+
+    return markdown
+
+
+def _scrape_via_cloudscraper(link: str) -> Optional[str]:
+    """Fallback scraper using cloudscraper + BeautifulSoup. Returns plain text or None."""
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+        )
+        response = scraper.get(link, timeout=(15, 45))
+        if response.status_code != 200:
+            logger.warning("Cloudscraper HTTP {} for {}", response.status_code, link)
+            return None
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'iframe']):
+            tag.decompose()
+        main = soup.find('article') or soup.find('main') or soup.body
+        text = main.get_text(separator='\n', strip=True) if main else ''
+
+        if not text or len(text) < 100:
+            logger.warning("Cloudscraper extracted empty/short text for {} (len={})", link, len(text))
+            return None
+
+        return text
+    except Exception as e:
+        logger.error("Cloudscraper exception for {}: {}", link, e)
+        return None
+
+
+def get_news_from_link_via_firecrawl(link: str) -> Optional[str]:
+    """
+    Scrape URL to markdown/text. Tries Firecrawl with stealth proxy, then auto proxy,
+    then cloudscraper as last resort. Returns None only if every attempt fails.
+    """
+    logger.info("Scraping URL: {}", link)
+
+    firecrawl_attempts = [
+        {"proxy": "stealth", "timeout": 30000},
+        {"proxy": "auto", "wait_for": 2000, "timeout": 30000},
+    ]
+    for i, opts in enumerate(firecrawl_attempts, 1):
+        logger.info("Firecrawl attempt {}/{} for {} opts={}", i, len(firecrawl_attempts), link, opts)
+        content = _scrape_via_firecrawl(link, **opts)
+        if content:
+            logger.debug("Firecrawl attempt {} OK: {} chars from {}", i, len(content), link)
+            return content
+
+    logger.info("Firecrawl exhausted for {} — falling back to cloudscraper", link)
+    content = _scrape_via_cloudscraper(link)
+    if content:
+        logger.debug("Cloudscraper OK: {} chars from {}", len(content), link)
+        return content
+
+    logger.error("All scraping strategies failed for {}", link)
+    return None
 
 def get_links_from_url_via_firecrawl(link: str) -> List[str]:
     try:
@@ -1265,7 +1319,8 @@ def summarize_news_content_via_openai(parsed_content: str) -> schemas.News:
     Summarizes the given content using OpenAI's chat model.
     """
 
-    if parsed_content is None:
+    if not parsed_content or (isinstance(parsed_content, str) and len(parsed_content.strip()) < 100):
+        logger.warning("Skipping OpenAI summary: empty/short parsed_content")
         return None
     try:
         summary = client.chat.completions.create(
