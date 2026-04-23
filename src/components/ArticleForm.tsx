@@ -2227,7 +2227,22 @@ const cancelContactForm = () => {
           articleId: editingArticleId,
         }),
       });
-      const result = await response.json();
+
+      // Se il reverse proxy (o un timeout) restituisce HTML invece di JSON,
+      // evitiamo il crash di .json() e mostriamo un messaggio leggibile.
+      const rawText = await response.text();
+      let result: any = null;
+      try {
+        result = rawText ? JSON.parse(rawText) : null;
+      } catch (parseErr) {
+        console.error('Risposta non-JSON dal server:', response.status, rawText.slice(0, 500));
+        const hint = response.status >= 500
+          ? ' Il reverse proxy potrebbe aver chiuso la connessione: la generazione potrebbe essere comunque completata, controlla l\'elenco articoli tra qualche minuto.'
+          : '';
+        alert(`Errore nella generazione dell'articolo AI (HTTP ${response.status}).${hint}`);
+        shouldCloseModal = false;
+        return;
+      }
 
       if (response.status === 422) {
         // Combinazione tono+persona bloccata dalla skill (STEP 1.5)
