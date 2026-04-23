@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Depends
 import uvicorn
-from . import schemas, models, database, skill_runner
+from . import schemas, models, database, skill_runner, persona_runner
 from .database import engine, get_db, get_supabase_client
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse, urljoin
@@ -243,6 +243,86 @@ def generate_seo_keywords(news_item: models.New) -> list[str]:
         return []
 
 
+def _generate_seo_keywords_from_persona_payload(payload: dict) -> list[str]:
+    """Variante di generate_seo_keywords che parte dal payload della skill persona.
+
+    Usa meta_title, meta_description, keyword e angolo per dare a Claude
+    abbastanza contesto da produrre 10 keyword SEO aggiuntive.
+    """
+    try:
+        seo = payload.get("seo") or {}
+        news_info = (
+            f"Titolo: {seo.get('meta_title') or ''}\n"
+            f"Descrizione: {seo.get('meta_description') or ''}\n"
+            f"Keyword principale: {payload.get('keyword') or ''}\n"
+            f"Angolo: {payload.get('angolo') or ''}\n"
+            f"Livello: {payload.get('livello') or ''}"
+        )
+        response = claude_client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": f"{CLAUDE_KEYWORDS_PROMPT}\n\nInformazioni:\n{news_info}",
+            }],
+        )
+        text = response.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        data = json.loads(text)
+        tags = data.get("tags", []) or []
+        return [t for t in tags if isinstance(t, str) and t.strip()]
+    except Exception as e:
+        logger.warning("_generate_seo_keywords_from_persona_payload fallita: {}", e)
+        return []
+
+
+def _build_persona_keywords(payload: dict) -> list[str]:
+    """Keyword della skill come primo elemento + 10 tag SEO, dedup case-insensitive."""
+    skill_keyword = (payload.get("keyword") or "").strip()
+    seo_tags = _generate_seo_keywords_from_persona_payload(payload)
+    combined: list[str] = []
+    seen: set[str] = set()
+    for tag in ([skill_keyword] + seo_tags if skill_keyword else seo_tags):
+        t = (tag or "").strip()
+        if not t:
+            continue
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(t)
+    return combined
+
+
+def _map_persona_payload_to_article(payload: dict) -> dict:
+    """Mappa il payload della skill persona nel formato atteso dal frontend."""
+    seo = payload.get("seo") or {}
+    article_block = payload.get("article") or {}
+    sections = article_block.get("sections") or []
+    return {
+        "title": seo.get("meta_title") or article_block.get("h1") or "",
+        "excerpt": seo.get("meta_description") or "",
+        "content": sections_to_markdown(sections),
+        "keywords": _build_persona_keywords(payload),
+        "sourceUrl": payload.get("source_url") or "",
+        "angolo": payload.get("angolo") or "",
+        "livello": payload.get("livello") or "",
+        "meta": payload.get("meta") or {},
+    }
+
+
+def _words_to_livello(total_words: int) -> str:
+    if total_words < 600:
+        return "flash"
+    if total_words <= 900:
+        return "editoriale"
+    return "evergreen"
+
+
 async def _run_skill_and_save_background(news_id: int) -> None:
     """Task di background: esegue la skill e crea la bozza articles su Supabase.
 
@@ -411,6 +491,59 @@ async def get_pending_review_news(db: Session = Depends(get_db)):
         "url": n.url,
         "is_generating": n.id in _generating_news_ids,
     } for n in pending]
+
+
+@app.post("/api/articles/generate-with-persona")
+async def generate_article_with_persona_endpoint(payload: dict):
+    """Genera un articolo via skill news-angle-rewriter-persona.
+
+    Usato dal modal "Genera con AI" nell'editor articoli. Sincrono: la skill
+    gira ~5-7 minuti e il frontend resta in attesa con loader. La route Astro
+    che proxa questa chiamata imposta un undici Agent con timeout 15 min.
+    """
+    prompt = (payload.get("prompt") or "").strip()
+    source_url = (payload.get("sourceUrl") or "").strip()
+    tono = (payload.get("tone") or "Neutrale").strip() or "Neutrale"
+    persona = (payload.get("persona") or "Giornalista").strip() or "Giornalista"
+    try:
+        paragraphs = int(payload.get("paragraphs") or 3)
+        words_per_paragraph = int(payload.get("wordsPerParagraph") or 150)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "paragraphs/wordsPerParagraph devono essere numeri")
+    total_words = max(paragraphs * words_per_paragraph, 1)
+    livello = _words_to_livello(total_words)
+
+    url = source_url or prompt
+    if not url:
+        raise HTTPException(400, "Fornisci almeno 'prompt' o 'sourceUrl'")
+
+    # Se l'utente ha fornito un URL, usiamo `target` per passare ulteriore
+    # contesto dal prompt; se invece e' stato usato solo il prompt, la skill
+    # lo usa gia' come url/topic e non vale la pena ripeterlo in target.
+    target = prompt if source_url and prompt else None
+
+    try:
+        skill_payload = await persona_runner.generate_article_with_persona(
+            url=url,
+            livello=livello,
+            tono=tono,
+            persona=persona,
+            target=target,
+        )
+    except ValueError as e:
+        # tono o persona non validi (enum)
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        # STEP 1.5: combinazione tono+persona bloccata per la natura della notizia
+        logger.info("persona skill ha rifiutato la combinazione: {}", e)
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.exception("persona skill fallita: {}", e)
+        raise HTTPException(status_code=500, detail=f"Skill fallita: {e}")
+
+    skill_payload = _strip_em_dashes(skill_payload)
+    article = _map_persona_payload_to_article(skill_payload)
+    return {"article": article}
 
 @app.get("/api/news/{news_id}")
 async def get_news_detail(news_id: int, db: Session = Depends(get_db)):
