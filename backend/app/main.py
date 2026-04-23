@@ -243,6 +243,41 @@ def generate_seo_keywords(news_item: models.New) -> list[str]:
         return []
 
 
+def _generate_seo_keywords_from_prompt(prompt: str, source_url: str = "") -> list[str]:
+    """Genera 10 keyword dal prompt del modal, PRIMA di invocare la skill.
+
+    Serve a dare a `find_related_articles` abbastanza tag da scorare
+    (tag overlap pesa il 60% nello scoring): senza questa passata i tag
+    sarebbero vuoti e gli interlink risulterebbero quasi sempre vuoti.
+    """
+    if not prompt:
+        return []
+    try:
+        info = f"Argomento: {prompt}"
+        if source_url:
+            info += f"\nFonte URL: {source_url}"
+        response = claude_client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": f"{CLAUDE_KEYWORDS_PROMPT}\n\nInformazioni:\n{info}",
+            }],
+        )
+        text = response.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        data = json.loads(text)
+        tags = data.get("tags", []) or []
+        return [t for t in tags if isinstance(t, str) and t.strip()]
+    except Exception as e:
+        logger.warning("_generate_seo_keywords_from_prompt fallita: {}", e)
+        return []
+
+
 def _generate_seo_keywords_from_persona_payload(payload: dict) -> list[str]:
     """Variante di generate_seo_keywords che parte dal payload della skill persona.
 
@@ -715,10 +750,13 @@ async def generate_article_with_persona_endpoint(payload: dict):
 
     target = prompt if source_url and prompt else None
 
-    # Interlink: usa prompt come topic hint per trovare articoli correlati.
-    # La categoria finale verra' classificata automaticamente dopo la skill,
-    # quindi qui passiamo stringa vuota come filtro categoria.
-    related = find_related_articles(prompt or "", [], "")
+    # Interlink: generiamo 10 tag dal prompt PRIMA di chiamare la skill, cosi'
+    # `find_related_articles` puo' calcolare il 60% di score dal tag overlap
+    # (che altrimenti sarebbe zero). Questa call Claude extra costa ~2-3s ed
+    # e' determinante per ottenere interlink di qualita'.
+    prompt_tags = _generate_seo_keywords_from_prompt(prompt, source_url)
+    logger.info("persona pre-tags per interlink ({}): {}", len(prompt_tags), prompt_tags)
+    related = find_related_articles(prompt or "", prompt_tags, "")
     site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
     interlink_urls = [
         f"{site_base}/{a['category_slug']}/{a['slug']}"
