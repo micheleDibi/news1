@@ -9,6 +9,13 @@ Astro.response.headers.set('Expires', '0');
 Astro.response.headers.set('Surrogate-Control', 'no-store');
 ---
 
+<style is:global>
+  @keyframes progress-indet {
+    0%   { margin-left: -40%; }
+    100% { margin-left: 100%; }
+  }
+</style>
+
 <!-- Loading screen -->
 <div id="loading-screen" class="fixed inset-0 bg-white z-50 flex items-center justify-center">
   <div class="text-center">
@@ -133,6 +140,7 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
     document.getElementById('admin-content')?.classList.remove('hidden');
 
     await loadPendingArticles();
+    startPolling();
   }
 
   function getFilteredArticles() {
@@ -170,39 +178,79 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
     if (container) container.classList.remove('hidden');
 
     if (list) {
-      list.innerHTML = pageItems.map((item: any) => `
-        <li class="flex items-center hover:bg-gray-50 px-4 py-4 sm:px-6">
-          <a href="/admin/articles/0/edit?newsId=${item.id}" class="block flex-1 min-w-0">
-            <p class="text-sm font-medium text-primary truncate">${item.title || 'Senza titolo'}</p>
-            <p class="mt-1 text-sm text-gray-500 line-clamp-1">
-              ${item.facts && item.facts.length > 0 ? item.facts[0] : (item.context ? item.context.substring(0, 120) + '...' : '')}
-            </p>
-            <div class="mt-1 flex items-center gap-3 flex-wrap">
-              ${item.category ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">${item.category}</span>` : ''}
-              ${item.url ? `<a href="${item.url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-xs text-gray-500 hover:text-indigo-600 flex items-center gap-1"><svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>${(() => { try { return new URL(item.url).hostname.replace(/^www\\./, ''); } catch { return item.url; } })()}</a>` : ''}
-              <span class="text-xs text-gray-400">${item.date_scraped ? new Date(item.date_scraped).toLocaleDateString('it-IT') : ''}</span>
-            </div>
-          </a>
-          <a
-            href="/admin/articles/0/edit?newsId=${item.id}"
-            class="ml-2 flex-shrink-0 p-2 text-gray-400 hover:text-primary rounded-full hover:bg-gray-100 transition-colors"
-            title="Modifica"
-          >
-            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
-          </a>
-          <button
-            data-news-id="${item.id}"
-            class="discard-btn flex-shrink-0 p-2 text-gray-400 hover:text-red-600 rounded-full hover:bg-red-50 transition-colors"
-            title="Scarta articolo"
-          >
-            <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-          </button>
-        </li>
-      `).join('');
+      list.innerHTML = pageItems.map((item: any) => {
+        const isGenerating = !!item.is_generating;
+        const hostname = item.url ? (() => { try { return new URL(item.url).hostname.replace(/^www\./, ''); } catch { return item.url; } })() : '';
+        const facts = item.facts && item.facts.length > 0 ? item.facts[0] : (item.context ? item.context.substring(0, 120) + '...' : '');
+        const editHref = `/admin/articles/0/edit?newsId=${item.id}`;
+        const dateStr = item.date_scraped ? new Date(item.date_scraped).toLocaleDateString('it-IT') : '';
+
+        // Stato "in generazione": link disabilitato, barra indeterminata,
+        // nessun bottone di modifica o scarto (per evitare race con il BG task).
+        if (isGenerating) {
+          return `
+            <li class="px-4 py-4 sm:px-6 bg-indigo-50/40 border-l-4 border-indigo-400">
+              <div class="flex items-start gap-3">
+                <div class="flex-shrink-0 mt-1">
+                  <svg class="animate-spin h-5 w-5 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <p class="text-sm font-medium text-gray-700 truncate">${item.title || 'Senza titolo'}</p>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700 uppercase tracking-wide">In generazione</span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-500 line-clamp-1">${facts}</p>
+                  <div class="mt-2 w-full bg-indigo-100 rounded-full h-1.5 overflow-hidden">
+                    <div class="h-1.5 bg-indigo-400 rounded-full animate-[progress-indet_1.8s_ease-in-out_infinite]" style="width:40%"></div>
+                  </div>
+                  <div class="mt-2 flex items-center gap-3 flex-wrap">
+                    ${item.category ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">${item.category}</span>` : ''}
+                    ${item.url ? `<a href="${item.url}" target="_blank" rel="noopener noreferrer" class="text-xs text-gray-500 hover:text-indigo-600 flex items-center gap-1"><svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>${hostname}</a>` : ''}
+                    <span class="text-xs text-gray-400">${dateStr}</span>
+                    <span class="text-[11px] text-gray-400 italic">La skill sta lavorando... tempo tipico 5-7 minuti.</span>
+                  </div>
+                </div>
+              </div>
+            </li>
+          `;
+        }
+
+        // Stato normale
+        return `
+          <li class="flex items-center hover:bg-gray-50 px-4 py-4 sm:px-6">
+            <a href="${editHref}" class="block flex-1 min-w-0">
+              <p class="text-sm font-medium text-primary truncate">${item.title || 'Senza titolo'}</p>
+              <p class="mt-1 text-sm text-gray-500 line-clamp-1">${facts}</p>
+              <div class="mt-1 flex items-center gap-3 flex-wrap">
+                ${item.category ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">${item.category}</span>` : ''}
+                ${item.url ? `<a href="${item.url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-xs text-gray-500 hover:text-indigo-600 flex items-center gap-1"><svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>${hostname}</a>` : ''}
+                <span class="text-xs text-gray-400">${dateStr}</span>
+              </div>
+            </a>
+            <a
+              href="${editHref}"
+              class="ml-2 flex-shrink-0 p-2 text-gray-400 hover:text-primary rounded-full hover:bg-gray-100 transition-colors"
+              title="Modifica"
+            >
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </a>
+            <button
+              data-news-id="${item.id}"
+              class="discard-btn flex-shrink-0 p-2 text-gray-400 hover:text-red-600 rounded-full hover:bg-red-50 transition-colors"
+              title="Scarta articolo"
+            >
+              <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          </li>
+        `;
+      }).join('');
 
       setupDiscardButtons();
     }
@@ -244,28 +292,82 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
     });
   }
 
-  async function loadPendingArticles() {
-    try {
-      const res = await fetch('/api/news/pending-review');
-      if (!res.ok) return;
-      allArticles = await res.json() || [];
+  async function fetchWithRetry(url: string, attempts = 3, timeoutMs = 10000): Promise<any[]> {
+    // Retry con backoff 500ms, 1500ms. Timeout per tentativo via AbortController
+    // per evitare che il fetch resti appeso quando il proxy / reverse proxy
+    // chiude la connessione.
+    let lastErr: any;
+    for (let i = 0; i < attempts; i++) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+        clearTimeout(t);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return (await res.json()) || [];
+      } catch (err) {
+        clearTimeout(t);
+        lastErr = err;
+        if (i < attempts - 1) {
+          await new Promise(r => setTimeout(r, 500 * (i + 1) * (i + 1)));
+        }
+      }
+    }
+    throw lastErr;
+  }
 
-      // Populate category filter
-      const categories = [...new Set(allArticles.map((a: any) => a.category).filter(Boolean))].sort();
-      const categoryFilter = document.getElementById('category-filter') as HTMLSelectElement;
-      if (categoryFilter) {
-        categories.forEach(cat => {
-          const option = document.createElement('option');
-          option.value = cat as string;
-          option.textContent = cat as string;
-          categoryFilter.appendChild(option);
-        });
+  async function loadPendingArticles(isPoll = false) {
+    try {
+      const newData = await fetchWithRetry('/api/news/pending-review');
+
+      // Al primo load popoliamo anche il filtro categorie. In polling non lo tocchiamo.
+      if (!isPoll) {
+        const categories = [...new Set(newData.map((a: any) => a.category).filter(Boolean))].sort();
+        const categoryFilter = document.getElementById('category-filter') as HTMLSelectElement;
+        if (categoryFilter) {
+          categories.forEach(cat => {
+            const option = document.createElement('option');
+            option.value = cat as string;
+            option.textContent = cat as string;
+            categoryFilter.appendChild(option);
+          });
+        }
       }
 
+      allArticles = newData;
       renderPage();
-    } catch (err) {
+    } catch (err: any) {
+      // In polling non alarmiamo: il fetch ha gia' provato 3 volte, manteniamo
+      // i dati precedenti in lista e riproviamo al prossimo tick.
+      if (isPoll) {
+        console.warn('Polling pending-review failed (keeping previous data):', err?.message || err);
+        return;
+      }
       console.error('Error loading pending articles:', err);
+      // Primo load fallito: mostra stato vuoto con invito a ricaricare
+      const list = document.getElementById('pending-list');
+      const container = document.getElementById('pending-list-container');
+      if (container && list) {
+        container.classList.remove('hidden');
+        list.innerHTML = `
+          <li class="px-4 py-8 text-center">
+            <p class="text-sm text-gray-600">Impossibile caricare gli articoli. Riprova.</p>
+            <button onclick="window.location.reload()" class="mt-2 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 rounded hover:bg-indigo-700">Ricarica</button>
+          </li>`;
+      }
     }
+  }
+
+  // Polling: ogni 10s ricarica la lista se c'e' almeno un articolo in generazione
+  // (o se la lista e' vuota, per intercettare nuove news arrivate dalla pipeline).
+  function startPolling() {
+    setInterval(() => {
+      const hasGenerating = allArticles.some((a: any) => a.is_generating);
+      // Polliamo solo se c'e' lavoro in corso: evita traffico superfluo.
+      if (hasGenerating) {
+        loadPendingArticles(true);
+      }
+    }, 10000);
   }
 
   // Event listeners

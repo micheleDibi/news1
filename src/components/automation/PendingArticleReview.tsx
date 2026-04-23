@@ -18,22 +18,11 @@ interface Props {
   newsId: string;
 }
 
-const PROGRESS_STEPS = [
-  { pct: 10, msg: 'Avvio generazione...' },
-  { pct: 30, msg: 'Generazione keywords SEO...' },
-  { pct: 50, msg: 'Ricerca articoli correlati...' },
-  { pct: 70, msg: 'Ricostruzione articolo...' },
-  { pct: 85, msg: 'Finalizzazione...' },
-  { pct: 95, msg: 'Quasi fatto...' },
-];
-
 export default function PendingArticleReview({ newsId }: Props) {
   const [article, setArticle] = useState<NewsItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressMsg, setProgressMsg] = useState('');
 
   useEffect(() => {
     fetch(`${BACKEND_URL}/api/news/${newsId}`)
@@ -54,52 +43,23 @@ export default function PendingArticleReview({ newsId }: Props) {
   const handleGenerate = async () => {
     if (!article) return;
     setGenerating(true);
-    setProgress(0);
-    setProgressMsg('Avvio generazione...');
-
-    // Simulate progress steps while waiting for the API
-    let stepIndex = 0;
-    const interval = setInterval(() => {
-      if (stepIndex < PROGRESS_STEPS.length) {
-        setProgress(PROGRESS_STEPS[stepIndex].pct);
-        setProgressMsg(PROGRESS_STEPS[stepIndex].msg);
-        stepIndex++;
-      }
-    }, 5000);
 
     try {
-      // Step 1: Reconstruct with Claude
-      const reconstructRes = await fetch(`${BACKEND_URL}/api/news/reconstruct/${article.id}`, {
+      // Fire & forget: l'endpoint /api/news/reconstruct e' ora 202 Accepted e
+      // la skill (5-7 min) gira in background lato backend. Torniamo subito
+      // alla lista "Da generare" dove l'articolo sara' marcato come
+      // "in generazione" con link di modifica disabilitato, evitando doppie
+      // esecuzioni e il timeout da proxy.
+      const res = await fetch(`${BACKEND_URL}/api/news/reconstruct/${article.id}`, {
         method: 'POST',
       });
-      if (!reconstructRes.ok) throw new Error('Errore nella generazione dell\'articolo');
-
-      setProgress(90);
-      setProgressMsg('Pubblicazione bozza...');
-
-      // Step 2: Publish as draft to Supabase via CMS API
-      const publishRes = await fetch(`${BACKEND_URL}/api/news/publish/${article.id}`, {
-        method: 'POST',
-      });
-      if (!publishRes.ok) throw new Error('Errore nella creazione della bozza');
-
-      const publishData = await publishRes.json();
-      const supabaseId = publishData?.data?.article?.id;
-
-      clearInterval(interval);
-      setProgress(100);
-      setProgressMsg('Completato!');
-
-      // Redirect to the article editor
-      setTimeout(() => {
-        if (supabaseId) {
-          window.location.href = `/admin/articles/${supabaseId}/edit`;
-        } else {
-          window.location.href = '/admin/articles';
-        }
-      }, 500);
+      if (!res.ok && res.status !== 202) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || 'Errore nell\'avvio della generazione');
+      }
+      // Redirect immediato alla lista
+      window.location.href = '/admin/articles/pending';
     } catch (err: any) {
-      clearInterval(interval);
       setGenerating(false);
       setError(err.message);
     }
@@ -139,18 +99,10 @@ export default function PendingArticleReview({ newsId }: Props) {
 
   if (generating) {
     return (
-      <div className="max-w-2xl mx-auto py-12">
-        <div className="text-center mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">{progressMsg}</h2>
-          <p className="text-sm text-gray-500">Non chiudere questa pagina</p>
-        </div>
-        <div className="w-full bg-gray-200 rounded-full h-4 mb-2">
-          <div
-            className="bg-green-500 h-4 rounded-full transition-all duration-700 ease-in-out"
-            style={{ width: `${progress}%` }}
-          ></div>
-        </div>
-        <p className="text-center text-sm text-gray-600">{progress}%</p>
+      <div className="max-w-2xl mx-auto py-12 text-center">
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">Generazione avviata</h2>
+        <p className="text-sm text-gray-500">Ritorno alla lista articoli da generare...</p>
         {error && (
           <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
             {error}

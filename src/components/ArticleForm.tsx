@@ -940,8 +940,31 @@ export default function ArticleForm({ article }: ArticleFormProps) {
     sourceUrl: '' // Optional source URL or web search term
   });
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiProgressStep, setAiProgressStep] = useState(0);
   const [aiTagsLoading, setAiTagsLoading] = useState(false);
   const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+
+  // Messaggi di stato ciclici mostrati nel modal "Genera con AI" mentre la
+  // skill gira (5-7 min). Il progresso e' puramente visivo: non rispecchia
+  // realmente lo stato lato server.
+  const aiProgressMessages = [
+    'Analizzo la fonte…',
+    "Cerco l'angolo giusto…",
+    'Fact-check dei dati…',
+    "Scrivo l'articolo nello stile scelto…",
+    'Ottimizzo per SEO…',
+  ];
+
+  useEffect(() => {
+    if (!aiLoading) {
+      setAiProgressStep(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setAiProgressStep(prev => (prev + 1) % aiProgressMessages.length);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [aiLoading]);
 
   const [sidebarVideoUrl, setSidebarVideoUrl] = useState<string>(article?.video_url || '');
   const [isUploadingVideo, setIsUploadingVideo] = useState(false);
@@ -2127,6 +2150,19 @@ const cancelContactForm = () => {
     }
   }, [title]); // Runs when title (from watch) changes
 
+  // ResizeObserver: quando il textarea passa da display:none (loading screen)
+  // a visibile, il suo width diventa > 0 e scatta un re-resize per coprire
+  // il caso in cui l'autoResize iniziale aveva letto scrollHeight=0.
+  useEffect(() => {
+    const el = titleTextareaRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      autoResizeTextarea(titleTextareaRef.current);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // Load creators list if allowed
   useEffect(() => {
     if (!canModifyCreator) return;
@@ -2167,48 +2203,123 @@ const cancelContactForm = () => {
     // We don't set secondary_category_slugs here as it's handled by its own state and input
   };
 
+  // Polling helper: attende finche' il job non esce dagli stati pending/running.
+  // Evita JSON.parse su HTML e ritorna sempre un result strutturato.
+  const pollJobStatus = async (jobId: string, maxAttempts = 180, intervalMs = 5000): Promise<any> => {
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, intervalMs));
+      try {
+        const res = await fetch(`/api/articles/generation-status/${jobId}`, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}` },
+        });
+        const text = await res.text();
+        let data: any = null;
+        try { data = text ? JSON.parse(text) : null; } catch { /* ignora: transiente */ }
+        if (!data) continue;
+        if (data.status === 'done' || data.status === 'failed' || data.status === 'blocked') {
+          return data;
+        }
+      } catch (e) {
+        // errore di rete transiente: continua a pollare
+        console.warn('[persona-skill] poll fallito, retry…', e);
+      }
+    }
+    return { status: 'failed', error: `Timeout: la generazione sta impiegando piu di ${Math.round((maxAttempts * intervalMs) / 60000)} minuti.` };
+  };
+
   const handleGenerateAi = async () => {
     setAiLoading(true);
+    let shouldCloseModal = true;
     try {
-      const response = await fetch('/api/generate-article', {
+      const editingArticleId = article?.id ?? null;
+      // Creator: stessa logica del submit normale del form. Viene mandato
+      // al backend cosi' l'articolo creato ha come autore il giornalista
+      // loggato (non "AI News Generator").
+      const baseCreator = userProfile?.full_name || currentUser || article?.creator || '';
+      const finalCreator = canModifyCreator ? (selectedCreator || baseCreator) : baseCreator;
+
+      // 1) POST veloce: avvia il job e ricevi jobId (202 Accepted)
+      const startRes = await fetch('/api/articles/generate-with-persona', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
         },
-        body: JSON.stringify(aiParams), // includes sourceUrl
+        body: JSON.stringify({
+          ...aiParams,
+          creator: finalCreator,
+          articleId: editingArticleId,
+        }),
       });
-      const result = await response.json();
-      
-      // Check if the API call was successful and returned the expected article structure
-      if (result && result.article) {
+
+      const startText = await startRes.text();
+      let startData: any = null;
+      try { startData = startText ? JSON.parse(startText) : null; } catch { /* ignore */ }
+
+      if (!startRes.ok || !startData?.jobId) {
+        const msg = startData?.detail || startData?.error || `Errore avvio generazione (HTTP ${startRes.status})`;
+        alert("Errore nella generazione dell'articolo AI: " + msg);
+        shouldCloseModal = false;
+        return;
+      }
+
+      // 2) Polling finche' lo stato non e' terminal
+      const result = await pollJobStatus(startData.jobId);
+
+      if (result.status === 'blocked') {
+        alert(result.detail || 'Combinazione di tono e persona non consentita per questa notizia.');
+        shouldCloseModal = false;
+        return;
+      }
+
+      if (result.status === 'failed') {
+        alert("Errore nella generazione dell'articolo AI: " + (result.error || 'Fallimento sconosciuto'));
+        shouldCloseModal = false;
+        return;
+      }
+
+      // status === 'done'
+      if (result.mode === 'create' && result.supabaseId) {
+        window.location.href = `/admin/articles/${result.supabaseId}/edit`;
+        return;
+      }
+
+      if (result.mode === 'edit' && result.article) {
         const articleAi = result.article;
-        setValue('category', articleAi.category || ''); // Use default if category is missing
-        setValue('title', articleAi.title);
-        setValue('excerpt', articleAi.excerpt);
-        setValue('tags', articleAi.keywords);
-        // Convert markdown content to HTML for the editor
+        const baseFields = result.base_fields || {};
+        const skillFields = result.skill_fields || {};
+
+        if (baseFields.title) setValue('title', baseFields.title);
+        if (baseFields.excerpt !== undefined) setValue('excerpt', baseFields.excerpt || '');
+        if (baseFields.summary !== undefined) setValue('summary', baseFields.summary || '');
+        if (baseFields.title_summary !== undefined) setValue('title_summary', baseFields.title_summary || '');
+        if (Array.isArray(articleAi.keywords)) setValue('tags', articleAi.keywords);
+
         const html = markdownToHtml(articleAi.content);
         setEditorContent(html);
-        setValue('content', html); // Update form value with HTML
-        // Remove the TagsInput key increment since we no longer use TagsInput
-        // setTagsInputKey(prevKey => prevKey + 1); // Increment key to force TagsInput re-render
-        
-        setPreviewMode(true); // Optionally switch to preview
-        console.log('Article generated by AI:', articleAi);
-        console.log('final object:', result);
+        setValue('content', html);
+
+        // Propaga campi skill_* nel form state: `articleData` fa `...data`
+        // quindi confluiscono nel PUT /api/articles/:id/update.
+        Object.entries(skillFields).forEach(([key, value]) => {
+          setValue(key as any, value as any);
+        });
+
+        setPreviewMode(true);
+        console.log('[persona-skill] edit mode: form popolato, save manuale');
       } else {
-        // Handle the error case where the API returned an error or unexpected format
-        console.error('AI Generation Error:', result?.error || 'Unexpected response format');
-        // Corrected alert message string escaping
-        alert("Errore nella generazione dell'articolo AI: " + (result?.error || 'Risposta inattesa dal server.')); 
+        console.error('AI Generation Error: risposta done inattesa', result);
+        alert("Errore nella generazione dell'articolo AI: risposta inattesa dal server.");
+        shouldCloseModal = false;
       }
     } catch (error) {
       console.error('Errore generazione AI:', error);
       alert('Errore nella generazione dell\'articolo AI: ' + (error as Error).message);
+      shouldCloseModal = false;
     } finally {
       setAiLoading(false);
-      setShowAiModal(false);
+      if (shouldCloseModal) setShowAiModal(false);
     }
   };
 
@@ -3506,6 +3617,28 @@ const cancelContactForm = () => {
                   </div>
                 )}
 
+                {/* Angolo generato dalla skill (sola lettura, ultimo elemento della sidebar) */}
+                {article?.skill_angolo && (
+                  <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 lg:px-5 lg:py-4 bg-amber-50 border-b border-amber-200">
+                      <h3 className="text-sm font-semibold text-amber-800 uppercase tracking-wide flex items-center gap-2">
+                        <svg className="h-4 w-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                        </svg>
+                        Angolo proposto
+                      </h3>
+                    </div>
+                    <div className="p-4 lg:p-5">
+                      <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap select-text">
+                        {article.skill_angolo}
+                      </p>
+                      <p className="mt-3 text-[11px] text-gray-400 italic">
+                        Campo generato automaticamente dalla skill, di sola lettura.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
               </div>
             </div>
           </div>
@@ -3799,11 +3932,24 @@ const cancelContactForm = () => {
                 />
               </div>
             </div>
+            {aiLoading && (
+              <div className="mt-4 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-800 flex items-center gap-2">
+                <svg className="animate-spin h-4 w-4 text-indigo-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>
+                  {aiProgressMessages[aiProgressStep]}{' '}
+                  <span className="text-xs text-indigo-600">(5-7 minuti)</span>
+                </span>
+              </div>
+            )}
             <div className="mt-4 sm:mt-6 flex flex-col sm:flex-row justify-end space-y-2 sm:space-y-0 sm:space-x-4">
               <button
                 type="button"
                 onClick={() => setShowAiModal(false)}
-                className="w-full sm:w-auto px-3 sm:px-4 py-2 border border-gray-300 rounded-md text-sm font-medium bg-white hover:bg-gray-50"
+                disabled={aiLoading}
+                className={`w-full sm:w-auto px-3 sm:px-4 py-2 border border-gray-300 rounded-md text-sm font-medium bg-white hover:bg-gray-50 ${aiLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 Annulla
               </button>

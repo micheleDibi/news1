@@ -40,7 +40,7 @@ BASE_URL = "https://www.scuolainterpelli.it/interpelli-scuola-aggiornati/"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 
-CLAUDE_MODEL = "claude-opus-4-6"
+CLAUDE_MODEL = "claude-opus-4-7"
 
 
 def _generate_interpello_slug(item: dict) -> str:
