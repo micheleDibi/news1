@@ -2209,6 +2209,10 @@ const cancelContactForm = () => {
     try {
       const currentCategory = getValues('category') || '';
       const currentCategorySlug = currentCategory ? slugify(currentCategory) : '';
+      // Edit mode se stiamo modificando un articolo esistente: il backend
+      // non inserira' una nuova riga, restituira' solo i campi skill_* da
+      // popolare nel form. Il save esistente li inviera' all'update API.
+      const editingArticleId = article?.id ?? null;
 
       const response = await fetch('/api/articles/generate-with-persona', {
         method: 'POST',
@@ -2220,6 +2224,7 @@ const cancelContactForm = () => {
           ...aiParams,
           category: currentCategory,
           categorySlug: currentCategorySlug,
+          articleId: editingArticleId,
         }),
       });
       const result = await response.json();
@@ -2239,24 +2244,40 @@ const cancelContactForm = () => {
         return;
       }
 
-      // La skill ha creato la bozza su Supabase: redirige all'editor del
-      // nuovo articolo (stesso pattern del flusso pending).
+      // CREATE mode: il backend ha inserito la bozza, redirect all'editor.
       if (result?.supabaseId) {
         window.location.href = `/admin/articles/${result.supabaseId}/edit`;
         return;
       }
 
-      // Fallback difensivo: se per qualche motivo non arriva supabaseId ma
-      // c'e' l'article mappato, popoliamo comunque il form come prima.
+      // EDIT mode: popola il form con i campi base + skill_*. Il DB non e'
+      // stato toccato: l'utente rivede e al click "Salva" l'articolo esistente
+      // viene aggiornato con il nuovo contenuto (e i campi skill_* portati
+      // dal form state).
       if (result?.article) {
         const articleAi = result.article;
-        setValue('title', articleAi.title);
-        setValue('excerpt', articleAi.excerpt);
-        setValue('tags', articleAi.keywords);
+        const baseFields = result.base_fields || {};
+        const skillFields = result.skill_fields || {};
+
+        if (baseFields.title) setValue('title', baseFields.title);
+        if (baseFields.excerpt !== undefined) setValue('excerpt', baseFields.excerpt || '');
+        if (baseFields.summary !== undefined) setValue('summary', baseFields.summary || '');
+        if (baseFields.title_summary !== undefined) setValue('title_summary', baseFields.title_summary || '');
+        if (Array.isArray(articleAi.keywords)) setValue('tags', articleAi.keywords);
+
         const html = markdownToHtml(articleAi.content);
         setEditorContent(html);
         setValue('content', html);
+
+        // Propaga i campi skill_* nello stato del form: `articleData` fa
+        // `...data` quindi questi vanno dritti al PUT /api/articles/:id/update
+        // come colonne Supabase.
+        Object.entries(skillFields).forEach(([key, value]) => {
+          setValue(key as any, value as any);
+        });
+
         setPreviewMode(true);
+        console.log('[persona-skill] edit mode: form popolato, save manuale');
       } else {
         console.error('AI Generation Error:', result?.error || 'Unexpected response format');
         alert("Errore nella generazione dell'articolo AI: " + (result?.error || 'Risposta inattesa dal server.'));

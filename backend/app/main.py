@@ -589,23 +589,7 @@ async def generate_article_with_persona_endpoint(payload: dict):
             combined_tags.append(t)
             seen_lower.add(t.lower())
 
-    now_iso = datetime.now(ITALY_TZ).isoformat()
-    article_row = {
-        "title": title,
-        "slug": proposed_slug,
-        "content": content_markdown,
-        "excerpt": excerpt,
-        "summary": summary,
-        "title_summary": title_summary,
-        "category": category,
-        "category_slug": final_category_slug,
-        "tags": combined_tags,
-        "source": source_url or "",
-        "image_url": "/edunews24_immagine_da_sostituire.png",
-        "created_at": now_iso,
-        "published_at": now_iso,
-        "isdraft": True,
-        "creator": "AI News Generator (persona)",
+    skill_fields = {
         "skill_generated_at": skill_payload.get("generated_at"),
         "skill_livello": skill_payload.get("livello"),
         "skill_keyword": keyword,
@@ -618,6 +602,56 @@ async def generate_article_with_persona_endpoint(payload: dict):
         "skill_fonti": skill_payload.get("fonti") or [],
         "skill_validation": skill_payload.get("validation") or {},
         "skill_raw_payload": skill_payload,
+    }
+
+    article_id_raw = payload.get("articleId")
+    try:
+        article_id = int(article_id_raw) if article_id_raw not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        article_id = None
+
+    base_fields = {
+        "title": title,
+        "excerpt": excerpt,
+        "summary": summary,
+        "title_summary": title_summary,
+        "content": content_markdown,
+        "tags": combined_tags,
+        "source": source_url or "",
+        "category": category,
+        "category_slug": final_category_slug,
+    }
+
+    if article_id:
+        # EDIT MODE: l'utente sta modificando un articolo esistente. Non
+        # scriviamo niente su Supabase: il frontend popolera' il form con
+        # questi campi e, al click "Salva", l'endpoint update gestira' la
+        # persistenza (inclusi i campi skill_*).
+        logger.info(
+            "persona skill [edit mode] article_id={} livello={} keyword={!r}",
+            article_id, skill_payload.get("livello"), keyword,
+        )
+        return {
+            "supabaseId": None,
+            "slug": None,
+            "editMode": True,
+            "article": _map_persona_payload_to_article(skill_payload),
+            "skill_fields": skill_fields,
+            "base_fields": base_fields,
+        }
+
+    # CREATE MODE: inserisce subito una bozza in Supabase e ritorna l'id
+    # cosi' il frontend reindirizza all'editor del nuovo articolo.
+    now_iso = datetime.now(ITALY_TZ).isoformat()
+    article_row = {
+        **base_fields,
+        "slug": proposed_slug,
+        "image_url": "/edunews24_immagine_da_sostituire.png",
+        "created_at": now_iso,
+        "published_at": now_iso,
+        "isdraft": True,
+        "creator": "AI News Generator (persona)",
+        **skill_fields,
     }
 
     supabase = get_supabase_client()
@@ -638,7 +672,10 @@ async def generate_article_with_persona_endpoint(payload: dict):
     return {
         "supabaseId": inserted.get("id"),
         "slug": inserted.get("slug"),
+        "editMode": False,
         "article": _map_persona_payload_to_article(skill_payload),
+        "skill_fields": skill_fields,
+        "base_fields": base_fields,
     }
 
 @app.get("/api/news/{news_id}")
