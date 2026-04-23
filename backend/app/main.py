@@ -323,6 +323,38 @@ def _words_to_livello(total_words: int) -> str:
     return "evergreen"
 
 
+def _classify_article_category(title: str, content_markdown: str) -> tuple[str, str]:
+    """Classifica automaticamente un articolo generato dalla skill in una
+    delle CategoryEnum, riusando lo stesso prompt del flusso news scraper.
+
+    Ritorna (nome_categoria, slug_categoria). Fallback a ("Scuola", "scuola")
+    se la classificazione fallisce per qualunque motivo.
+    """
+    try:
+        # Prendi i primi ~2000 char del content per non sforare il context
+        excerpt = content_markdown.strip()[:2000]
+        classification_text = f"Title: {title}\n\nContent:\n{excerpt}"
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": CLASSIFICATION_PROMPT},
+                {"role": "user", "content": classification_text},
+            ],
+            response_model=CategoryEnum,
+        )
+        category_name = mapping_category_enum_to_string(response)
+        category_slug = category_name.lower() \
+            .replace("à", "a").replace("è", "e").replace("é", "e") \
+            .replace("ì", "i").replace("ò", "o").replace("ù", "u") \
+            .replace(" ", "-")
+        logger.info("classify_article_category: '{}' -> {} ({})",
+                    title[:60], category_name, category_slug)
+        return category_name, category_slug
+    except Exception as e:
+        logger.warning("classify_article_category fallita, fallback a Scuola: {}", e)
+        return "Scuola", "scuola"
+
+
 async def _run_skill_and_save_background(news_id: int) -> None:
     """Task di background: esegue la skill e crea la bozza articles su Supabase.
 
@@ -511,8 +543,7 @@ async def _run_persona_skill_background(
     target: str | None,
     interlink_urls: list[str],
     article_id: int | None,
-    category: str,
-    category_slug_input: str,
+    creator: str,
     source_url: str,
 ) -> None:
     """Task di background: esegue la skill persona, salva o prepara i dati
@@ -540,10 +571,14 @@ async def _run_persona_skill_background(
             or keyword
             or "Articolo senza titolo"
         )
-        proposed_slug, derived_category_slug = generate_slugs(title, category or "")
-        final_category_slug = category_slug_input or derived_category_slug
         content_markdown = sections_to_markdown(article_block.get("sections") or [])
         excerpt = seo.get("meta_description")
+
+        # Classificazione automatica della categoria (stesso pattern del
+        # flusso scraping news: GPT-4o + CLASSIFICATION_PROMPT + CategoryEnum).
+        category_name, final_category_slug = _classify_article_category(title, content_markdown)
+
+        proposed_slug, _ = generate_slugs(title, category_name)
         try:
             summary, title_summary = await generate_summary(content_markdown)
         except Exception as e:
@@ -582,7 +617,7 @@ async def _run_persona_skill_background(
             "content": content_markdown,
             "tags": combined_tags,
             "source": source_url or "",
-            "category": category,
+            "category": category_name,
             "category_slug": final_category_slug,
         }
 
@@ -613,7 +648,7 @@ async def _run_persona_skill_background(
             "created_at": now_iso,
             "published_at": now_iso,
             "isdraft": True,
-            "creator": "AI News Generator (persona)",
+            "creator": creator or "AI News Generator (persona)",
             **skill_fields,
         }
         supabase = get_supabase_client()
@@ -665,8 +700,7 @@ async def generate_article_with_persona_endpoint(payload: dict):
     source_url = (payload.get("sourceUrl") or "").strip()
     tono = (payload.get("tone") or "Neutrale").strip() or "Neutrale"
     persona = (payload.get("persona") or "Giornalista").strip() or "Giornalista"
-    category = (payload.get("category") or "").strip()
-    category_slug_input = (payload.get("categorySlug") or "").strip()
+    creator = (payload.get("creator") or "").strip()
     try:
         paragraphs = int(payload.get("paragraphs") or 3)
         words_per_paragraph = int(payload.get("wordsPerParagraph") or 150)
@@ -681,8 +715,10 @@ async def generate_article_with_persona_endpoint(payload: dict):
 
     target = prompt if source_url and prompt else None
 
-    # Interlink: usa prompt come topic hint per trovare articoli correlati
-    related = find_related_articles(prompt or "", [], category_slug_input or "")
+    # Interlink: usa prompt come topic hint per trovare articoli correlati.
+    # La categoria finale verra' classificata automaticamente dopo la skill,
+    # quindi qui passiamo stringa vuota come filtro categoria.
+    related = find_related_articles(prompt or "", [], "")
     site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
     interlink_urls = [
         f"{site_base}/{a['category_slug']}/{a['slug']}"
@@ -711,8 +747,7 @@ async def generate_article_with_persona_endpoint(payload: dict):
         target=target,
         interlink_urls=interlink_urls,
         article_id=article_id,
-        category=category,
-        category_slug_input=category_slug_input,
+        creator=creator,
         source_url=source_url,
     ))
     logger.info(

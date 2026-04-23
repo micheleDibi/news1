@@ -2232,9 +2232,12 @@ const cancelContactForm = () => {
     setAiLoading(true);
     let shouldCloseModal = true;
     try {
-      const currentCategory = getValues('category') || '';
-      const currentCategorySlug = currentCategory ? slugify(currentCategory) : '';
       const editingArticleId = article?.id ?? null;
+      // Creator: stessa logica del submit normale del form. Viene mandato
+      // al backend cosi' l'articolo creato ha come autore il giornalista
+      // loggato (non "AI News Generator").
+      const baseCreator = userProfile?.full_name || currentUser || article?.creator || '';
+      const finalCreator = canModifyCreator ? (selectedCreator || baseCreator) : baseCreator;
 
       // 1) POST veloce: avvia il job e ricevi jobId (202 Accepted)
       const startRes = await fetch('/api/articles/generate-with-persona', {
@@ -2245,8 +2248,7 @@ const cancelContactForm = () => {
         },
         body: JSON.stringify({
           ...aiParams,
-          category: currentCategory,
-          categorySlug: currentCategorySlug,
+          creator: finalCreator,
           articleId: editingArticleId,
         }),
       });
