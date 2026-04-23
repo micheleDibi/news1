@@ -2203,18 +2203,41 @@ const cancelContactForm = () => {
     // We don't set secondary_category_slugs here as it's handled by its own state and input
   };
 
+  // Polling helper: attende finche' il job non esce dagli stati pending/running.
+  // Evita JSON.parse su HTML e ritorna sempre un result strutturato.
+  const pollJobStatus = async (jobId: string, maxAttempts = 180, intervalMs = 5000): Promise<any> => {
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, intervalMs));
+      try {
+        const res = await fetch(`/api/articles/generation-status/${jobId}`, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}` },
+        });
+        const text = await res.text();
+        let data: any = null;
+        try { data = text ? JSON.parse(text) : null; } catch { /* ignora: transiente */ }
+        if (!data) continue;
+        if (data.status === 'done' || data.status === 'failed' || data.status === 'blocked') {
+          return data;
+        }
+      } catch (e) {
+        // errore di rete transiente: continua a pollare
+        console.warn('[persona-skill] poll fallito, retry…', e);
+      }
+    }
+    return { status: 'failed', error: `Timeout: la generazione sta impiegando piu di ${Math.round((maxAttempts * intervalMs) / 60000)} minuti.` };
+  };
+
   const handleGenerateAi = async () => {
     setAiLoading(true);
     let shouldCloseModal = true;
     try {
       const currentCategory = getValues('category') || '';
       const currentCategorySlug = currentCategory ? slugify(currentCategory) : '';
-      // Edit mode se stiamo modificando un articolo esistente: il backend
-      // non inserira' una nuova riga, restituira' solo i campi skill_* da
-      // popolare nel form. Il save esistente li inviera' all'update API.
       const editingArticleId = article?.id ?? null;
 
-      const response = await fetch('/api/articles/generate-with-persona', {
+      // 1) POST veloce: avvia il job e ricevi jobId (202 Accepted)
+      const startRes = await fetch('/api/articles/generate-with-persona', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2228,48 +2251,39 @@ const cancelContactForm = () => {
         }),
       });
 
-      // Se il reverse proxy (o un timeout) restituisce HTML invece di JSON,
-      // evitiamo il crash di .json() e mostriamo un messaggio leggibile.
-      const rawText = await response.text();
-      let result: any = null;
-      try {
-        result = rawText ? JSON.parse(rawText) : null;
-      } catch (parseErr) {
-        console.error('Risposta non-JSON dal server:', response.status, rawText.slice(0, 500));
-        const hint = response.status >= 500
-          ? ' Il reverse proxy potrebbe aver chiuso la connessione: la generazione potrebbe essere comunque completata, controlla l\'elenco articoli tra qualche minuto.'
-          : '';
-        alert(`Errore nella generazione dell'articolo AI (HTTP ${response.status}).${hint}`);
-        shouldCloseModal = false;
-        return;
-      }
+      const startText = await startRes.text();
+      let startData: any = null;
+      try { startData = startText ? JSON.parse(startText) : null; } catch { /* ignore */ }
 
-      if (response.status === 422) {
-        // Combinazione tono+persona bloccata dalla skill (STEP 1.5)
-        const msg = result?.detail || 'Combinazione di tono e persona non consentita per questa notizia.';
-        alert(msg);
-        shouldCloseModal = false;
-        return;
-      }
-
-      if (!response.ok) {
-        const msg = result?.detail || result?.error || 'Errore dal server';
+      if (!startRes.ok || !startData?.jobId) {
+        const msg = startData?.detail || startData?.error || `Errore avvio generazione (HTTP ${startRes.status})`;
         alert("Errore nella generazione dell'articolo AI: " + msg);
         shouldCloseModal = false;
         return;
       }
 
-      // CREATE mode: il backend ha inserito la bozza, redirect all'editor.
-      if (result?.supabaseId) {
+      // 2) Polling finche' lo stato non e' terminal
+      const result = await pollJobStatus(startData.jobId);
+
+      if (result.status === 'blocked') {
+        alert(result.detail || 'Combinazione di tono e persona non consentita per questa notizia.');
+        shouldCloseModal = false;
+        return;
+      }
+
+      if (result.status === 'failed') {
+        alert("Errore nella generazione dell'articolo AI: " + (result.error || 'Fallimento sconosciuto'));
+        shouldCloseModal = false;
+        return;
+      }
+
+      // status === 'done'
+      if (result.mode === 'create' && result.supabaseId) {
         window.location.href = `/admin/articles/${result.supabaseId}/edit`;
         return;
       }
 
-      // EDIT mode: popola il form con i campi base + skill_*. Il DB non e'
-      // stato toccato: l'utente rivede e al click "Salva" l'articolo esistente
-      // viene aggiornato con il nuovo contenuto (e i campi skill_* portati
-      // dal form state).
-      if (result?.article) {
+      if (result.mode === 'edit' && result.article) {
         const articleAi = result.article;
         const baseFields = result.base_fields || {};
         const skillFields = result.skill_fields || {};
@@ -2284,9 +2298,8 @@ const cancelContactForm = () => {
         setEditorContent(html);
         setValue('content', html);
 
-        // Propaga i campi skill_* nello stato del form: `articleData` fa
-        // `...data` quindi questi vanno dritti al PUT /api/articles/:id/update
-        // come colonne Supabase.
+        // Propaga campi skill_* nel form state: `articleData` fa `...data`
+        // quindi confluiscono nel PUT /api/articles/:id/update.
         Object.entries(skillFields).forEach(([key, value]) => {
           setValue(key as any, value as any);
         });
@@ -2294,8 +2307,8 @@ const cancelContactForm = () => {
         setPreviewMode(true);
         console.log('[persona-skill] edit mode: form popolato, save manuale');
       } else {
-        console.error('AI Generation Error:', result?.error || 'Unexpected response format');
-        alert("Errore nella generazione dell'articolo AI: " + (result?.error || 'Risposta inattesa dal server.'));
+        console.error('AI Generation Error: risposta done inattesa', result);
+        alert("Errore nella generazione dell'articolo AI: risposta inattesa dal server.");
         shouldCloseModal = false;
       }
     } catch (error) {

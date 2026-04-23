@@ -493,16 +493,174 @@ async def get_pending_review_news(db: Session = Depends(get_db)):
     } for n in pending]
 
 
+# --- Persona skill: fire-and-forget + polling --------------------------------
+# Tracciamento job in-memory: key = job_id (uuid), value = stato. Sopravvive
+# solo al processo: se il server riparte i job attivi si perdono. In edit mode
+# questo significa che l'utente dovra' rigenerare; in create mode la bozza
+# potrebbe comunque essere stata scritta su Supabase prima del restart.
+_persona_jobs: dict[str, dict] = {}
+
+
+async def _run_persona_skill_background(
+    job_id: str,
+    *,
+    url: str,
+    livello: str,
+    tono: str,
+    persona: str,
+    target: str | None,
+    interlink_urls: list[str],
+    article_id: int | None,
+    category: str,
+    category_slug_input: str,
+    source_url: str,
+) -> None:
+    """Task di background: esegue la skill persona, salva o prepara i dati
+    per il frontend, e aggiorna lo stato del job in `_persona_jobs`.
+    """
+    try:
+        _persona_jobs[job_id]["status"] = "running"
+        skill_payload = await persona_runner.generate_article_with_persona(
+            url=url,
+            livello=livello,
+            tono=tono,
+            persona=persona,
+            target=target,
+            interlinks=interlink_urls,
+        )
+        skill_payload = _strip_em_dashes(skill_payload)
+
+        seo = skill_payload.get("seo") or {}
+        article_block = skill_payload.get("article") or {}
+        keyword = skill_payload.get("keyword") or ""
+        title = (
+            article_block.get("h1")
+            or seo.get("h1")
+            or seo.get("meta_title")
+            or keyword
+            or "Articolo senza titolo"
+        )
+        proposed_slug, derived_category_slug = generate_slugs(title, category or "")
+        final_category_slug = category_slug_input or derived_category_slug
+        content_markdown = sections_to_markdown(article_block.get("sections") or [])
+        excerpt = seo.get("meta_description")
+        try:
+            summary, title_summary = await generate_summary(content_markdown)
+        except Exception as e:
+            logger.warning("generate_summary fallita, continuo senza: {}", e)
+            summary, title_summary = None, None
+
+        seo_tags = _generate_seo_keywords_from_persona_payload(skill_payload)
+        combined_tags: list[str] = []
+        if keyword:
+            combined_tags.append(keyword)
+        seen_lower = {t.lower() for t in combined_tags}
+        for t in seo_tags:
+            if t.lower() not in seen_lower:
+                combined_tags.append(t)
+                seen_lower.add(t.lower())
+
+        skill_fields = {
+            "skill_generated_at": skill_payload.get("generated_at"),
+            "skill_livello": skill_payload.get("livello"),
+            "skill_keyword": keyword,
+            "skill_meta_title": seo.get("meta_title"),
+            "skill_meta_description": seo.get("meta_description"),
+            "skill_angolo": skill_payload.get("angolo"),
+            "skill_competitor_report": skill_payload.get("competitor_report") or [],
+            "skill_factcheck_report": skill_payload.get("factcheck_report") or [],
+            "skill_article_sections": article_block.get("sections") or [],
+            "skill_fonti": skill_payload.get("fonti") or [],
+            "skill_validation": skill_payload.get("validation") or {},
+            "skill_raw_payload": skill_payload,
+        }
+        base_fields = {
+            "title": title,
+            "excerpt": excerpt,
+            "summary": summary,
+            "title_summary": title_summary,
+            "content": content_markdown,
+            "tags": combined_tags,
+            "source": source_url or "",
+            "category": category,
+            "category_slug": final_category_slug,
+        }
+
+        if article_id:
+            # EDIT MODE: niente scrittura su Supabase. Il frontend popolera'
+            # il form con base_fields+skill_fields; al click "Salva" l'update
+            # endpoint persistera' tutto.
+            _persona_jobs[job_id].update({
+                "status": "done",
+                "mode": "edit",
+                "article": _map_persona_payload_to_article(skill_payload),
+                "skill_fields": skill_fields,
+                "base_fields": base_fields,
+                "articleId": article_id,
+            })
+            logger.info(
+                "persona job {} [edit] done article_id={} livello={} keyword={!r}",
+                job_id, article_id, skill_payload.get("livello"), keyword,
+            )
+            return
+
+        # CREATE MODE: insert bozza su Supabase, ritorna supabaseId/slug.
+        now_iso = datetime.now(ITALY_TZ).isoformat()
+        article_row = {
+            **base_fields,
+            "slug": proposed_slug,
+            "image_url": "/edunews24_immagine_da_sostituire.png",
+            "created_at": now_iso,
+            "published_at": now_iso,
+            "isdraft": True,
+            "creator": "AI News Generator (persona)",
+            **skill_fields,
+        }
+        supabase = get_supabase_client()
+        result = supabase.table("articles").insert(article_row).execute()
+        if not result.data:
+            _persona_jobs[job_id].update({
+                "status": "failed",
+                "error": "Inserimento Supabase senza dati",
+            })
+            return
+        inserted = result.data[0]
+        _persona_jobs[job_id].update({
+            "status": "done",
+            "mode": "create",
+            "supabaseId": inserted.get("id"),
+            "slug": inserted.get("slug"),
+            "article": _map_persona_payload_to_article(skill_payload),
+            "skill_fields": skill_fields,
+            "base_fields": base_fields,
+        })
+        logger.info(
+            "persona job {} [create] done id={} slug={} livello={} keyword={!r}",
+            job_id, inserted.get("id"), inserted.get("slug"),
+            skill_payload.get("livello"), keyword,
+        )
+
+    except ValueError as e:
+        _persona_jobs[job_id].update({"status": "failed", "error": str(e)})
+        logger.warning("persona job {} fallito (ValueError): {}", job_id, e)
+    except RuntimeError as e:
+        # STEP 1.5: combinazione tono+persona bloccata
+        _persona_jobs[job_id].update({"status": "blocked", "detail": str(e)})
+        logger.info("persona job {} bloccato dallo STEP 1.5: {}", job_id, e)
+    except Exception as e:
+        logger.exception("persona job {} fallito: {}", job_id, e)
+        _persona_jobs[job_id].update({"status": "failed", "error": str(e)})
+
+
 @app.post("/api/articles/generate-with-persona")
 async def generate_article_with_persona_endpoint(payload: dict):
-    """Genera un articolo via skill news-angle-rewriter-persona e lo salva
-    come bozza su Supabase `articles` (stesso pattern del flusso pending).
+    """Avvia la generazione articolo via skill persona in background.
 
-    Usato dal modal "Genera con AI" nell'editor articoli. La skill impiega
-    5-7 minuti; il frontend attende con loader e al termine viene reindirizzato
-    all'editor della bozza appena creata. La route Astro che proxa questa
-    chiamata imposta un undici Agent con timeout 15 min.
+    Ritorna immediatamente 202 con jobId. Il frontend fa polling su
+    /api/articles/generation-status/{jobId} finche' lo stato non diventa
+    done/failed/blocked. Evita timeout del reverse proxy.
     """
+    import uuid
     prompt = (payload.get("prompt") or "").strip()
     source_url = (payload.get("sourceUrl") or "").strip()
     tono = (payload.get("tone") or "Neutrale").strip() or "Neutrale"
@@ -521,14 +679,9 @@ async def generate_article_with_persona_endpoint(payload: dict):
     if not url:
         raise HTTPException(400, "Fornisci almeno 'prompt' o 'sourceUrl'")
 
-    # Se l'utente ha fornito un URL, usiamo `target` per passare ulteriore
-    # contesto dal prompt; se e' stato usato solo il prompt, la skill lo usa
-    # gia' come url/topic e non vale la pena ripeterlo in target.
     target = prompt if source_url and prompt else None
 
-    # Interlink: stesso pattern del flusso pending. Cerca articoli correlati
-    # usando il prompt come hint di topic, e costruisce URL assoluti col
-    # dominio pubblico (mai localhost).
+    # Interlink: usa prompt come topic hint per trovare articoli correlati
     related = find_related_articles(prompt or "", [], category_slug_input or "")
     site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
     interlink_urls = [
@@ -537,146 +690,55 @@ async def generate_article_with_persona_endpoint(payload: dict):
         if a.get("category_slug") and a.get("slug")
     ]
 
-    try:
-        skill_payload = await persona_runner.generate_article_with_persona(
-            url=url,
-            livello=livello,
-            tono=tono,
-            persona=persona,
-            target=target,
-            interlinks=interlink_urls,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        # STEP 1.5: combinazione tono+persona bloccata per la natura della notizia
-        logger.info("persona skill ha rifiutato la combinazione: {}", e)
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        logger.exception("persona skill fallita: {}", e)
-        raise HTTPException(status_code=500, detail=f"Skill fallita: {e}")
-
-    skill_payload = _strip_em_dashes(skill_payload)
-
-    seo = skill_payload.get("seo") or {}
-    article_block = skill_payload.get("article") or {}
-    keyword = skill_payload.get("keyword") or ""
-
-    title = (
-        article_block.get("h1")
-        or seo.get("h1")
-        or seo.get("meta_title")
-        or keyword
-        or "Articolo senza titolo"
-    )
-    proposed_slug, derived_category_slug = generate_slugs(title, category or "")
-    final_category_slug = category_slug_input or derived_category_slug
-    content_markdown = sections_to_markdown(article_block.get("sections") or [])
-    excerpt = seo.get("meta_description")
-    try:
-        summary, title_summary = await generate_summary(content_markdown)
-    except Exception as e:
-        logger.warning("generate_summary fallita, continuo senza: {}", e)
-        summary, title_summary = None, None
-
-    seo_tags = _generate_seo_keywords_from_persona_payload(skill_payload)
-    combined_tags: list[str] = []
-    if keyword:
-        combined_tags.append(keyword)
-    seen_lower = {t.lower() for t in combined_tags}
-    for t in seo_tags:
-        if t.lower() not in seen_lower:
-            combined_tags.append(t)
-            seen_lower.add(t.lower())
-
-    skill_fields = {
-        "skill_generated_at": skill_payload.get("generated_at"),
-        "skill_livello": skill_payload.get("livello"),
-        "skill_keyword": keyword,
-        "skill_meta_title": seo.get("meta_title"),
-        "skill_meta_description": seo.get("meta_description"),
-        "skill_angolo": skill_payload.get("angolo"),
-        "skill_competitor_report": skill_payload.get("competitor_report") or [],
-        "skill_factcheck_report": skill_payload.get("factcheck_report") or [],
-        "skill_article_sections": article_block.get("sections") or [],
-        "skill_fonti": skill_payload.get("fonti") or [],
-        "skill_validation": skill_payload.get("validation") or {},
-        "skill_raw_payload": skill_payload,
-    }
-
     article_id_raw = payload.get("articleId")
     try:
         article_id = int(article_id_raw) if article_id_raw not in (None, "", 0) else None
     except (TypeError, ValueError):
         article_id = None
 
-    base_fields = {
-        "title": title,
-        "excerpt": excerpt,
-        "summary": summary,
-        "title_summary": title_summary,
-        "content": content_markdown,
-        "tags": combined_tags,
-        "source": source_url or "",
-        "category": category,
-        "category_slug": final_category_slug,
+    job_id = str(uuid.uuid4())
+    _persona_jobs[job_id] = {
+        "status": "pending",
+        "started_at": datetime.now(ITALY_TZ).isoformat(),
+        "mode": "edit" if article_id else "create",
     }
-
-    if article_id:
-        # EDIT MODE: l'utente sta modificando un articolo esistente. Non
-        # scriviamo niente su Supabase: il frontend popolera' il form con
-        # questi campi e, al click "Salva", l'endpoint update gestira' la
-        # persistenza (inclusi i campi skill_*).
-        logger.info(
-            "persona skill [edit mode] article_id={} livello={} keyword={!r}",
-            article_id, skill_payload.get("livello"), keyword,
-        )
-        return {
-            "supabaseId": None,
-            "slug": None,
-            "editMode": True,
-            "article": _map_persona_payload_to_article(skill_payload),
-            "skill_fields": skill_fields,
-            "base_fields": base_fields,
-        }
-
-    # CREATE MODE: inserisce subito una bozza in Supabase e ritorna l'id
-    # cosi' il frontend reindirizza all'editor del nuovo articolo.
-    now_iso = datetime.now(ITALY_TZ).isoformat()
-    article_row = {
-        **base_fields,
-        "slug": proposed_slug,
-        "image_url": "/edunews24_immagine_da_sostituire.png",
-        "created_at": now_iso,
-        "published_at": now_iso,
-        "isdraft": True,
-        "creator": "AI News Generator (persona)",
-        **skill_fields,
-    }
-
-    supabase = get_supabase_client()
-    try:
-        result = supabase.table("articles").insert(article_row).execute()
-    except Exception as e:
-        logger.exception("Inserimento Supabase fallito: {}", e)
-        raise HTTPException(status_code=500, detail=f"Inserimento Supabase fallito: {e}")
-    if not result.data:
-        raise HTTPException(status_code=500, detail="Inserimento Supabase senza dati")
-    inserted = result.data[0]
-
+    asyncio.create_task(_run_persona_skill_background(
+        job_id,
+        url=url,
+        livello=livello,
+        tono=tono,
+        persona=persona,
+        target=target,
+        interlink_urls=interlink_urls,
+        article_id=article_id,
+        category=category,
+        category_slug_input=category_slug_input,
+        source_url=source_url,
+    ))
     logger.info(
-        "persona skill article salvato: id={}, slug={}, livello={}, keyword={!r}",
-        inserted.get("id"), inserted.get("slug"),
-        skill_payload.get("livello"), keyword,
+        "persona job {} avviato: mode={} article_id={} livello={} tono={} persona={}",
+        job_id, "edit" if article_id else "create",
+        article_id, livello, tono, persona,
     )
-    return {
-        "supabaseId": inserted.get("id"),
-        "slug": inserted.get("slug"),
-        "editMode": False,
-        "article": _map_persona_payload_to_article(skill_payload),
-        "skill_fields": skill_fields,
-        "base_fields": base_fields,
-    }
+    return JSONResponse(
+        status_code=202,
+        content={"jobId": job_id, "status": "accepted"},
+    )
+
+
+@app.get("/api/articles/generation-status/{job_id}")
+async def get_persona_job_status(job_id: str):
+    """Stato del job di generazione persona. Pollato dal frontend.
+
+    Stati possibili: pending | running | done | blocked | failed.
+    `done`:    include supabaseId/slug (create) oppure base_fields/skill_fields (edit)
+    `blocked`: include detail (messaggio STEP 1.5 per il giornalista)
+    `failed`:  include error
+    """
+    job = _persona_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato o scaduto")
+    return job
 
 @app.get("/api/news/{news_id}")
 async def get_news_detail(news_id: int, db: Session = Depends(get_db)):
