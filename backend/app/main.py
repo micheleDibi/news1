@@ -495,16 +495,20 @@ async def get_pending_review_news(db: Session = Depends(get_db)):
 
 @app.post("/api/articles/generate-with-persona")
 async def generate_article_with_persona_endpoint(payload: dict):
-    """Genera un articolo via skill news-angle-rewriter-persona.
+    """Genera un articolo via skill news-angle-rewriter-persona e lo salva
+    come bozza su Supabase `articles` (stesso pattern del flusso pending).
 
-    Usato dal modal "Genera con AI" nell'editor articoli. Sincrono: la skill
-    gira ~5-7 minuti e il frontend resta in attesa con loader. La route Astro
-    che proxa questa chiamata imposta un undici Agent con timeout 15 min.
+    Usato dal modal "Genera con AI" nell'editor articoli. La skill impiega
+    5-7 minuti; il frontend attende con loader e al termine viene reindirizzato
+    all'editor della bozza appena creata. La route Astro che proxa questa
+    chiamata imposta un undici Agent con timeout 15 min.
     """
     prompt = (payload.get("prompt") or "").strip()
     source_url = (payload.get("sourceUrl") or "").strip()
     tono = (payload.get("tone") or "Neutrale").strip() or "Neutrale"
     persona = (payload.get("persona") or "Giornalista").strip() or "Giornalista"
+    category = (payload.get("category") or "").strip()
+    category_slug_input = (payload.get("categorySlug") or "").strip()
     try:
         paragraphs = int(payload.get("paragraphs") or 3)
         words_per_paragraph = int(payload.get("wordsPerParagraph") or 150)
@@ -518,9 +522,20 @@ async def generate_article_with_persona_endpoint(payload: dict):
         raise HTTPException(400, "Fornisci almeno 'prompt' o 'sourceUrl'")
 
     # Se l'utente ha fornito un URL, usiamo `target` per passare ulteriore
-    # contesto dal prompt; se invece e' stato usato solo il prompt, la skill
-    # lo usa gia' come url/topic e non vale la pena ripeterlo in target.
+    # contesto dal prompt; se e' stato usato solo il prompt, la skill lo usa
+    # gia' come url/topic e non vale la pena ripeterlo in target.
     target = prompt if source_url and prompt else None
+
+    # Interlink: stesso pattern del flusso pending. Cerca articoli correlati
+    # usando il prompt come hint di topic, e costruisce URL assoluti col
+    # dominio pubblico (mai localhost).
+    related = find_related_articles(prompt or "", [], category_slug_input or "")
+    site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
+    interlink_urls = [
+        f"{site_base}/{a['category_slug']}/{a['slug']}"
+        for a in related
+        if a.get("category_slug") and a.get("slug")
+    ]
 
     try:
         skill_payload = await persona_runner.generate_article_with_persona(
@@ -529,9 +544,9 @@ async def generate_article_with_persona_endpoint(payload: dict):
             tono=tono,
             persona=persona,
             target=target,
+            interlinks=interlink_urls,
         )
     except ValueError as e:
-        # tono o persona non validi (enum)
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         # STEP 1.5: combinazione tono+persona bloccata per la natura della notizia
@@ -542,8 +557,89 @@ async def generate_article_with_persona_endpoint(payload: dict):
         raise HTTPException(status_code=500, detail=f"Skill fallita: {e}")
 
     skill_payload = _strip_em_dashes(skill_payload)
-    article = _map_persona_payload_to_article(skill_payload)
-    return {"article": article}
+
+    seo = skill_payload.get("seo") or {}
+    article_block = skill_payload.get("article") or {}
+    keyword = skill_payload.get("keyword") or ""
+
+    title = (
+        article_block.get("h1")
+        or seo.get("h1")
+        or seo.get("meta_title")
+        or keyword
+        or "Articolo senza titolo"
+    )
+    proposed_slug, derived_category_slug = generate_slugs(title, category or "")
+    final_category_slug = category_slug_input or derived_category_slug
+    content_markdown = sections_to_markdown(article_block.get("sections") or [])
+    excerpt = seo.get("meta_description")
+    try:
+        summary, title_summary = await generate_summary(content_markdown)
+    except Exception as e:
+        logger.warning("generate_summary fallita, continuo senza: {}", e)
+        summary, title_summary = None, None
+
+    seo_tags = _generate_seo_keywords_from_persona_payload(skill_payload)
+    combined_tags: list[str] = []
+    if keyword:
+        combined_tags.append(keyword)
+    seen_lower = {t.lower() for t in combined_tags}
+    for t in seo_tags:
+        if t.lower() not in seen_lower:
+            combined_tags.append(t)
+            seen_lower.add(t.lower())
+
+    now_iso = datetime.now(ITALY_TZ).isoformat()
+    article_row = {
+        "title": title,
+        "slug": proposed_slug,
+        "content": content_markdown,
+        "excerpt": excerpt,
+        "summary": summary,
+        "title_summary": title_summary,
+        "category": category,
+        "category_slug": final_category_slug,
+        "tags": combined_tags,
+        "source": source_url or "",
+        "image_url": "/edunews24_immagine_da_sostituire.png",
+        "created_at": now_iso,
+        "published_at": now_iso,
+        "isdraft": True,
+        "creator": "AI News Generator (persona)",
+        "skill_generated_at": skill_payload.get("generated_at"),
+        "skill_livello": skill_payload.get("livello"),
+        "skill_keyword": keyword,
+        "skill_meta_title": seo.get("meta_title"),
+        "skill_meta_description": seo.get("meta_description"),
+        "skill_angolo": skill_payload.get("angolo"),
+        "skill_competitor_report": skill_payload.get("competitor_report") or [],
+        "skill_factcheck_report": skill_payload.get("factcheck_report") or [],
+        "skill_article_sections": article_block.get("sections") or [],
+        "skill_fonti": skill_payload.get("fonti") or [],
+        "skill_validation": skill_payload.get("validation") or {},
+        "skill_raw_payload": skill_payload,
+    }
+
+    supabase = get_supabase_client()
+    try:
+        result = supabase.table("articles").insert(article_row).execute()
+    except Exception as e:
+        logger.exception("Inserimento Supabase fallito: {}", e)
+        raise HTTPException(status_code=500, detail=f"Inserimento Supabase fallito: {e}")
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Inserimento Supabase senza dati")
+    inserted = result.data[0]
+
+    logger.info(
+        "persona skill article salvato: id={}, slug={}, livello={}, keyword={!r}",
+        inserted.get("id"), inserted.get("slug"),
+        skill_payload.get("livello"), keyword,
+    )
+    return {
+        "supabaseId": inserted.get("id"),
+        "slug": inserted.get("slug"),
+        "article": _map_persona_payload_to_article(skill_payload),
+    }
 
 @app.get("/api/news/{news_id}")
 async def get_news_detail(news_id: int, db: Session = Depends(get_db)):
