@@ -134,7 +134,7 @@ Lo script serializza con `ensure_ascii=False`: gli accenti finiscono
 nel JSON solo se li scrivi accentati nei content_sections.
 
 INDICE EVERGREEN: per articoli evergreen, l'indice va inserito come
-prima sezione `{"type": "auto_index"}`. Lo script genera automaticamente
+prima sezione `{{"type": "auto_index"}}`. Lo script genera automaticamente
 gli `id` slug per gli H2 ed espande l'auto_index in un paragrafo con
 link `#slug` cliccabili. NON scrivere l'indice come paragrafo di testo
 manuale: i link non sarebbero cliccabili.
