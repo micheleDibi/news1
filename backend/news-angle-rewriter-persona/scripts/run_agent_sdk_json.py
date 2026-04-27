@@ -124,6 +124,21 @@ Esempio di invocazione via tool Bash:
     )
     "
 
+ACCENTI ITALIANI OBBLIGATORI: ogni stringa passata allo script
+(`title`, `meta_title`, `meta_description`, h2/h3, paragrafi, items
+delle liste, FAQ, `angolo`, `keyword`) DEVE conservare gli accenti
+italiani: `è à ù ò ì é í ó ú` e l'apostrofo tipografico delle elisioni.
+Mai sostituirli con la vocale base (es. `università` non `universita`,
+`può` non `puo`, `Cos'è` non `Cos'e`, `più` non `piu`, `già` non `gia`).
+Lo script serializza con `ensure_ascii=False`: gli accenti finiscono
+nel JSON solo se li scrivi accentati nei content_sections.
+
+INDICE EVERGREEN: per articoli evergreen, l'indice va inserito come
+prima sezione `{"type": "auto_index"}`. Lo script genera automaticamente
+gli `id` slug per gli H2 ed espande l'auto_index in un paragrafo con
+link `#slug` cliccabili. NON scrivere l'indice come paragrafo di testo
+manuale: i link non sarebbero cliccabili.
+
 VALIDAZIONE COMBINAZIONE TONO+PERSONA (STEP 1.5 di SKILL.md):
 dopo aver classificato la natura della notizia (istituzionale / negativa /
 neutra) nello STEP 1, verifica la tabella dei blocchi prima di procedere.

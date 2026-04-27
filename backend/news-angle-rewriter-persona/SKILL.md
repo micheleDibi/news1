@@ -41,6 +41,9 @@ L'utente PUÒ opzionalmente fornire:
 6. **SEMPRE fact-check** prima di generare l'articolo finale
 7. **SEMPRE output JSON** con metadati SEO, report angolo, fact-check, tono e persona usati
 8. **SEMPRE rispettare la tabella dei blocchi tono/persona** — se la combinazione è incoerente, NON generare l'articolo
+9. **SEMPRE preservare gli accenti italiani** — `è à ù ò ì é í ó ú` vanno scritti come tali in **ogni** stringa passata allo script (titolo, h1, meta description, h2/h3, paragrafi, bullet, FAQ, angolo, fonti). Mai sostituirli con la vocale base (`è`→`e`, `università`→`universita`, `può`→`puo`, `già`→`gia`, `più`→`piu`, `qualità`→`qualita`, `accessibilità`→`accessibilita`). Lo stesso vale per l'apostrofo tipografico nelle elisioni (`Cos'è`, non `Cos'e`). Lo script salva il JSON con `ensure_ascii=False`: gli accenti restano nel file solo se li scrivi accentati nei content_sections.
+10. **Massimo 1 `bullet_list` e 1 `numbered_list` per articolo** — vale per tutti i livelli. Se serve enumerare più cose, scegli quale merita la lista (di solito "In breve" → bullet, "Guida passo-passo" o moduli → numbered) e rendi le altre come paragrafi discorsivi con grassetto sui termini chiave. Mai due bullet né due numbered nello stesso JSON.
+11. **Chiusura sempre discorsiva** — l'ultima sezione di `content_sections` DEVE essere un `paragraph` (mai `bullet_list`, `numbered_list` né un h3 di FAQ orfano). Nell'evergreen, dopo le FAQ chiudi con un paragrafo finale di 2-3 frasi nello stile della persona (prospettiva, conseguenza pratica, invito alla riflessione). NO riassunto, NO "in conclusione", NO blacklist.
 
 ## Workflow Completo
 
@@ -303,11 +306,12 @@ DESCRIPTION: [max 155 caratteri, specifica il target]
 H1: [diverso dal title, max 75 caratteri]
 
 Struttura obbligatoria:
-1. Indice con anchor link
-2. "In breve" (4-5 punti chiave, max 80 parole)
-3. Guida passo-passo numerata con scadenze reali
-4. Errori comuni (3-4)
-5. FAQ (3-5 domande, risposte 2-3 righe)
+1. Indice con anchor link → inserisci come prima sezione `{"type": "auto_index"}`. Lo script lo espande automaticamente in un paragrafo con link cliccabili verso tutti gli H2 della pagina (anchor `#slug-h2`). NON scrivere l'indice a mano come paragrafo di testo: senza l'auto_index i link non funzionano.
+2. "In breve" (4-5 punti chiave, max 80 parole) — **unico** `bullet_list` consentito
+3. Guida passo-passo o moduli numerati con scadenze reali — **unico** `numbered_list` consentito
+4. Errori comuni (3-4) — **paragrafi discorsivi**, NON bullet. Ogni errore va scritto come paragrafo breve che apre con un grassetto identificativo (es. `**Confondere il sistema con un LMS**: la piattaforma...`). Vietato usare `bullet_list` qui: il secondo bullet violerebbe la regola "max 1 bullet per articolo".
+5. FAQ (3-5 domande, risposte 2-3 righe) — h3 + paragrafi
+6. **Chiusura discorsiva** (obbligatoria) — un `paragraph` finale di 2-3 frasi nello stile della persona, dopo l'ultima risposta FAQ. Senza h2 dedicato. Mai chiudere con FAQ né con liste.
 
 Il registro della guida è governato dal tono.
 La voce delle FAQ è governata dalla persona.

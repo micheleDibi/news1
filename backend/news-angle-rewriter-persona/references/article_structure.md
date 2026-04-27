@@ -43,21 +43,29 @@ Indice solo se >3 sezioni H2. NO FAQ (non è una guida).
 
 ## EVERGREEN (1000-1500 parole)
 
+L'indice DEVE essere inserito come prima sezione con `{"type": "auto_index"}`. Lo script `generate_json_output.py` slugifica ogni H2 (`id` univoco, accenti rimossi solo nello slug) e costruisce il paragrafo "Indice:" con link `#slug` cliccabili. Non scrivere mai l'indice come paragrafo di testo: rimarrebbe testo statico senza ancore.
+
+**Vincoli sulle liste**: massimo **1 `bullet_list` + 1 `numbered_list`** in tutto l'articolo. "In breve" usa il bullet, la guida passo-passo (o moduli) usa il numbered. Tutte le altre enumerazioni (errori comuni, vantaggi, criteri) vanno rese come paragrafi discorsivi con grassetto sui termini chiave.
+
+**Chiusura**: l'articolo NON può finire con una lista né con la FAQ. Subito dopo l'ultima risposta della FAQ inserisci un `paragraph` di chiusura (2-3 frasi, nello stile della persona): prospettiva concreta, conseguenza pratica, riflessione. Mai riassunto, mai "in conclusione".
+
 ```
-[Indice con anchor link]
+{"type": "auto_index"}  ← espanso automaticamente
 
 ## In breve
-[4-5 punti chiave in grassetto. Max 80 parole.]
+[4-5 punti chiave. Max 80 parole. UNICO bullet_list]
 
-## [Sezione passo-passo]
-1. [Passo 1 con scadenza/data specifica]
-2. [Passo 2]
-3. [Passo 3]
+## [Sezione passo-passo o moduli]
+1. [Passo/modulo 1 con scadenza o dettaglio specifico]
+2. [Passo/modulo 2]
+3. [Passo/modulo 3]
+   ← UNICO numbered_list
 
 ## Errori comuni
-- [Errore 1]: [come evitarlo]
-- [Errore 2]: [come evitarlo]
-- [Errore 3]: [come evitarlo]
+**[Errore 1]**: [paragrafo di 1-2 frasi con come evitarlo].
+**[Errore 2]**: [paragrafo di 1-2 frasi].
+**[Errore 3]**: [paragrafo di 1-2 frasi].
+   ← 3-4 paragrafi separati, NON un bullet_list
 
 ## Domande frequenti
 
@@ -66,4 +74,7 @@ Indice solo se >3 sezioni H2. NO FAQ (non è una guida).
 
 ### [Domanda 2]?
 [Risposta 2-3 righe]
+
+[Paragrafo di chiusura discorsivo, 2-3 frasi, senza h2 dedicato.
+Stile della persona, NO riassunto, NO "in conclusione".]
 ```
