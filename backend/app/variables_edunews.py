@@ -142,10 +142,10 @@ Example output structure:
 
 
 ## =============================================
-## PROMPT CLAUDE OPUS 4.6
+## PROMPT CLAUDE OPUS 4.7
 ## =============================================
 
-CLAUDE_MODEL = "claude-opus-4-6"
+CLAUDE_MODEL = "claude-opus-4-7"
 
 CLAUDE_KEYWORDS_PROMPT = """Sei un esperto SEO specializzato nel settore dell'istruzione, scuola e universita in Italia.
 

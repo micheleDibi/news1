@@ -1,6 +1,11 @@
 ---
 export const prerender = false;
 
+const host = Astro.request.headers.get('host') ?? '';
+if (host.startsWith('edutest.ersaf.it')) {
+  return Astro.redirect('/admin', 302);
+}
+
 import Layout from '../layouts/Layout.astro';
 import CategorySidebar from '../components/CategorySidebar.astro';
 import { supabase } from '../lib/supabase';

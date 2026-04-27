@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Depends
 import uvicorn
-from . import schemas, models, database
+from . import schemas, models, database, skill_runner, persona_runner
 from .database import engine, get_db, get_supabase_client
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse, urljoin
@@ -175,17 +175,371 @@ async def summarize_news(db: Session = Depends(get_db)):
         "summarized_urls": summarized_urls  # Return the URLs with their IDs
     }
 
+# Set di news_id attualmente in generazione (skill in background).
+# In-memory: si resetta al riavvio uvicorn (accettabile: la riga news resta con
+# is_published=False e riappare in "Da generare", l'utente puo' rilanciare).
+_generating_news_ids: set[int] = set()
+
+
+def _strip_em_dashes(value):
+    """Rimuove l'em-dash (U+2014 `—`) dai contenuti generati dalla skill.
+
+    La redazione non vuole questo carattere nei testi. Sostituisce:
+    - " — " (con spazi attorno) -> ", "  (preserva la pausa grammaticale)
+    - "—"   (attaccato o solo)   -> "-"   (hyphen)
+
+    Applicato ricorsivamente su dict/list cosi' da coprire le sections
+    strutturate e i report annidati del payload skill.
+    """
+    if isinstance(value, str):
+        s = value.replace(" — ", ", ")
+        s = s.replace("—", "-")
+        return s
+    if isinstance(value, list):
+        return [_strip_em_dashes(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_em_dashes(v) for k, v in value.items()}
+    return value
+
+
+def generate_seo_keywords(news_item: models.New) -> list[str]:
+    """Genera 10 keyword SEO via Claude (stesso prompt del vecchio flusso).
+
+    Usato dal background task della skill per popolare il campo articles.tags
+    con la varieta' di keyword che il vecchio flusso produceva, cosi' da non
+    regredire rispetto a come la redazione era abituata a vederle.
+    Ritorna una lista (eventualmente vuota in caso di errore).
+    """
+    if news_item is None:
+        return []
+    try:
+        news_info = (
+            f"Titolo: {news_item.title}\n"
+            f"Fatti: {news_item.facts}\n"
+            f"Contesto: {news_item.context}\n"
+            f"Categoria: {news_item.category}\n"
+            f"Luogo: {news_item.location}\n"
+            f"Data pubblicazione: {news_item.published_date}"
+        )
+        response = claude_client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": f"{CLAUDE_KEYWORDS_PROMPT}\n\nInformazioni:\n{news_info}",
+            }],
+        )
+        text = response.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        data = json.loads(text)
+        tags = data.get("tags", []) or []
+        return [t for t in tags if isinstance(t, str) and t.strip()]
+    except Exception as e:
+        logger.warning("generate_seo_keywords fallita: {}", e)
+        return []
+
+
+def _generate_seo_keywords_from_prompt(prompt: str, source_url: str = "") -> list[str]:
+    """Genera 10 keyword dal prompt del modal, PRIMA di invocare la skill.
+
+    Serve a dare a `find_related_articles` abbastanza tag da scorare
+    (tag overlap pesa il 60% nello scoring): senza questa passata i tag
+    sarebbero vuoti e gli interlink risulterebbero quasi sempre vuoti.
+    """
+    if not prompt:
+        return []
+    try:
+        info = f"Argomento: {prompt}"
+        if source_url:
+            info += f"\nFonte URL: {source_url}"
+        response = claude_client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": f"{CLAUDE_KEYWORDS_PROMPT}\n\nInformazioni:\n{info}",
+            }],
+        )
+        text = response.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        data = json.loads(text)
+        tags = data.get("tags", []) or []
+        return [t for t in tags if isinstance(t, str) and t.strip()]
+    except Exception as e:
+        logger.warning("_generate_seo_keywords_from_prompt fallita: {}", e)
+        return []
+
+
+def _generate_seo_keywords_from_persona_payload(payload: dict) -> list[str]:
+    """Variante di generate_seo_keywords che parte dal payload della skill persona.
+
+    Usa meta_title, meta_description, keyword e angolo per dare a Claude
+    abbastanza contesto da produrre 10 keyword SEO aggiuntive.
+    """
+    try:
+        seo = payload.get("seo") or {}
+        news_info = (
+            f"Titolo: {seo.get('meta_title') or ''}\n"
+            f"Descrizione: {seo.get('meta_description') or ''}\n"
+            f"Keyword principale: {payload.get('keyword') or ''}\n"
+            f"Angolo: {payload.get('angolo') or ''}\n"
+            f"Livello: {payload.get('livello') or ''}"
+        )
+        response = claude_client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": f"{CLAUDE_KEYWORDS_PROMPT}\n\nInformazioni:\n{news_info}",
+            }],
+        )
+        text = response.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+        data = json.loads(text)
+        tags = data.get("tags", []) or []
+        return [t for t in tags if isinstance(t, str) and t.strip()]
+    except Exception as e:
+        logger.warning("_generate_seo_keywords_from_persona_payload fallita: {}", e)
+        return []
+
+
+def _build_persona_keywords(payload: dict) -> list[str]:
+    """Keyword della skill come primo elemento + 10 tag SEO, dedup case-insensitive."""
+    skill_keyword = (payload.get("keyword") or "").strip()
+    seo_tags = _generate_seo_keywords_from_persona_payload(payload)
+    combined: list[str] = []
+    seen: set[str] = set()
+    for tag in ([skill_keyword] + seo_tags if skill_keyword else seo_tags):
+        t = (tag or "").strip()
+        if not t:
+            continue
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(t)
+    return combined
+
+
+def _map_persona_payload_to_article(payload: dict) -> dict:
+    """Mappa il payload della skill persona nel formato atteso dal frontend."""
+    seo = payload.get("seo") or {}
+    article_block = payload.get("article") or {}
+    sections = article_block.get("sections") or []
+    return {
+        "title": seo.get("meta_title") or article_block.get("h1") or "",
+        "excerpt": seo.get("meta_description") or "",
+        "content": sections_to_markdown(sections),
+        "keywords": _build_persona_keywords(payload),
+        "sourceUrl": payload.get("source_url") or "",
+        "angolo": payload.get("angolo") or "",
+        "livello": payload.get("livello") or "",
+        "meta": payload.get("meta") or {},
+    }
+
+
+def _words_to_livello(total_words: int) -> str:
+    if total_words < 600:
+        return "flash"
+    if total_words <= 900:
+        return "editoriale"
+    return "evergreen"
+
+
+def _classify_article_category(title: str, content_markdown: str) -> tuple[str, str]:
+    """Classifica automaticamente un articolo generato dalla skill in una
+    delle CategoryEnum, riusando lo stesso prompt del flusso news scraper.
+
+    Ritorna (nome_categoria, slug_categoria). Fallback a ("Scuola", "scuola")
+    se la classificazione fallisce per qualunque motivo.
+    """
+    try:
+        # Prendi i primi ~2000 char del content per non sforare il context
+        excerpt = content_markdown.strip()[:2000]
+        classification_text = f"Title: {title}\n\nContent:\n{excerpt}"
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": CLASSIFICATION_PROMPT},
+                {"role": "user", "content": classification_text},
+            ],
+            response_model=CategoryEnum,
+        )
+        category_name = mapping_category_enum_to_string(response)
+        category_slug = category_name.lower() \
+            .replace("à", "a").replace("è", "e").replace("é", "e") \
+            .replace("ì", "i").replace("ò", "o").replace("ù", "u") \
+            .replace(" ", "-")
+        logger.info("classify_article_category: '{}' -> {} ({})",
+                    title[:60], category_name, category_slug)
+        return category_name, category_slug
+    except Exception as e:
+        logger.warning("classify_article_category fallita, fallback a Scuola: {}", e)
+        return "Scuola", "scuola"
+
+
+async def _run_skill_and_save_background(news_id: int) -> None:
+    """Task di background: esegue la skill e crea la bozza articles su Supabase.
+
+    Non bloccha la risposta HTTP del client: il frontend puo' navigare altrove
+    mentre la skill (5-7 min) completa lato server. Al termine la riga news
+    viene marcata is_published=True cosi' sparisce da "Da generare".
+    """
+    db = database.SessionLocal()
+    try:
+        news_item = db.query(models.New).filter(models.New.id == news_id).first()
+        if news_item is None:
+            logger.error("[bg] news {} non trovata", news_id)
+            return
+
+        related = find_related_articles(
+            news_item.title or "",
+            news_item.tags or [],
+            news_item.category or "",
+        )
+        # URL pubblico del sito per gli interlink: sull'articolo finale non
+        # devono mai comparire URL localhost. Default al dominio di produzione
+        # edunews24.it (stesso pattern usato in indexnow.py / interpelli.py /
+        # selezione_personale.py); override via env PUBLIC_SITE_URL se serve
+        # in staging.
+        site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
+        interlink_urls = [
+            f"{site_base}/{a['category_slug']}/{a['slug']}"
+            for a in related
+            if a.get("category_slug") and a.get("slug")
+        ]
+
+        payload = await skill_runner.generate_article_for_news(news_item, interlink_urls)
+        # Safety net: rimuovi em-dash dall'intero payload prima del mapping su articles.
+        payload = _strip_em_dashes(payload)
+
+        seo = payload.get("seo") or {}
+        article_block = payload.get("article") or {}
+        keyword = payload.get("keyword") or news_item.title or f"articolo-{news_id}"
+
+        title = article_block.get("h1") or seo.get("h1") or news_item.title or f"articolo-{news_id}"
+        proposed_slug, category_slug = generate_slugs(title, news_item.category or "")
+        content_markdown = sections_to_markdown(article_block.get("sections") or [])
+
+        excerpt = seo.get("meta_description")
+        summary, title_summary = await generate_summary(content_markdown)
+
+        # Tag: 10 keyword SEO via Claude (come prima della skill) + keyword
+        # della skill come primo elemento (dedup case-insensitive).
+        seo_tags = generate_seo_keywords(news_item)
+        combined_tags: list[str] = []
+        if keyword:
+            combined_tags.append(keyword)
+        seen_lower = {t.lower() for t in combined_tags}
+        for t in seo_tags:
+            if t.lower() not in seen_lower:
+                combined_tags.append(t)
+                seen_lower.add(t.lower())
+        logger.debug("tag finali (skill keyword first): {}", combined_tags)
+
+        now_iso = datetime.now(ITALY_TZ).isoformat()
+        article_row = {
+            "title": title,
+            "slug": proposed_slug,
+            "content": content_markdown,
+            "excerpt": excerpt,
+            "summary": summary,
+            "title_summary": title_summary,
+            "category": news_item.category,
+            "category_slug": category_slug,
+            "tags": combined_tags,
+            "source": news_item.url,
+            "image_url": "/edunews24_immagine_da_sostituire.png",
+            "created_at": now_iso,
+            "published_at": now_iso,
+            "isdraft": True,
+            "creator": "AI News Generator (skill)",
+            "skill_generated_at": payload.get("generated_at"),
+            "skill_livello": payload.get("livello"),
+            "skill_keyword": keyword,
+            "skill_meta_title": seo.get("meta_title"),
+            "skill_meta_description": seo.get("meta_description"),
+            "skill_angolo": payload.get("angolo"),
+            "skill_competitor_report": payload.get("competitor_report") or [],
+            "skill_factcheck_report": payload.get("factcheck_report") or [],
+            "skill_article_sections": article_block.get("sections") or [],
+            "skill_fonti": payload.get("fonti") or [],
+            "skill_validation": payload.get("validation") or {},
+            "skill_raw_payload": payload,
+        }
+
+        supabase = get_supabase_client()
+        result = supabase.table("articles").insert(article_row).execute()
+
+        if not result.data:
+            logger.error("[bg] Supabase insert senza dati per news {}", news_id)
+            return
+
+        inserted = result.data[0]
+        news_item.is_published = True
+        news_item.proposed_slug = inserted.get("slug") or proposed_slug
+        db.commit()
+        logger.info(
+            "[bg] skill article salvato: news_id={}, article_id={}, slug={}",
+            news_id, inserted.get("id"), inserted.get("slug"),
+        )
+    except Exception as e:
+        logger.exception("[bg] generazione skill fallita per news {}: {}", news_id, e)
+    finally:
+        _generating_news_ids.discard(news_id)
+        db.close()
+
+
 @app.post("/api/news/reconstruct/{news_id}")
 async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_db)):
+    """Avvia in background la generazione via skill news-angle-rewriter.
 
+    Risposta immediata 202 Accepted: la skill (5-7 min) gira in background
+    e il frontend puo' navigare altrove. L'avanzamento e' esposto dalla
+    lista pending-review tramite il campo `is_generating`.
+    """
     news_item: models.New = get_new_with_id(news_id, db)
-    article_response: schemas.NewsArticle = get_reconstructed_article_via_claude(news_item)
-    update_news_item_with_reconstruction(news_item, article_response, db)
-    return article_response
+    if news_item is None:
+        raise HTTPException(status_code=404, detail="News item not found")
+    if news_item.is_published:
+        raise HTTPException(status_code=409, detail="Article already generated")
+    if news_id in _generating_news_ids:
+        return JSONResponse(
+            status_code=202,
+            content={"status": "in_progress", "news_id": news_id},
+        )
+
+    _generating_news_ids.add(news_id)
+    asyncio.create_task(_run_skill_and_save_background(news_id))
+
+    logger.info("reconstruct: avviata skill in background per news_id={}", news_id)
+    return JSONResponse(
+        status_code=202,
+        content={"status": "accepted", "news_id": news_id},
+    )
+
 
 @app.get("/api/news/pending-review")
 async def get_pending_review_news(db: Session = Depends(get_db)):
-    """Get summarized articles that haven't been reconstructed yet"""
+    """Get summarized articles that haven't been reconstructed yet.
+
+    Il campo `is_generating` segnala che la skill e' attualmente in corso
+    per quella news (background task avviato da reconstruct_specific_article),
+    cosi' che il frontend possa disabilitare il link di modifica ed evitare
+    doppie generazioni.
+    """
     pending = db.query(models.New).filter(
         models.New.title.isnot(None),
         models.New.proposed_response.is_(None),
@@ -202,7 +556,262 @@ async def get_pending_review_news(db: Session = Depends(get_db)):
         "published_date": n.published_date,
         "date_scraped": str(n.date_scraped) if n.date_scraped else None,
         "url": n.url,
+        "is_generating": n.id in _generating_news_ids,
     } for n in pending]
+
+
+# --- Persona skill: fire-and-forget + polling --------------------------------
+# Tracciamento job in-memory: key = job_id (uuid), value = stato. Sopravvive
+# solo al processo: se il server riparte i job attivi si perdono. In edit mode
+# questo significa che l'utente dovra' rigenerare; in create mode la bozza
+# potrebbe comunque essere stata scritta su Supabase prima del restart.
+_persona_jobs: dict[str, dict] = {}
+
+
+async def _run_persona_skill_background(
+    job_id: str,
+    *,
+    url: str,
+    livello: str,
+    tono: str,
+    persona: str,
+    target: str | None,
+    interlink_urls: list[str],
+    article_id: int | None,
+    creator: str,
+    source_url: str,
+) -> None:
+    """Task di background: esegue la skill persona, salva o prepara i dati
+    per il frontend, e aggiorna lo stato del job in `_persona_jobs`.
+    """
+    try:
+        _persona_jobs[job_id]["status"] = "running"
+        skill_payload = await persona_runner.generate_article_with_persona(
+            url=url,
+            livello=livello,
+            tono=tono,
+            persona=persona,
+            target=target,
+            interlinks=interlink_urls,
+        )
+        skill_payload = _strip_em_dashes(skill_payload)
+
+        seo = skill_payload.get("seo") or {}
+        article_block = skill_payload.get("article") or {}
+        keyword = skill_payload.get("keyword") or ""
+        title = (
+            article_block.get("h1")
+            or seo.get("h1")
+            or seo.get("meta_title")
+            or keyword
+            or "Articolo senza titolo"
+        )
+        content_markdown = sections_to_markdown(article_block.get("sections") or [])
+        excerpt = seo.get("meta_description")
+
+        # Classificazione automatica della categoria (stesso pattern del
+        # flusso scraping news: GPT-4o + CLASSIFICATION_PROMPT + CategoryEnum).
+        category_name, final_category_slug = _classify_article_category(title, content_markdown)
+
+        proposed_slug, _ = generate_slugs(title, category_name)
+        try:
+            summary, title_summary = await generate_summary(content_markdown)
+        except Exception as e:
+            logger.warning("generate_summary fallita, continuo senza: {}", e)
+            summary, title_summary = None, None
+
+        seo_tags = _generate_seo_keywords_from_persona_payload(skill_payload)
+        combined_tags: list[str] = []
+        if keyword:
+            combined_tags.append(keyword)
+        seen_lower = {t.lower() for t in combined_tags}
+        for t in seo_tags:
+            if t.lower() not in seen_lower:
+                combined_tags.append(t)
+                seen_lower.add(t.lower())
+
+        skill_fields = {
+            "skill_generated_at": skill_payload.get("generated_at"),
+            "skill_livello": skill_payload.get("livello"),
+            "skill_keyword": keyword,
+            "skill_meta_title": seo.get("meta_title"),
+            "skill_meta_description": seo.get("meta_description"),
+            "skill_angolo": skill_payload.get("angolo"),
+            "skill_competitor_report": skill_payload.get("competitor_report") or [],
+            "skill_factcheck_report": skill_payload.get("factcheck_report") or [],
+            "skill_article_sections": article_block.get("sections") or [],
+            "skill_fonti": skill_payload.get("fonti") or [],
+            "skill_validation": skill_payload.get("validation") or {},
+            "skill_raw_payload": skill_payload,
+        }
+        base_fields = {
+            "title": title,
+            "excerpt": excerpt,
+            "summary": summary,
+            "title_summary": title_summary,
+            "content": content_markdown,
+            "tags": combined_tags,
+            "source": source_url or "",
+            "category": category_name,
+            "category_slug": final_category_slug,
+        }
+
+        if article_id:
+            # EDIT MODE: niente scrittura su Supabase. Il frontend popolera'
+            # il form con base_fields+skill_fields; al click "Salva" l'update
+            # endpoint persistera' tutto.
+            _persona_jobs[job_id].update({
+                "status": "done",
+                "mode": "edit",
+                "article": _map_persona_payload_to_article(skill_payload),
+                "skill_fields": skill_fields,
+                "base_fields": base_fields,
+                "articleId": article_id,
+            })
+            logger.info(
+                "persona job {} [edit] done article_id={} livello={} keyword={!r}",
+                job_id, article_id, skill_payload.get("livello"), keyword,
+            )
+            return
+
+        # CREATE MODE: insert bozza su Supabase, ritorna supabaseId/slug.
+        now_iso = datetime.now(ITALY_TZ).isoformat()
+        article_row = {
+            **base_fields,
+            "slug": proposed_slug,
+            "image_url": "/edunews24_immagine_da_sostituire.png",
+            "created_at": now_iso,
+            "published_at": now_iso,
+            "isdraft": True,
+            "creator": creator or "AI News Generator (persona)",
+            **skill_fields,
+        }
+        supabase = get_supabase_client()
+        result = supabase.table("articles").insert(article_row).execute()
+        if not result.data:
+            _persona_jobs[job_id].update({
+                "status": "failed",
+                "error": "Inserimento Supabase senza dati",
+            })
+            return
+        inserted = result.data[0]
+        _persona_jobs[job_id].update({
+            "status": "done",
+            "mode": "create",
+            "supabaseId": inserted.get("id"),
+            "slug": inserted.get("slug"),
+            "article": _map_persona_payload_to_article(skill_payload),
+            "skill_fields": skill_fields,
+            "base_fields": base_fields,
+        })
+        logger.info(
+            "persona job {} [create] done id={} slug={} livello={} keyword={!r}",
+            job_id, inserted.get("id"), inserted.get("slug"),
+            skill_payload.get("livello"), keyword,
+        )
+
+    except ValueError as e:
+        _persona_jobs[job_id].update({"status": "failed", "error": str(e)})
+        logger.warning("persona job {} fallito (ValueError): {}", job_id, e)
+    except RuntimeError as e:
+        # STEP 1.5: combinazione tono+persona bloccata
+        _persona_jobs[job_id].update({"status": "blocked", "detail": str(e)})
+        logger.info("persona job {} bloccato dallo STEP 1.5: {}", job_id, e)
+    except Exception as e:
+        logger.exception("persona job {} fallito: {}", job_id, e)
+        _persona_jobs[job_id].update({"status": "failed", "error": str(e)})
+
+
+@app.post("/api/articles/generate-with-persona")
+async def generate_article_with_persona_endpoint(payload: dict):
+    """Avvia la generazione articolo via skill persona in background.
+
+    Ritorna immediatamente 202 con jobId. Il frontend fa polling su
+    /api/articles/generation-status/{jobId} finche' lo stato non diventa
+    done/failed/blocked. Evita timeout del reverse proxy.
+    """
+    import uuid
+    prompt = (payload.get("prompt") or "").strip()
+    source_url = (payload.get("sourceUrl") or "").strip()
+    tono = (payload.get("tone") or "Neutrale").strip() or "Neutrale"
+    persona = (payload.get("persona") or "Giornalista").strip() or "Giornalista"
+    creator = (payload.get("creator") or "").strip()
+    try:
+        paragraphs = int(payload.get("paragraphs") or 3)
+        words_per_paragraph = int(payload.get("wordsPerParagraph") or 150)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "paragraphs/wordsPerParagraph devono essere numeri")
+    total_words = max(paragraphs * words_per_paragraph, 1)
+    livello = _words_to_livello(total_words)
+
+    url = source_url or prompt
+    if not url:
+        raise HTTPException(400, "Fornisci almeno 'prompt' o 'sourceUrl'")
+
+    target = prompt if source_url and prompt else None
+
+    # Interlink: generiamo 10 tag dal prompt PRIMA di chiamare la skill, cosi'
+    # `find_related_articles` puo' calcolare il 60% di score dal tag overlap
+    # (che altrimenti sarebbe zero). Questa call Claude extra costa ~2-3s ed
+    # e' determinante per ottenere interlink di qualita'.
+    prompt_tags = _generate_seo_keywords_from_prompt(prompt, source_url)
+    logger.info("persona pre-tags per interlink ({}): {}", len(prompt_tags), prompt_tags)
+    related = find_related_articles(prompt or "", prompt_tags, "")
+    site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
+    interlink_urls = [
+        f"{site_base}/{a['category_slug']}/{a['slug']}"
+        for a in related
+        if a.get("category_slug") and a.get("slug")
+    ]
+
+    article_id_raw = payload.get("articleId")
+    try:
+        article_id = int(article_id_raw) if article_id_raw not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        article_id = None
+
+    job_id = str(uuid.uuid4())
+    _persona_jobs[job_id] = {
+        "status": "pending",
+        "started_at": datetime.now(ITALY_TZ).isoformat(),
+        "mode": "edit" if article_id else "create",
+    }
+    asyncio.create_task(_run_persona_skill_background(
+        job_id,
+        url=url,
+        livello=livello,
+        tono=tono,
+        persona=persona,
+        target=target,
+        interlink_urls=interlink_urls,
+        article_id=article_id,
+        creator=creator,
+        source_url=source_url,
+    ))
+    logger.info(
+        "persona job {} avviato: mode={} article_id={} livello={} tono={} persona={}",
+        job_id, "edit" if article_id else "create",
+        article_id, livello, tono, persona,
+    )
+    return JSONResponse(
+        status_code=202,
+        content={"jobId": job_id, "status": "accepted"},
+    )
+
+
+@app.get("/api/articles/generation-status/{job_id}")
+async def get_persona_job_status(job_id: str):
+    """Stato del job di generazione persona. Pollato dal frontend.
+
+    Stati possibili: pending | running | done | blocked | failed.
+    `done`:    include supabaseId/slug (create) oppure base_fields/skill_fields (edit)
+    `blocked`: include detail (messaggio STEP 1.5 per il giornalista)
+    `failed`:  include error
+    """
+    job = _persona_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato o scaduto")
+    return job
 
 @app.get("/api/news/{news_id}")
 async def get_news_detail(news_id: int, db: Session = Depends(get_db)):
@@ -720,17 +1329,52 @@ async def generate_and_save_audio(article_id: int, text: str):
 
 @app.post("/api/news/publish/{news_id}")
 async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
-    """Publish news to CMS API"""
+    """Publish news to CMS API.
+
+    Se la bozza esiste gia' in Supabase (creata da reconstruct_specific_article
+    tramite la skill news-angle-rewriter), evita l'INSERT duplicato e avvia solo
+    la generazione audio in background. Altrimenti mantiene il flusso legacy
+    basato sui campi proposed_* della riga news SQLite.
+    """
     # Fetch the news item from database
     news_item = db.query(models.New).filter(models.New.id == news_id).first()
 
-    logger.debug("news_item = {}", news_item)
+    if not news_item:
+        raise HTTPException(status_code=404, detail="News item not found")
+
+    # Idempotenza: se reconstruct (skill) ha gia' marcato la news come pubblicata
+    # e ha generato lo slug, recupera la bozza articles via slug e salta l'INSERT.
+    if news_item.is_published and news_item.proposed_slug:
+        try:
+            supabase = get_supabase_client()
+            existing = supabase.table("articles").select(
+                "id, slug, title, content"
+            ).eq("slug", news_item.proposed_slug).limit(1).execute()
+        except Exception as e:
+            logger.warning("Idempotency lookup on articles failed: {}", e)
+            existing = None
+
+        if existing and existing.data:
+            article_row = existing.data[0]
+            article_id = article_row.get("id")
+            logger.info(
+                "publish_to_cms: bozza skill gia' presente (article_id={}, slug={}), salto INSERT",
+                article_id, article_row.get("slug"),
+            )
+            text_to_audio = (
+                f"Titolo: {article_row.get('title') or ''}\n\n"
+                f"{article_row.get('content') or ''}"
+            )
+            if article_id:
+                asyncio.create_task(generate_and_save_audio(article_id, text_to_audio))
+            return {
+                "success": True,
+                "message": "Article draft already exists from skill; audio generation scheduled.",
+                "data": {"article": article_row},
+            }
 
     logger.debug("news_item.proposed_title = {}", news_item.proposed_title)
     logger.debug("news_item.proposed_response = {}", news_item.proposed_response)
-
-    if not news_item:
-        raise HTTPException(status_code=404, detail="News item not found")
 
     try:
         text_to_audio = f"Titolo: {news_item.proposed_title}\n\n{news_item.proposed_response}"
@@ -854,6 +1498,55 @@ def generate_slugs(proposed_title: str, category: str):
     logger.debug("Category slug: {}", category_slug)
 
     return proposed_slug, category_slug
+
+
+def _render_segments(segments) -> str:
+    """Converte una lista di segmenti inline (text/bold/link) in markdown."""
+    if not segments:
+        return ""
+    parts = []
+    for seg in segments:
+        kind = (seg or {}).get("kind")
+        text = (seg or {}).get("text", "")
+        if kind == "bold":
+            parts.append(f"**{text}**")
+        elif kind == "link":
+            parts.append(f"[{text}]({(seg or {}).get('url', '')})")
+        else:
+            parts.append(text)
+    return "".join(parts)
+
+
+def sections_to_markdown(sections) -> str:
+    """Converte l'array `article.sections` della skill in markdown unificato.
+
+    Gestisce i tipi emessi da `generate_json_output._normalize_sections`:
+    paragraph (con segments), h2, h3, bullet_list, numbered_list.
+    """
+    if not sections:
+        return ""
+    out = []
+    for s in sections:
+        stype = (s or {}).get("type", "paragraph")
+        if stype == "h2":
+            out.append(f"## {s.get('text', '')}")
+        elif stype == "h3":
+            out.append(f"### {s.get('text', '')}")
+        elif stype == "paragraph":
+            out.append(_render_segments(s.get("segments")))
+        elif stype == "bullet_list":
+            for item in s.get("items") or []:
+                out.append(f"- {_render_segments(item)}")
+        elif stype == "numbered_list":
+            for idx, item in enumerate(s.get("items") or [], start=1):
+                out.append(f"{idx}. {_render_segments(item)}")
+        else:
+            # fallback: raw text se presente
+            text = s.get("text")
+            if text:
+                out.append(text if isinstance(text, str) else " ".join(text))
+    return "\n\n".join(p for p in out if p)
+
 
 def get_content_and_root_url(url: str):
     try:
@@ -1269,7 +1962,8 @@ def find_related_articles(title: str, tags: List[str], category: str) -> List[di
 
 
 def get_reconstructed_article_via_claude(news_item: models.New) -> schemas.NewsArticle:
-    """Ricostruisce un articolo usando Claude Opus 4.6 con interlinking."""
+    """DEPRECATED: sostituita da skill_runner.generate_article_for_news.
+    Ricostruisce un articolo usando Claude Opus 4.6 con interlinking."""
     if news_item is None:
         return None
     try:
@@ -1392,7 +2086,8 @@ async def generate_summary(content: str) -> str:
         return None
 
 def update_news_item_with_reconstruction(news_item: models.New, article_response: schemas.NewsArticle, db: Session) -> None:
-
+    """DEPRECATED: il flusso skill scrive direttamente su Supabase articles,
+    non aggiorna piu' i campi proposed_* sulla riga news SQLite."""
     if article_response is None:
         return None
     logger.debug("Article received: title={}, subtitle={}, content={}, tags={}", article_response.proposed_title, article_response.proposed_subtitle, article_response.proposed_content, article_response.tags)

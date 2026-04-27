@@ -35,7 +35,7 @@ INPA_API_URL = "https://portale.inpa.gov.it/concorsi-smart/api/concorso-public-a
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4321")
 
-CLAUDE_MODEL = "claude-opus-4-6"
+CLAUDE_MODEL = "claude-opus-4-7"
 
 HEADERS = {
     "Content-Type": "application/json",

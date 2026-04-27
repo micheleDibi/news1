@@ -1,0 +1,27 @@
+# Secrets — mai committare
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# Output generati
+output/
+*.json.bak
+
+# Cache Firecrawl (scrape intermedi)
+.firecrawl/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
