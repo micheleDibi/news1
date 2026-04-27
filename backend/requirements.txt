@@ -25,3 +25,4 @@ pandas
 urllib3
 Pillow
 loguru
+claude-agent-sdk
