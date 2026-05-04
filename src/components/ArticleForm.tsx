@@ -39,7 +39,7 @@ async function forceFacebookScrape(articleUrl: string) {
 }
 
 // Facebook posting function
-async function sendFacebookPost(articleUrl: string, title: string, tags: string[] = [], imageUrl?: string) {
+async function sendFacebookPost(articleUrl: string, postText: string, tags: string[] = [], imageUrl?: string) {
   const PAGE_ID = import.meta.env.PUBLIC_FACEBOOK_PAGE_ID;
   const ACCESS_TOKEN = import.meta.env.PUBLIC_FACEBOOK_ACCESS_TOKEN;
   const url = `https://graph.facebook.com/v22.0/${PAGE_ID}/feed`;
@@ -51,8 +51,7 @@ async function sendFacebookPost(articleUrl: string, title: string, tags: string[
   // Format tags into hashtags
   const hashtags = tags.map(tag => `#${tag.replace(/\s+/g, '')}`).join(' '); // Remove spaces within tags
 
-  // Simple message without the URL, adding hashtags if available
-  let message = `${title}`;
+  let message = postText;
   if (hashtags) {
     message += `\n\n${hashtags}`;
   }
@@ -1895,7 +1894,7 @@ const cancelContactForm = () => {
           });
           
           // Pass tags and image to the Facebook post function
-          const fbResponse = await sendFacebookPost(fullArticleUrl, data.title, articleData.tags, data.image_url);
+          const fbResponse = await sendFacebookPost(fullArticleUrl, data.excerpt, articleData.tags, data.image_url);
           
           if (fbResponse && fbResponse.id) {
             setFbPostStatus({
