@@ -275,9 +275,10 @@ const faqStructuredData = generateFAQStructuredData(faqItems);
 // Always strip any FAQ section already present in markdown to avoid duplication, then re-inject at the end
 let finalContent = formattedContent;
 if (faqItems.length > 0) {
-  const faqHtmlIndex = finalContent.indexOf('<h2 id="domande-frequenti"');
-  if (faqHtmlIndex !== -1) {
-    finalContent = finalContent.substring(0, faqHtmlIndex).trim();
+  // Markdown headings convert to <h3> for ## and <h2> for # — match either
+  const faqHtmlMatch = finalContent.match(/<h[23]\s+id="domande-frequenti"/i);
+  if (faqHtmlMatch && faqHtmlMatch.index !== undefined) {
+    finalContent = finalContent.substring(0, faqHtmlMatch.index).trim();
   }
 
   // Add FAQ link to TOC if present
@@ -290,9 +291,11 @@ if (faqItems.length > 0) {
     );
   }
 
-  // Append FAQ section at the end of the article content
-  const faqHtml = `\n<h2 id="domande-frequenti">Domande frequenti</h2>\n` +
-    faqItems.map(faq => `<h3>${faq.question}</h3>\n<p>${faq.answer}</p>`).join('\n');
+  // Append FAQ section at the end of the article content (matching the markdown ##/### styling)
+  const faqHtml = `\n<h3 id="domande-frequenti" class="text-xl font-bold text-gray-900 mt-6 mb-3">Domande frequenti</h3>\n` +
+    faqItems.map(faq =>
+      `<h4 class="text-lg font-semibold text-gray-900 mt-4 mb-2">${faq.question}</h4>\n<p class="text-gray-700 leading-relaxed mb-4">${faq.answer}</p>`
+    ).join('\n');
   finalContent += faqHtml;
 }
 
