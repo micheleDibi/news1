@@ -97,7 +97,8 @@ for (const item of linkinbioItems) {
       .from('articles')
       .select('id, title, slug, category, category_slug, image_url, creator')
       .eq('isdraft', false)
-      .not('video_url', 'is', null)
+      .neq('video_url', '')
+      .neq('video_url', ' ')
       .order('published_at', { ascending: false })
       .limit(item.article_count || 5);
     dynamicArticlesMap[item.id] = (data || []) as DynamicArticle[];

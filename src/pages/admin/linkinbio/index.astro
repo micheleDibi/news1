@@ -884,7 +884,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
         const { data } = await supabase.from('articles').select('id, title, slug, category, category_slug, creator').eq('category_slug', item.category_slug).eq('isdraft', false).order('published_at', { ascending: false }).limit(item.article_count || 3);
         previewDynArticles[item.id] = data || [];
       } else if (item.type === 'video') {
-        const { data } = await supabase.from('articles').select('id, title, slug, category, category_slug, creator').eq('isdraft', false).not('video_url', 'is', null).order('published_at', { ascending: false }).limit(item.article_count || 5);
+        const { data } = await supabase.from('articles').select('id, title, slug, category, category_slug, creator').eq('isdraft', false).neq('video_url', '').neq('video_url', ' ').order('published_at', { ascending: false }).limit(item.article_count || 5);
         previewDynArticles[item.id] = data || [];
       }
     }
