@@ -272,16 +272,15 @@ if (article.faqs && Array.isArray(article.faqs) && article.faqs.length > 0) {
 
 const faqStructuredData = generateFAQStructuredData(faqItems);
 
-// If FAQ items came from markdown fallback, strip the FAQ section from rendered content to avoid duplication
+// Always strip any FAQ section already present in markdown to avoid duplication, then re-inject at the end
 let finalContent = formattedContent;
-if (faqItems.length > 0 && !(article.faqs && Array.isArray(article.faqs) && article.faqs.length > 0)) {
+if (faqItems.length > 0) {
   const faqHtmlIndex = finalContent.indexOf('<h2 id="domande-frequenti"');
   if (faqHtmlIndex !== -1) {
     finalContent = finalContent.substring(0, faqHtmlIndex).trim();
   }
-}
-if (faqItems.length > 0) {
-  // Find the last </li></ul> of the TOC (first <ul> block containing anchor links)
+
+  // Add FAQ link to TOC if present
   const tocEndPattern = /(<li><a\s+href="#[^"]*"[^>]*>[^<]*<\/a><\/li>)\s*(<\/ul>)/;
   const tocMatch = finalContent.match(tocEndPattern);
   if (tocMatch) {
@@ -290,6 +289,11 @@ if (faqItems.length > 0) {
       `$1\n<li><a href="#domande-frequenti" class="text-primary hover:underline">Domande frequenti</a></li>\n$2`
     );
   }
+
+  // Append FAQ section at the end of the article content
+  const faqHtml = `\n<h2 id="domande-frequenti">Domande frequenti</h2>\n` +
+    faqItems.map(faq => `<h3>${faq.question}</h3>\n<p>${faq.answer}</p>`).join('\n');
+  finalContent += faqHtml;
 }
 
 // Helper function to generate srcset URLs
@@ -454,21 +458,6 @@ const metaDescription = truncateAtDot(article.excerpt || '', 160);
               </div>
             </div>
           </article>
-
-          {/* FAQ Section - below article */}
-          {faqItems.length > 0 && (
-            <section class="bg-white rounded-lg shadow-sm p-6 md:p-8">
-              <h2 id="domande-frequenti" class="text-2xl font-bold text-gray-900 mb-6">Domande frequenti</h2>
-              <div class="space-y-6">
-                {faqItems.map((faq) => (
-                  <div class="faq-item">
-                    <h3 class="text-lg font-semibold text-gray-900 mb-2">{faq.question}</h3>
-                    <p class="text-gray-700 leading-relaxed">{faq.answer}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
 
           {creatorProfile && (
             <section class="w-full bg-sport-50 rounded-lg shadow-md p-6 flex items-center gap-6 mb-8">
