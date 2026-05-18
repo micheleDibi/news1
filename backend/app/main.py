@@ -3184,5 +3184,16 @@ async def reconstruct_first_article(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Error during reconstruction: {str(e)}")
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    # reload_dirs limitato ad "app": evita che uvicorn rilevi i file temporanei
+    # scritti dalla skill in `backend/skill/scripts/_gen_*.py` durante la
+    # generazione (Claude Agent SDK), che causerebbero un reload del backend
+    # killando tutte le generazioni asyncio in volo (autosabotaggio).
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_dirs=["app"],
+        reload_excludes=["**/_gen_*.py", "**/skill/**"],
+    )
 
