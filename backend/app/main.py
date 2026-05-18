@@ -206,6 +206,10 @@ async def summarize_news(db: Session = Depends(get_db)):
 # Supabase (via `articles.reconstruct_news_id`) ed eventualmente lo collega
 # senza duplicati. Stale threshold: la skill dura 5-7 min, soglia 20 min.
 RECONSTRUCT_STALE_MINUTES = 20
+# Timeout massimo per la skill: oltre questo il task viene cancellato e la
+# news torna disponibile con un errore esplicito. La skill dura tipicamente
+# 5-7 min, 15 da' margine 2x per API esterne (Firecrawl/Claude) lente.
+SKILL_TIMEOUT_SECONDS = 900
 
 
 def _is_news_generating(news: models.New) -> bool:
@@ -248,11 +252,40 @@ def _clear_news_generating(news_id: int, db: Session | None = None, error: str |
             db.close()
 
 
-def _recover_stale_reconstructs(pending_list: list[models.New], db: Session) -> None:
-    """Per ogni news con generation_started_at stale e is_published=False, cerca
-    su Supabase la bozza eventualmente gia' creata e marca la news pubblicata.
-    Altrimenti resetta lo stato di generazione con un messaggio di errore.
+def _try_recover_single_news(news: models.New, supabase, *, label: str) -> None:
+    """Tenta recovery per una singola news con generation_started_at non-NULL.
 
+    Se esiste una bozza Supabase con reconstruct_news_id=news.id la collega;
+    altrimenti resetta lo stato con un messaggio di errore. Resetta sempre lo
+    stato (anche su eccezione) per evitare stuck loop. `label` distingue i log
+    ("startup" vs "stale-poll").
+    """
+    try:
+        art = supabase.table("articles") \
+            .select("id,slug").eq("reconstruct_news_id", news.id).limit(1).execute()
+        if art.data:
+            news.is_published = True
+            news.proposed_slug = art.data[0].get("slug") or news.proposed_slug
+            news.generation_started_at = None
+            news.generation_error = None
+            logger.info(
+                "{} recovery: news_id={} collegata a article_id={}",
+                label, news.id, art.data[0]["id"],
+            )
+            return
+        news.generation_started_at = None
+        news.generation_error = "Generazione interrotta (backend riavviato o task terminato). Rilancia per riprovare."
+        logger.warning("{} recovery: news_id={} reset senza articolo", label, news.id)
+    except Exception as e:
+        # Reset comunque: evita stuck infinito se la query Supabase fallisce.
+        logger.exception("{} recovery: news_id={} eccezione nel recovery: {}", label, news.id, e)
+        news.generation_started_at = None
+        news.generation_error = f"Recovery fallito: {str(e)[:300]}"
+
+
+def _recover_stale_reconstructs(pending_list: list[models.New], db: Session) -> None:
+    """Per ogni news con generation_started_at stale e is_published=False,
+    applica la strategia di recovery (vedi _try_recover_single_news).
     Idempotente: chiamabile a ogni GET pending-review.
     """
     stale = [
@@ -269,25 +302,37 @@ def _recover_stale_reconstructs(pending_list: list[models.New], db: Session) -> 
         logger.warning("recover stale: supabase non disponibile: {}", e)
         return
     for n in stale:
-        try:
-            art = supabase.table("articles") \
-                .select("id,slug").eq("reconstruct_news_id", n.id).limit(1).execute()
-            if art.data:
-                n.is_published = True
-                n.proposed_slug = art.data[0].get("slug") or n.proposed_slug
-                n.generation_started_at = None
-                n.generation_error = None
-                logger.info(
-                    "reconstruct recuperato post-crash: news_id={} article_id={}",
-                    n.id, art.data[0]["id"],
-                )
-            else:
-                n.generation_started_at = None
-                n.generation_error = "Server riavviato durante la generazione. Riprova."
-                logger.warning("reconstruct stale senza articolo, reset news_id={}", n.id)
-        except Exception as e:
-            logger.warning("recovery stale news_id={} fallito: {}", n.id, e)
+        _try_recover_single_news(n, supabase, label="stale-poll")
     db.commit()
+
+
+@app.on_event("startup")
+async def _recover_orphaned_generations_on_startup() -> None:
+    """Al boot: tutti i task asyncio del processo precedente sono morti, ma
+    `news.generation_started_at` puo' essere ancora valorizzato. Quelle news
+    sono orphan e vanno recuperate subito, senza aspettare i 20 min di stale
+    detection. Strategia stessa di _recover_stale_reconstructs ma applicata
+    indistintamente a tutte le news con `generation_started_at IS NOT NULL`.
+    """
+    db = database.SessionLocal()
+    try:
+        orphans = db.query(models.New) \
+            .filter(models.New.generation_started_at.isnot(None)).all()
+        if not orphans:
+            logger.info("startup recovery: nessun orphan da recuperare")
+            return
+        logger.warning("startup recovery: {} news orphan da recuperare", len(orphans))
+        try:
+            supabase = get_supabase_client()
+        except Exception as e:
+            logger.error("startup recovery: supabase non raggiungibile, skip: {}", e)
+            return
+        for n in orphans:
+            _try_recover_single_news(n, supabase, label="startup")
+        db.commit()
+        logger.info("startup recovery: completata")
+    finally:
+        db.close()
 
 
 def _strip_em_dashes(value):
@@ -505,7 +550,12 @@ async def _run_skill_and_save_background(news_id: int) -> None:
     Non bloccha la risposta HTTP del client: il frontend puo' navigare altrove
     mentre la skill (5-7 min) completa lato server. Al termine la riga news
     viene marcata is_published=True cosi' sparisce da "Da generare".
+
+    La skill e' wrappata in `asyncio.wait_for(timeout=SKILL_TIMEOUT_SECONDS)`
+    per evitare freeze indefiniti su API esterne. CancelledError (shutdown
+    del backend) e TimeoutError sono gestiti esplicitamente.
     """
+    logger.info("[bg] start news_id={}", news_id)
     db = database.SessionLocal()
     try:
         news_item = db.query(models.New).filter(models.New.id == news_id).first()
@@ -529,8 +579,13 @@ async def _run_skill_and_save_background(news_id: int) -> None:
             for a in related
             if a.get("category_slug") and a.get("slug")
         ]
+        logger.info("[bg] news_id={} interlinks calcolati: {} urls", news_id, len(interlink_urls))
 
-        payload = await skill_runner.generate_article_for_news(news_item, interlink_urls)
+        payload = await asyncio.wait_for(
+            skill_runner.generate_article_for_news(news_item, interlink_urls),
+            timeout=SKILL_TIMEOUT_SECONDS,
+        )
+        logger.info("[bg] news_id={} skill completata, processo payload", news_id)
         # Safety net: rimuovi em-dash dall'intero payload prima del mapping su articles.
         payload = _strip_em_dashes(payload)
 
@@ -594,6 +649,7 @@ async def _run_skill_and_save_background(news_id: int) -> None:
             "skill_raw_payload": payload,
         }
 
+        logger.info("[bg] news_id={} INSERT articolo in corso", news_id)
         supabase = get_supabase_client()
         result = supabase.table("articles").insert(article_row).execute()
 
@@ -614,6 +670,25 @@ async def _run_skill_and_save_background(news_id: int) -> None:
             "[bg] skill article salvato: news_id={}, article_id={}, slug={}",
             news_id, inserted.get("id"), inserted.get("slug"),
         )
+    except asyncio.CancelledError:
+        # Task cancellato (shutdown del backend o cancel programmatico).
+        # Reset stato e ri-raise: asyncio si aspetta che il task propaghi
+        # CancelledError per uno shutdown pulito.
+        logger.warning("[bg] task news_id={} cancellato (shutdown?), reset stato", news_id)
+        try:
+            _clear_news_generating(news_id, db=None, error="Task interrotto (shutdown del backend)")
+        except Exception:
+            pass
+        raise
+    except asyncio.TimeoutError:
+        logger.error("[bg] skill timeout per news {} dopo {}s", news_id, SKILL_TIMEOUT_SECONDS)
+        try:
+            _clear_news_generating(
+                news_id, db=None,
+                error=f"Skill in timeout dopo {SKILL_TIMEOUT_SECONDS // 60} minuti. Probabile freeze API esterna (Firecrawl/Claude).",
+            )
+        except Exception:
+            pass
     except Exception as e:
         logger.exception("[bg] generazione skill fallita per news {}: {}", news_id, e)
         # Session passata in stato indeterminato dopo l'eccezione: usiamo una
@@ -653,6 +728,69 @@ async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_d
         status_code=202,
         content={"status": "accepted", "news_id": news_id},
     )
+
+
+@app.post("/api/news/{news_id}/reset-generation")
+async def reset_news_generation(news_id: int, db: Session = Depends(get_db)):
+    """Reset manuale dello stato di generazione per una news.
+
+    Use case: l'utente vede una news 'IN GENERAZIONE' stuck (task asyncio morto
+    col backend) e non vuole aspettare i 20 min di stale detection. Resetta
+    generation_started_at e popola generation_error.
+    """
+    news = db.query(models.New).filter(models.New.id == news_id).first()
+    if news is None:
+        raise HTTPException(status_code=404, detail="News non trovata")
+    if news.generation_started_at is None:
+        return {"news_id": news_id, "status": "noop"}
+    news.generation_started_at = None
+    news.generation_error = "Reset manuale dell'utente"
+    db.commit()
+    logger.info("reset manuale generazione news_id={}", news_id)
+    return {"news_id": news_id, "status": "reset"}
+
+
+@app.get("/api/news/{news_id}/generation-info")
+async def get_news_generation_info(news_id: int, db: Session = Depends(get_db)):
+    """Diagnostic: stato completo della generazione per una news.
+
+    Espone tutto cio' che serve per capire perche' una news e' bloccata:
+    timestamps, error, stato di pubblicazione, e ricerca cross su Supabase
+    per articoli con reconstruct_news_id matching.
+    """
+    news = db.query(models.New).filter(models.New.id == news_id).first()
+    if news is None:
+        raise HTTPException(status_code=404, detail="News non trovata")
+    started = news.generation_started_at
+    seconds_elapsed = None
+    is_stale = False
+    if started is not None:
+        started_aware = started if started.tzinfo else ITALY_TZ.localize(started)
+        delta = datetime.now(ITALY_TZ) - started_aware
+        seconds_elapsed = int(delta.total_seconds())
+        is_stale = delta >= timedelta(minutes=RECONSTRUCT_STALE_MINUTES)
+    matching: list[dict] = []
+    try:
+        res = get_supabase_client().table("articles") \
+            .select("id,slug,isdraft,created_at") \
+            .eq("reconstruct_news_id", news_id).execute()
+        matching = res.data or []
+    except Exception as e:
+        matching = [{"error": str(e)[:300]}]
+    return {
+        "news_id": news_id,
+        "title": news.title,
+        "is_published": news.is_published,
+        "generation_started_at": started.isoformat() if started else None,
+        "generation_error": news.generation_error,
+        "seconds_since_start": seconds_elapsed,
+        "is_stale": is_stale,
+        "is_generating": _is_news_generating(news),
+        "proposed_slug": news.proposed_slug,
+        "supabase_articles_matching": matching,
+        "stale_threshold_minutes": RECONSTRUCT_STALE_MINUTES,
+        "skill_timeout_seconds": SKILL_TIMEOUT_SECONDS,
+    }
 
 
 @app.get("/api/news/pending-review")

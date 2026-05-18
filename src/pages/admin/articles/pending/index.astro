@@ -186,7 +186,8 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
         const dateStr = item.date_scraped ? new Date(item.date_scraped).toLocaleDateString('it-IT') : '';
 
         // Stato "in generazione": link disabilitato, barra indeterminata,
-        // nessun bottone di modifica o scarto (per evitare race con il BG task).
+        // pulsante "Annulla generazione" per forzare reset senza aspettare i
+        // 20 min di stale detection (utile dopo restart backend).
         if (isGenerating) {
           return `
             <li class="px-4 py-4 sm:px-6 bg-indigo-50/40 border-l-4 border-indigo-400">
@@ -211,6 +212,11 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
                     ${item.url ? `<a href="${item.url}" target="_blank" rel="noopener noreferrer" class="text-xs text-gray-500 hover:text-indigo-600 flex items-center gap-1"><svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>${hostname}</a>` : ''}
                     <span class="text-xs text-gray-400">${dateStr}</span>
                     <span class="text-[11px] text-gray-400 italic">La skill sta lavorando... tempo tipico 5-7 minuti.</span>
+                    <button
+                      data-news-id="${item.id}"
+                      class="reset-gen-btn ml-auto inline-flex items-center px-2 py-1 text-xs font-medium text-red-700 hover:text-white hover:bg-red-600 border border-red-300 rounded transition-colors"
+                      title="Forza reset dello stato (utile se il backend e' stato riavviato)"
+                    >Annulla generazione</button>
                   </div>
                 </div>
               </div>
@@ -224,11 +230,18 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
             <a href="${editHref}" class="block flex-1 min-w-0">
               <p class="text-sm font-medium text-primary truncate">${item.title || 'Senza titolo'}</p>
               <p class="mt-1 text-sm text-gray-500 line-clamp-1">${facts}</p>
+              ${item.generation_error ? `
+                <p class="mt-1 text-sm text-red-600 flex items-start gap-1.5">
+                  <svg class="h-4 w-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                  </svg>
+                  <span><strong>Generazione fallita:</strong> ${String(item.generation_error).replace(/</g, '&lt;')}</span>
+                </p>
+              ` : ''}
               <div class="mt-1 flex items-center gap-3 flex-wrap">
                 ${item.category ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">${item.category}</span>` : ''}
                 ${item.url ? `<a href="${item.url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="text-xs text-gray-500 hover:text-indigo-600 flex items-center gap-1"><svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>${hostname}</a>` : ''}
                 <span class="text-xs text-gray-400">${dateStr}</span>
-                ${item.generation_error ? `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800" title="${String(item.generation_error).replace(/"/g, '&quot;')}">Generazione precedente fallita</span>` : ''}
               </div>
             </a>
             <a
@@ -254,6 +267,7 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
       }).join('');
 
       setupDiscardButtons();
+      setupResetGenerationButtons();
     }
 
     // Update pagination
@@ -288,6 +302,28 @@ Astro.response.headers.set('Surrogate-Control', 'no-store');
           }
         } catch (err) {
           console.error('Error discarding article:', err);
+        }
+      });
+    });
+  }
+
+  function setupResetGenerationButtons() {
+    document.querySelectorAll('.reset-gen-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const newsId = (e.currentTarget as HTMLElement).dataset.newsId;
+        if (!newsId || !confirm("Annullare la generazione in corso? La news tornera' disponibile per una nuova generazione.")) return;
+        try {
+          const res = await fetch(`/api/news/${newsId}/reset-generation`, { method: 'POST' });
+          if (res.ok) {
+            await loadPendingArticles(true);
+          } else {
+            alert('Errore durante il reset. Riprova.');
+          }
+        } catch (err) {
+          console.error('Error resetting generation:', err);
+          alert('Errore di rete durante il reset.');
         }
       });
     });
