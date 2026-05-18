@@ -561,11 +561,97 @@ async def get_pending_review_news(db: Session = Depends(get_db)):
 
 
 # --- Persona skill: fire-and-forget + polling --------------------------------
-# Tracciamento job in-memory: key = job_id (uuid), value = stato. Sopravvive
-# solo al processo: se il server riparte i job attivi si perdono. In edit mode
-# questo significa che l'utente dovra' rigenerare; in create mode la bozza
-# potrebbe comunque essere stata scritta su Supabase prima del restart.
-_persona_jobs: dict[str, dict] = {}
+# Tracciamento job persistito su Supabase (tabella `persona_jobs`).
+# Schema: backend/sql/persona_jobs.sql
+# - Il job sopravvive ai restart del backend.
+# - Se il backend muore durante un task asyncio in volo, il job resta in stato
+#   `running` con `updated_at` vecchio: `_mark_stale_if_needed` lo marca
+#   `failed` dopo PERSONA_JOB_STALE_MINUTES e, in CREATE mode, prova a
+#   recuperare la bozza eventualmente gia' scritta su `articles` tramite
+#   `articles.persona_job_id`.
+PERSONA_JOB_STALE_MINUTES = 20
+PERSONA_JOB_TTL_HOURS = 24
+_persona_cleanup_done_at: datetime | None = None
+
+
+def _persona_jobs_table():
+    return get_supabase_client().table("persona_jobs")
+
+
+def _create_job(job_id: str, *, mode: str, creator: str) -> None:
+    now = datetime.now(ITALY_TZ).isoformat()
+    _persona_jobs_table().insert({
+        "job_id": job_id,
+        "status": "pending",
+        "mode": mode,
+        "creator": creator,
+        "started_at": now,
+        "updated_at": now,
+    }).execute()
+
+
+def _update_job(job_id: str, fields: dict) -> None:
+    fields = {**fields, "updated_at": datetime.now(ITALY_TZ).isoformat()}
+    try:
+        _persona_jobs_table().update(fields).eq("job_id", job_id).execute()
+    except Exception as e:
+        logger.warning("persona_jobs UPDATE fallita per {}: {}", job_id, e)
+
+
+def _load_job(job_id: str) -> dict | None:
+    res = _persona_jobs_table().select("*").eq("job_id", job_id).limit(1).execute()
+    return res.data[0] if res.data else None
+
+
+def _mark_stale_if_needed(job: dict) -> dict:
+    if job["status"] not in ("pending", "running"):
+        return job
+    updated = datetime.fromisoformat(job["updated_at"])
+    # Confronto timezone-safe: se updated_at e' naive lo trattiamo come ITALY_TZ.
+    if updated.tzinfo is None:
+        updated = ITALY_TZ.localize(updated)
+    if datetime.now(ITALY_TZ) - updated < timedelta(minutes=PERSONA_JOB_STALE_MINUTES):
+        return job
+    # Recovery anti-race: in CREATE mode la bozza potrebbe gia' essere su DB
+    # (INSERT riuscita ma UPDATE del job interrotta dal crash).
+    if job["mode"] == "create":
+        art = get_supabase_client().table("articles") \
+            .select("id,slug").eq("persona_job_id", job["job_id"]).limit(1).execute()
+        if art.data:
+            _update_job(job["job_id"], {
+                "status": "done",
+                "supabase_article_id": art.data[0]["id"],
+                "slug": art.data[0]["slug"],
+            })
+            logger.info(
+                "persona job {} recuperato post-crash via persona_job_id={}",
+                job["job_id"], art.data[0]["id"],
+            )
+            return _load_job(job["job_id"]) or job
+    _update_job(job["job_id"], {
+        "status": "failed",
+        "error": "Server riavviato durante la generazione. Controlla la lista bozze: l'articolo potrebbe essere stato salvato.",
+    })
+    logger.warning(
+        "persona job {} marcato stale (updated_at={})",
+        job["job_id"], job["updated_at"],
+    )
+    return _load_job(job["job_id"]) or job
+
+
+def _cleanup_stale_jobs() -> None:
+    """Cleanup opportunistico: rimuove job con updated_at > TTL_HOURS.
+    Triggerato dal polling, al massimo 1 volta/ora per processo."""
+    global _persona_cleanup_done_at
+    now = datetime.now(ITALY_TZ)
+    if _persona_cleanup_done_at and (now - _persona_cleanup_done_at) < timedelta(hours=1):
+        return
+    cutoff = (now - timedelta(hours=PERSONA_JOB_TTL_HOURS)).isoformat()
+    try:
+        _persona_jobs_table().delete().lt("updated_at", cutoff).execute()
+        _persona_cleanup_done_at = now
+    except Exception as e:
+        logger.warning("persona_jobs cleanup fallito: {}", e)
 
 
 async def _run_persona_skill_background(
@@ -582,10 +668,10 @@ async def _run_persona_skill_background(
     source_url: str,
 ) -> None:
     """Task di background: esegue la skill persona, salva o prepara i dati
-    per il frontend, e aggiorna lo stato del job in `_persona_jobs`.
+    per il frontend, e aggiorna lo stato del job nella tabella `persona_jobs`.
     """
     try:
-        _persona_jobs[job_id]["status"] = "running"
+        _update_job(job_id, {"status": "running"})
         skill_payload = await persona_runner.generate_article_with_persona(
             url=url,
             livello=livello,
@@ -660,13 +746,15 @@ async def _run_persona_skill_background(
             # EDIT MODE: niente scrittura su Supabase. Il frontend popolera'
             # il form con base_fields+skill_fields; al click "Salva" l'update
             # endpoint persistera' tutto.
-            _persona_jobs[job_id].update({
+            _update_job(job_id, {
                 "status": "done",
                 "mode": "edit",
-                "article": _map_persona_payload_to_article(skill_payload),
-                "skill_fields": skill_fields,
-                "base_fields": base_fields,
-                "articleId": article_id,
+                "article_id": article_id,
+                "payload": {
+                    "article": _map_persona_payload_to_article(skill_payload),
+                    "skill_fields": skill_fields,
+                    "base_fields": base_fields,
+                },
             })
             logger.info(
                 "persona job {} [edit] done article_id={} livello={} keyword={!r}",
@@ -679,6 +767,10 @@ async def _run_persona_skill_background(
         article_row = {
             **base_fields,
             "slug": proposed_slug,
+            # persona_job_id abilita il recovery anti-race in
+            # _mark_stale_if_needed: se il backend muore tra l'INSERT e
+            # l'UPDATE del job, il prossimo polling ritrova la bozza qui.
+            "persona_job_id": job_id,
             "image_url": "/edunews24_immagine_da_sostituire.png",
             "created_at": now_iso,
             "published_at": now_iso,
@@ -689,20 +781,22 @@ async def _run_persona_skill_background(
         supabase = get_supabase_client()
         result = supabase.table("articles").insert(article_row).execute()
         if not result.data:
-            _persona_jobs[job_id].update({
+            _update_job(job_id, {
                 "status": "failed",
                 "error": "Inserimento Supabase senza dati",
             })
             return
         inserted = result.data[0]
-        _persona_jobs[job_id].update({
+        _update_job(job_id, {
             "status": "done",
             "mode": "create",
-            "supabaseId": inserted.get("id"),
+            "supabase_article_id": inserted.get("id"),
             "slug": inserted.get("slug"),
-            "article": _map_persona_payload_to_article(skill_payload),
-            "skill_fields": skill_fields,
-            "base_fields": base_fields,
+            "payload": {
+                "article": _map_persona_payload_to_article(skill_payload),
+                "skill_fields": skill_fields,
+                "base_fields": base_fields,
+            },
         })
         logger.info(
             "persona job {} [create] done id={} slug={} livello={} keyword={!r}",
@@ -711,15 +805,15 @@ async def _run_persona_skill_background(
         )
 
     except ValueError as e:
-        _persona_jobs[job_id].update({"status": "failed", "error": str(e)})
+        _update_job(job_id, {"status": "failed", "error": str(e)})
         logger.warning("persona job {} fallito (ValueError): {}", job_id, e)
     except RuntimeError as e:
         # STEP 1.5: combinazione tono+persona bloccata
-        _persona_jobs[job_id].update({"status": "blocked", "detail": str(e)})
+        _update_job(job_id, {"status": "blocked", "detail": str(e)})
         logger.info("persona job {} bloccato dallo STEP 1.5: {}", job_id, e)
     except Exception as e:
         logger.exception("persona job {} fallito: {}", job_id, e)
-        _persona_jobs[job_id].update({"status": "failed", "error": str(e)})
+        _update_job(job_id, {"status": "failed", "error": str(e)})
 
 
 @app.post("/api/articles/generate-with-persona")
@@ -771,11 +865,7 @@ async def generate_article_with_persona_endpoint(payload: dict):
         article_id = None
 
     job_id = str(uuid.uuid4())
-    _persona_jobs[job_id] = {
-        "status": "pending",
-        "started_at": datetime.now(ITALY_TZ).isoformat(),
-        "mode": "edit" if article_id else "create",
-    }
+    _create_job(job_id, mode="edit" if article_id else "create", creator=creator)
     asyncio.create_task(_run_persona_skill_background(
         job_id,
         url=url,
@@ -808,10 +898,27 @@ async def get_persona_job_status(job_id: str):
     `blocked`: include detail (messaggio STEP 1.5 per il giornalista)
     `failed`:  include error
     """
-    job = _persona_jobs.get(job_id)
+    _cleanup_stale_jobs()
+    job = _load_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job non trovato o scaduto")
-    return job
+    job = _mark_stale_if_needed(job)
+    payload = job.get("payload") or {}
+    # Reshape per compatibilita' API frontend: stesse chiavi della versione
+    # in-memory precedente (supabaseId/articleId/article/skill_fields/base_fields).
+    return {
+        "status": job["status"],
+        "mode": job["mode"],
+        "started_at": job.get("started_at"),
+        "supabaseId": job.get("supabase_article_id"),
+        "slug": job.get("slug"),
+        "articleId": job.get("article_id"),
+        "article": payload.get("article"),
+        "skill_fields": payload.get("skill_fields"),
+        "base_fields": payload.get("base_fields"),
+        "error": job.get("error"),
+        "detail": job.get("detail"),
+    }
 
 @app.get("/api/news/{news_id}")
 async def get_news_detail(news_id: int, db: Session = Depends(get_db)):

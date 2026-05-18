@@ -2211,7 +2211,21 @@ const cancelContactForm = () => {
         const res = await fetch(`/api/articles/generation-status/${jobId}`, {
           method: 'GET',
           headers: { 'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}` },
+          cache: 'no-store',
         });
+        // 404: job non trovato/scaduto (backend riavviato, TTL, job_id errato).
+        // Stop immediato: continuare per 15 min sarebbe inutile e genera log spam.
+        if (res.status === 404) {
+          return {
+            status: 'failed',
+            error: "Job non trovato (probabile riavvio del server). Controlla la lista bozze recenti: l'articolo potrebbe essere stato salvato comunque.",
+          };
+        }
+        // 5xx: errore transitorio (proxy/backend temporaneamente giu'), riprova
+        if (res.status >= 500) continue;
+        if (!res.ok) {
+          return { status: 'failed', error: `Errore polling (HTTP ${res.status})` };
+        }
         const text = await res.text();
         let data: any = null;
         try { data = text ? JSON.parse(text) : null; } catch { /* ignora: transiente */ }
