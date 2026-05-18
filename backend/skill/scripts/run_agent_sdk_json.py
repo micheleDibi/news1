@@ -76,10 +76,23 @@ OUTPUT FINALE OBBLIGATORIO: JSON scritto nel path ESATTO seguente.
 
     OUTPUT_PATH = {output_path}
 
+REGOLA CRITICA - FILESYSTEM:
+QUALSIASI file ausiliario che generi (script Python helper, JSON intermedi,
+file di build, dump temporanei) DEVE essere scritto ESCLUSIVAMENTE nella
+directory `/tmp/`, MAI dentro la working directory o sottocartelle della skill.
+Esempio CORRETTO:
+    Write file_path="/tmp/_gen_articolo_xyz.py" content="..."
+    Bash command="python /tmp/_gen_articolo_xyz.py"
+Esempio VIETATO (causa restart del backend in dev e sporca il codebase):
+    Write file_path="scripts/_gen_xyz.py"
+    Write file_path="/root/news1/backend/skill/scripts/_gen_xyz.py"
+L'unica eccezione e' l'OUTPUT_PATH del JSON finale (gia' in /tmp/).
+
 Usa SEMPRE `scripts/generate_json_output.py::create_seo_article_json`
 come unico formato di output. Non generare DOCX, Markdown o testo libero.
 
-Esegui lo script tramite il tool Bash, ad esempio:
+Per la maggior parte dei casi preferisci la chiamata inline via Bash + python -c
+(evita di scrivere file). Esempio:
 
     python -c "
     import sys; sys.path.insert(0, 'scripts')
@@ -99,6 +112,9 @@ Esegui lo script tramite il tool Bash, ad esempio:
         output_path='{output_path}'
     )
     "
+
+Se il payload e' troppo grande per python -c, scrivi lo script helper SOLO in
+/tmp/ (vedi REGOLA CRITICA - FILESYSTEM sopra), poi eseguilo con `python /tmp/...`.
 
 SCRAPING OBBLIGATORIO VIA FIRECRAWL: il comando shell `firecrawl scrape`
 NON esiste nel sistema. Per leggere l'URL della notizia (Step 1 di SKILL.md)
