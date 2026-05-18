@@ -40,6 +40,29 @@ class ExtractSchema(BaseModel):
 load_dotenv()
 
 models.Base.metadata.create_all(bind=engine)
+
+
+def _ensure_news_generation_columns() -> None:
+    """Aggiunge colonne di tracking generazione skill se mancano su `news`.
+
+    SQLite non ha ADD COLUMN IF NOT EXISTS, quindi check via PRAGMA. Lanciato
+    all'avvio: idempotente, no-op se le colonne ci sono gia'.
+    """
+    try:
+        with engine.connect() as conn:
+            cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(news)").fetchall()}
+            if "generation_started_at" not in cols:
+                conn.exec_driver_sql("ALTER TABLE news ADD COLUMN generation_started_at TIMESTAMP")
+            if "generation_error" not in cols:
+                conn.exec_driver_sql("ALTER TABLE news ADD COLUMN generation_error VARCHAR")
+            conn.commit()
+    except Exception as e:
+        # Log via print: il logger viene importato piu' sotto, qui potrebbe non
+        # essere ancora configurato.
+        print(f"[startup] _ensure_news_generation_columns fallito: {e}")
+
+
+_ensure_news_generation_columns()
 FIRECRAWL_API_KEY_EXTRACT = os.getenv("FIRECRAWL_API_KEY")
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -175,10 +198,96 @@ async def summarize_news(db: Session = Depends(get_db)):
         "summarized_urls": summarized_urls  # Return the URLs with their IDs
     }
 
-# Set di news_id attualmente in generazione (skill in background).
-# In-memory: si resetta al riavvio uvicorn (accettabile: la riga news resta con
-# is_published=False e riappare in "Da generare", l'utente puo' rilanciare).
-_generating_news_ids: set[int] = set()
+# Tracking generazione skill di reconstruct (sezione "Articoli da Generare").
+# Persistito su `news.generation_started_at` (vedi models.py): sopravvive ai
+# restart del backend. Se il task asyncio muore con il processo, la news resta
+# con `generation_started_at` non-NULL; al prossimo polling di pending-review
+# la `_recover_stale_reconstructs` controlla se l'articolo e' stato salvato su
+# Supabase (via `articles.reconstruct_news_id`) ed eventualmente lo collega
+# senza duplicati. Stale threshold: la skill dura 5-7 min, soglia 20 min.
+RECONSTRUCT_STALE_MINUTES = 20
+
+
+def _is_news_generating(news: models.New) -> bool:
+    """True se la news ha una generazione in corso e non e' stale."""
+    started = news.generation_started_at
+    if started is None:
+        return False
+    # SQLite restituisce DateTime naive: lo trattiamo come ITALY_TZ.
+    if started.tzinfo is None:
+        started = ITALY_TZ.localize(started)
+    return datetime.now(ITALY_TZ) - started < timedelta(minutes=RECONSTRUCT_STALE_MINUTES)
+
+
+def _mark_news_generating(news_id: int, db: Session) -> None:
+    news = db.query(models.New).filter(models.New.id == news_id).first()
+    if news is None:
+        return
+    news.generation_started_at = datetime.now(ITALY_TZ).replace(tzinfo=None)
+    news.generation_error = None
+    db.commit()
+
+
+def _clear_news_generating(news_id: int, db: Session | None = None, error: str | None = None) -> None:
+    """Resetta lo stato di generazione. Se `db=None` apre una session propria:
+    utile nei branch except dove la session passata potrebbe essere in stato
+    di rollback richiesto."""
+    own_session = db is None
+    if own_session:
+        db = database.SessionLocal()
+    try:
+        news = db.query(models.New).filter(models.New.id == news_id).first()
+        if news is None:
+            return
+        news.generation_started_at = None
+        if error is not None:
+            news.generation_error = error
+        db.commit()
+    finally:
+        if own_session:
+            db.close()
+
+
+def _recover_stale_reconstructs(pending_list: list[models.New], db: Session) -> None:
+    """Per ogni news con generation_started_at stale e is_published=False, cerca
+    su Supabase la bozza eventualmente gia' creata e marca la news pubblicata.
+    Altrimenti resetta lo stato di generazione con un messaggio di errore.
+
+    Idempotente: chiamabile a ogni GET pending-review.
+    """
+    stale = [
+        n for n in pending_list
+        if n.generation_started_at is not None
+        and not _is_news_generating(n)
+        and not n.is_published
+    ]
+    if not stale:
+        return
+    try:
+        supabase = get_supabase_client()
+    except Exception as e:
+        logger.warning("recover stale: supabase non disponibile: {}", e)
+        return
+    for n in stale:
+        try:
+            art = supabase.table("articles") \
+                .select("id,slug").eq("reconstruct_news_id", n.id).limit(1).execute()
+            if art.data:
+                n.is_published = True
+                n.proposed_slug = art.data[0].get("slug") or n.proposed_slug
+                n.generation_started_at = None
+                n.generation_error = None
+                logger.info(
+                    "reconstruct recuperato post-crash: news_id={} article_id={}",
+                    n.id, art.data[0]["id"],
+                )
+            else:
+                n.generation_started_at = None
+                n.generation_error = "Server riavviato durante la generazione. Riprova."
+                logger.warning("reconstruct stale senza articolo, reset news_id={}", n.id)
+        except Exception as e:
+            logger.warning("recovery stale news_id={} fallito: {}", n.id, e)
+    db.commit()
 
 
 def _strip_em_dashes(value):
@@ -453,6 +562,11 @@ async def _run_skill_and_save_background(news_id: int) -> None:
         article_row = {
             "title": title,
             "slug": proposed_slug,
+            # reconstruct_news_id abilita il recovery anti-race in
+            # _recover_stale_reconstructs: se il backend muore tra l'INSERT
+            # qui e il db.commit() di is_published, il prossimo polling
+            # ritrova la bozza e marca la news come pubblicata.
+            "reconstruct_news_id": news_id,
             "content": content_markdown,
             "excerpt": excerpt,
             "summary": summary,
@@ -485,11 +599,16 @@ async def _run_skill_and_save_background(news_id: int) -> None:
 
         if not result.data:
             logger.error("[bg] Supabase insert senza dati per news {}", news_id)
+            news_item.generation_started_at = None
+            news_item.generation_error = "Supabase insert senza dati"
+            db.commit()
             return
 
         inserted = result.data[0]
         news_item.is_published = True
         news_item.proposed_slug = inserted.get("slug") or proposed_slug
+        news_item.generation_started_at = None
+        news_item.generation_error = None
         db.commit()
         logger.info(
             "[bg] skill article salvato: news_id={}, article_id={}, slug={}",
@@ -497,8 +616,13 @@ async def _run_skill_and_save_background(news_id: int) -> None:
         )
     except Exception as e:
         logger.exception("[bg] generazione skill fallita per news {}: {}", news_id, e)
+        # Session passata in stato indeterminato dopo l'eccezione: usiamo una
+        # session pulita per resettare lo stato (db=None la fa creare).
+        try:
+            _clear_news_generating(news_id, db=None, error=str(e)[:500])
+        except Exception:
+            pass
     finally:
-        _generating_news_ids.discard(news_id)
         db.close()
 
 
@@ -515,13 +639,13 @@ async def reconstruct_specific_article(news_id: int, db: Session = Depends(get_d
         raise HTTPException(status_code=404, detail="News item not found")
     if news_item.is_published:
         raise HTTPException(status_code=409, detail="Article already generated")
-    if news_id in _generating_news_ids:
+    if _is_news_generating(news_item):
         return JSONResponse(
             status_code=202,
             content={"status": "in_progress", "news_id": news_id},
         )
 
-    _generating_news_ids.add(news_id)
+    _mark_news_generating(news_id, db)
     asyncio.create_task(_run_skill_and_save_background(news_id))
 
     logger.info("reconstruct: avviata skill in background per news_id={}", news_id)
@@ -539,12 +663,21 @@ async def get_pending_review_news(db: Session = Depends(get_db)):
     per quella news (background task avviato da reconstruct_specific_article),
     cosi' che il frontend possa disabilitare il link di modifica ed evitare
     doppie generazioni.
+
+    Triggera anche il recovery delle generazioni stale (backend crashato a
+    meta' generazione): se la bozza e' su Supabase la news viene marcata
+    pubblicata; altrimenti generation_started_at viene resettato.
     """
     pending = db.query(models.New).filter(
         models.New.title.isnot(None),
         models.New.proposed_response.is_(None),
         models.New.is_published == False
     ).order_by(models.New.date_scraped.desc()).all()
+
+    _recover_stale_reconstructs(pending, db)
+    # Dopo la recovery alcune news possono essere diventate is_published=True
+    # (bozza ritrovata su Supabase): le escludiamo dalla lista pending.
+    pending = [n for n in pending if not n.is_published]
 
     return [{
         "id": n.id,
@@ -556,7 +689,8 @@ async def get_pending_review_news(db: Session = Depends(get_db)):
         "published_date": n.published_date,
         "date_scraped": str(n.date_scraped) if n.date_scraped else None,
         "url": n.url,
-        "is_generating": n.id in _generating_news_ids,
+        "is_generating": _is_news_generating(n),
+        "generation_error": n.generation_error,
     } for n in pending]
 
 

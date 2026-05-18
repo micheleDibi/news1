@@ -32,6 +32,11 @@ class New(Base):
     proposed_slug = Column(String)
     category_slug = Column(String)
     tags = Column(MutableList.as_mutable(JSON), default=list)
+    # Persistenza stato generazione skill (sostituisce il set in-memory
+    # _generating_news_ids: sopravvive ai restart del backend). Vedi
+    # main.py:_ensure_news_generation_columns per la migration SQLite.
+    generation_started_at = Column(DateTime, nullable=True)
+    generation_error = Column(String, nullable=True)
 
 
 
