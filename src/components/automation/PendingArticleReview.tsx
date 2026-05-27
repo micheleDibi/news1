@@ -52,6 +52,7 @@ export default function PendingArticleReview({ newsId }: Props) {
       // esecuzioni e il timeout da proxy.
       const res = await fetch(`${BACKEND_URL}/api/news/reconstruct/${article.id}`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
       });
       if (!res.ok && res.status !== 202) {
         const body = await res.json().catch(() => ({}));

@@ -13,6 +13,13 @@ export default defineConfig({
   devToolbar: {
     enabled: false, // This disables the Astro mini menu
   },
+  // Disabilita CSRF check di Astro: dietro Cloudflare + nginx il confronto
+  // Origin/Host fallisce (Astro vede Host=127.0.0.1:4000 e blocca POST come
+  // "Cross-site POST form submissions are forbidden"). Le rotte admin sono
+  // gia' protette da auth Supabase, quindi il check e' ridondante.
+  security: {
+    checkOrigin: false,
+  },
   server: {
     host: "0.0.0.0", // Bind to all interfaces to allow external access
     port: 80, // Listen on port 80
