@@ -62,10 +62,9 @@ def _generate_interpello_slug(item: dict) -> str:
 def _llm_json_request(
     system_prompt: str,
     user_content: str,
-    temperature: float = 0,
     max_tokens: int = 4096,
 ) -> dict:
-    """Chiama Claude Opus 4.6 per ottenere una risposta JSON."""
+    """Chiama Claude per ottenere una risposta JSON."""
     claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     # Forza output JSON nel system prompt
@@ -78,7 +77,6 @@ def _llm_json_request(
         messages=[
             {"role": "user", "content": user_content},
         ],
-        temperature=temperature,
     )
     raw = response.content[0].text.strip()
     # Gestisci eventuale blocco markdown ```json ... ```
@@ -103,7 +101,6 @@ def _llm_json_request(
             messages=[
                 {"role": "user", "content": raw},
             ],
-            temperature=0,
         )
         fixed = fix_response.content[0].text.strip()
         if "```" in fixed:
@@ -763,7 +760,6 @@ def generate_interpello_article(
         data = _llm_json_request(
             system_prompt=ARTICLE_PROMPT,
             user_content=user_content,
-            temperature=0.7,
             max_tokens=8000,
         )
         return InterpelloArticle(
