@@ -934,16 +934,33 @@ async def _run_persona_skill_background(
     tono: str,
     persona: str,
     target: str | None,
-    interlink_urls: list[str],
+    prompt: str,
     article_id: int | None,
     creator: str,
     source_url: str,
 ) -> None:
     """Task di background: esegue la skill persona, salva o prepara i dati
     per il frontend, e aggiorna lo stato del job nella tabella `persona_jobs`.
+
+    Il pre-computing degli interlink (Claude per tag SEO + Supabase scan di
+    tutti gli articoli pubblicati) viene fatto qui, NON nell'endpoint, per
+    permettere a quest'ultimo di rispondere 202 in <500ms ed evitare timeout
+    iOS Safari (30s in background).
     """
     try:
         _update_job(job_id, {"status": "running"})
+
+        # Pre-computing interlink (era nell'endpoint, ora qui in background)
+        prompt_tags = _generate_seo_keywords_from_prompt(prompt, source_url)
+        logger.info("persona pre-tags per interlink ({}): {}", len(prompt_tags), prompt_tags)
+        related = find_related_articles(prompt or "", prompt_tags, "")
+        site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
+        interlink_urls = [
+            f"{site_base}/{a['category_slug']}/{a['slug']}"
+            for a in related
+            if a.get("category_slug") and a.get("slug")
+        ]
+
         skill_payload = await persona_runner.generate_article_with_persona(
             url=url,
             livello=livello,
@@ -1116,20 +1133,6 @@ async def generate_article_with_persona_endpoint(payload: dict):
 
     target = prompt if source_url and prompt else None
 
-    # Interlink: generiamo 10 tag dal prompt PRIMA di chiamare la skill, cosi'
-    # `find_related_articles` puo' calcolare il 60% di score dal tag overlap
-    # (che altrimenti sarebbe zero). Questa call Claude extra costa ~2-3s ed
-    # e' determinante per ottenere interlink di qualita'.
-    prompt_tags = _generate_seo_keywords_from_prompt(prompt, source_url)
-    logger.info("persona pre-tags per interlink ({}): {}", len(prompt_tags), prompt_tags)
-    related = find_related_articles(prompt or "", prompt_tags, "")
-    site_base = os.getenv("PUBLIC_SITE_URL", "https://edunews24.it").rstrip("/")
-    interlink_urls = [
-        f"{site_base}/{a['category_slug']}/{a['slug']}"
-        for a in related
-        if a.get("category_slug") and a.get("slug")
-    ]
-
     article_id_raw = payload.get("articleId")
     try:
         article_id = int(article_id_raw) if article_id_raw not in (None, "", 0) else None
@@ -1138,6 +1141,9 @@ async def generate_article_with_persona_endpoint(payload: dict):
 
     job_id = str(uuid.uuid4())
     _create_job(job_id, mode="edit" if article_id else "create", creator=creator)
+    # Pre-computing interlink (Claude tags + Supabase scan) e' spostato dentro
+    # _run_persona_skill_background: evita 5-15s di blocking pre-202 che
+    # causano "Load failed" su iOS Safari.
     asyncio.create_task(_run_persona_skill_background(
         job_id,
         url=url,
@@ -1145,7 +1151,7 @@ async def generate_article_with_persona_endpoint(payload: dict):
         tono=tono,
         persona=persona,
         target=target,
-        interlink_urls=interlink_urls,
+        prompt=prompt,
         article_id=article_id,
         creator=creator,
         source_url=source_url,
