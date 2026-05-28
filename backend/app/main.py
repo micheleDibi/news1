@@ -356,6 +356,24 @@ def _strip_em_dashes(value):
     return value
 
 
+def _strip_null_bytes(value):
+    """Rimuove i null byte (U+0000) dai contenuti generati dalla skill.
+
+    Postgres rifiuta sempre i null byte nei campi `text` con errore 22P05
+    ('unsupported Unicode escape sequence: \\u0000 cannot be converted to
+    text'). La skill puo' produrli inavvertitamente quando l'output viene
+    de-serializzato (es. \\u0000 dentro stringhe JSON). Applicato
+    ricorsivamente come _strip_em_dashes.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [_strip_null_bytes(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_null_bytes(v) for k, v in value.items()}
+    return value
+
+
 def generate_seo_keywords(news_item: models.New) -> list[str]:
     """Genera 10 keyword SEO via Claude (stesso prompt del vecchio flusso).
 
@@ -586,8 +604,10 @@ async def _run_skill_and_save_background(news_id: int) -> None:
             timeout=SKILL_TIMEOUT_SECONDS,
         )
         logger.info("[bg] news_id={} skill completata, processo payload", news_id)
-        # Safety net: rimuovi em-dash dall'intero payload prima del mapping su articles.
+        # Safety net: rimuovi em-dash e null byte dall'intero payload prima
+        # del mapping su articles. Postgres rifiuta i null byte (22P05).
         payload = _strip_em_dashes(payload)
+        payload = _strip_null_bytes(payload)
 
         seo = payload.get("seo") or {}
         article_block = payload.get("article") or {}
@@ -970,6 +990,7 @@ async def _run_persona_skill_background(
             interlinks=interlink_urls,
         )
         skill_payload = _strip_em_dashes(skill_payload)
+        skill_payload = _strip_null_bytes(skill_payload)
 
         seo = skill_payload.get("seo") or {}
         article_block = skill_payload.get("article") or {}
