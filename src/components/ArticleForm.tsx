@@ -2065,8 +2065,19 @@ const cancelContactForm = () => {
       clearTimeout(fetchTimeout);
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to generate audio');
+        // Response potrebbe essere HTML (pagina di errore nginx/Cloudflare/Astro)
+        // o testo libero, non solo JSON. Leggiamo come text e mostriamo il
+        // codice di stato + snippet, cosi' l'errore vero non viene mascherato
+        // da "Unexpected token '<'" di JSON.parse.
+        const bodyText = await response.text().catch(() => '');
+        let detail = '';
+        try {
+          const parsed = JSON.parse(bodyText);
+          detail = parsed.error || parsed.detail || bodyText.slice(0, 200);
+        } catch {
+          detail = bodyText.slice(0, 200) || response.statusText;
+        }
+        throw new Error(`TTS failed [HTTP ${response.status}]: ${detail}`);
       }
 
       const { audioUrl } = await response.json();
