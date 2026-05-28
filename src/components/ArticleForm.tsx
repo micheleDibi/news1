@@ -2339,7 +2339,14 @@ const cancelContactForm = () => {
       }
     } catch (error) {
       console.error('Errore generazione AI:', error);
-      alert('Errore nella generazione dell\'articolo AI: ' + (error as Error).message);
+      const err = error as any;
+      // "Load failed" / "Failed to fetch" = errore di trasporto (server down,
+      // body rifiutato, rete client KO). Aggiungiamo diagnostica utile.
+      const isNetwork = err?.name === 'TypeError' || /load failed|failed to fetch|network/i.test(err?.message || '');
+      const extra = isNetwork
+        ? ` (online=${typeof navigator !== 'undefined' ? navigator.onLine : '?'}${err?.cause ? `, cause=${String(err.cause).slice(0, 120)}` : ''})`
+        : '';
+      alert("Errore nella generazione dell'articolo AI: " + (err?.message || 'errore sconosciuto') + extra);
       shouldCloseModal = false;
     } finally {
       setAiLoading(false);
