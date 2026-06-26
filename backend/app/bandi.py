@@ -84,10 +84,9 @@ def _scraper_subprocess_env() -> dict[str, str]:
     return env
 
 
-def _run_scraper_command(args: list[str], label: str) -> int:
-    # Usiamo `app.cli` (canonico, supporta --limit) anziche' `app.scheduler`
-    # che espone solo run-now / run-pending-now senza argomenti.
-    cmd = [_scraper_python(), "-m", "app.cli", *args]
+def _run_scraper_module(module: str, args: list[str], label: str) -> int:
+    """Esegue `python -m <module> [args...]` con cwd e env dello scraper."""
+    cmd = [_scraper_python(), "-m", module, *args]
     logger.info("[bandi/{}] start: cwd={} cmd={}", label, _scraper_dir(), " ".join(cmd))
     started = time.monotonic()
     try:
@@ -115,17 +114,35 @@ def _run_scraper_command(args: list[str], label: str) -> int:
 
 
 def run_scraper_full() -> int:
-    """Esegue una scan completa di tutte le fonti attive (cli `run`)."""
+    """Esegue una scan completa di tutte le fonti attive (cli `run`).
+
+    Lo scraping accoda i bandi nella `ai_job_queue` (campo `ai_processing_required=true`)
+    ma NON processa la coda — questo lo fa `run_ai_worker_drain()`.
+    """
     args: list[str] = ["run"]
     limit = os.getenv("BANDI_SCRAPER_RUN_LIMIT")
     if limit:
         args += ["--limit", str(limit)]
-    return _run_scraper_command(args, "scraper-full")
+    return _run_scraper_module("app.cli", args, "scraper-full")
 
 
 def run_scraper_pending() -> int:
     """Retry sulle fonti/bandi in coda `pending` (cli `run-pending`)."""
-    return _run_scraper_command(["run-pending"], "scraper-pending")
+    return _run_scraper_module("app.cli", ["run-pending"], "scraper-pending")
+
+
+def run_ai_worker_drain() -> int:
+    """Processa la `ai_job_queue` fino a svuotarla (classifica bandi via OpenAI).
+
+    Necessario tra scraping e skill enrichment: lo scraper accoda i job AI ma il
+    worker dedicato e' separato. Solo dopo questo passaggio i bandi passano a
+    `ai_processing_status='completed'` e diventano selezionabili dalla skill.
+    """
+    return _run_scraper_module(
+        "app.ai.run_ai_worker",
+        ["--limit", "10", "--drain-all"],
+        "ai-worker-drain",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -455,17 +472,19 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 def run_full_pipeline() -> None:
-    """Pipeline 4x/giorno: scraper full + skill enrichment batch."""
+    """Pipeline 4x/giorno: scraper full → worker AI (drain) → skill enrichment batch."""
     logger.info("[bandi] pipeline full: start")
     run_scraper_full()
+    run_ai_worker_drain()
     asyncio.run(run_skill_enrichment_batch(_batch_size()))
     logger.info("[bandi] pipeline full: done")
 
 
 def run_pending_pipeline() -> None:
-    """Pipeline pending (1x/4h): retry scraper + skill enrichment batch."""
+    """Pipeline pending (1x/4h): retry scraper → worker AI (drain) → skill enrichment batch."""
     logger.info("[bandi] pipeline pending: start")
     run_scraper_pending()
+    run_ai_worker_drain()
     asyncio.run(run_skill_enrichment_batch(_batch_size()))
     logger.info("[bandi] pipeline pending: done")
 
