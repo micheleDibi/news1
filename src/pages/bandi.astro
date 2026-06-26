@@ -182,11 +182,15 @@ const pageKeywords =
     <div class="container mx-auto px-4 max-w-6xl -mt-6">
       {/* Filter card with collapse/expand */}
       <div class="mb-6 bg-white rounded-xl shadow-md border border-gray-100 overflow-visible">
-        {/* Header (clickable) */}
-        <button
-          type="button"
+        {/* Header (clickable). NB: usiamo div role=button, NON un <button>, perche'
+            il Reset interno e' anch'esso un <button> e nesting di button non e' valido
+            HTML: il browser auto-chiuderebbe il toggle prima del Reset e il body
+            del pannello finirebbe FUORI dalla card. */}
+        <div
           id="filters-toggle"
-          class="w-full flex items-center justify-between gap-3 p-4 sm:p-5 text-left hover:bg-gray-50 transition-colors rounded-t-xl"
+          role="button"
+          tabindex="0"
+          class="w-full flex items-center justify-between gap-3 p-4 sm:p-5 text-left hover:bg-gray-50 transition-colors rounded-t-xl cursor-pointer select-none"
           aria-expanded="true"
           aria-controls="filters-body"
         >
@@ -206,7 +210,7 @@ const pageKeywords =
             <button
               type="button"
               id="reset-filters"
-              class="hidden sm:inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-800 transition-colors"
+              class="hidden sm:inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-800 transition-colors rounded-md hover:bg-gray-100"
               data-no-toggle="true"
             >
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
@@ -214,7 +218,7 @@ const pageKeywords =
             </button>
             <svg id="filters-chevron" class="w-5 h-5 text-gray-400 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
           </div>
-        </button>
+        </div>
 
         {/* Body */}
         <div id="filters-body" class="border-t border-gray-100 px-4 sm:px-5 pb-5 pt-4 space-y-5">
@@ -641,12 +645,24 @@ const pageKeywords =
   const defaultCollapsed = persisted == null ? window.matchMedia('(max-width: 640px)').matches : persisted === '1';
   setCollapsed(defaultCollapsed);
 
-  filtersToggle.addEventListener('click', e => {
-    // Ignore clicks on the inline reset button
-    if (e.target.closest('[data-no-toggle="true"]')) return;
+  function toggleCollapsed() {
     const nowCollapsed = !filtersBody.classList.contains('hidden');
     setCollapsed(nowCollapsed);
     localStorage.setItem(STORAGE_KEY, nowCollapsed ? '1' : '0');
+  }
+
+  filtersToggle.addEventListener('click', e => {
+    // Ignore clicks on the inline reset button
+    if (e.target.closest('[data-no-toggle="true"]')) return;
+    toggleCollapsed();
+  });
+  // Accessibilita': Enter/Space sul role=button per toggle da tastiera
+  filtersToggle.addEventListener('keydown', e => {
+    if (e.target.closest('[data-no-toggle="true"]')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggleCollapsed();
+    }
   });
 
   // ============================================================
