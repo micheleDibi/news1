@@ -57,6 +57,33 @@ def _scraper_python() -> str:
     return os.getenv("BANDI_SCRAPER_PYTHON") or "python"
 
 
+# Variabili che lo scraper deve leggere dal suo `.env` interno (non da quello di
+# news1). Pydantic-settings legge prima dall'env del processo e poi cade sul
+# `.env`: se lasciamo passare le variabili del parent (es. `DATABASE_URL` di
+# news1 = sqlite di sviluppo), sovrascrivono il `DATABASE_URL` Supabase del DB B
+# atteso dallo scraper.
+_SCRAPER_ENV_BLOCKLIST = (
+    "DATABASE_URL",
+    "DATABASE_POOLER_HOST", "DATABASE_POOLER_PORT",
+    "DATABASE_CONNECT_TIMEOUT_SECONDS", "DATABASE_SSLMODE",
+    "SUPABASE_URL", "SUPABASE_KEY",
+    "OPENAI_API_KEY", "OPENAI_MODEL",
+    "TESSERACT_CMD", "OCR_LANGUAGE",
+    "SOURCE_ROOT_URL",
+    "SCRAPER_CONCURRENCY", "SCRAPER_TIMEOUT_SECONDS",
+    "SCRAPER_RETRY_MAX", "SCRAPER_RETRY_DELAY_SECONDS",
+    "REDIS_URL", "CELERY_BROKER_URL", "CELERY_RESULT_BACKEND",
+    "LOG_LEVEL", "LOG_JSON",
+)
+
+
+def _scraper_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for var in _SCRAPER_ENV_BLOCKLIST:
+        env.pop(var, None)
+    return env
+
+
 def _run_scraper_command(args: list[str], label: str) -> int:
     # Usiamo `app.cli` (canonico, supporta --limit) anziche' `app.scheduler`
     # che espone solo run-now / run-pending-now senza argomenti.
@@ -67,6 +94,7 @@ def _run_scraper_command(args: list[str], label: str) -> int:
         result = subprocess.run(
             cmd,
             cwd=_scraper_dir(),
+            env=_scraper_subprocess_env(),
             capture_output=True,
             text=True,
             check=False,
