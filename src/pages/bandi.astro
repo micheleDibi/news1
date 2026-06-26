@@ -14,6 +14,8 @@ import {
   type Programma,
   type ModalitaErogazione,
 } from '../lib/supabase-bandi';
+import BandiExpertCta from '../components/BandiExpertCta.astro';
+import ContactForm from '../components/ContactForm';
 
 export const prerender = false;
 
@@ -180,6 +182,11 @@ const pageKeywords =
     </div>
 
     <div class="container mx-auto px-4 max-w-6xl -mt-6">
+      {/* Banner CTA "Hai bisogno di un esperto?" */}
+      <div class="mb-6">
+        <BandiExpertCta variant="full-width" />
+      </div>
+
       {/* Filter card with collapse/expand */}
       <div class="mb-6 bg-white rounded-xl shadow-md border border-gray-100 overflow-visible">
         {/* Header (clickable). NB: usiamo div role=button, NON un <button>, perche'
@@ -417,6 +424,21 @@ const pageKeywords =
         </nav>
       )}
     </div>
+
+    {/* Sezione contatto esperto (target dello smooth scroll del banner) */}
+    <section id="contact-esperto" class="scroll-mt-20 bg-gradient-to-b from-gray-50 to-gray-100 py-14 sm:py-16">
+      <div class="container mx-auto px-4 max-w-4xl">
+        <div class="text-center mb-8">
+          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-blue-100 text-blue-700 mb-4">Supporto progettuale</span>
+          <h2 class="text-2xl md:text-3xl font-bold text-gray-900 mb-3">Parla con un esperto</h2>
+          <p class="text-gray-600 max-w-2xl mx-auto leading-relaxed">
+            Compila il form e ti contatteremo per supportarti nella partecipazione al bando giusto per te.
+            Il nostro staff valuta la tua candidatura insieme agli strumenti AI sviluppati dai migliori progettisti italiani.
+          </p>
+        </div>
+        <ContactForm client:load context={{ source: 'listing-bandi' }} />
+      </div>
+    </section>
   </main>
 </Layout>
 

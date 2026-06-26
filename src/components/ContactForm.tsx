@@ -8,7 +8,29 @@ interface FormData {
   note: string;
 }
 
-export default function ContactForm() {
+export interface ContactFormContext {
+  /** Origine della richiesta. Es. 'bando-detail', 'listing-bandi', 'articolo'. */
+  source?: string;
+  bando_titolo?: string;
+  bando_slug?: string;
+  bando_url?: string;
+}
+
+interface ContactFormProps {
+  /**
+   * Contesto opzionale: viene inoltrato al body della fetch verso /api/contact.
+   * L'API lo usa per personalizzare il subject e includere un riferimento nel
+   * corpo HTML della mail che arriva in redazione.
+   */
+  context?: ContactFormContext;
+  /**
+   * Pre-popola il textarea "Messaggio" alla prima render. L'utente puo'
+   * modificare/cancellare. Default '' (vuoto).
+   */
+  prefilledNotes?: string;
+}
+
+export default function ContactForm({ context, prefilledNotes }: ContactFormProps = {}) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{
     type: 'success' | 'error';
@@ -20,7 +42,7 @@ export default function ContactForm() {
     cognome: '',
     cellulare: '',
     email: '',
-    note: ''
+    note: prefilledNotes || ''
   });
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -42,7 +64,10 @@ export default function ContactForm() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          ...formData,
+          ...(context ? { context } : {}),
+        }),
       });
 
       const result = await response.json();
@@ -62,7 +87,7 @@ export default function ContactForm() {
         cognome: '',
         cellulare: '',
         email: '',
-        note: ''
+        note: prefilledNotes || ''
       });
 
     } catch (error) {
@@ -81,8 +106,8 @@ export default function ContactForm() {
       {message && (
         <div
           className={`p-4 rounded-md ${
-            message.type === 'error' 
-              ? 'bg-red-50 text-red-700 border border-red-200' 
+            message.type === 'error'
+              ? 'bg-red-50 text-red-700 border border-red-200'
               : 'bg-green-50 text-green-700 border border-green-200'
           }`}
         >

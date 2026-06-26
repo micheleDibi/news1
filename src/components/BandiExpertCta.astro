@@ -1,0 +1,88 @@
+---
+/**
+ * Banner CTA "Hai bisogno di un esperto per candidarti alla misura?"
+ *
+ * Due varianti:
+ *  - `full-width`: card grande, riga su desktop / colonna su mobile.
+ *    Pensata per il listing /bandi (tra hero e pannello filtri).
+ *  - `sidebar`: card compatta verticale per la sidebar del detail /bandi/[slug].
+ *
+ * Il bottone e' un anchor che fa smooth scroll a `targetAnchor` (default
+ * `#contact-esperto`). La sezione target la posiziona la pagina chiamante.
+ */
+interface Props {
+  variant?: 'sidebar' | 'full-width';
+  targetAnchor?: string;
+}
+const { variant = 'full-width', targetAnchor = '#contact-esperto' } = Astro.props;
+---
+
+{variant === 'full-width' ? (
+  <div class="relative overflow-hidden rounded-2xl shadow-xl bg-gradient-to-br from-blue-700 via-blue-700 to-indigo-800 border border-blue-600/20">
+    {/* Decorative pattern */}
+    <div class="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/3 blur-2xl"></div>
+    <div class="absolute bottom-0 left-0 w-48 h-48 bg-indigo-400/10 rounded-full translate-y-1/2 -translate-x-1/3 blur-2xl"></div>
+
+    <div class="relative p-6 sm:p-8 lg:p-10 flex flex-col lg:flex-row items-center gap-6 lg:gap-8">
+      {/* Icon */}
+      <div class="shrink-0 w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-white/15 backdrop-blur-sm border border-white/20 flex items-center justify-center shadow-lg">
+        <svg class="w-9 h-9 sm:w-11 sm:h-11 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z" />
+        </svg>
+      </div>
+
+      {/* Text */}
+      <div class="flex-1 text-center lg:text-left">
+        <h2 class="text-xl sm:text-2xl lg:text-[1.6rem] font-bold text-white leading-tight mb-2">
+          Hai bisogno di un esperto per candidarti alla misura?
+        </h2>
+        <p class="text-blue-100 text-sm sm:text-base leading-relaxed max-w-2xl lg:max-w-3xl">
+          Clicca qui! Il nostro staff ti aiutera' attraverso gli strumenti AI governati dai migliori progettisti italiani.
+        </p>
+      </div>
+
+      {/* CTA */}
+      <div class="shrink-0 w-full sm:w-auto">
+        <a
+          href={targetAnchor}
+          aria-label="Vai al form di contatto con un esperto"
+          class="group inline-flex items-center justify-center gap-2 w-full sm:w-auto px-6 py-3.5 bg-white text-blue-700 font-semibold rounded-xl shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-white/40"
+        >
+          <span>Contattaci</span>
+          <svg class="w-4 h-4 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6"></path></svg>
+        </a>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="relative overflow-hidden rounded-xl shadow-md bg-gradient-to-br from-blue-700 via-blue-700 to-indigo-800 border border-blue-600/20">
+    {/* Decorative blob */}
+    <div class="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/3 blur-xl"></div>
+
+    <div class="relative p-5">
+      <div class="flex items-center gap-3 mb-3">
+        <div class="shrink-0 w-10 h-10 rounded-lg bg-white/15 backdrop-blur-sm border border-white/20 flex items-center justify-center">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
+          </svg>
+        </div>
+        <h3 class="font-bold text-white text-base leading-snug">
+          Hai bisogno di un esperto?
+        </h3>
+      </div>
+
+      <p class="text-blue-100 text-sm leading-relaxed mb-4">
+        Il nostro staff ti aiutera' a candidarti a questa misura attraverso strumenti AI governati dai migliori progettisti italiani.
+      </p>
+
+      <a
+        href={targetAnchor}
+        aria-label="Vai al form di contatto con un esperto"
+        class="group flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-white text-blue-700 font-semibold rounded-lg shadow-md hover:shadow-lg hover:bg-blue-50 active:scale-[0.98] transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-white/40 text-sm"
+      >
+        <span>Contattaci</span>
+        <svg class="w-4 h-4 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6"></path></svg>
+      </a>
+    </div>
+  </div>
+)}
