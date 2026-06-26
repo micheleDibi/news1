@@ -1,0 +1,63 @@
+{
+  "_comment": "Mapping dominio -> hint default per i campi strutturati del bando. Usati come pre-compilato dall'estrattore; vanno sempre sovrascritti se il bando concreto dichiara qualcosa di diverso. La chiave e' il dominio normalizzato (senza www., senza schema).",
+
+  "ue.regione.lombardia.it":            {"ente": "Regione Lombardia", "tipologia": "misto", "area": "Lombardia"},
+  "fesr.regione.lombardia.it":          {"ente": "Regione Lombardia", "tipologia": "FESR", "area": "Lombardia"},
+  "fse.regione.lombardia.it":           {"ente": "Regione Lombardia", "tipologia": "FSE", "area": "Lombardia"},
+  "bandi.regione.lombardia.it":         {"ente": "Regione Lombardia", "tipologia": "regionale", "area": "Lombardia"},
+
+  "regione.liguria.it":                 {"ente": "Regione Liguria", "tipologia": "regionale", "area": "Liguria"},
+  "filse.it":                           {"ente": "Regione Liguria (Filse)", "tipologia": "regionale", "area": "Liguria"},
+
+  "regione.toscana.it":                 {"ente": "Regione Toscana", "tipologia": "regionale", "area": "Toscana"},
+
+  "regione.piemonte.it":                {"ente": "Regione Piemonte", "tipologia": "regionale", "area": "Piemonte"},
+  "bandi.regione.piemonte.it":          {"ente": "Regione Piemonte", "tipologia": "regionale", "area": "Piemonte"},
+
+  "sicilia-fse.it":                     {"ente": "Regione Siciliana", "tipologia": "FSE", "area": "Sicilia"},
+  "euroinfosicilia.it":                 {"ente": "Regione Siciliana", "tipologia": "misto", "area": "Sicilia"},
+
+  "coesione.regione.abruzzo.it":        {"ente": "Regione Abruzzo", "tipologia": "misto", "area": "Abruzzo"},
+
+  "lazioeuropa.it":                     {"ente": "Regione Lazio", "tipologia": "misto", "area": "Lazio"},
+
+  "regione.sardegna.it":                {"ente": "Regione Sardegna", "tipologia": "regionale", "area": "Sardegna"},
+  "old.regione.sardegna.it":            {"ente": "Regione Sardegna", "tipologia": "regionale", "area": "Sardegna"},
+
+  "programmazione-ue-2021-2027.regione.veneto.it": {"ente": "Regione Veneto", "tipologia": "misto", "area": "Veneto"},
+  "spazio-operatori.regione.veneto.it": {"ente": "Regione Veneto", "tipologia": "regionale", "area": "Veneto"},
+
+  "prfesr2127.regione.campania.it":     {"ente": "Regione Campania", "tipologia": "FESR", "area": "Campania"},
+  "fse.regione.campania.it":            {"ente": "Regione Campania", "tipologia": "FSE", "area": "Campania"},
+
+  "fesr.regione.emilia-romagna.it":     {"ente": "Regione Emilia-Romagna", "tipologia": "FESR", "area": "Emilia-Romagna"},
+  "formazionelavoro.regione.emilia-romagna.it": {"ente": "Regione Emilia-Romagna", "tipologia": "FSE", "area": "Emilia-Romagna"},
+
+  "regione.umbria.it":                  {"ente": "Regione Umbria", "tipologia": "regionale", "area": "Umbria"},
+
+  "regione.puglia.it":                  {"ente": "Regione Puglia", "tipologia": "regionale", "area": "Puglia"},
+  "sistema.puglia.it":                  {"ente": "Regione Puglia", "tipologia": "regionale", "area": "Puglia"},
+  "jtf-taranto.regione.puglia.it":      {"ente": "Regione Puglia", "tipologia": "JTF", "area": "Puglia"},
+
+  "new.regione.vda.it":                 {"ente": "Regione Valle d'Aosta", "tipologia": "regionale", "area": "Valle d'Aosta"},
+  "regione.vda.it":                     {"ente": "Regione Valle d'Aosta", "tipologia": "regionale", "area": "Valle d'Aosta"},
+
+  "provincia.tn.it":                    {"ente": "Provincia autonoma di Trento", "tipologia": "regionale", "area": "Trentino"},
+  "provincia.bz.it":                    {"ente": "Provincia autonoma di Bolzano", "tipologia": "regionale", "area": "Alto Adige"},
+
+  "interregeurope.eu":                  {"ente": "Programma Interreg Europe", "tipologia": "Interreg", "area": "UE"},
+  "interreg-alcotra.eu":                {"ente": "Programma Interreg Alcotra", "tipologia": "Interreg", "area": "transfrontaliera Italia-Francia"},
+  "interreg-marittimo.eu":              {"ente": "Programma Interreg Italia-Francia Marittimo", "tipologia": "Interreg", "area": "transfrontaliera"},
+  "interreg-ipa-adrion.eu":             {"ente": "Programma Interreg IPA Adrion", "tipologia": "Interreg", "area": "transnazionale Adriatico-Ionico"},
+  "interreg-euro-med.eu":               {"ente": "Programma Interreg Euro-MED", "tipologia": "Interreg", "area": "transnazionale Mediterraneo"},
+  "interregnextmed.eu":                 {"ente": "Programma Interreg NEXT MED", "tipologia": "Interreg", "area": "transfrontaliera mediterranea"},
+  "italy-croatia.eu":                   {"ente": "Programma Interreg Italia-Croazia", "tipologia": "Interreg", "area": "transfrontaliera Italia-Croazia"},
+  "italyslovenia.eu":                   {"ente": "Programma Interreg Italia-Slovenia", "tipologia": "Interreg", "area": "transfrontaliera Italia-Slovenia"},
+
+  "ec.europa.eu":                       {"ente": "Commissione europea", "tipologia": "nazionale", "area": "UE"},
+  "europa.eu":                          {"ente": "Commissione europea", "tipologia": "nazionale", "area": "UE"},
+
+  "miur.gov.it":                        {"ente": "Ministero dell'Istruzione e del Merito", "tipologia": "nazionale", "area": "Italia"},
+  "mim.gov.it":                         {"ente": "Ministero dell'Istruzione e del Merito", "tipologia": "nazionale", "area": "Italia"},
+  "mur.gov.it":                         {"ente": "Ministero dell'Universita' e della Ricerca", "tipologia": "nazionale", "area": "Italia"}
+}

@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Esegui anche la pipeline E2E completa (fonte discovery + scan + AI)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  # ── Unit tests (no DB required) ─────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests (no DB)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies (OCR)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr \
+            poppler-utils
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create stub .env for pytest-dotenv
+        run: |
+          cat > .env <<'EOF'
+          DATABASE_URL=postgresql://stub:stub@localhost/stub
+          SUPABASE_URL=https://stub.supabase.co
+          SUPABASE_KEY=stub_key
+          SOURCE_ROOT_URL=https://stub.example.com
+          OPENAI_API_KEY=stub_openai_key
+          EOF
+
+      - name: Run unit tests (exclude integration)
+        run: |
+          pytest app/tests/ -m "not integration" -q --tb=short
+
+  # ── Integration tests (requires DB secrets) ─────────────────────────────────
+  integration-tests:
+    name: Integration Tests (DB)
+    runs-on: ubuntu-latest
+    # Only run on non-fork PRs and direct pushes (secrets not available on forks)
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies (OCR)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr \
+            poppler-utils
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create .env from secrets
+        run: |
+          cat > .env <<EOF
+          DATABASE_URL=${{ secrets.DATABASE_URL }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          SOURCE_ROOT_URL=${{ secrets.SOURCE_ROOT_URL }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          EOF
+
+      - name: Run integration tests
+        run: |
+          pytest app/tests/ -m integration -q --tb=short
+
+  # ── E2E pipeline run (requires all secrets) ──────────────────────────────────
+  e2e-pipeline:
+    name: E2E Pipeline Run
+    runs-on: ubuntu-latest
+    # Only run on direct push to main/master, or manual trigger with run_e2e=true
+    if: (github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.run_e2e == 'true')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies (OCR)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr \
+            poppler-utils
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create .env from secrets
+        run: |
+          cat > .env <<EOF
+          DATABASE_URL=${{ secrets.DATABASE_URL }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          SOURCE_ROOT_URL=${{ secrets.SOURCE_ROOT_URL }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          EOF
+
+      - name: 1 — Discovery fonti
+        run: python -m app.scrapers.run_fonte_discovery
+
+      - name: 2 — Scan bandi (run completa)
+        run: python -m app.cli run
+
+      - name: 3 — Enqueue AI jobs
+        run: python -m app.ai.run_ai_enqueue --limit 1000 --report-every 50
+
+      - name: 4 — Worker AI (drain-all)
+        run: python -m app.ai.run_ai_worker --limit 50 --drain-all

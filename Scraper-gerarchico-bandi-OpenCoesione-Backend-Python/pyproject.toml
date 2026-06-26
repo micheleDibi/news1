@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+env_files = [".env"]
+markers = [
+    "integration: test che richiedono connessione reale al DB (deselect con -m 'not integration')",
+]
+filterwarnings = [
+    "ignore:The `gotrue` package is deprecated.*:DeprecationWarning",
+]

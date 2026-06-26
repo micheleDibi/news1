@@ -1,0 +1,43 @@
+# Core
+python-dotenv==1.0.1
+
+# Database
+psycopg2-binary==2.9.9
+supabase==2.4.2
+SQLAlchemy==2.0.30
+
+# HTTP / Scraping
+httpx==0.27.0
+requests==2.32.3
+playwright==1.44.0
+beautifulsoup4==4.12.3
+lxml==5.2.1
+
+# AI
+openai==1.30.1
+
+# OCR
+pytesseract==0.3.10
+Pillow==10.3.0
+pdfplumber==0.11.0
+pdf2image==1.17.0
+
+# Async / Queue
+celery==5.4.0
+redis==5.0.4
+
+# Scheduler
+apscheduler==3.10.4
+
+# Logging
+structlog==24.1.0
+
+# Utilities
+pydantic==2.7.1
+pydantic-settings==2.2.1
+tenacity==8.3.0
+
+# Testing
+pytest==8.2.0
+pytest-asyncio==0.23.6
+pytest-dotenv==0.5.2

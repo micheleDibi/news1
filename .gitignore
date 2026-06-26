@@ -89,3 +89,9 @@ Thumbs.db
 
 # Claude Code session data
 .claude/
+
+# Scratch / backup intermedi (es. _backups/ dello scraper, file _tmp_/_gen_ di skill)
+**/_backups/
+**/_tmp_*.py
+**/_gen_*.py
+
