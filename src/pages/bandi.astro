@@ -67,7 +67,6 @@ async function loadFilterOptions() {
       supabaseBandi.from('beneficiari').select('id, nome').order('nome', { ascending: true }),
       supabaseBandi.from('programmi').select('id, nome').order('nome', { ascending: true }),
       supabaseBandi.from('modalita_erogazione').select('id, nome').order('nome', { ascending: true }),
-      // Limito ATECO a 5000 codici (~ tutti quelli effettivamente referenziati dai bandi).
       supabaseBandi
         .from('codici_ateco')
         .select('id, codice, descrizione')
@@ -91,13 +90,20 @@ const { items: bandiData, total: totalCount } = await loadBandiData();
 const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 const filterOptions = await loadFilterOptions();
 
-// Valori "code — descrizione" memorizzati nella colonna codici_ateco_norm (TEXT[]).
-// Devono corrispondere ESATTAMENTE al formato usato dal backend in `_denormalize_bando_lookups`
-// e dal backfill SQL.
-const atecoValues = filterOptions.ateco.map(a => ({
-  display: a.descrizione ? `${a.codice} — ${a.descrizione}` : a.codice,
-  value: `${a.codice} — ${a.descrizione || ''}`,
-}));
+// Opzioni per i multi-select. value = quello che finisce nel filtro PostgREST,
+// label = quello mostrato all'utente.
+const filterOpts = {
+  regione: filterOptions.regioni.map(r => ({ value: r.nome, label: r.nome })),
+  settore: filterOptions.settori.map(s => ({ value: s.nome, label: s.nome })),
+  beneficiario: filterOptions.beneficiari.map(b => ({ value: b.nome, label: b.nome })),
+  programma: filterOptions.programmi.map(p => ({ value: p.nome, label: p.nome })),
+  modalita: filterOptions.modalita.map(m => ({ value: m.nome, label: m.nome })),
+  // ATECO: value = "<codice> — <descrizione>" (formato denormalizzato in codici_ateco_norm)
+  ateco: filterOptions.ateco.map(a => ({
+    value: a.descrizione ? `${a.codice} — ${a.descrizione}` : a.codice,
+    label: a.descrizione ? `${a.codice} — ${a.descrizione}` : a.codice,
+  })),
+};
 
 const formatDate = (s: string | null | undefined): string => {
   if (!s) return '—';
@@ -131,7 +137,7 @@ const scadenzaBadgeLabel = (stato: string | null | undefined): string => {
 
 const pageTitle = 'Bandi e finanziamenti pubblici - EduNews24';
 const pageDescription =
-  'Trova bandi di finanziamento europei, nazionali e regionali. Filtra per regione, settore, beneficiari, tipologia (FESR/FSE/Interreg/JTF), codici ATECO, programma, importo e scadenza.';
+  'Trova bandi di finanziamento europei, nazionali e regionali. Filtra per regione, settore, beneficiari, tipologia, codici ATECO, programma, importo e scadenza.';
 const pageKeywords =
   'bandi, finanziamenti, FESR, FSE, Interreg, OpenCoesione, fondi europei, regionali, nazionali, codici ATECO';
 ---
@@ -161,116 +167,146 @@ const pageKeywords =
     </div>
 
     <div class="container mx-auto px-4 max-w-6xl -mt-6">
-      <div class="mb-6 p-5 bg-white rounded-xl shadow-md border border-gray-100">
-        {/* Riga 1: Search + lookup dropdowns + Programma + Reset */}
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
-          <div class="lg:col-span-2">
-            <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Cerca</label>
-            <div class="relative">
-              <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-              <input type="text" id="search-filter" placeholder="Titolo, ente, descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
+      {/* Filter card with collapse/expand */}
+      <div class="mb-6 bg-white rounded-xl shadow-md border border-gray-100 overflow-visible">
+        {/* Header (clickable) */}
+        <button
+          type="button"
+          id="filters-toggle"
+          class="w-full flex items-center justify-between gap-3 p-4 sm:p-5 text-left hover:bg-gray-50 transition-colors rounded-t-xl"
+          aria-expanded="true"
+          aria-controls="filters-body"
+        >
+          <div class="flex items-center gap-3 min-w-0">
+            <span class="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-lg bg-blue-50 text-blue-600">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
+            </span>
+            <div class="min-w-0">
+              <h2 class="font-semibold text-gray-900 leading-tight">Filtri</h2>
+              <p class="text-xs text-gray-500 mt-0.5 hidden sm:block">Affina la ricerca tra i bandi disponibili</p>
             </div>
+            <span id="active-filters-badge" class="hidden ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">
+              <span id="active-count">0</span>&nbsp;attiv<span id="active-pluralize">i</span>
+            </span>
           </div>
-
-          <div>
-            <label for="regione-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Regione</label>
-            <select id="regione-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
-              <option value="">Tutte</option>
-              {filterOptions.regioni.map(r => <option value={r.nome}>{r.nome}</option>)}
-            </select>
-          </div>
-
-          <div>
-            <label for="settore-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Settore</label>
-            <select id="settore-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
-              <option value="">Tutti</option>
-              {filterOptions.settori.map(s => <option value={s.nome}>{s.nome}</option>)}
-            </select>
-          </div>
-
-          <div>
-            <label for="beneficiario-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Beneficiario</label>
-            <select id="beneficiario-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
-              <option value="">Tutti</option>
-              {filterOptions.beneficiari.map(b => <option value={b.nome}>{b.nome}</option>)}
-            </select>
-          </div>
-
-          <div>
-            <label class="block text-xs font-semibold text-transparent mb-1.5">Reset</label>
-            <button id="reset-filters" class="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-1.5">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          <div class="flex items-center gap-3 shrink-0">
+            <button
+              type="button"
+              id="reset-filters"
+              class="hidden sm:inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-800 transition-colors"
+              data-no-toggle="true"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
               Resetta
             </button>
+            <svg id="filters-chevron" class="w-5 h-5 text-gray-400 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
           </div>
-        </div>
+        </button>
 
-        {/* Riga 2: Programma + Modalita erogazione + ATECO */}
-        <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-end">
+        {/* Body */}
+        <div id="filters-body" class="border-t border-gray-100 px-4 sm:px-5 pb-5 pt-4 space-y-5">
+          {/* Riga 1: Search full-width */}
           <div>
-            <label for="programma-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Programma</label>
-            <select id="programma-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
-              <option value="">Tutti</option>
-              {filterOptions.programmi.map(p => <option value={p.nome}>{p.nome}</option>)}
-            </select>
-          </div>
-          <div>
-            <label for="modalita-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Modalita erogazione</label>
-            <select id="modalita-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
-              <option value="">Tutte</option>
-              {filterOptions.modalita.map(m => <option value={m.nome}>{m.nome}</option>)}
-            </select>
-          </div>
-          <div>
-            <label for="ateco-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Codice ATECO</label>
-            <input type="text" id="ateco-filter" list="ateco-list" placeholder="Digita codice o descrizione..." class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
-            <datalist id="ateco-list">
-              {atecoValues.map(a => <option value={a.value}>{a.display}</option>)}
-            </datalist>
-          </div>
-        </div>
-
-        {/* Riga 3: Tipologia chips + Stato scadenza chips */}
-        <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div>
-            <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tipologia</label>
-            <div id="tipologia-chips" class="flex flex-wrap gap-2">
-              {TIPOLOGIE_BANDO.map(t => (
-                <button type="button" data-value={t} class="chip-toggle px-3 py-1.5 rounded-full text-xs font-semibold border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors" data-active="false">
-                  {t}
-                </button>
-              ))}
+            <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Ricerca testuale</label>
+            <div class="relative">
+              <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+              <input type="text" id="search-filter" placeholder="Cerca per titolo, ente o descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
             </div>
           </div>
+
+          {/* Riga 2: 6 multi-select lookup */}
           <div>
-            <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Stato scadenza</label>
-            <div id="scadenza-chips" class="flex flex-wrap gap-2">
-              {STATI_SCADENZA.map(s => (
-                <button type="button" data-value={s} class="chip-toggle px-3 py-1.5 rounded-full text-xs font-semibold border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors" data-active="false">
-                  {s === 'aperto' ? 'Aperto' : s === 'in_scadenza' ? 'In scadenza' : 'Scaduto'}
-                </button>
-              ))}
+            <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Categorie</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {/* Ogni multiselect ha la stessa struttura. Le opzioni sono iniettate via JS. */}
+              {(['regione', 'settore', 'beneficiario', 'programma', 'modalita', 'ateco'] as const).map(name => {
+                const labels: Record<typeof name, string> = {
+                  regione: 'Regione',
+                  settore: 'Settore',
+                  beneficiario: 'Beneficiario',
+                  programma: 'Programma',
+                  modalita: 'Modalita erogazione',
+                  ateco: 'Codice ATECO',
+                };
+                return (
+                  <div class="multiselect relative" data-name={name}>
+                    <button type="button" class="ms-trigger w-full flex items-center justify-between gap-2 px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50 hover:bg-gray-100 hover:border-gray-300 transition-colors text-left">
+                      <span class="ms-display flex-1 truncate text-gray-500" data-empty={labels[name]}>{labels[name]}</span>
+                      <span class="ms-count hidden shrink-0 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 text-[10px] font-bold bg-blue-600 text-white rounded-full">0</span>
+                      <svg class="ms-chevron w-4 h-4 text-gray-400 transition-transform shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </button>
+                    <div class="ms-popover hidden absolute z-30 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                      <div class="p-2 border-b border-gray-100">
+                        <div class="relative">
+                          <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                          <input type="text" class="ms-search w-full pl-8 pr-2 py-1.5 text-sm bg-gray-50 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="Cerca...">
+                        </div>
+                      </div>
+                      <div class="ms-list max-h-64 overflow-y-auto py-1"></div>
+                      <div class="ms-footer p-2 border-t border-gray-100 flex items-center justify-between text-xs">
+                        <button type="button" class="ms-clear text-gray-500 hover:text-gray-800 font-medium">Pulisci</button>
+                        <span class="ms-status text-gray-400">0 selezionati</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
-        </div>
 
-        {/* Riga 4: Importo + Scadenza ranges */}
-        <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div>
-            <label for="importo-min" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Importo min (€)</label>
-            <input type="number" id="importo-min" min="0" step="1000" placeholder="0" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+          {/* Riga 3: chip multi (tipologia + stato scadenza) */}
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <div>
+              <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tipologia</h3>
+              <div id="tipologia-chips" class="flex flex-wrap gap-2">
+                {TIPOLOGIE_BANDO.map(t => (
+                  <button type="button" data-value={t} class="chip-toggle px-3 py-1.5 rounded-full text-xs font-semibold border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors" data-active="false">
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Stato scadenza</h3>
+              <div id="scadenza-chips" class="flex flex-wrap gap-2">
+                {STATI_SCADENZA.map(s => (
+                  <button type="button" data-value={s} class="chip-toggle px-3 py-1.5 rounded-full text-xs font-semibold border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors" data-active="false">
+                    {s === 'aperto' ? 'Aperto' : s === 'in_scadenza' ? 'In scadenza' : 'Scaduto'}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
+
+          {/* Riga 4: range importo + scadenza */}
           <div>
-            <label for="importo-max" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Importo max (€)</label>
-            <input type="number" id="importo-max" min="0" step="1000" placeholder="∞" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+            <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Importo e scadenza</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div>
+                <label for="importo-min" class="block text-xs text-gray-500 mb-1">Importo min (€)</label>
+                <input type="number" id="importo-min" min="0" step="1000" placeholder="0" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              </div>
+              <div>
+                <label for="importo-max" class="block text-xs text-gray-500 mb-1">Importo max (€)</label>
+                <input type="number" id="importo-max" min="0" step="1000" placeholder="∞" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              </div>
+              <div>
+                <label for="scadenza-da" class="block text-xs text-gray-500 mb-1">Scadenza da</label>
+                <input type="date" id="scadenza-da" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              </div>
+              <div>
+                <label for="scadenza-a" class="block text-xs text-gray-500 mb-1">Scadenza a</label>
+                <input type="date" id="scadenza-a" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              </div>
+            </div>
           </div>
-          <div>
-            <label for="scadenza-da" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Scadenza da</label>
-            <input type="date" id="scadenza-da" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
-          </div>
-          <div>
-            <label for="scadenza-a" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Scadenza a</label>
-            <input type="date" id="scadenza-a" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+
+          {/* Reset mobile (sm:hidden) */}
+          <div class="sm:hidden pt-2 border-t border-gray-100">
+            <button type="button" id="reset-filters-mobile" class="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-1.5">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+              Resetta filtri
+            </button>
           </div>
         </div>
       </div>
@@ -377,51 +413,173 @@ const pageKeywords =
   </main>
 </Layout>
 
-<script is:inline define:vars={{ supabaseUrl, supabaseKey, PAGE_SIZE, SELECT_LIST: BANDO_SELECT_LIST }}>
-  async function supabaseFetch(table, params) {
-    const url = new URL(`${supabaseUrl}/rest/v1/${table}`);
-    Object.entries(params).forEach(([k, v]) => {
-      if (Array.isArray(v)) v.forEach(vv => url.searchParams.append(k, vv));
-      else url.searchParams.set(k, v);
-    });
-    const res = await fetch(url.toString(), {
-      headers: {
-        'apikey': supabaseKey,
-        'Authorization': `Bearer ${supabaseKey}`,
-        'Prefer': 'count=exact',
-      },
-    });
-    const total = parseInt(res.headers.get('content-range')?.split('/')[1] || '0', 10);
-    const data = await res.json();
-    return { data, total };
+<script is:inline define:vars={{ supabaseUrl, supabaseKey, PAGE_SIZE, SELECT_LIST: BANDO_SELECT_LIST, filterOpts }}>
+  // ============================================================
+  // Utility
+  // ============================================================
+  function debounce(fn, wait) {
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
   }
 
-  const searchInput = document.getElementById('search-filter');
-  const regioneSelect = document.getElementById('regione-filter');
-  const settoreSelect = document.getElementById('settore-filter');
-  const beneficiarioSelect = document.getElementById('beneficiario-filter');
-  const programmaSelect = document.getElementById('programma-filter');
-  const modalitaSelect = document.getElementById('modalita-filter');
-  const atecoInput = document.getElementById('ateco-filter');
-  const importoMin = document.getElementById('importo-min');
-  const importoMax = document.getElementById('importo-max');
-  const scadenzaDa = document.getElementById('scadenza-da');
-  const scadenzaA = document.getElementById('scadenza-a');
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  // ============================================================
+  // Multi-select component
+  // ============================================================
+  const MAX_VISIBLE_OPTIONS = 200;
+
+  function createMultiSelect(rootEl, options, onChange) {
+    const trigger = rootEl.querySelector('.ms-trigger');
+    const popover = rootEl.querySelector('.ms-popover');
+    const search = rootEl.querySelector('.ms-search');
+    const list = rootEl.querySelector('.ms-list');
+    const clearBtn = rootEl.querySelector('.ms-clear');
+    const display = rootEl.querySelector('.ms-display');
+    const countBadge = rootEl.querySelector('.ms-count');
+    const chevron = rootEl.querySelector('.ms-chevron');
+    const status = rootEl.querySelector('.ms-status');
+    const emptyLabel = display.dataset.empty || 'Tutti';
+
+    const selected = new Set();
+    let filtered = options.slice();
+
+    function renderList() {
+      const visible = filtered.slice(0, MAX_VISIBLE_OPTIONS);
+      list.innerHTML = visible.length === 0
+        ? '<p class="text-sm text-gray-400 px-3 py-4 text-center">Nessuna opzione</p>'
+        : visible.map(opt => `
+            <label class="flex items-center gap-2.5 px-3 py-1.5 hover:bg-blue-50 cursor-pointer text-sm transition-colors">
+              <input type="checkbox" class="ms-checkbox w-4 h-4 rounded text-blue-600 border-gray-300 focus:ring-blue-500 cursor-pointer" value="${escapeAttr(opt.value)}" ${selected.has(opt.value) ? 'checked' : ''}>
+              <span class="flex-1 truncate text-gray-700">${escapeHtml(opt.label)}</span>
+            </label>
+          `).join('');
+
+      if (filtered.length > MAX_VISIBLE_OPTIONS) {
+        list.insertAdjacentHTML('beforeend', `<p class="text-xs text-gray-400 px-3 py-2 text-center border-t border-gray-100">${filtered.length - MAX_VISIBLE_OPTIONS} altre opzioni — affina la ricerca</p>`);
+      }
+
+      list.querySelectorAll('.ms-checkbox').forEach(cb => {
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(cb.value);
+          else selected.delete(cb.value);
+          updateDisplay();
+          onChange();
+        });
+      });
+    }
+
+    function updateDisplay() {
+      const arr = Array.from(selected);
+      if (arr.length === 0) {
+        display.textContent = emptyLabel;
+        display.classList.add('text-gray-500');
+        display.classList.remove('text-gray-900', 'font-medium');
+        countBadge.classList.add('hidden');
+      } else {
+        const preview = arr.slice(0, 2).join(', ');
+        const extra = arr.length > 2 ? ` +${arr.length - 2}` : '';
+        display.textContent = preview + extra;
+        display.classList.remove('text-gray-500');
+        display.classList.add('text-gray-900', 'font-medium');
+        countBadge.textContent = String(arr.length);
+        countBadge.classList.remove('hidden');
+      }
+      status.textContent = arr.length === 0 ? 'Nessuna selezione' : `${arr.length} ${arr.length === 1 ? 'selezionato' : 'selezionati'}`;
+    }
+
+    function open() {
+      // Close any other popover
+      document.querySelectorAll('.ms-popover:not(.hidden)').forEach(p => {
+        if (p !== popover) p.classList.add('hidden');
+        if (p !== popover) {
+          const sib = p.parentElement?.querySelector('.ms-chevron');
+          if (sib) sib.classList.remove('rotate-180');
+        }
+      });
+      popover.classList.remove('hidden');
+      chevron.classList.add('rotate-180');
+      // Reset search to show all options
+      search.value = '';
+      filtered = options.slice();
+      renderList();
+      setTimeout(() => search.focus(), 50);
+    }
+    function close() {
+      popover.classList.add('hidden');
+      chevron.classList.remove('rotate-180');
+    }
+
+    trigger.addEventListener('click', e => {
+      e.stopPropagation();
+      if (popover.classList.contains('hidden')) open();
+      else close();
+    });
+
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      filtered = q
+        ? options.filter(opt => opt.label.toLowerCase().includes(q))
+        : options.slice();
+      renderList();
+    });
+    search.addEventListener('click', e => e.stopPropagation());
+
+    popover.addEventListener('click', e => e.stopPropagation());
+
+    clearBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      selected.clear();
+      list.querySelectorAll('.ms-checkbox').forEach(cb => { cb.checked = false; });
+      updateDisplay();
+      onChange();
+    });
+
+    renderList();
+    updateDisplay();
+
+    return {
+      getSelected: () => Array.from(selected),
+      clear: () => {
+        selected.clear();
+        updateDisplay();
+        // Force re-render of list to uncheck visible boxes
+        list.querySelectorAll('.ms-checkbox').forEach(cb => { cb.checked = false; });
+      },
+      close,
+    };
+  }
+
+  // ============================================================
+  // Wire up multi-selects
+  // ============================================================
+  const multiselects = {};
+  const debouncedReset = debounce(() => resetAndLoad(), 200);
+  document.querySelectorAll('.multiselect').forEach(rootEl => {
+    const name = rootEl.dataset.name;
+    const opts = filterOpts[name] || [];
+    multiselects[name] = createMultiSelect(rootEl, opts, debouncedReset);
+  });
+
+  // Close all popovers on outside click + Escape
+  document.addEventListener('click', () => {
+    Object.values(multiselects).forEach(ms => ms.close());
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      Object.values(multiselects).forEach(ms => ms.close());
+    }
+  });
+
+  // ============================================================
+  // Chip toggles (tipologia, stato scadenza)
+  // ============================================================
   const tipologiaChips = document.getElementById('tipologia-chips');
   const scadenzaChips = document.getElementById('scadenza-chips');
-  const bandiList = document.getElementById('bandi-list');
-  const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
-  const resetButton = document.getElementById('reset-filters');
-  const visibleCountSpan = document.getElementById('visible-count');
-  const heroCountSpan = document.getElementById('hero-count');
-  const loadingIndicator = document.getElementById('loading-indicator');
-  const prevBtn = document.getElementById('prev-page');
-  const nextBtn = document.getElementById('next-page');
-  const currentPageNum = document.getElementById('current-page-num');
-  const totalPagesNum = document.getElementById('total-pages-num');
-
-  let currentPage = 1;
-  let isLoading = false;
 
   function getActiveChips(container) {
     return Array.from(container.querySelectorAll('.chip-toggle[data-active="true"]')).map(b => b.dataset.value);
@@ -446,6 +604,113 @@ const pageKeywords =
   setupChips(tipologiaChips);
   setupChips(scadenzaChips);
 
+  // ============================================================
+  // Other inputs
+  // ============================================================
+  const searchInput = document.getElementById('search-filter');
+  const importoMin = document.getElementById('importo-min');
+  const importoMax = document.getElementById('importo-max');
+  const scadenzaDa = document.getElementById('scadenza-da');
+  const scadenzaA = document.getElementById('scadenza-a');
+
+  // ============================================================
+  // Collapse / expand
+  // ============================================================
+  const filtersToggle = document.getElementById('filters-toggle');
+  const filtersBody = document.getElementById('filters-body');
+  const filtersChevron = document.getElementById('filters-chevron');
+  const STORAGE_KEY = 'bandi:filters-collapsed';
+
+  function setCollapsed(collapsed) {
+    if (collapsed) {
+      filtersBody.classList.add('hidden');
+      filtersChevron.classList.add('-rotate-90');
+      filtersToggle.setAttribute('aria-expanded', 'false');
+    } else {
+      filtersBody.classList.remove('hidden');
+      filtersChevron.classList.remove('-rotate-90');
+      filtersToggle.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  // Read persisted state; default = expanded on desktop, collapsed on mobile
+  const persisted = localStorage.getItem(STORAGE_KEY);
+  const defaultCollapsed = persisted == null ? window.matchMedia('(max-width: 640px)').matches : persisted === '1';
+  setCollapsed(defaultCollapsed);
+
+  filtersToggle.addEventListener('click', e => {
+    // Ignore clicks on the inline reset button
+    if (e.target.closest('[data-no-toggle="true"]')) return;
+    const nowCollapsed = !filtersBody.classList.contains('hidden');
+    setCollapsed(nowCollapsed);
+    localStorage.setItem(STORAGE_KEY, nowCollapsed ? '1' : '0');
+  });
+
+  // ============================================================
+  // Active filters count
+  // ============================================================
+  const activeBadge = document.getElementById('active-filters-badge');
+  const activeCount = document.getElementById('active-count');
+  const activePluralize = document.getElementById('active-pluralize');
+
+  function countActiveFilters() {
+    let n = 0;
+    if ((searchInput.value || '').trim()) n++;
+    Object.values(multiselects).forEach(ms => { if (ms.getSelected().length) n++; });
+    if (getActiveChips(tipologiaChips).length) n++;
+    if (getActiveChips(scadenzaChips).length) n++;
+    if (importoMin.value) n++;
+    if (importoMax.value) n++;
+    if (scadenzaDa.value) n++;
+    if (scadenzaA.value) n++;
+    return n;
+  }
+
+  function updateActiveBadge() {
+    const n = countActiveFilters();
+    if (n === 0) {
+      activeBadge.classList.add('hidden');
+    } else {
+      activeBadge.classList.remove('hidden');
+      activeCount.textContent = String(n);
+      activePluralize.textContent = n === 1 ? 'o' : 'i';
+    }
+  }
+
+  // ============================================================
+  // Supabase REST helpers
+  // ============================================================
+  async function supabaseFetch(table, params) {
+    const url = new URL(`${supabaseUrl}/rest/v1/${table}`);
+    Object.entries(params).forEach(([k, v]) => {
+      if (Array.isArray(v)) v.forEach(vv => url.searchParams.append(k, vv));
+      else url.searchParams.set(k, v);
+    });
+    const res = await fetch(url.toString(), {
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Prefer': 'count=exact',
+      },
+    });
+    const total = parseInt(res.headers.get('content-range')?.split('/')[1] || '0', 10);
+    const data = await res.json();
+    return { data, total };
+  }
+
+  // ============================================================
+  // Card rendering
+  // ============================================================
+  const bandiList = document.getElementById('bandi-list');
+  const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
+  const visibleCountSpan = document.getElementById('visible-count');
+  const heroCountSpan = document.getElementById('hero-count');
+  const loadingIndicator = document.getElementById('loading-indicator');
+  const prevBtn = document.getElementById('prev-page');
+  const nextBtn = document.getElementById('next-page');
+  const currentPageNum = document.getElementById('current-page-num');
+  const totalPagesNum = document.getElementById('total-pages-num');
+
   function formatDateDisplay(s) {
     if (!s) return '—';
     try {
@@ -454,12 +719,10 @@ const pageKeywords =
       return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
     } catch { return s; }
   }
-
   function formatEuro(n) {
     if (n == null) return '—';
     return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n);
   }
-
   function badgeClasses(stato) {
     if (stato === 'aperto') return 'bg-blue-100 text-blue-700 ring-1 ring-blue-200';
     if (stato === 'in_scadenza') return 'bg-amber-100 text-amber-700 ring-1 ring-amber-200';
@@ -471,11 +734,6 @@ const pageKeywords =
     if (stato === 'in_scadenza') return 'In scadenza';
     if (stato === 'scaduto') return 'Scaduto';
     return '—';
-  }
-
-  function escapeHtml(s) {
-    if (s == null) return '';
-    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   }
 
   function renderItems(items) {
@@ -532,24 +790,38 @@ const pageKeywords =
     if (paginationNav) paginationNav.style.display = pages <= 1 ? 'none' : 'flex';
   }
 
+  // ============================================================
+  // Filter aggregation + page load
+  // ============================================================
+  let currentPage = 1;
+  let isLoading = false;
+
+  // PostgREST filter clause builders. Quote values that contain special chars.
+  function quoteVal(v) {
+    return `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  function safe(v) { return String(v).replace(/[(),]/g, ' '); }
+
   async function loadPage() {
     if (isLoading) return;
     isLoading = true;
     if (loadingIndicator) { loadingIndicator.classList.remove('hidden'); loadingIndicator.classList.add('flex'); }
 
-    const searchTerm = (searchInput && searchInput.value || '').trim();
-    const regione = (regioneSelect && regioneSelect.value || '').trim();
-    const settore = (settoreSelect && settoreSelect.value || '').trim();
-    const beneficiario = (beneficiarioSelect && beneficiarioSelect.value || '').trim();
-    const programma = (programmaSelect && programmaSelect.value || '').trim();
-    const modalita = (modalitaSelect && modalitaSelect.value || '').trim();
-    const ateco = (atecoInput && atecoInput.value || '').trim();
+    const searchTerm = (searchInput.value || '').trim();
+    const sel = {
+      regione: multiselects.regione?.getSelected() || [],
+      settore: multiselects.settore?.getSelected() || [],
+      beneficiario: multiselects.beneficiario?.getSelected() || [],
+      programma: multiselects.programma?.getSelected() || [],
+      modalita: multiselects.modalita?.getSelected() || [],
+      ateco: multiselects.ateco?.getSelected() || [],
+    };
     const tipologie = getActiveChips(tipologiaChips);
     const stati = getActiveChips(scadenzaChips);
-    const impMin = importoMin && importoMin.value ? parseInt(importoMin.value, 10) : null;
-    const impMax = importoMax && importoMax.value ? parseInt(importoMax.value, 10) : null;
-    const scadDa = scadenzaDa && scadenzaDa.value ? scadenzaDa.value : '';
-    const scadA = scadenzaA && scadenzaA.value ? scadenzaA.value : '';
+    const impMin = importoMin.value ? parseInt(importoMin.value, 10) : null;
+    const impMax = importoMax.value ? parseInt(importoMax.value, 10) : null;
+    const scadDa = scadenzaDa.value || '';
+    const scadA = scadenzaA.value || '';
 
     const from = (currentPage - 1) * PAGE_SIZE;
     const params = {
@@ -561,44 +833,56 @@ const pageKeywords =
       'limit': String(PAGE_SIZE),
     };
 
+    // Combiniamo tutti i predicati custom in un singolo `and=()`.
+    const andParts = [];
+
+    // Ricerca testuale: OR su 3 colonne
     if (searchTerm) {
-      const t = searchTerm.replace(/[(),]/g, ' ');
-      params['or'] = `(seo_titolo.ilike.*${t}*,seo_descrizione_breve.ilike.*${t}*,ente_erogatore.ilike.*${t}*)`;
+      const t = safe(searchTerm);
+      andParts.push(`or(seo_titolo.ilike.*${t}*,seo_descrizione_breve.ilike.*${t}*,ente_erogatore.ilike.*${t}*)`);
     }
-    if (regione) {
-      params['area_geografica'] = `ilike.*${regione}*`;
+
+    // Regione: area_geografica e' TEXT free-form, usiamo OR di ilike
+    if (sel.regione.length) {
+      const ors = sel.regione.map(v => `area_geografica.ilike.*${safe(v)}*`);
+      andParts.push(`or(${ors.join(',')})`);
     }
-    if (settore) {
-      params['tematica'] = `cs.{"${settore.replace(/"/g, '\\"')}"}`;
+    // Settore: tematica e' TEXT[], overlap
+    if (sel.settore.length) {
+      andParts.push(`tematica.ov.{${sel.settore.map(quoteVal).join(',')}}`);
     }
-    if (beneficiario) {
-      params['beneficiari_norm'] = `cs.{"${beneficiario.replace(/"/g, '\\"')}"}`;
+    // Beneficiario: beneficiari_norm e' TEXT[], overlap
+    if (sel.beneficiario.length) {
+      andParts.push(`beneficiari_norm.ov.{${sel.beneficiario.map(quoteVal).join(',')}}`);
     }
-    if (programma) {
-      params['programma_nome'] = `eq.${programma}`;
+    // ATECO: codici_ateco_norm e' TEXT[], overlap
+    if (sel.ateco.length) {
+      andParts.push(`codici_ateco_norm.ov.{${sel.ateco.map(quoteVal).join(',')}}`);
     }
-    if (modalita) {
-      params['modalita_erogazione_nome'] = `eq.${modalita}`;
+    // Programma: TEXT, IN
+    if (sel.programma.length) {
+      andParts.push(`programma_nome.in.(${sel.programma.map(quoteVal).join(',')})`);
     }
-    if (ateco) {
-      // Il datalist usa value="C28 — descrizione". Se l'utente ha digitato solo il codice
-      // (senza descrizione) o un testo libero, facciamo un match parziale via array contains
-      // sul prefisso esatto (PostgREST non supporta ilike su array element, quindi usiamo cs).
-      params['codici_ateco_norm'] = `cs.{"${ateco.replace(/"/g, '\\"')}"}`;
+    // Modalita: TEXT, IN
+    if (sel.modalita.length) {
+      andParts.push(`modalita_erogazione_nome.in.(${sel.modalita.map(quoteVal).join(',')})`);
     }
+    // Tipologia chip
     if (tipologie.length) {
-      params['tipologia_normalizzata'] = `in.(${tipologie.map(t => `"${t}"`).join(',')})`;
+      andParts.push(`tipologia_normalizzata.in.(${tipologie.map(quoteVal).join(',')})`);
     }
+    // Stato scadenza chip
     if (stati.length) {
-      params['scadenza_stato'] = `in.(${stati.map(s => `"${s}"`).join(',')})`;
+      andParts.push(`scadenza_stato.in.(${stati.map(quoteVal).join(',')})`);
     }
-    const andClauses = [];
-    if (impMin != null) andClauses.push(`importo_totale_eur.gte.${impMin}`);
-    if (impMax != null) andClauses.push(`importo_totale_eur.lte.${impMax}`);
-    if (scadDa) andClauses.push(`data_scadenza.gte.${scadDa}`);
-    if (scadA) andClauses.push(`data_scadenza.lte.${scadA}`);
-    if (andClauses.length) {
-      params['and'] = `(${andClauses.join(',')})`;
+    // Range filters
+    if (impMin != null) andParts.push(`importo_totale_eur.gte.${impMin}`);
+    if (impMax != null) andParts.push(`importo_totale_eur.lte.${impMax}`);
+    if (scadDa) andParts.push(`data_scadenza.gte.${scadDa}`);
+    if (scadA) andParts.push(`data_scadenza.lte.${scadA}`);
+
+    if (andParts.length) {
+      params['and'] = `(${andParts.join(',')})`;
     }
 
     try {
@@ -612,28 +896,18 @@ const pageKeywords =
     } finally {
       isLoading = false;
       if (loadingIndicator) { loadingIndicator.classList.add('hidden'); loadingIndicator.classList.remove('flex'); }
+      updateActiveBadge();
     }
   }
 
   function resetAndLoad() { currentPage = 1; loadPage(); }
-
-  function debounce(fn, wait) {
-    let t;
-    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
-  }
   const debouncedLoad = debounce(resetAndLoad, 300);
 
-  if (searchInput) searchInput.addEventListener('input', debouncedLoad);
-  if (regioneSelect) regioneSelect.addEventListener('change', resetAndLoad);
-  if (settoreSelect) settoreSelect.addEventListener('change', resetAndLoad);
-  if (beneficiarioSelect) beneficiarioSelect.addEventListener('change', resetAndLoad);
-  if (programmaSelect) programmaSelect.addEventListener('change', resetAndLoad);
-  if (modalitaSelect) modalitaSelect.addEventListener('change', resetAndLoad);
-  if (atecoInput) atecoInput.addEventListener('input', debouncedLoad);
-  if (importoMin) importoMin.addEventListener('input', debouncedLoad);
-  if (importoMax) importoMax.addEventListener('input', debouncedLoad);
-  if (scadenzaDa) scadenzaDa.addEventListener('change', resetAndLoad);
-  if (scadenzaA) scadenzaA.addEventListener('change', resetAndLoad);
+  searchInput.addEventListener('input', debouncedLoad);
+  importoMin.addEventListener('input', debouncedLoad);
+  importoMax.addEventListener('input', debouncedLoad);
+  scadenzaDa.addEventListener('change', resetAndLoad);
+  scadenzaA.addEventListener('change', resetAndLoad);
 
   if (prevBtn) prevBtn.addEventListener('click', () => {
     if (currentPage > 1) { currentPage--; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
@@ -642,30 +916,34 @@ const pageKeywords =
     currentPage++; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
-  if (resetButton) {
-    resetButton.addEventListener('click', () => {
-      if (searchInput) searchInput.value = '';
-      if (regioneSelect) regioneSelect.value = '';
-      if (settoreSelect) settoreSelect.value = '';
-      if (beneficiarioSelect) beneficiarioSelect.value = '';
-      if (programmaSelect) programmaSelect.value = '';
-      if (modalitaSelect) modalitaSelect.value = '';
-      if (atecoInput) atecoInput.value = '';
-      if (importoMin) importoMin.value = '';
-      if (importoMax) importoMax.value = '';
-      if (scadenzaDa) scadenzaDa.value = '';
-      if (scadenzaA) scadenzaA.value = '';
-      tipologiaChips.querySelectorAll('.chip-toggle').forEach(b => {
-        b.dataset.active = 'false';
-        b.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
-        b.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
-      });
-      scadenzaChips.querySelectorAll('.chip-toggle').forEach(b => {
-        b.dataset.active = 'false';
-        b.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
-        b.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
-      });
-      resetAndLoad();
+  // ============================================================
+  // Reset
+  // ============================================================
+  function resetAllFilters() {
+    searchInput.value = '';
+    Object.values(multiselects).forEach(ms => ms.clear());
+    importoMin.value = '';
+    importoMax.value = '';
+    scadenzaDa.value = '';
+    scadenzaA.value = '';
+    tipologiaChips.querySelectorAll('.chip-toggle').forEach(b => {
+      b.dataset.active = 'false';
+      b.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
+      b.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
     });
+    scadenzaChips.querySelectorAll('.chip-toggle').forEach(b => {
+      b.dataset.active = 'false';
+      b.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
+      b.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
+    });
+    resetAndLoad();
   }
+  document.getElementById('reset-filters').addEventListener('click', e => {
+    e.stopPropagation();
+    resetAllFilters();
+  });
+  document.getElementById('reset-filters-mobile').addEventListener('click', resetAllFilters);
+
+  // Initial badge update
+  updateActiveBadge();
 </script>
