@@ -10,6 +10,9 @@ import {
   type Regione,
   type Settore,
   type Beneficiario,
+  type CodiceAteco,
+  type Programma,
+  type ModalitaErogazione,
 } from '../lib/supabase-bandi';
 
 export const prerender = false;
@@ -22,7 +25,8 @@ const BANDO_SELECT_LIST =
   'id, slug, seo_titolo, seo_descrizione_breve, ente_erogatore, ' +
   'tipologia_normalizzata, area_geografica, scadenza_stato, ' +
   'data_scadenza, importo_totale_eur, importo_max_per_progetto_eur, ' +
-  'tematica, beneficiari_norm, link_bando, titolo';
+  'tematica, beneficiari_norm, codici_ateco_norm, programma_nome, ' +
+  'modalita_erogazione_nome, link_bando, titolo';
 
 async function loadBandiData(): Promise<{ items: Bando[]; total: number }> {
   try {
@@ -47,18 +51,36 @@ async function loadBandiData(): Promise<{ items: Bando[]; total: number }> {
 }
 
 async function loadFilterOptions() {
-  const empty = { regioni: [] as Regione[], settori: [] as Settore[], beneficiari: [] as Beneficiario[] };
+  const empty = {
+    regioni: [] as Regione[],
+    settori: [] as Settore[],
+    beneficiari: [] as Beneficiario[],
+    programmi: [] as Programma[],
+    modalita: [] as ModalitaErogazione[],
+    ateco: [] as CodiceAteco[],
+  };
   try {
     if (!supabaseUrl || !supabaseKey) return empty;
-    const [regRes, setRes, benRes] = await Promise.all([
+    const [regRes, setRes, benRes, progRes, modRes, atecoRes] = await Promise.all([
       supabaseBandi.from('regioni').select('id, nome').order('nome', { ascending: true }),
       supabaseBandi.from('settori').select('id, nome').order('nome', { ascending: true }),
       supabaseBandi.from('beneficiari').select('id, nome').order('nome', { ascending: true }),
+      supabaseBandi.from('programmi').select('id, nome').order('nome', { ascending: true }),
+      supabaseBandi.from('modalita_erogazione').select('id, nome').order('nome', { ascending: true }),
+      // Limito ATECO a 5000 codici (~ tutti quelli effettivamente referenziati dai bandi).
+      supabaseBandi
+        .from('codici_ateco')
+        .select('id, codice, descrizione')
+        .order('codice', { ascending: true })
+        .limit(5000),
     ]);
     return {
       regioni: (regRes.data || []) as Regione[],
       settori: (setRes.data || []) as Settore[],
       beneficiari: (benRes.data || []) as Beneficiario[],
+      programmi: (progRes.data || []) as Programma[],
+      modalita: (modRes.data || []) as ModalitaErogazione[],
+      ateco: (atecoRes.data || []) as CodiceAteco[],
     };
   } catch {
     return empty;
@@ -68,6 +90,14 @@ async function loadFilterOptions() {
 const { items: bandiData, total: totalCount } = await loadBandiData();
 const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 const filterOptions = await loadFilterOptions();
+
+// Valori "code — descrizione" memorizzati nella colonna codici_ateco_norm (TEXT[]).
+// Devono corrispondere ESATTAMENTE al formato usato dal backend in `_denormalize_bando_lookups`
+// e dal backfill SQL.
+const atecoValues = filterOptions.ateco.map(a => ({
+  display: a.descrizione ? `${a.codice} — ${a.descrizione}` : a.codice,
+  value: `${a.codice} — ${a.descrizione || ''}`,
+}));
 
 const formatDate = (s: string | null | undefined): string => {
   if (!s) return '—';
@@ -101,16 +131,16 @@ const scadenzaBadgeLabel = (stato: string | null | undefined): string => {
 
 const pageTitle = 'Bandi e finanziamenti pubblici - EduNews24';
 const pageDescription =
-  'Trova bandi di finanziamento europei, nazionali e regionali. Filtra per regione, settore, beneficiari, tipologia (FESR/FSE/Interreg/JTF), importo e scadenza.';
+  'Trova bandi di finanziamento europei, nazionali e regionali. Filtra per regione, settore, beneficiari, tipologia (FESR/FSE/Interreg/JTF), codici ATECO, programma, importo e scadenza.';
 const pageKeywords =
-  'bandi, finanziamenti, FESR, FSE, Interreg, OpenCoesione, fondi europei, regionali, nazionali';
+  'bandi, finanziamenti, FESR, FSE, Interreg, OpenCoesione, fondi europei, regionali, nazionali, codici ATECO';
 ---
 
 <Layout title={pageTitle} description={pageDescription} keywords={pageKeywords}>
   <main class="bg-gray-50 min-h-screen">
-    <div class="bg-gradient-to-r from-emerald-700 to-teal-800 text-white py-10 px-4 sm:px-6 lg:px-8">
+    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
       <div class="container mx-auto max-w-6xl">
-        <nav class="flex text-sm text-emerald-200 mb-4" aria-label="Breadcrumb">
+        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
           <ol class="inline-flex items-center space-x-1">
             <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
             <li class="flex items-center">
@@ -120,7 +150,7 @@ const pageKeywords =
           </ol>
         </nav>
         <h1 class="text-3xl md:text-4xl font-bold mb-2">Bandi e finanziamenti pubblici</h1>
-        <p class="text-emerald-100 text-lg max-w-2xl">Bandi europei (FESR, FSE, Interreg, JTF), nazionali e regionali. Filtra per regione, settore, beneficiari, importo e scadenza.</p>
+        <p class="text-blue-100 text-lg max-w-2xl">Bandi europei (FESR, FSE, Interreg, JTF), nazionali e regionali. Filtra per regione, settore, beneficiari, codici ATECO, programma, importo e scadenza.</p>
         <div class="mt-4 flex items-center gap-4 text-sm">
           <span class="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
@@ -132,19 +162,19 @@ const pageKeywords =
 
     <div class="container mx-auto px-4 max-w-6xl -mt-6">
       <div class="mb-6 p-5 bg-white rounded-xl shadow-md border border-gray-100">
-        {/* Row 1: Search + lookup dropdowns + reset */}
+        {/* Riga 1: Search + lookup dropdowns + Programma + Reset */}
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
           <div class="lg:col-span-2">
             <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Cerca</label>
             <div class="relative">
               <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-              <input type="text" id="search-filter" placeholder="Titolo, ente, descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-gray-50 transition-colors">
+              <input type="text" id="search-filter" placeholder="Titolo, ente, descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
             </div>
           </div>
 
           <div>
             <label for="regione-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Regione</label>
-            <select id="regione-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-gray-50">
+            <select id="regione-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
               {filterOptions.regioni.map(r => <option value={r.nome}>{r.nome}</option>)}
             </select>
@@ -152,7 +182,7 @@ const pageKeywords =
 
           <div>
             <label for="settore-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Settore</label>
-            <select id="settore-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-gray-50">
+            <select id="settore-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
               <option value="">Tutti</option>
               {filterOptions.settori.map(s => <option value={s.nome}>{s.nome}</option>)}
             </select>
@@ -160,7 +190,7 @@ const pageKeywords =
 
           <div>
             <label for="beneficiario-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Beneficiario</label>
-            <select id="beneficiario-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-gray-50">
+            <select id="beneficiario-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
               <option value="">Tutti</option>
               {filterOptions.beneficiari.map(b => <option value={b.nome}>{b.nome}</option>)}
             </select>
@@ -175,7 +205,32 @@ const pageKeywords =
           </div>
         </div>
 
-        {/* Row 2: Tipologia chips + Stato scadenza chips */}
+        {/* Riga 2: Programma + Modalita erogazione + ATECO */}
+        <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-end">
+          <div>
+            <label for="programma-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Programma</label>
+            <select id="programma-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              <option value="">Tutti</option>
+              {filterOptions.programmi.map(p => <option value={p.nome}>{p.nome}</option>)}
+            </select>
+          </div>
+          <div>
+            <label for="modalita-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Modalita erogazione</label>
+            <select id="modalita-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              <option value="">Tutte</option>
+              {filterOptions.modalita.map(m => <option value={m.nome}>{m.nome}</option>)}
+            </select>
+          </div>
+          <div>
+            <label for="ateco-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Codice ATECO</label>
+            <input type="text" id="ateco-filter" list="ateco-list" placeholder="Digita codice o descrizione..." class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+            <datalist id="ateco-list">
+              {atecoValues.map(a => <option value={a.value}>{a.display}</option>)}
+            </datalist>
+          </div>
+        </div>
+
+        {/* Riga 3: Tipologia chips + Stato scadenza chips */}
         <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div>
             <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tipologia</label>
@@ -199,23 +254,23 @@ const pageKeywords =
           </div>
         </div>
 
-        {/* Row 3: Importo + Scadenza ranges */}
+        {/* Riga 4: Importo + Scadenza ranges */}
         <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
             <label for="importo-min" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Importo min (€)</label>
-            <input type="number" id="importo-min" min="0" step="1000" placeholder="0" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-gray-50">
+            <input type="number" id="importo-min" min="0" step="1000" placeholder="0" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
           </div>
           <div>
             <label for="importo-max" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Importo max (€)</label>
-            <input type="number" id="importo-max" min="0" step="1000" placeholder="∞" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-gray-50">
+            <input type="number" id="importo-max" min="0" step="1000" placeholder="∞" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
           </div>
           <div>
             <label for="scadenza-da" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Scadenza da</label>
-            <input type="date" id="scadenza-da" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-gray-50">
+            <input type="date" id="scadenza-da" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
           </div>
           <div>
             <label for="scadenza-a" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Scadenza a</label>
-            <input type="date" id="scadenza-a" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm bg-gray-50">
+            <input type="date" id="scadenza-a" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
           </div>
         </div>
       </div>
@@ -224,7 +279,7 @@ const pageKeywords =
         <p id="results-count" class="text-sm text-gray-500">
           <span id="visible-count" class="font-semibold text-gray-700">{totalCount}</span> bandi trovati
         </p>
-        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-emerald-600">
+        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-blue-600">
           <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
           Caricamento...
         </div>
@@ -245,7 +300,7 @@ const pageKeywords =
                   <div class="p-5 sm:p-6">
                     <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
                       <div class="flex-1 min-w-0">
-                        <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-emerald-700 transition-colors line-clamp-2">
+                        <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">
                           {bando.seo_titolo || bando.titolo}
                         </h2>
                       </div>
@@ -268,7 +323,7 @@ const pageKeywords =
                         </span>
                       )}
                       {bando.tipologia_normalizzata && (
-                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-xs font-semibold">
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">
                           {bando.tipologia_normalizzata}
                         </span>
                       )}
@@ -345,6 +400,9 @@ const pageKeywords =
   const regioneSelect = document.getElementById('regione-filter');
   const settoreSelect = document.getElementById('settore-filter');
   const beneficiarioSelect = document.getElementById('beneficiario-filter');
+  const programmaSelect = document.getElementById('programma-filter');
+  const modalitaSelect = document.getElementById('modalita-filter');
+  const atecoInput = document.getElementById('ateco-filter');
   const importoMin = document.getElementById('importo-min');
   const importoMax = document.getElementById('importo-max');
   const scadenzaDa = document.getElementById('scadenza-da');
@@ -376,10 +434,10 @@ const pageKeywords =
       const active = btn.dataset.active === 'true';
       btn.dataset.active = active ? 'false' : 'true';
       if (active) {
-        btn.classList.remove('bg-emerald-600', 'text-white', 'border-emerald-600');
+        btn.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
         btn.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
       } else {
-        btn.classList.add('bg-emerald-600', 'text-white', 'border-emerald-600');
+        btn.classList.add('bg-blue-600', 'text-white', 'border-blue-600');
         btn.classList.remove('bg-gray-50', 'text-gray-700', 'border-gray-200');
       }
       resetAndLoad();
@@ -438,14 +496,14 @@ const pageKeywords =
           <div class="p-5 sm:p-6">
             <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
               <div class="flex-1 min-w-0">
-                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-emerald-700 transition-colors line-clamp-2">${escapeHtml(b.seo_titolo || b.titolo || '')}</h2>
+                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">${escapeHtml(b.seo_titolo || b.titolo || '')}</h2>
               </div>
               <span class="shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${badgeClasses(b.scadenza_stato)}">${badgeLabel(b.scadenza_stato)}</span>
             </div>
             <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
               ${b.ente_erogatore ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg><span class="line-clamp-1">${escapeHtml(b.ente_erogatore)}</span></span>` : ''}
               ${b.area_geografica ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg><span>${escapeHtml(b.area_geografica)}</span></span>` : ''}
-              ${b.tipologia_normalizzata ? `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-xs font-semibold">${escapeHtml(b.tipologia_normalizzata)}</span>` : ''}
+              ${b.tipologia_normalizzata ? `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">${escapeHtml(b.tipologia_normalizzata)}</span>` : ''}
             </div>
             <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
               ${b.data_scadenza ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Scadenza: <span class="font-medium">${formatDateDisplay(b.data_scadenza)}</span></span>` : ''}
@@ -483,6 +541,9 @@ const pageKeywords =
     const regione = (regioneSelect && regioneSelect.value || '').trim();
     const settore = (settoreSelect && settoreSelect.value || '').trim();
     const beneficiario = (beneficiarioSelect && beneficiarioSelect.value || '').trim();
+    const programma = (programmaSelect && programmaSelect.value || '').trim();
+    const modalita = (modalitaSelect && modalitaSelect.value || '').trim();
+    const ateco = (atecoInput && atecoInput.value || '').trim();
     const tipologie = getActiveChips(tipologiaChips);
     const stati = getActiveChips(scadenzaChips);
     const impMin = importoMin && importoMin.value ? parseInt(importoMin.value, 10) : null;
@@ -508,11 +569,22 @@ const pageKeywords =
       params['area_geografica'] = `ilike.*${regione}*`;
     }
     if (settore) {
-      // tematica e' TEXT[]: cs.{"valore"} = contains
       params['tematica'] = `cs.{"${settore.replace(/"/g, '\\"')}"}`;
     }
     if (beneficiario) {
       params['beneficiari_norm'] = `cs.{"${beneficiario.replace(/"/g, '\\"')}"}`;
+    }
+    if (programma) {
+      params['programma_nome'] = `eq.${programma}`;
+    }
+    if (modalita) {
+      params['modalita_erogazione_nome'] = `eq.${modalita}`;
+    }
+    if (ateco) {
+      // Il datalist usa value="C28 — descrizione". Se l'utente ha digitato solo il codice
+      // (senza descrizione) o un testo libero, facciamo un match parziale via array contains
+      // sul prefisso esatto (PostgREST non supporta ilike su array element, quindi usiamo cs).
+      params['codici_ateco_norm'] = `cs.{"${ateco.replace(/"/g, '\\"')}"}`;
     }
     if (tipologie.length) {
       params['tipologia_normalizzata'] = `in.(${tipologie.map(t => `"${t}"`).join(',')})`;
@@ -520,7 +592,6 @@ const pageKeywords =
     if (stati.length) {
       params['scadenza_stato'] = `in.(${stati.map(s => `"${s}"`).join(',')})`;
     }
-    // Range filters: PostgREST accetta piu' filtri sulla stessa colonna via and=()
     const andClauses = [];
     if (impMin != null) andClauses.push(`importo_totale_eur.gte.${impMin}`);
     if (impMax != null) andClauses.push(`importo_totale_eur.lte.${impMax}`);
@@ -556,6 +627,9 @@ const pageKeywords =
   if (regioneSelect) regioneSelect.addEventListener('change', resetAndLoad);
   if (settoreSelect) settoreSelect.addEventListener('change', resetAndLoad);
   if (beneficiarioSelect) beneficiarioSelect.addEventListener('change', resetAndLoad);
+  if (programmaSelect) programmaSelect.addEventListener('change', resetAndLoad);
+  if (modalitaSelect) modalitaSelect.addEventListener('change', resetAndLoad);
+  if (atecoInput) atecoInput.addEventListener('input', debouncedLoad);
   if (importoMin) importoMin.addEventListener('input', debouncedLoad);
   if (importoMax) importoMax.addEventListener('input', debouncedLoad);
   if (scadenzaDa) scadenzaDa.addEventListener('change', resetAndLoad);
@@ -574,22 +648,24 @@ const pageKeywords =
       if (regioneSelect) regioneSelect.value = '';
       if (settoreSelect) settoreSelect.value = '';
       if (beneficiarioSelect) beneficiarioSelect.value = '';
+      if (programmaSelect) programmaSelect.value = '';
+      if (modalitaSelect) modalitaSelect.value = '';
+      if (atecoInput) atecoInput.value = '';
       if (importoMin) importoMin.value = '';
       if (importoMax) importoMax.value = '';
       if (scadenzaDa) scadenzaDa.value = '';
       if (scadenzaA) scadenzaA.value = '';
       tipologiaChips.querySelectorAll('.chip-toggle').forEach(b => {
         b.dataset.active = 'false';
-        b.classList.remove('bg-emerald-600', 'text-white', 'border-emerald-600');
+        b.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
         b.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
       });
       scadenzaChips.querySelectorAll('.chip-toggle').forEach(b => {
         b.dataset.active = 'false';
-        b.classList.remove('bg-emerald-600', 'text-white', 'border-emerald-600');
+        b.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
         b.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
       });
       resetAndLoad();
     });
   }
 </script>
-

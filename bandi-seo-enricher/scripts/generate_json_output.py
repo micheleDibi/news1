@@ -45,6 +45,9 @@ WORD_RANGES = {
     "guida_bando": (800, 1200),
 }
 
+ALLEGATI_TIPI = {"pdf", "doc", "docx", "zip", "rtf", "xlsx", "xls", "odt", "ods", "altro"}
+URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
 STOPWORDS_IT = {
     "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
     "di", "a", "da", "in", "con", "su", "per", "tra", "fra",
@@ -160,6 +163,43 @@ def _validate_date_iso(value: Any) -> bool:
         return False
 
 
+def _validate_allegati(allegati: Any) -> tuple[list[dict], list[str]]:
+    """Valida e normalizza la lista allegati. Ritorna (lista_pulita, warnings)."""
+    warnings: list[str] = []
+    if allegati is None:
+        return [], warnings
+    if not isinstance(allegati, list):
+        warnings.append(f"allegati deve essere una lista, trovato: {type(allegati).__name__}")
+        return [], warnings
+
+    out: list[dict] = []
+    seen_urls: set[str] = set()
+    for i, item in enumerate(allegati):
+        if not isinstance(item, dict):
+            warnings.append(f"allegati[{i}] non e' un dict")
+            continue
+        url = (item.get("url") or "").strip()
+        label = (item.get("label") or "").strip()
+        tipo = (item.get("tipo") or "").strip().lower()
+        if not url:
+            warnings.append(f"allegati[{i}] url mancante")
+            continue
+        if not URL_RE.match(url):
+            warnings.append(f"allegati[{i}] url non http(s): {url[:80]}")
+            continue
+        if not label:
+            warnings.append(f"allegati[{i}] label mancante")
+            continue
+        if tipo not in ALLEGATI_TIPI:
+            warnings.append(f"allegati[{i}] tipo non canonico: {tipo!r}")
+            tipo = "altro"
+        if url in seen_urls:
+            continue  # dedup silenzioso
+        seen_urls.add(url)
+        out.append({"label": label, "url": url, "tipo": tipo})
+    return out, warnings
+
+
 def _compute_scadenza_stato(scadenza: str | None) -> str | None:
     if not scadenza:
         return None
@@ -190,6 +230,7 @@ def create_bando_json(
     factcheck_report: list[dict],
     fonti: list[dict],
     livello: str,
+    allegati: list[dict] | None = None,
     output_path: str | Path | None = None,
 ) -> dict:
     if livello not in WORD_RANGES:
@@ -226,6 +267,9 @@ def create_bando_json(
 
     warnings.extend(_validate_sections(contenuto_sections))
     warnings.extend(_check_blacklist(contenuto_sections))
+
+    allegati_clean, allegati_warnings = _validate_allegati(allegati)
+    warnings.extend(allegati_warnings)
 
     if not bando_data.get("ente_erogatore"):
         warnings.append("ente_erogatore mancante (NOT NULL nello schema)")
@@ -272,6 +316,7 @@ def create_bando_json(
             "link_candidatura": bando_data.get("link_candidatura"),
             "riferimento_normativo": bando_data.get("riferimento_normativo"),
         },
+        "allegati": allegati_clean,
         "factcheck_report": factcheck_report or [],
         "fonti": fonti or [],
         "validation": {

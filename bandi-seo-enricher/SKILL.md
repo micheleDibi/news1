@@ -64,9 +64,21 @@ Output: contenuto markdown su stdout (salvalo in un file di scratch). Se Firecra
 
 Richiede la variabile d'ambiente `FIRECRAWL_API_KEY`.
 
-### STEP 3 — PDF allegati
+### STEP 3 — PDF allegati e raccolta link documenti
 
 Se nel markdown trovi link a PDF di bando/avviso/regolamento/allegato (estensione `.pdf`), scrapali con lo stesso comando e usali come **fonte primaria** per scadenza/importo/beneficiari. **Il PDF batte sempre la pagina web.** Se PDF e pagina divergono, vince il PDF e annota la discrepanza in `factcheck_report`.
+
+**RACCOLTA ALLEGATI (obbligatorio)** — Durante la lettura del markdown della pagina istituzionale e dei PDF, raccogli TUTTI gli URL a file con estensioni `.pdf`, `.doc`, `.docx`, `.zip`, `.rtf`, `.xlsx`, `.xls`, `.odt`, `.ods` (modulistica, regolamenti, allegati tecnici, FAQ ufficiali, schemi di domanda). Per ogni allegato componi un oggetto:
+
+```json
+{"label": "Modulo di candidatura", "url": "https://.../modulo.pdf", "tipo": "pdf"}
+```
+
+- **`label`**: testo del link che porta al file (es. testo nel `[testo](url)` markdown). Fallback se il link è solo un'icona o un URL nudo: usa il nome del file senza estensione, con underscore/dash convertiti in spazi e sentence case.
+- **`url`**: URL assoluto (risolvi gli URL relativi rispetto a `source_url`).
+- **`tipo`**: una stringa tra `pdf | doc | docx | zip | rtf | xlsx | xls | odt | ods | altro` derivata dall'estensione (lowercase). Usa `altro` se l'estensione non è in lista.
+
+Includi questi oggetti nell'array `allegati[]` del JSON di output (vedi STEP 7). Se la pagina non ha file allegati: emetti `"allegati": []`. Niente duplicati: deduplica per URL.
 
 ### STEP 4 — Estrazione campi strutturati
 
@@ -109,7 +121,7 @@ Il contenuto deve essere **specifico per quel bando**: apertura con fatto concre
 
 ### STEP 7 — Assembla e valida il JSON
 
-Scrivi i parametri editoriali in un file JSON di scratch (`scratchpad/<slug>.inputs.json`) con esattamente i kwargs di `create_bando_json` **tranne `output_path`**: `source_url`, `source_domain`, `titolo`, `occhiello`, `slug`, `descrizione_breve`, `meta_title`, `meta_description`, `contenuto_sections`, `bando_data`, `factcheck_report`, `fonti`, `livello`. Poi:
+Scrivi i parametri editoriali in un file JSON di scratch (`scratchpad/<slug>.inputs.json`) con esattamente i kwargs di `create_bando_json` **tranne `output_path`**: `source_url`, `source_domain`, `titolo`, `occhiello`, `slug`, `descrizione_breve`, `meta_title`, `meta_description`, `contenuto_sections`, `bando_data`, `factcheck_report`, `fonti`, `livello`, `allegati` (array, anche vuoto). Poi:
 
 ```bash
 # emette il JSON completo del bando su stdout (caso "solo JSON")
@@ -170,6 +182,12 @@ Il JSON emesso segue questo schema, allineato 1:1 alla tabella Supabase:
     "riferimento_normativo": "..."
   },
 
+  "allegati": [
+    {"label": "Modulo di candidatura", "url": "https://.../modulo.pdf", "tipo": "pdf"},
+    {"label": "Regolamento", "url": "https://.../regolamento.pdf", "tipo": "pdf"},
+    {"label": "FAQ", "url": "https://.../faq.docx", "tipo": "docx"}
+  ],
+
   "factcheck_report": [
     {"dato": "scadenza 30 settembre 2026", "stato": "confermato", "fonte_primaria": "https://.../bando.pdf"}
   ],
@@ -213,6 +231,7 @@ Il JSON emesso segue questo schema, allineato 1:1 alla tabella Supabase:
 - [ ] `importo_totale_eur` e `importo_max_per_progetto_eur` interi in euro (no centesimi, no float)
 - [ ] `link_candidatura` verificato o ricondotto a `source_url` con nota
 - [ ] `beneficiari` e `tematica` array (anche vuoti, mai null)
+- [ ] `allegati` array (vuoto se la pagina non ha file), URL assoluti, tipo nell'enum, deduplicato per url
 
 **SEO:**
 - [ ] `meta_title` ≤ 60 char, keyword nelle prime 3-4 parole

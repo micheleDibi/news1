@@ -10,11 +10,12 @@ const { slug } = Astro.params;
 
 const SELECT_LIST =
   'id, slug, seo_titolo, seo_occhiello, seo_descrizione_breve, ' +
-  'seo_meta_title, seo_meta_description, seo_contenuto, seo_factcheck, seo_fonti, ' +
+  'seo_meta_title, seo_meta_description, seo_contenuto, ' +
   'ente_erogatore, tipologia_normalizzata, area_geografica, tematica, beneficiari_norm, ' +
   'scadenza_stato, data_scadenza, importo_totale_eur, importo_max_per_progetto_eur, ' +
   'link_candidatura, riferimento_normativo, link_bando, ' +
-  'titolo, descrizione, data_pubblicazione, codice_bando, fondo';
+  'titolo, descrizione, data_pubblicazione, codice_bando, fondo, ' +
+  'allegati, codici_ateco_norm, programma_nome, modalita_erogazione_nome';
 
 let bando: Bando | null = null;
 try {
@@ -31,7 +32,7 @@ try {
 
 if (!bando) {
   return new Response(
-    `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>404 - Bando non trovato</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#ef4444;margin:0">404</h1><p style="font-size:1.5rem;font-weight:bold">Bando non trovato</p><p>Il bando richiesto non esiste o e' stato rimosso.</p><a href="/bandi" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#059669;color:white;border-radius:0.375rem;text-decoration:none">Torna ai bandi</a></div></body></html>`,
+    `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>404 - Bando non trovato</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#ef4444;margin:0">404</h1><p style="font-size:1.5rem;font-weight:bold">Bando non trovato</p><p>Il bando richiesto non esiste o e' stato rimosso.</p><a href="/bandi" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#2563eb;color:white;border-radius:0.375rem;text-decoration:none">Torna ai bandi</a></div></body></html>`,
     { status: 404, headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' } },
   );
 }
@@ -73,11 +74,29 @@ const scadenzaBadge = (() => {
   return { label: '—', cls: 'bg-gray-100 text-gray-500 ring-1 ring-gray-200' };
 })();
 
+// Tipo allegato → icona/colore
+const allegatoTipoLabel = (tipo: string): string => {
+  if (tipo === 'pdf') return 'PDF';
+  if (tipo === 'doc' || tipo === 'docx') return 'DOC';
+  if (tipo === 'xls' || tipo === 'xlsx' || tipo === 'ods') return 'XLS';
+  if (tipo === 'odt' || tipo === 'rtf') return 'TXT';
+  if (tipo === 'zip') return 'ZIP';
+  return 'FILE';
+};
+
+const allegatoTipoClasses = (tipo: string): string => {
+  if (tipo === 'pdf') return 'bg-red-50 text-red-700';
+  if (tipo === 'doc' || tipo === 'docx' || tipo === 'odt' || tipo === 'rtf') return 'bg-blue-50 text-blue-700';
+  if (tipo === 'xls' || tipo === 'xlsx' || tipo === 'ods') return 'bg-green-50 text-green-700';
+  if (tipo === 'zip') return 'bg-amber-50 text-amber-700';
+  return 'bg-gray-100 text-gray-600';
+};
+
 // Inline segment renderer
 const renderSegments = (segments: Array<{ kind: 'text' | 'bold' | 'link'; text: string; url?: string }>) => {
   return segments.map(seg => {
     if (seg.kind === 'bold') return `<strong>${escapeText(seg.text)}</strong>`;
-    if (seg.kind === 'link' && seg.url) return `<a href="${escapeAttr(seg.url)}" class="text-emerald-700 hover:underline" target="_blank" rel="noopener noreferrer">${escapeText(seg.text)}</a>`;
+    if (seg.kind === 'link' && seg.url) return `<a href="${escapeAttr(seg.url)}" class="text-blue-700 hover:underline" target="_blank" rel="noopener noreferrer">${escapeText(seg.text)}</a>`;
     return escapeText(seg.text);
   }).join('');
 };
@@ -129,9 +148,9 @@ const jsonLd: Record<string, unknown> = {
   </Fragment>
 
   <main class="bg-gray-50 min-h-screen">
-    <div class="bg-gradient-to-r from-emerald-700 to-teal-800 text-white py-10 px-4 sm:px-6 lg:px-8">
+    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
       <div class="container mx-auto max-w-6xl">
-        <nav class="flex text-sm text-emerald-200 mb-4" aria-label="Breadcrumb">
+        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
           <ol class="inline-flex items-center space-x-1">
             <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
             <li class="flex items-center">
@@ -145,7 +164,7 @@ const jsonLd: Record<string, unknown> = {
           </ol>
         </nav>
         {bando.seo_occhiello && (
-          <p class="text-emerald-200 text-sm uppercase tracking-wider mb-2">{bando.seo_occhiello}</p>
+          <p class="text-blue-200 text-sm uppercase tracking-wider mb-2">{bando.seo_occhiello}</p>
         )}
         <h1 class="text-2xl md:text-4xl font-bold mb-3 leading-tight">{bando.seo_titolo || bando.titolo}</h1>
         <div class="flex flex-wrap items-center gap-3 text-sm">
@@ -153,13 +172,13 @@ const jsonLd: Record<string, unknown> = {
             <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold">{bando.tipologia_normalizzata}</span>
           )}
           {bando.ente_erogatore && (
-            <span class="inline-flex items-center gap-1.5 text-emerald-100">
+            <span class="inline-flex items-center gap-1.5 text-blue-100">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5"/></svg>
               {bando.ente_erogatore}
             </span>
           )}
           {bando.area_geografica && (
-            <span class="inline-flex items-center gap-1.5 text-emerald-100">
+            <span class="inline-flex items-center gap-1.5 text-blue-100">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
               {bando.area_geografica}
             </span>
@@ -176,7 +195,7 @@ const jsonLd: Record<string, unknown> = {
           {bando.seo_descrizione_breve && (
             <p class="text-lg text-gray-700 leading-relaxed mb-6 font-medium">{bando.seo_descrizione_breve}</p>
           )}
-          <div class="prose prose-emerald max-w-none">
+          <div class="prose prose-blue max-w-none">
             {sections.map((section) => {
               if (section.type === 'h2') return <h2 class="text-2xl font-bold text-gray-900 mt-8 mb-3">{section.text}</h2>;
               if (section.type === 'h3') return <h3 class="text-xl font-semibold text-gray-900 mt-6 mb-2">{section.text}</h3>;
@@ -215,43 +234,6 @@ const jsonLd: Record<string, unknown> = {
               return null;
             })}
           </div>
-
-          {/* Trasparenza box */}
-          {((bando.seo_factcheck?.length || 0) > 0 || (bando.seo_fonti?.length || 0) > 0) && (
-            <section class="mt-10 pt-6 border-t border-gray-200">
-              <h2 class="text-lg font-bold text-gray-900 mb-3">Trasparenza dei dati</h2>
-              {bando.seo_factcheck && bando.seo_factcheck.length > 0 && (
-                <div class="mb-4">
-                  <h3 class="text-sm font-semibold text-gray-600 uppercase tracking-wider mb-2">Verifica fatti</h3>
-                  <ul class="space-y-1.5 text-sm">
-                    {bando.seo_factcheck.map(f => (
-                      <li class="flex gap-2">
-                        <span class={`shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${
-                          f.stato === 'confermato' ? 'bg-emerald-50 text-emerald-700' :
-                          f.stato === 'divergente' ? 'bg-amber-50 text-amber-700' :
-                          'bg-gray-100 text-gray-600'
-                        }`}>{f.stato}</span>
-                        <span class="text-gray-700">{f.dato}</span>
-                        {f.fonte_primaria && <a href={f.fonte_primaria} target="_blank" rel="noopener noreferrer" class="text-emerald-700 hover:underline text-xs">fonte</a>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {bando.seo_fonti && bando.seo_fonti.length > 0 && (
-                <div>
-                  <h3 class="text-sm font-semibold text-gray-600 uppercase tracking-wider mb-2">Fonti istituzionali</h3>
-                  <ul class="space-y-1 text-sm">
-                    {bando.seo_fonti.map(f => (
-                      <li>
-                        <a href={f.fonte_url} target="_blank" rel="noopener noreferrer" class="text-emerald-700 hover:underline">{f.dato}</a>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </section>
-          )}
         </article>
 
         {/* Sidebar */}
@@ -264,14 +246,39 @@ const jsonLd: Record<string, unknown> = {
                 href={bando.link_candidatura}
                 target="_blank"
                 rel="noopener noreferrer"
-                class="block w-full text-center px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg transition-colors"
+                class="block w-full text-center px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
               >
                 Vai al modulo di candidatura
                 <svg class="inline w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
               </a>
               {bando.link_bando && bando.link_bando !== bando.link_candidatura && (
-                <a href={bando.link_bando} target="_blank" rel="noopener noreferrer" class="block mt-2 text-center text-sm text-emerald-700 hover:underline">Pagina istituzionale del bando</a>
+                <a href={bando.link_bando} target="_blank" rel="noopener noreferrer" class="block mt-2 text-center text-sm text-blue-700 hover:underline">Pagina istituzionale del bando</a>
               )}
+            </div>
+          )}
+
+          {/* Documenti e allegati */}
+          {bando.allegati && bando.allegati.length > 0 && (
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Documenti e allegati</h3>
+              <ul class="space-y-2">
+                {bando.allegati.map(a => (
+                  <li>
+                    <a
+                      href={a.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="flex items-start gap-2.5 text-sm text-gray-700 hover:text-blue-700 transition-colors group"
+                    >
+                      <span class={`shrink-0 inline-flex items-center justify-center min-w-[2.25rem] px-1.5 py-0.5 rounded text-[10px] font-bold mt-0.5 ${allegatoTipoClasses(a.tipo)}`}>
+                        {allegatoTipoLabel(a.tipo)}
+                      </span>
+                      <span class="flex-1 leading-snug group-hover:underline">{a.label}</span>
+                      <svg class="shrink-0 w-3.5 h-3.5 text-gray-400 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                    </a>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 
@@ -318,7 +325,7 @@ const jsonLd: Record<string, unknown> = {
               <ul class="space-y-1.5">
                 {bando.beneficiari_norm.map(b => (
                   <li class="text-sm text-gray-700 flex items-start gap-2">
-                    <svg class="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    <svg class="w-4 h-4 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                     {b}
                   </li>
                 ))}
@@ -332,9 +339,43 @@ const jsonLd: Record<string, unknown> = {
               <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Tematica</h3>
               <div class="flex flex-wrap gap-2">
                 {bando.tematica.map(t => (
-                  <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-700 text-xs font-medium">{t}</span>
+                  <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 text-xs font-medium">{t}</span>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Codici ATECO */}
+          {bando.codici_ateco_norm && bando.codici_ateco_norm.length > 0 && (
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Codici ATECO</h3>
+              <ul class="space-y-1.5">
+                {bando.codici_ateco_norm.map(c => (
+                  <li class="text-sm text-gray-700 flex items-start gap-2">
+                    <svg class="w-4 h-4 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                    <span class="leading-snug">{c}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Programma + Modalita */}
+          {(bando.programma_nome || bando.modalita_erogazione_nome) && (
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Programma e modalita</h3>
+              {bando.programma_nome && (
+                <div class="mb-3">
+                  <p class="text-xs text-gray-500 mb-0.5">Programma</p>
+                  <p class="text-sm font-medium text-gray-800">{bando.programma_nome}</p>
+                </div>
+              )}
+              {bando.modalita_erogazione_nome && (
+                <div>
+                  <p class="text-xs text-gray-500 mb-0.5">Modalita erogazione</p>
+                  <p class="text-sm font-medium text-gray-800">{bando.modalita_erogazione_nome}</p>
+                </div>
+              )}
             </div>
           )}
 

@@ -316,6 +316,7 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
         "seo_factcheck": payload.get("factcheck_report"),
         "seo_fonti": payload.get("fonti"),
         "seo_validation": payload.get("validation"),
+        "allegati": payload.get("allegati"),
         "ente_erogatore": _pick(bando_obj, "ente_erogatore"),
         "tipologia_normalizzata": _pick(bando_obj, "tipologia"),
         "area_geografica": _pick(bando_obj, "area_geografica"),
@@ -348,6 +349,59 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
             sb.table("bando").update(seo_clean).eq("id", bando_id).execute()
         else:
             raise
+
+
+def _denormalize_bando_lookups(sb, bando_id: int, bando: dict[str, Any]) -> None:
+    """Popola le colonne denormalizzate del bando per i filtri del frontend.
+
+    - `programma_nome` da lookup `programmi` via `programma_id`
+    - `modalita_erogazione_nome` da lookup `modalita_erogazione` via `modalita_erogazione_id`
+    - `codici_ateco_norm` (TEXT[]) da join `bando_codici_ateco` → `codici_ateco`
+
+    Idempotente: i campi sono ricalcolati a ogni chiamata. Best-effort: errori sulle
+    singole query non bloccano l'enrichment (loggati come warning, campo lasciato `None`).
+    """
+    updates: dict[str, Any] = {}
+
+    programma_id = bando.get("programma_id")
+    if programma_id:
+        names = _safe_select_names(sb, "programmi", [programma_id])
+        if names:
+            updates["programma_nome"] = names[0]
+
+    modalita_id = bando.get("modalita_erogazione_id")
+    if modalita_id:
+        names = _safe_select_names(sb, "modalita_erogazione", [modalita_id])
+        if names:
+            updates["modalita_erogazione_nome"] = names[0]
+
+    ateco_ids = _try_junction_lookup(sb, "bando_codici_ateco", "codice_ateco_id", bando_id)
+    if ateco_ids:
+        try:
+            res = sb.table("codici_ateco").select("codice, descrizione").in_("id", ateco_ids).execute()
+            codici = []
+            seen: set[str] = set()
+            for r in res.data or []:
+                code = (r.get("codice") or "").strip()
+                desc = (r.get("descrizione") or "").strip()
+                if not code:
+                    continue
+                value = f"{code} — {desc}" if desc else code
+                if value in seen:
+                    continue
+                seen.add(value)
+                codici.append(value)
+            if codici:
+                updates["codici_ateco_norm"] = codici
+        except Exception as e:
+            logger.warning("[bandi/denorm] lookup codici_ateco failed bando_id={}: {}", bando_id, e)
+
+    if not updates:
+        return
+    try:
+        sb.table("bando").update(updates).eq("id", bando_id).execute()
+    except Exception as e:
+        logger.warning("[bandi/denorm] UPDATE failed bando_id={} updates={}: {}", bando_id, list(updates), e)
 
 
 def _max_attempts() -> int:
@@ -400,6 +454,10 @@ async def _enrich_one(sb, bando: dict[str, Any]) -> bool:
             "skill_attempts": attempts,
         }).eq("id", bando_id).execute()
         return False
+
+    # 5) denormalizza lookup (programma/modalita/ATECO) per i filtri del frontend.
+    # Best-effort: errori qui non invalidano l'enrichment.
+    _denormalize_bando_lookups(sb, bando_id, bando)
 
     sb.table("bando").update({
         "skill_processing_status": "completed",

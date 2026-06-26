@@ -21,12 +21,25 @@ export type TipologiaBando = typeof TIPOLOGIE_BANDO[number];
 export const STATI_SCADENZA = ['aperto', 'in_scadenza', 'scaduto'] as const;
 export type StatoScadenza = typeof STATI_SCADENZA[number];
 
+export const ALLEGATO_TIPI = [
+  'pdf', 'doc', 'docx', 'zip', 'rtf', 'xlsx', 'xls', 'odt', 'ods', 'altro',
+] as const;
+export type AllegatoTipo = typeof ALLEGATO_TIPI[number];
+
+export interface Allegato {
+  label: string;
+  url: string;
+  tipo: AllegatoTipo;
+}
+
 // Tipo del bando "pubblico" (ciò che il frontend legge da DB B con anon key + RLS).
-// Mappa 1:1 con le colonne SEO aggiunte da backend/sql/bando_alter_seo_fields.sql.
+// Mappa 1:1 con le colonne SEO aggiunte da:
+//   backend/sql/bando_alter_seo_fields.sql
+//   backend/sql/bando_alter_filters_and_attachments.sql
 export interface Bando {
   id: number;
   // Dati dallo scraper (rimangono utili per la card / dettaglio)
-  titolo: string | null;            // titolo grezzo (fallback)
+  titolo: string | null;
   descrizione: string | null;
   link_bando: string;
   codice_bando: string | null;
@@ -38,7 +51,7 @@ export interface Bando {
   importo: string | null;
   importo_numerico: number | null;
   ultimo_scraping_at: string | null;
-  // Colonne SEO popolate dalla skill
+  // Colonne SEO popolate dalla skill (bando_alter_seo_fields.sql)
   slug: string;
   seo_livello: 'flash_bando' | 'guida_bando' | null;
   seo_titolo: string | null;
@@ -47,8 +60,6 @@ export interface Bando {
   seo_meta_title: string | null;
   seo_meta_description: string | null;
   seo_contenuto: { sections: BandoSection[] } | null;
-  seo_factcheck: Array<{ dato: string; stato: string; fonte_primaria: string }> | null;
-  seo_fonti: Array<{ dato: string; fonte_url: string }> | null;
   seo_validation: Record<string, unknown> | null;
   ente_erogatore: string | null;
   tipologia_normalizzata: TipologiaBando | null;
@@ -61,6 +72,11 @@ export interface Bando {
   link_candidatura: string | null;
   riferimento_normativo: string | null;
   skill_processing_status: string;
+  // Colonne nuove (bando_alter_filters_and_attachments.sql)
+  allegati: Allegato[] | null;
+  codici_ateco_norm: string[] | null;
+  programma_nome: string | null;
+  modalita_erogazione_nome: string | null;
 }
 
 // Sezioni del contenuto editoriale generato dalla skill.
@@ -77,3 +93,5 @@ export interface Regione { id: number; nome: string }
 export interface Settore { id: number; nome: string }
 export interface Beneficiario { id: number; nome: string }
 export interface CodiceAteco { id: number; codice: string; descrizione: string | null }
+export interface Programma { id: number; nome: string }
+export interface ModalitaErogazione { id: number; nome: string }
