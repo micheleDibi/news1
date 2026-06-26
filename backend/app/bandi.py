@@ -427,10 +427,12 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
 
     logger.info("[bandi/skill] batch start: size={} max_attempts={}", batch_size, max_att)
     try:
+        # Fase 1 conclusa = AI completata OPPURE non necessaria (deterministico bastava).
+        # Senza `not_required` perderemmo i bandi con matching pulito.
         res = (
             sb.table("bando")
             .select(_BANDO_CORE_COLUMNS)
-            .eq("ai_processing_status", "completed")
+            .in_("ai_processing_status", ["completed", "not_required"])
             .in_("skill_processing_status", ["queued", "failed"])
             .lt("skill_attempts", max_att)
             .order("ultimo_scraping_at", desc=True)
