@@ -58,7 +58,9 @@ def _scraper_python() -> str:
 
 
 def _run_scraper_command(args: list[str], label: str) -> int:
-    cmd = [_scraper_python(), "-m", "app.scheduler", *args]
+    # Usiamo `app.cli` (canonico, supporta --limit) anziche' `app.scheduler`
+    # che espone solo run-now / run-pending-now senza argomenti.
+    cmd = [_scraper_python(), "-m", "app.cli", *args]
     logger.info("[bandi/{}] start: cwd={} cmd={}", label, _scraper_dir(), " ".join(cmd))
     started = time.monotonic()
     try:
@@ -85,8 +87,8 @@ def _run_scraper_command(args: list[str], label: str) -> int:
 
 
 def run_scraper_full() -> int:
-    """Esegue una scan completa di tutte le fonti attive (scheduler run-now)."""
-    args: list[str] = ["run-now"]
+    """Esegue una scan completa di tutte le fonti attive (cli `run`)."""
+    args: list[str] = ["run"]
     limit = os.getenv("BANDI_SCRAPER_RUN_LIMIT")
     if limit:
         args += ["--limit", str(limit)]
@@ -94,8 +96,8 @@ def run_scraper_full() -> int:
 
 
 def run_scraper_pending() -> int:
-    """Retry sulle fonti/bandi in coda `pending` (scheduler run-pending-now)."""
-    return _run_scraper_command(["run-pending-now"], "scraper-pending")
+    """Retry sulle fonti/bandi in coda `pending` (cli `run-pending`)."""
+    return _run_scraper_command(["run-pending"], "scraper-pending")
 
 
 # ---------------------------------------------------------------------------
