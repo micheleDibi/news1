@@ -26,7 +26,8 @@ const PAGE_SIZE = 20;
 const BANDO_SELECT_LIST =
   'id, slug, seo_titolo, seo_descrizione_breve, ente_erogatore, ' +
   'tipologia_normalizzata, area_geografica, scadenza_stato, ' +
-  'data_scadenza, importo_totale_eur, importo_max_per_progetto_eur, ' +
+  'data_scadenza, data_pubblicazione, data_pubblicazione_source, ' +
+  'importo_totale_eur, importo_max_per_progetto_eur, ' +
   'tematica, beneficiari_norm, codici_ateco_norm, programma_nome, ' +
   'modalita_erogazione_nome, link_bando, titolo';
 
@@ -37,13 +38,15 @@ async function loadBandiData(): Promise<{ items: Bando[]; total: number }> {
       .from('bando')
       .select('id', { count: 'exact', head: true })
       .eq('skill_processing_status', 'completed')
+      .eq('is_bando_confermato', true)
       .not('slug', 'is', null);
     const { data, error } = await supabaseBandi
       .from('bando')
       .select(BANDO_SELECT_LIST)
       .eq('skill_processing_status', 'completed')
+      .eq('is_bando_confermato', true)
       .not('slug', 'is', null)
-      .order('data_scadenza', { ascending: true, nullsFirst: false })
+      .order('data_pubblicazione', { ascending: false, nullsFirst: false })
       .range(0, PAGE_SIZE - 1);
     if (error) return { items: [], total: 0 };
     return { items: (data || []) as unknown as Bando[], total: count || 0 };
@@ -392,6 +395,12 @@ const pageKeywords =
                     </div>
 
                     <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
+                      {bando.data_pubblicazione && (
+                        <span class="inline-flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                          Pubblicato il <span class="font-medium">{formatDate(bando.data_pubblicazione)}</span>
+                        </span>
+                      )}
                       {bando.data_scadenza && (
                         <span class="inline-flex items-center gap-1.5">
                           <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
@@ -817,6 +826,7 @@ const pageKeywords =
               ${b.tipologia_normalizzata ? `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">${escapeHtml(b.tipologia_normalizzata)}</span>` : ''}
             </div>
             <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
+              ${b.data_pubblicazione ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Pubblicato il <span class="font-medium">${formatDateDisplay(b.data_pubblicazione)}</span></span>` : ''}
               ${b.data_scadenza ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Scadenza: <span class="font-medium">${formatDateDisplay(b.data_scadenza)}</span></span>` : ''}
               ${b.importo_totale_eur != null ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Totale: <span class="font-medium">${formatEuro(b.importo_totale_eur)}</span></span>` : ''}
             </div>
@@ -880,8 +890,9 @@ const pageKeywords =
     const params = {
       'select': SELECT_LIST,
       'skill_processing_status': 'eq.completed',
+      'is_bando_confermato': 'is.true',
       'slug': 'not.is.null',
-      'order': 'data_scadenza.asc.nullslast',
+      'order': 'data_pubblicazione.desc.nullslast',
       'offset': String(from),
       'limit': String(PAGE_SIZE),
     };

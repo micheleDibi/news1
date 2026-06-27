@@ -276,6 +276,11 @@ def build_hint_from_bando(sb, bando: dict[str, Any]) -> dict[str, Any]:
         hint["fondo"] = bando["fondo"]
     if bando.get("data_scadenza"):
         hint["data_scadenza_grezza"] = str(bando["data_scadenza"])
+    if bando.get("data_pubblicazione"):
+        # Hint: data di pubblicazione gia' estratta da fase 1. La skill puo'
+        # proporre la sua se ne trova una piu' autoritativa (es. dal PDF) col
+        # campo `bando.data_pubblicazione_source` (vedi SKILL.md STEP 6b).
+        hint["data_pubblicazione_grezza"] = str(bando["data_pubblicazione"])
     if bando.get("importo"):
         hint["importo_grezzo"] = bando["importo"]
     if bando.get("importo_numerico") is not None:
@@ -297,12 +302,47 @@ def _pick(d: Any, key: str) -> Any:
     return None
 
 
+_SCADENZA_OVERRIDE_SOURCES = {"official_pdf", "official_page"}
+
+
+def _read_existing_for_audit(sb, bando_id: int) -> dict[str, Any] | None:
+    """Legge (data_scadenza, data_pubblicazione, raw_data) per audit pre-skill override.
+
+    Best-effort: ritorna None se il fetch fallisce (l'update procede comunque).
+    """
+    try:
+        res = (
+            sb.table("bando")
+            .select("data_scadenza, data_pubblicazione, raw_data")
+            .eq("id", bando_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.warning("[bandi] read pre-skill audit failed bando_id={}: {}", bando_id, e)
+        return None
+
+
 def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> None:
-    """Persiste il JSON output della skill nelle colonne SEO di `bando`.
+    """Persiste il JSON output della skill nelle colonne di `bando`.
+
+    Verdetto autoritativo: la skill (fase 2) sovrascrive `is_bando_confermato`,
+    e — se la data ha source autorevole (PDF/pagina ufficiale) — anche
+    `data_scadenza` e `data_pubblicazione`. Per audit, prima della sovrascrittura
+    salva i valori precedenti in `raw_data["data_scadenza_pre_skill"]` e
+    `raw_data["data_pubblicazione_pre_skill"]`.
 
     Risolve eventuali collisioni di `slug` aggiungendo suffisso `-{bando_id}`.
     """
     bando_obj = payload.get("bando") or {}
+    validation_obj = payload.get("validation") or {}
+
+    is_valid_bando = validation_obj.get("is_valid_bando")
+    if not isinstance(is_valid_bando, bool):
+        # Retrocompatibilita': vecchi payload senza il blocco validation → assume True.
+        is_valid_bando = True
 
     seo: dict[str, Any] = {
         "slug": payload.get("slug"),
@@ -315,7 +355,7 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
         "seo_contenuto": payload.get("contenuto"),
         "seo_factcheck": payload.get("factcheck_report"),
         "seo_fonti": payload.get("fonti"),
-        "seo_validation": payload.get("validation"),
+        "seo_validation": validation_obj or None,
         "allegati": payload.get("allegati"),
         "ente_erogatore": _pick(bando_obj, "ente_erogatore"),
         "tipologia_normalizzata": _pick(bando_obj, "tipologia"),
@@ -327,11 +367,65 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
         "importo_max_per_progetto_eur": _pick(bando_obj, "importo_max_per_progetto_eur"),
         "link_candidatura": _pick(bando_obj, "link_candidatura"),
         "riferimento_normativo": _pick(bando_obj, "riferimento_normativo"),
+        # Verdetto autoritativo della skill (override fase 1)
+        "is_bando_confermato": is_valid_bando,
+        "validation_reason": validation_obj.get("validation_reason"),
+        "rejection_category": validation_obj.get("rejection_category"),
+        # Provenienza delle date (sempre persistite per audit)
+        "data_scadenza_source": _pick(bando_obj, "scadenza_source"),
+        "data_pubblicazione_source": _pick(bando_obj, "data_pubblicazione_source"),
+        # Verifica link candidatura: bool sempre persistito (anche False).
+        "link_candidatura_verified": bool(_pick(bando_obj, "link_candidatura_verified")),
     }
-    # Rimuovi i None per non sovrascrivere con NULL
-    seo_clean = {k: v for k, v in seo.items() if v is not None}
 
-    if "slug" not in seo_clean:
+    # Sovrascrittura date autoritative: SOLO se la skill ha una source autorevole
+    # (PDF o pagina ufficiale). Per inferred/missing manteniamo il valore di fase 1
+    # — meglio una buona stima che NULL, e l'ordinamento DESC NULLS LAST nel listing
+    # frontend mette in fondo i record senza data.
+    scadenza_iso = _pick(bando_obj, "scadenza")
+    scadenza_source = _pick(bando_obj, "scadenza_source")
+    pubblicazione_iso = _pick(bando_obj, "data_pubblicazione")
+    pubblicazione_source = _pick(bando_obj, "data_pubblicazione_source")
+
+    will_override_scadenza = (
+        scadenza_iso and scadenza_source in _SCADENZA_OVERRIDE_SOURCES
+    )
+    will_override_pubblicazione = (
+        pubblicazione_iso and pubblicazione_source in _SCADENZA_OVERRIDE_SOURCES
+    )
+
+    if will_override_scadenza or will_override_pubblicazione:
+        existing = _read_existing_for_audit(sb, bando_id)
+        merged_raw: dict[str, Any] | None = None
+        if existing is not None:
+            prev_raw = existing.get("raw_data") or {}
+            if not isinstance(prev_raw, dict):
+                prev_raw = {}
+            merged_raw = dict(prev_raw)
+            if will_override_scadenza:
+                prev_scadenza = existing.get("data_scadenza")
+                if prev_scadenza and str(prev_scadenza) != str(scadenza_iso):
+                    merged_raw["data_scadenza_pre_skill"] = str(prev_scadenza)
+                    merged_raw["data_scadenza_pre_skill_source"] = "scraper_fallback"
+            if will_override_pubblicazione:
+                prev_pubblicazione = existing.get("data_pubblicazione")
+                if prev_pubblicazione and str(prev_pubblicazione) != str(pubblicazione_iso):
+                    merged_raw["data_pubblicazione_pre_skill"] = str(prev_pubblicazione)
+                    merged_raw["data_pubblicazione_pre_skill_source"] = "scraper_fallback"
+        if merged_raw is not None:
+            seo["raw_data"] = merged_raw
+        if will_override_scadenza:
+            seo["data_scadenza"] = scadenza_iso
+        if will_override_pubblicazione:
+            seo["data_pubblicazione"] = pubblicazione_iso
+
+    # Rimuovi solo i None che NON sono verdetti booleani / campi di flag espliciti.
+    # is_bando_confermato e link_candidatura_verified DEVONO essere persistiti anche
+    # quando False — sono il verdetto della skill, non assenza di dato.
+    always_keep = {"is_bando_confermato", "link_candidatura_verified"}
+    seo_clean = {k: v for k, v in seo.items() if (v is not None or k in always_keep)}
+
+    if "slug" not in seo_clean or not seo_clean.get("slug"):
         seo_clean["slug"] = _slugify(seo.get("seo_titolo") or "") + f"-{bando_id}"
 
     try:

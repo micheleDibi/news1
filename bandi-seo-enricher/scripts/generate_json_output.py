@@ -48,6 +48,12 @@ WORD_RANGES = {
 ALLEGATI_TIPI = {"pdf", "doc", "docx", "zip", "rtf", "xlsx", "xls", "odt", "ods", "altro"}
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+SCADENZA_SOURCE_VALUES = {"official_pdf", "official_page", "inferred", "missing"}
+REJECTION_CATEGORIES = {
+    "index_page", "search_results", "category_page",
+    "expired_archive", "not_a_funding_call", "unreachable",
+}
+
 STOPWORDS_IT = {
     "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
     "di", "a", "da", "in", "con", "su", "per", "tra", "fra",
@@ -215,6 +221,28 @@ def _compute_scadenza_stato(scadenza: str | None) -> str | None:
     return "aperto"
 
 
+def _normalize_validation(validation_data: dict | None) -> dict:
+    """Normalizza il blocco validation in input.
+
+    Default backward-compat: is_valid_bando=True quando non specificato.
+    """
+    raw = validation_data or {}
+    is_valid = raw.get("is_valid_bando", True)
+    if not isinstance(is_valid, bool):
+        is_valid = bool(is_valid)
+    reason = raw.get("validation_reason")
+    if reason is not None and not isinstance(reason, str):
+        reason = str(reason)
+    rejection = raw.get("rejection_category")
+    if rejection is not None and not isinstance(rejection, str):
+        rejection = str(rejection)
+    return {
+        "is_valid_bando": is_valid,
+        "validation_reason": reason,
+        "rejection_category": rejection,
+    }
+
+
 def create_bando_json(
     *,
     source_url: str,
@@ -231,12 +259,29 @@ def create_bando_json(
     fonti: list[dict],
     livello: str,
     allegati: list[dict] | None = None,
+    validation_data: dict | None = None,
     output_path: str | Path | None = None,
 ) -> dict:
+    """Costruisce il JSON di un bando (single-bando).
+
+    `validation_data` (opzionale) contiene il verdetto di validita' della skill:
+      {"is_valid_bando": bool, "validation_reason": str|None, "rejection_category": str|None}
+
+    Se `is_valid_bando=False` (pagina indice, ricerca, archivio, ecc.), gli altri
+    campi possono restare placeholder/null: l'orchestrator nascondera' il record
+    dal frontend. Le validazioni di lunghezza/contenuto SEO vengono saltate per
+    non bloccare l'emissione del payload "respinto".
+
+    Se `validation_data=None` (default), assume `is_valid_bando=True` per
+    retrocompatibilita' con i call site preesistenti.
+    """
     if livello not in WORD_RANGES:
         raise ValueError(f"livello non valido: {livello}. Atteso uno di {list(WORD_RANGES)}")
 
-    final_slug = slug or slugify(titolo)
+    validation = _normalize_validation(validation_data)
+    is_valid_bando = validation["is_valid_bando"]
+
+    final_slug = slug or slugify(titolo) or slugify(source_url)
 
     # Auto-calcolo scadenza_stato dalla scadenza (se l'utente non lo passa o non e' coerente, ricomputa)
     auto_stato = _compute_scadenza_stato(bando_data.get("scadenza"))
@@ -247,49 +292,87 @@ def create_bando_json(
 
     # Validation
     warnings: list[str] = []
-    if len(meta_title) > META_TITLE_MAX:
-        warnings.append(f"meta_title troppo lungo: {len(meta_title)} > {META_TITLE_MAX}")
-    if len(meta_description) > META_DESC_MAX:
-        warnings.append(f"meta_description troppo lunga: {len(meta_description)} > {META_DESC_MAX}")
-    if len(titolo) > TITOLO_MAX:
-        warnings.append(f"titolo troppo lungo: {len(titolo)} > {TITOLO_MAX}")
-    if not (DESC_BREVE_MIN <= len(descrizione_breve) <= DESC_BREVE_MAX):
-        warnings.append(f"descrizione_breve fuori range {DESC_BREVE_MIN}-{DESC_BREVE_MAX}: {len(descrizione_breve)}")
-    if len(final_slug) > SLUG_MAX:
-        warnings.append(f"slug troppo lungo: {len(final_slug)} > {SLUG_MAX}")
-    if meta_title.strip().lower() == titolo.strip().lower():
-        warnings.append("meta_title e titolo (H1) sono identici: devono essere diversi")
 
-    word_count = _count_words(contenuto_sections)
-    wmin, wmax = WORD_RANGES[livello]
-    if not (wmin <= word_count <= wmax):
-        warnings.append(f"word_count fuori range {livello} ({wmin}-{wmax}): {word_count}")
+    # Per i record bocciati (is_valid_bando=False) salta tutte le validazioni di
+    # forma editoriale/SEO: il payload e' un placeholder, non un articolo.
+    if is_valid_bando:
+        if len(meta_title) > META_TITLE_MAX:
+            warnings.append(f"meta_title troppo lungo: {len(meta_title)} > {META_TITLE_MAX}")
+        if len(meta_description) > META_DESC_MAX:
+            warnings.append(f"meta_description troppo lunga: {len(meta_description)} > {META_DESC_MAX}")
+        if len(titolo) > TITOLO_MAX:
+            warnings.append(f"titolo troppo lungo: {len(titolo)} > {TITOLO_MAX}")
+        if not (DESC_BREVE_MIN <= len(descrizione_breve) <= DESC_BREVE_MAX):
+            warnings.append(f"descrizione_breve fuori range {DESC_BREVE_MIN}-{DESC_BREVE_MAX}: {len(descrizione_breve)}")
+        if len(final_slug) > SLUG_MAX:
+            warnings.append(f"slug troppo lungo: {len(final_slug)} > {SLUG_MAX}")
+        if meta_title.strip().lower() == titolo.strip().lower():
+            warnings.append("meta_title e titolo (H1) sono identici: devono essere diversi")
 
-    warnings.extend(_validate_sections(contenuto_sections))
-    warnings.extend(_check_blacklist(contenuto_sections))
+        word_count = _count_words(contenuto_sections)
+        wmin, wmax = WORD_RANGES[livello]
+        if not (wmin <= word_count <= wmax):
+            warnings.append(f"word_count fuori range {livello} ({wmin}-{wmax}): {word_count}")
+
+        warnings.extend(_validate_sections(contenuto_sections))
+        warnings.extend(_check_blacklist(contenuto_sections))
+
+        if not bando_data.get("ente_erogatore"):
+            warnings.append("ente_erogatore mancante (NOT NULL nello schema)")
+    else:
+        word_count = _count_words(contenuto_sections)
+        # Verdetto negativo: validation_reason richiesto, rejection_category opzionale ma
+        # caldamente raccomandata. Avvisa se mancano per audit.
+        if not validation.get("validation_reason"):
+            warnings.append("validation_reason mancante: serve a tracciare perche' il record e' stato bocciato")
+        rej = validation.get("rejection_category")
+        if rej is not None and rej not in REJECTION_CATEGORIES:
+            warnings.append(f"rejection_category non canonica: {rej!r}")
 
     allegati_clean, allegati_warnings = _validate_allegati(allegati)
     warnings.extend(allegati_warnings)
 
-    if not bando_data.get("ente_erogatore"):
-        warnings.append("ente_erogatore mancante (NOT NULL nello schema)")
+    # Validazioni "leggere" sempre (anche per bocciati): formato date, enum, tipi.
     if not _validate_date_iso(bando_data.get("scadenza")):
         warnings.append(f"scadenza non in formato ISO: {bando_data.get('scadenza')}")
     if bando_data.get("scadenza_stato") not in (None, "aperto", "in_scadenza", "scaduto"):
         warnings.append(f"scadenza_stato non valido: {bando_data.get('scadenza_stato')}")
     if bando_data.get("tipologia") not in (None, "FESR", "FSE", "Interreg", "nazionale", "regionale", "misto", "JTF"):
         warnings.append(f"tipologia non canonica: {bando_data.get('tipologia')}")
+    scadenza_source = bando_data.get("scadenza_source")
+    if scadenza_source is not None and scadenza_source not in SCADENZA_SOURCE_VALUES:
+        warnings.append(f"scadenza_source non valido: {scadenza_source!r}")
+    if scadenza_source is None and bando_data.get("scadenza"):
+        # Se c'e' una scadenza ma manca la provenienza, segnala (necessaria per decidere
+        # se l'orchestrator puo' sovrascrivere data_scadenza).
+        warnings.append("scadenza_source mancante: necessario per decidere se sovrascrivere data_scadenza nel DB")
+    if not _validate_date_iso(bando_data.get("data_pubblicazione")):
+        warnings.append(f"data_pubblicazione non in formato ISO: {bando_data.get('data_pubblicazione')}")
+    data_pubblicazione_source = bando_data.get("data_pubblicazione_source")
+    if data_pubblicazione_source is not None and data_pubblicazione_source not in SCADENZA_SOURCE_VALUES:
+        warnings.append(f"data_pubblicazione_source non valido: {data_pubblicazione_source!r}")
+    if data_pubblicazione_source is None and bando_data.get("data_pubblicazione"):
+        warnings.append(
+            "data_pubblicazione_source mancante: necessario per decidere se sovrascrivere data_pubblicazione nel DB"
+        )
     for k in ("importo_totale_eur", "importo_max_per_progetto_eur"):
         v = bando_data.get(k)
         if v is not None and (not isinstance(v, int) or v < 0):
             warnings.append(f"{k} deve essere int positivo o null, trovato: {v!r}")
     for k in ("beneficiari", "tematica"):
         v = bando_data.get(k)
+        if v is None:
+            continue  # ammesso per bocciati / placeholder; il payload finale normalizza a []
         if not isinstance(v, list):
             warnings.append(f"{k} deve essere una lista (anche vuota), trovato: {type(v).__name__}")
 
-    if not bando_data.get("link_candidatura"):
-        bando_data["link_candidatura"] = source_url
+    # NIENTE fallback link_candidatura = source_url. La skill deve esplicitamente
+    # decidere: NULL + verified=false oppure URL verificato + verified=true.
+    link_candidatura_verified = bool(bando_data.get("link_candidatura_verified", False))
+    if bando_data.get("link_candidatura") and not link_candidatura_verified:
+        # Avvertimento: link presente ma non verificato. La skill dovrebbe verificarlo (STEP 5)
+        # o impostarlo a null. L'orchestrator manterra' verified=false.
+        warnings.append("link_candidatura presente ma link_candidatura_verified=false: verificalo o impostalo a null")
 
     payload = {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -307,13 +390,17 @@ def create_bando_json(
             "ente_erogatore": bando_data.get("ente_erogatore"),
             "tipologia": bando_data.get("tipologia"),
             "area_geografica": bando_data.get("area_geografica"),
-            "beneficiari": bando_data.get("beneficiari", []) or [],
-            "tematica": bando_data.get("tematica", []) or [],
+            "beneficiari": bando_data.get("beneficiari") or [],
+            "tematica": bando_data.get("tematica") or [],
             "scadenza": bando_data.get("scadenza"),
+            "scadenza_source": scadenza_source,
             "scadenza_stato": bando_data.get("scadenza_stato"),
+            "data_pubblicazione": bando_data.get("data_pubblicazione"),
+            "data_pubblicazione_source": data_pubblicazione_source,
             "importo_totale_eur": bando_data.get("importo_totale_eur"),
             "importo_max_per_progetto_eur": bando_data.get("importo_max_per_progetto_eur"),
             "link_candidatura": bando_data.get("link_candidatura"),
+            "link_candidatura_verified": link_candidatura_verified,
             "riferimento_normativo": bando_data.get("riferimento_normativo"),
         },
         "allegati": allegati_clean,
@@ -321,6 +408,9 @@ def create_bando_json(
         "fonti": fonti or [],
         "validation": {
             "passed": len(warnings) == 0,
+            "is_valid_bando": is_valid_bando,
+            "validation_reason": validation["validation_reason"],
+            "rejection_category": validation["rejection_category"],
             "warnings": warnings,
             "word_count": word_count,
             "meta_title_length": len(meta_title),

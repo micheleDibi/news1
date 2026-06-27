@@ -22,7 +22,7 @@ Pattern frequenti:
 - "Commissione europea" / "Programma Interreg [Nome]" → per i bandi UE
 - "Provincia autonoma di Trento", "Regione autonoma Valle d'Aosta"
 
-**Fallback**: se non trovi un'intestazione esplicita, usa il `hint.ente` da `config/sources.json` derivato dal dominio.
+**Fallback**: se non trovi un'intestazione esplicita, usa il `hint.ente` passato dall'orchestrator nel prompt (costruito dai dati relazionali del DB scraper).
 
 ### `tipologia` (enum string, nullable)
 
@@ -155,7 +155,7 @@ Riporta la sigla intera così come scritta nel bando.
 
 ## Domini e hint noti
 
-I domini sotto sono i portali ricorrenti nel CSV `elenco_bandi.csv`. `config/sources.json` mappa ciascun dominio agli hint default. Usali come pre-compilato, ma **sovrascrivi sempre** se il bando concreto dichiara qualcosa di diverso.
+I domini sotto sono i portali ricorrenti dei bandi scrapati. L'orchestrator passa nel prompt un `hint` con `ente`, `tipologia`, `area`, `programma`, `beneficiari[]`, `regioni[]`, `settori[]`, `ateco[]` costruito a partire dai dati relazionali del DB scraper. Usali come pre-compilato, ma **sovrascrivi sempre** se il bando concreto dichiara qualcosa di diverso. La tabella sotto e' un riferimento di memoria per casi in cui l'hint dell'orchestrator e' vuoto o incompleto.
 
 | Dominio | Ente | Tipologia default | Area |
 |---|---|---|---|

@@ -15,9 +15,11 @@ const SELECT_LIST =
   'seo_meta_title, seo_meta_description, seo_contenuto, ' +
   'ente_erogatore, tipologia_normalizzata, area_geografica, tematica, beneficiari_norm, ' +
   'scadenza_stato, data_scadenza, importo_totale_eur, importo_max_per_progetto_eur, ' +
-  'link_candidatura, riferimento_normativo, link_bando, ' +
+  'link_candidatura, link_candidatura_verified, riferimento_normativo, link_bando, ' +
   'titolo, descrizione, data_pubblicazione, codice_bando, fondo, ' +
-  'allegati, codici_ateco_norm, programma_nome, modalita_erogazione_nome';
+  'allegati, codici_ateco_norm, programma_nome, modalita_erogazione_nome, ' +
+  'is_bando_confermato, data_scadenza_source, data_pubblicazione_source, ' +
+  'validation_reason, rejection_category';
 
 let bando: Bando | null = null;
 try {
@@ -26,6 +28,7 @@ try {
     .select(SELECT_LIST)
     .eq('slug', slug)
     .eq('skill_processing_status', 'completed')
+    .eq('is_bando_confermato', true)
     .single();
   if (!error && data) bando = data as unknown as Bando;
 } catch {
@@ -251,24 +254,36 @@ const jsonLd: Record<string, unknown> = {
 
         {/* Sidebar */}
         <aside class="space-y-4">
-          {/* CTA */}
-          {bando.link_candidatura && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Partecipa al bando</h3>
-              <a
-                href={bando.link_candidatura}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="block w-full text-center px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
-              >
-                Vai al modulo di candidatura
-                <svg class="inline w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-              </a>
-              {bando.link_bando && bando.link_bando !== bando.link_candidatura && (
-                <a href={bando.link_bando} target="_blank" rel="noopener noreferrer" class="block mt-2 text-center text-sm text-blue-700 hover:underline">Pagina istituzionale del bando</a>
-              )}
-            </div>
-          )}
+          {/* CTA — una sola, la piu' autoritativa disponibile:
+              1. link_candidatura SOLO se verificato dalla skill (link_candidatura_verified=true)
+              2. altrimenti fallback su link_bando (pagina ufficiale)
+              Niente piu' due link affiancati: confondeva l'utente quando la skill
+              ricadeva su source_url come link_candidatura. */}
+          {(() => {
+            const hasVerifiedCandidatura =
+              bando.link_candidatura_verified === true && !!bando.link_candidatura;
+            const ctaUrl: string | null = hasVerifiedCandidatura
+              ? bando.link_candidatura
+              : (bando.link_bando || null);
+            if (!ctaUrl) return null;
+            const ctaLabel = hasVerifiedCandidatura
+              ? 'Vai al modulo di candidatura'
+              : 'Apri la pagina ufficiale del bando';
+            return (
+              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Partecipa al bando</h3>
+                <a
+                  href={ctaUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="block w-full text-center px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
+                >
+                  {ctaLabel}
+                  <svg class="inline w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                </a>
+              </div>
+            );
+          })()}
 
           {/* Banner CTA "Hai bisogno di un esperto?" */}
           <BandiExpertCta variant="sidebar" />
@@ -295,6 +310,22 @@ const jsonLd: Record<string, unknown> = {
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {/* Pubblicazione (data della fonte, NON la nostra) */}
+          {bando.data_pubblicazione && (
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Data di pubblicazione</h3>
+              <p class="text-lg font-semibold text-gray-900">
+                {formatDate(bando.data_pubblicazione)}
+                {bando.data_pubblicazione_source === 'inferred' && (
+                  <span
+                    title="Data dedotta da contesto, non da label esplicita sulla fonte"
+                    class="ml-1 text-xs text-amber-600 align-top"
+                  >*</span>
+                )}
+              </p>
             </div>
           )}
 

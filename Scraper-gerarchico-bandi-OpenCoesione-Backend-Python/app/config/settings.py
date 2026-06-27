@@ -56,6 +56,12 @@ class Settings(BaseSettings):
         description="Soglia usata dal parser per preferire importi plausibili quando ci sono più candidati",
     )
 
+    # --- Firecrawl (fase 1 fetcher primario) ---
+    firecrawl_api_key: Optional[str] = Field(
+        default=None,
+        description="Chiave API Firecrawl. Se assente, il scraper cade su httpx (utile in dev locale).",
+    )
+
     # --- Redis / Celery ---
     redis_url: str = Field(default="redis://localhost:6379/0", description="URL Redis per Celery")
     celery_broker_url: str = Field(default="redis://localhost:6379/0")

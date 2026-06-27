@@ -207,13 +207,14 @@ def parse_bando_fields(title: str, link_bando: str, raw_data_obj: dict[str, Any]
 
     codice = _extract_codice_bando(corpus)
     stato = _extract_stato_bando(corpus)
-    
+
     # Data: preferenza pagina dettaglio > ricerca etichettata > fallback prima data generica
     data_pubblicazione = None
     data_apertura = None
     data_scadenza = None
+    data_scadenza_raw_match: str | None = None
     generic_dates: list[date] = []
-    
+
     page_dates = raw_data_obj.get("page_dates") or []
     if page_dates:
         # Se abbiamo date dalla pagina, usa la prima come pubblicazione
@@ -227,7 +228,10 @@ def parse_bando_fields(title: str, link_bando: str, raw_data_obj: dict[str, Any]
         # Altrimenti ricerca etichettata nel corpus
         data_pubblicazione = _extract_labeled_date(corpus, ["pubblicazione", "pubblicato", "pubblicata"])
         data_apertura = _extract_labeled_date(corpus, ["apertura", "aperto", "aperta", "inizio", "opening", "opens", "start"])
-        data_scadenza = _extract_labeled_date(corpus, ["scadenza", "scade", "termine", "deadline", "closes", "closing", "submission"])
+        data_scadenza, data_scadenza_raw_match = _extract_labeled_date_with_raw(
+            corpus,
+            ["scadenza", "scade", "termine", "deadline", "closes", "closing", "submission"],
+        )
         generic_dates = _extract_all_dates(corpus)
         if data_pubblicazione is None and generic_dates:
             data_pubblicazione = generic_dates[0]
@@ -248,22 +252,25 @@ def parse_bando_fields(title: str, link_bando: str, raw_data_obj: dict[str, Any]
         if url_date is not None:
             data_pubblicazione = url_date
 
-    # Se abbiamo almeno una data generica e mancano apertura/scadenza, usiamo le date residue.
+    # data_apertura: se non labelata, accettiamo la prima data della pagina come euristica.
+    # data_scadenza: NON accettiamo piu' fallback su "ultima data della pagina" — su
+    # pagine indice/archivio quel fallback catturava date storiche residue (es. "21/12/2015")
+    # e finivano salvate come scadenza di un bando 2026-2027. Meglio NULL che sbagliato:
+    # la skill di fase 2 estrae la scadenza dal PDF/pagina ufficiale.
     if generic_dates:
         unused_dates = [d for d in generic_dates if d is not None]
         if data_apertura is None and unused_dates:
             data_apertura = unused_dates[0]
-        if data_scadenza is None:
-            if len(unused_dates) >= 2:
-                data_scadenza = unused_dates[-1]
-            elif len(unused_dates) == 1 and data_apertura != unused_dates[0]:
-                data_scadenza = unused_dates[0]
-    
+
     # Comunque cerca apertura e scadenza etichettate
     if data_apertura is None:
         data_apertura = _extract_labeled_date(corpus, ["apertura", "aperto", "aperta", "inizio", "opening", "opens", "start"])
+    data_scadenza_raw_match: str | None = None
     if data_scadenza is None:
-        data_scadenza = _extract_labeled_date(corpus, ["scadenza", "scade", "termine", "deadline", "closes", "closing", "submission"])
+        data_scadenza, data_scadenza_raw_match = _extract_labeled_date_with_raw(
+            corpus,
+            ["scadenza", "scade", "termine", "deadline", "closes", "closing", "submission"],
+        )
 
     # Importo: raccogliamo candidati da pagina, PDF e corpus e scegliamo il più plausibile.
     # Questo evita che un valore spurio piccolo (es. anno, prefisso, importo parziale)
@@ -331,6 +338,10 @@ def parse_bando_fields(title: str, link_bando: str, raw_data_obj: dict[str, Any]
     extra: dict[str, Any] = {}
     if generic_dates:
         extra["date_candidates"] = [d.isoformat() for d in generic_dates]
+    if data_scadenza_raw_match:
+        # Traccia la stringa originale matchata per scadenza (audit + permette alla
+        # skill di fase 2 di valutare se rifare il parse con regole piu' robuste).
+        extra["data_scadenza_raw"] = data_scadenza_raw_match
     page_fetch_error = raw_data_obj.get("fetch_error")
     if page_fetch_error:
         extra["page_fetch_error"] = page_fetch_error
@@ -413,6 +424,27 @@ def _extract_labeled_date(text: str, labels: list[str]) -> date | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _extract_labeled_date_with_raw(text: str, labels: list[str]) -> tuple[date | None, str | None]:
+    """Come `_extract_labeled_date` ma ritorna anche la stringa originale matchata.
+
+    Serve per tracciare in `data_extra["data_scadenza_raw"]` il testo grezzo
+    (es. "21 dicembre 2015") che ha portato al valore di `data_scadenza`. Audit
+    utile quando la skill di fase 2 sovrascrive con una data autorevole.
+    """
+    label_group = "|".join(re.escape(l) for l in labels)
+    pattern = rf"(?:{label_group})([^\n]{{0,90}})"
+    for m in re.finditer(pattern, text, flags=re.IGNORECASE):
+        chunk = m.group(1) or ""
+        date_match = re.search(_DATE_TOKEN_PATTERN, chunk, flags=re.IGNORECASE)
+        if not date_match:
+            continue
+        raw = date_match.group(1)
+        parsed = _parse_date(raw)
+        if parsed is not None:
+            return parsed, raw.strip()
+    return None, None
 
 
 def _extract_all_dates(text: str) -> list[date]:

@@ -21,6 +21,29 @@ export type TipologiaBando = typeof TIPOLOGIE_BANDO[number];
 export const STATI_SCADENZA = ['aperto', 'in_scadenza', 'scaduto'] as const;
 export type StatoScadenza = typeof STATI_SCADENZA[number];
 
+// Provenienza della data di scadenza, settata dalla skill (fase 2).
+// L'orchestrator sovrascrive `data_scadenza` nel DB solo se source ∈ {official_pdf, official_page}.
+export const SCADENZA_SOURCES = [
+  'official_pdf',
+  'official_page',
+  'inferred',
+  'missing',
+  'scraper_fallback',
+] as const;
+export type ScadenzaSource = typeof SCADENZA_SOURCES[number];
+
+// Motivo per cui un record e' stato bocciato dalla skill (is_bando_confermato=false).
+// Quando popolato, il record NON appare nel frontend (RLS lo filtra).
+export const REJECTION_CATEGORIES = [
+  'index_page',
+  'search_results',
+  'category_page',
+  'expired_archive',
+  'not_a_funding_call',
+  'unreachable',
+] as const;
+export type RejectionCategory = typeof REJECTION_CATEGORIES[number];
+
 export const ALLEGATO_TIPI = [
   'pdf', 'doc', 'docx', 'zip', 'rtf', 'xlsx', 'xls', 'odt', 'ods', 'altro',
 ] as const;
@@ -70,6 +93,7 @@ export interface Bando {
   importo_totale_eur: number | null;
   importo_max_per_progetto_eur: number | null;
   link_candidatura: string | null;
+  link_candidatura_verified: boolean | null;
   riferimento_normativo: string | null;
   skill_processing_status: string;
   // Colonne nuove (bando_alter_filters_and_attachments.sql)
@@ -77,6 +101,13 @@ export interface Bando {
   codici_ateco_norm: string[] | null;
   programma_nome: string | null;
   modalita_erogazione_nome: string | null;
+  // Colonne nuove (bando_alter_validation_v2.sql)
+  is_bando_confermato: boolean | null;
+  data_scadenza_source: ScadenzaSource | null;
+  validation_reason: string | null;
+  rejection_category: RejectionCategory | null;
+  // Colonne nuove (bando_alter_data_pubblicazione_source.sql)
+  data_pubblicazione_source: ScadenzaSource | null;
 }
 
 // Sezioni del contenuto editoriale generato dalla skill.

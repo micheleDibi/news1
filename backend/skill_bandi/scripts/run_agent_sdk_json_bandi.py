@@ -132,10 +132,12 @@ Solo se Firecrawl fallisce (exit code != 0 o output vuoto) ricadi su
 WebFetch/WebSearch.
 
 Tutto il resto del workflow (STEP 0-8 di SKILL.md) resta invariato:
-lettura references/, hint da config/sources.json, scrape pagina + PDF,
-estrazione campi via extract_bando_fields.py, verifica link_candidatura,
-generazione contenuto editoriale (flash o guida) rispettando blacklist_frasi.md
-e seo_guidelines.md, assemble + validate via generate_json_output.py.
+lettura references/, hint dominio passato in input dall'orchestrator (gia' costruito
+dai dati relazionali del DB scraper — NON serve leggere file di config),
+scrape pagina + PDF, estrazione campi via extract_bando_fields.py,
+verifica link_candidatura, generazione contenuto editoriale (flash o guida)
+rispettando blacklist_frasi.md e seo_guidelines.md, assemble + validate via
+generate_json_output.py.
 
 Al termine comunica SOLO il percorso del file JSON generato.
 """.strip()

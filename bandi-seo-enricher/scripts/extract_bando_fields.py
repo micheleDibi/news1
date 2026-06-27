@@ -57,6 +57,26 @@ DEADLINE_CONTEXTS = [
 ]
 DEADLINE_CONTEXT_RE = re.compile("|".join(DEADLINE_CONTEXTS), re.IGNORECASE)
 
+# Contesti per data di PUBBLICAZIONE del bando dalla fonte ufficiale.
+# Pubblicazione del decreto/avviso, BUR/Gazzetta, delibera Giunta/Consiglio.
+# NON la data in cui noi l'abbiamo scrapato — quella e' tracciata in primo_scraping_at del DB.
+PUBLICATION_CONTEXTS = [
+    r"pubblicat[oa] (?:il|in data)?",
+    r"data (?:di )?pubblicazione",
+    r"pubblicazione (?:in |sul |sulla )?bur(?:l|c)?",
+    r"pubblicazione (?:in |sulla )?gazzetta(?: ufficiale)?",
+    r"gazzetta ufficiale (?:n\.|numero) \d+ del",
+    r"decret(?:o|i) (?:dirigenzial[ei] )?(?:n\.|numero) [\w\.\-/]+ del",
+    r"delib(?:era|erazione)(?: di giunta(?: regionale)?| del consiglio)? (?:n\.|numero) [\w\.\-/]+ del",
+    r"determin(?:a|azione) (?:dirigenzial[ei] )?(?:n\.|numero) [\w\.\-/]+ del",
+    r"d\.?g\.?r\.? (?:n\.|numero)? [\w\.\-/]+ del",
+    r"d\.?d\.?g\.? (?:n\.|numero)? [\w\.\-/]+ del",
+    r"prot(?:ocollo|\.) (?:n\.|numero) [\w\.\-/]+ del",
+    r"emanat[oa] (?:il|in data)?",
+    r"approvat[oa] (?:con (?:dgr|dd|ddg|delibera|decreto) [\w\.\-/]+ )?(?:il|del|in data)?",
+]
+PUBLICATION_CONTEXT_RE = re.compile("|".join(PUBLICATION_CONTEXTS), re.IGNORECASE)
+
 
 def _parse_match(m: re.Match, pattern_idx: int) -> Optional[str]:
     try:
@@ -99,6 +119,50 @@ def extract_scadenza(text: str) -> dict:
     chosen = future[0] if future else sorted(candidates)[-1]
     return {
         "scadenza": chosen,
+        "candidates_count": len(candidates),
+        "method": "context_proximity",
+    }
+
+
+# -------------------- data_pubblicazione --------------------
+
+def extract_data_pubblicazione(text: str) -> dict:
+    """Cerca la data di PUBBLICAZIONE del bando dalla fonte ufficiale.
+
+    Strategia analoga a `extract_scadenza` ma diversa per filtro semantico:
+    - cerca finestra di 200 char dopo un contesto di pubblicazione (PUBLICATION_CONTEXTS)
+    - prende la prima data trovata in quella finestra
+    - preferisce la data piu' RECENTE tra i candidati (la pubblicazione e' un evento singolo:
+      su pagine con piu' decreti vince quello piu' recente, di solito quello attuale).
+
+    Ritorna sempre `source` enum: `official_page` se trovato qui (la skill puo' poi
+    promuoverlo a `official_pdf` se viene dal parse di un PDF), o `missing`.
+    """
+    candidates: list[str] = []
+    for ctx_match in PUBLICATION_CONTEXT_RE.finditer(text):
+        window = text[ctx_match.start(): ctx_match.start() + 200]
+        for idx, pat in enumerate(DATE_PATTERNS):
+            m = pat.search(window)
+            if m:
+                iso = _parse_match(m, idx)
+                if iso:
+                    candidates.append(iso)
+                    break
+
+    if not candidates:
+        return {
+            "data_pubblicazione": None,
+            "data_pubblicazione_source": "missing",
+            "candidates_count": 0,
+            "method": "no_context_match",
+        }
+
+    # Tra i candidati di pubblicazione preferiamo la data piu' recente (top di lista
+    # dopo sorted desc) perche' i bandi spesso citano decreti precedenti come storia.
+    chosen = sorted(candidates, reverse=True)[0]
+    return {
+        "data_pubblicazione": chosen,
+        "data_pubblicazione_source": "official_page",
         "candidates_count": len(candidates),
         "method": "context_proximity",
     }
@@ -280,7 +344,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Estrae campi strutturati da bando markdown")
     ap.add_argument("--markdown-file", required=True)
     ap.add_argument("--url", required=True, help="URL sorgente del bando")
-    ap.add_argument("--hint", default="{}", help="JSON hint dal sources.json (chiavi: ente, tipologia, area)")
+    ap.add_argument(
+        "--hint",
+        default="{}",
+        help=(
+            "JSON hint dal backend (l'orchestrator news1 costruisce l'hint dai dati "
+            "relazionali del DB scraper). Chiavi tipiche: ente, tipologia, area, "
+            "programma, beneficiari, settori, ateco."
+        ),
+    )
     args = ap.parse_args()
 
     md_path = Path(args.markdown_file)
@@ -295,6 +367,7 @@ def main() -> int:
         hint = {}
 
     scad = extract_scadenza(text)
+    pub = extract_data_pubblicazione(text)
     ente_extracted = extract_ente(text)
 
     result = {
@@ -304,6 +377,12 @@ def main() -> int:
         "scadenza_extraction": {
             "candidates_count": scad["candidates_count"],
             "method": scad["method"],
+        },
+        "data_pubblicazione": pub["data_pubblicazione"],
+        "data_pubblicazione_source": pub["data_pubblicazione_source"],
+        "data_pubblicazione_extraction": {
+            "candidates_count": pub["candidates_count"],
+            "method": pub["method"],
         },
         "importo_totale_eur": extract_importo(text, AMOUNT_PATTERNS_TOTALE),
         "importo_max_per_progetto_eur": extract_importo(text, AMOUNT_PATTERNS_MAX),

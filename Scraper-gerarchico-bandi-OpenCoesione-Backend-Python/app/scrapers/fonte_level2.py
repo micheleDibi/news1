@@ -13,19 +13,12 @@ import httpx
 from bs4 import BeautifulSoup
 
 
-def _decode_httpx_html(response: httpx.Response) -> str:
-    """Decodifica HTML da risposta httpx con charset dichiarata o fallback utf-8."""
-    encoding = getattr(response, "charset_encoding", None) or "utf-8"
-    try:
-        return response.content.decode(encoding, errors="replace")
-    except (LookupError, UnicodeDecodeError):
-        return response.content.decode("utf-8", errors="replace")
-
 from app.ai.quality_gate import run_gate1
 from app.ocr.document_enrichment import enrich_from_pdf_links
 from app.ocr.page_detail_fetcher import fetch_bando_detail_page
 from app.config.settings import settings
 from app.parsers.bando_parser import parse_bando_fields
+from app.scrapers.firecrawl_client import get_firecrawl_client
 
 
 @dataclass(frozen=True)
@@ -156,9 +149,26 @@ class FonteLevel2Scanner:
         "/rss",
         "/feed",
         "/tag/",
+        "/tags/",
         "/categoria/",
+        "/categorie/",
         "/category/",
         "/author/",
+        # Pagine indice / ricerca / archivio che NON sono bandi singoli.
+        # Inclusi per evitare slug tipo "regione-piemonte-ricerca-voucher" o
+        # "bandi-finanziamenti-regione-piemonte-portale-ricerca" che superavano
+        # il filtro di 2 segnali keyword.
+        "/ricerca",
+        "/search",
+        "/cerca",
+        "/portale",
+        "/elenco-bandi",
+        "/lista-bandi",
+        "/archivio",
+        "/archive",
+        "/indice",
+        "/filtra",
+        "/filter/",
     )
 
     def __init__(self, timeout_seconds: int | None = None) -> None:
@@ -181,27 +191,22 @@ class FonteLevel2Scanner:
         return self._scan_html(fonte_id, source_url, fonte_format)
 
     def _scan_html(self, fonte_id: int, source_url: str, fonte_format: str) -> list[BandoCandidate]:
-        try:
-            with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True) as client:
-                response = client.get(source_url)
-                response.raise_for_status()
-        except httpx.TimeoutException as exc:
+        # Firecrawl primario (stealth/auto), httpx hard-fallback. Vedi firecrawl_client.
+        fetch = get_firecrawl_client().scrape(source_url)
+        if not fetch.html:
+            # Trasforma in FonteLevel2Error con stesso shape che il caller si aspetta.
+            status_code = fetch.status_code
+            recoverable = (
+                status_code in {408, 425, 429} or (status_code is not None and status_code >= 500)
+                or status_code is None  # timeout / errore di rete: ritentabile
+            )
             raise FonteLevel2Error(
-                f"Timeout fetch fonte HTML: {source_url}",
-                recoverable=True,
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            status_code = int(exc.response.status_code)
-            recoverable = status_code in {408, 425, 429} or status_code >= 500
-            raise FonteLevel2Error(
-                f"HTTP {status_code} fetch fonte HTML: {source_url}",
+                f"Fetch fonte HTML fallita ({fetch.fetched_via}): {source_url} — {fetch.error}",
                 recoverable=recoverable,
                 http_status_code=status_code,
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise FonteLevel2Error(f"Errore fetch fonte HTML: {source_url}", recoverable=True) from exc
+            )
 
-        soup = BeautifulSoup(_decode_httpx_html(response), "lxml")
+        soup = BeautifulSoup(fetch.html, "lxml")
         candidates: list[BandoCandidate] = []
         seen: set[str] = set()
 
@@ -236,6 +241,7 @@ class FonteLevel2Scanner:
                     fonte_format,
                     source_url,
                     parent_context=parent_context or source_url,
+                    fetched_via=fetch.fetched_via,
                 )
             )
 
@@ -313,8 +319,12 @@ class FonteLevel2Scanner:
         fonte_format: str,
         source_url: str,
         parent_context: str,
+        fetched_via: str | None = None,
     ) -> BandoCandidate:
         hash_bando = self._build_hash(fonte_id, link_bando)
+        diagnostics = self._link_diagnostics(title=title, url=link_bando, context=parent_context)
+        if fetched_via:
+            diagnostics["fetched_via"] = fetched_via
         raw_obj = {
             "livello": "fonte_scan",
             "fonte_id": fonte_id,
@@ -323,7 +333,7 @@ class FonteLevel2Scanner:
             "parent_context": parent_context,
             "candidate_title": title,
             "candidate_url": link_bando,
-            "link_diagnostics": self._link_diagnostics(title=title, url=link_bando, context=parent_context),
+            "link_diagnostics": diagnostics,
         }
         return BandoCandidate(
             fonte_id=fonte_id,

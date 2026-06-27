@@ -1,4 +1,12 @@
-"""Fetch e parsing dettaglio pagina bando per enrichment descrizione/date/importo."""
+"""Fetch e parsing dettaglio pagina bando per enrichment descrizione/date/importo.
+
+Firecrawl e' il fetcher primario dopo la batch 2 (vedi `app/scrapers/firecrawl_client.py`).
+Gli output rimangono identici al pre-batch2 (page_title, page_dates, page_importo,
+page_pdf_links) per non rompere `bando_parser.py`. In piu' aggiungiamo:
+  - `page_markdown_snippet`: i primi 8000 char di markdown pulito di Firecrawl,
+    utile alla skill di fase 2 come input meno rumoroso del raw HTML.
+  - `fetched_via`: tracciamento della strategia (firecrawl_stealth/auto/httpx_fallback).
+"""
 
 from __future__ import annotations
 
@@ -7,50 +15,52 @@ import re
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-import requests
-from bs4 import BeautifulSoup, NavigableString
-from requests import Response
+from bs4 import BeautifulSoup
+
+from app.scrapers.firecrawl_client import get_firecrawl_client
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 10
-_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+_MARKDOWN_SNIPPET_MAX = 8000
 
 
 def fetch_bando_detail_page(url: str) -> dict[str, Any]:
     """
     Fetch pagina dettaglio bando e estrae titolo reale, descrizione, date, importo.
-    
+
     Restituisce dict con chiavi:
     - 'page_title': H1 o H2 trovato
     - 'page_description': primo paragrafo o meta description
     - 'page_importo': importo trovato nella pagina con token monetario
     - 'page_dates': lista di date trovate
     - 'page_content_snippet': primi 1000 char di testo
-    - 'fetch_error': se presente, indica motivo fallimento
+    - 'page_markdown_snippet': primi 8000 char di markdown Firecrawl (se disponibile)
+    - 'page_pdf_links': link PDF allegati trovati
+    - 'fetched_via': 'firecrawl_stealth' | 'firecrawl_auto' | 'httpx_fallback' | 'firecrawl_unavailable'
+    - 'fetch_error': se presente, indica motivo fallimento (html assente)
     """
-    
+
     result: dict[str, Any] = {}
-    
-    try:
-        resp = requests.get(
-            url,
-            headers={"User-Agent": _USER_AGENT},
-            timeout=_TIMEOUT,
-            allow_redirects=True,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        result["fetch_error"] = str(e)
-        logger.warning(f"Fetch pagina {url} fallito: {e}")
+
+    fetch = get_firecrawl_client().scrape(url)
+    result["fetched_via"] = fetch.fetched_via
+    if not fetch.html:
+        err = fetch.error or "fetch fallita"
+        result["fetch_error"] = err
+        logger.warning("Fetch pagina %s fallito (%s): %s", url, fetch.fetched_via, err)
         return result
-    
+
     try:
-        soup = BeautifulSoup(_decode_response_html(resp), "html.parser")
+        soup = BeautifulSoup(fetch.html, "html.parser")
     except Exception as e:
         result["fetch_error"] = f"Parse HTML error: {e}"
-        logger.warning(f"Parse HTML {url} fallito: {e}")
+        logger.warning("Parse HTML %s fallito: %s", url, e)
         return result
+
+    if fetch.markdown:
+        # Snippet markdown gia' "pulito" da Firecrawl, utile alla skill per regex
+        # piu' robuste su date/importi senza il chrome della pagina.
+        result["page_markdown_snippet"] = fetch.markdown[:_MARKDOWN_SNIPPET_MAX]
     
     # Estrai titolo reale
     page_title = _extract_page_title(soup)
@@ -83,18 +93,6 @@ def fetch_bando_detail_page(url: str) -> dict[str, Any]:
         result["page_pdf_links"] = pdf_links
     
     return result
-
-
-def _decode_response_html(resp: Response) -> str:
-    """Decodifica l'HTML prima del parse, evitando a bs4 di inferire la charset dai byte grezzi."""
-    if resp.encoding:
-        return resp.text
-
-    apparent = getattr(resp, "apparent_encoding", None) or "utf-8"
-    try:
-        return resp.content.decode(apparent, errors="replace")
-    except (LookupError, UnicodeDecodeError):
-        return resp.content.decode("utf-8", errors="replace")
 
 
 def _extract_page_title(soup: BeautifulSoup) -> str | None:

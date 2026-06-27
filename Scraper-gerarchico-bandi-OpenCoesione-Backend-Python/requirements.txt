@@ -12,6 +12,7 @@ requests==2.32.3
 playwright==1.44.0
 beautifulsoup4==4.12.3
 lxml==5.2.1
+firecrawl-py>=2.0.0
 
 # AI
 openai==1.30.1

@@ -21,20 +21,21 @@ L'utente DEVE fornire:
 - **1 URL del bando** (`link_bando`).
 
 L'utente PUÒ opzionalmente fornire:
-1. **Hint dominio override** `{"ente": "...", "tipologia": "...", "area": "..."}` (default: derivato da `config/sources.json`; l'override utente vince).
+1. **Hint dominio override** `{"ente": "...", "tipologia": "...", "area": "..."}` (default: l'hint arriva dall'orchestrator che lo costruisce dai dati relazionali del DB del scraper; l'override utente vince).
 2. **Percorso di output** del JSON (default: stdout; es. `output/<slug>.json` per scrivere su file).
 3. **Livello forzato** `flash_bando` | `guida_bando` (default: lo classifica la skill).
 
 ## ⚠️ REGOLE CRITICHE
 
 1. **MAI inventare campi strutturati** — Se `scadenza`, `importo` o `beneficiari` non sono ricavabili dal bando, il campo resta `null` (o array vuoto). Mai stimare.
-2. **MAI emettere un bando senza link_candidatura verificato** — `link_candidatura` deve puntare a una pagina raggiungibile (verificata con scrape secondario), altrimenti ricondotto a `source_url` con nota.
+2. **MAI usare `source_url` come fallback di `link_candidatura`** — Se non trovi un link verificato a un modulo/sportello di partecipazione: `link_candidatura = null`, `link_candidatura_verified = false`. Il frontend gestisce NULL. Il fallback su `source_url` causava confusione (CTA puntavano alla stessa pagina del bando).
 3. **MAI superare i limiti SEO** — `meta_title` ≤ 60 char, `meta_description` ≤ 155 char, `titolo` (H1) ≤ 80 char, `meta_title` ≠ `titolo`.
 4. **MAI usare frasi della blacklist** (vedi `references/blacklist_frasi.md`).
 5. **SEMPRE sentence case** nei titoli (solo prima lettera maiuscola, no Title Case; sigle e nomi propri restano).
 6. **SEMPRE citare la fonte istituzionale** — Ogni dato strutturato deve avere un'entry in `fonti[]` con `dato` + `fonte_url`.
 7. **SEMPRE produrre JSON valido** che mappa 1:1 le colonne della tabella `bandi` su Supabase.
 8. **MAI contenuto generico/placeholder** — Genera SEMPRE contenuto editoriale ricco e specifico per quel bando (vedi STEP 6). Niente sezioni stub.
+9. **SEMPRE dare un verdetto di validita'** — Compila `validation.is_valid_bando` (true/false). Sei l'autorita' finale: l'orchestrator usa il tuo verdetto per decidere se mostrare il record. Le pagine indice/ricerca/categoria/archivio = `is_valid_bando: false` con `rejection_category` (vedi STEP 2.5).
 
 ## Workflow
 
@@ -49,7 +50,7 @@ L'utente PUÒ opzionalmente fornire:
 
 ### STEP 1 — Hint dominio
 
-Estrai il dominio dall'URL e cercane il match (esatto o per suffisso) in `config/sources.json` per pre-compilare `ente` / `tipologia` / `area`. Unisci con l'eventuale override utente (**l'override vince**). Se il dominio non è mappato → hint vuoto (vedi edge case "Dominio non mappato"). Gli hint sono default: vanno SEMPRE sovrascritti se il bando dichiara qualcosa di diverso.
+L'hint dominio ti arriva **come parametro dal prompt** dell'orchestrator. L'orchestrator (`news1/backend/app/bandi.py::build_hint_from_bando`) lo costruisce dai dati relazionali del DB scraper: `tipologia_grezza`, `programma`, `beneficiari[]`, `regioni[]`, `settori[]`, `ateco[]`, metadati grezzi (codice_bando, fondo, data_scadenza_grezza, data_pubblicazione_grezza, importo_grezzo, titolo_grezzo, descrizione_grezza). **Non cercare file di config sul filesystem**: l'hint che ricevi nel prompt e' tutto cio' che ti serve. Gli hint sono default: vanno SEMPRE sovrascritti se il bando dichiara qualcosa di diverso.
 
 ### STEP 2 — Scrape pagina bando
 
@@ -63,6 +64,30 @@ Output: contenuto markdown su stdout (salvalo in un file di scratch). Se Firecra
 3. Se ancora nulla: **STOP** — riporta `scrape_failed` all'utente. NON emettere un JSON inventato.
 
 Richiede la variabile d'ambiente `FIRECRAWL_API_KEY`.
+
+### STEP 2.5 — Verdetto di validita' (prima dell'estrazione)
+
+Prima di estrarre qualsiasi campo, decidi se la pagina e' davvero un **bando candidabile**. Compila `validation.is_valid_bando`:
+
+- **true** se la pagina ha: titolo del bando, ente erogatore identificabile, almeno una scadenza o range temporale, criteri di partecipazione, link a moduli/documenti. Una pagina che pubblica UN bando specifico.
+- **false** se la pagina e' un'**indice/lista**, una **ricerca**, una **categoria/tag**, un **archivio storico**, una pagina **istituzionale generale**, o contenuto **non riconducibile a un'opportunita' di finanziamento candidabile**.
+
+Se `is_valid_bando = false` devi compilare `validation.rejection_category` (enum):
+- `index_page` — pagina che lista/indicizza piu' bandi (es. "Tutti i bandi della Regione X")
+- `search_results` — risultati di una ricerca interna ("ricerca voucher")
+- `category_page` — pagina categoria/tag (es. "/categoria/agricoltura")
+- `expired_archive` — archivio di bandi chiusi senza bando attivo specifico
+- `not_a_funding_call` — la pagina non parla di finanziamenti (es. modulistica generale, pagina istituzionale)
+- `unreachable` — URL non raggiungibile o redirect verso pagina non-bando
+
+E un `validation.validation_reason` breve (1-2 frasi che spiegano la decisione).
+
+**Se `is_valid_bando = false`:**
+- Puoi saltare gli STEP 3-6 (estrazione, contenuto SEO) e produrre placeholder/null per i campi mancanti.
+- DEVI comunque emettere il JSON con `validation.is_valid_bando = false` e `validation.rejection_category` valorizzato.
+- L'orchestrator usera' questo verdetto per nascondere il record dal frontend (filtro RLS su `is_bando_confermato`).
+
+**Se `is_valid_bando = true`:** procedi normalmente con STEP 3 → STEP 7.
 
 ### STEP 3 — PDF allegati e raccolta link documenti
 
@@ -98,7 +123,10 @@ Se `link_candidatura` è valorizzato e diverso da `source_url`:
 python scripts/firecrawl_scrape.py "[link_candidatura]" --format markdown --max-chars 500 --check-only
 ```
 
-Se fallisce: imposta `link_candidatura = source_url` e annota in `factcheck_report`/`fonti`.
+- Se la verifica passa: `link_candidatura_verified = true`.
+- Se la verifica fallisce o `link_candidatura` non è estraibile dal bando: imposta `link_candidatura = null` e `link_candidatura_verified = false`. **NON usare `source_url` come fallback** — il frontend mostrera' solo `link_bando` (= source_url) come CTA secondaria "Apri la pagina ufficiale del bando".
+
+Il fallback storico `link_candidatura = source_url` era confondente: mostrava al pubblico due link identici (entrambi alla pagina del bando) sotto due etichette diverse, come se fossero modulo e pagina ufficiale.
 
 ### STEP 6 — Generazione contenuto SEO (sempre ricco, mai stub)
 
@@ -118,6 +146,33 @@ Segui `references/article_structure.md` (struttura sezioni) e `references/seo_gu
 Il contenuto deve essere **specifico per quel bando**: apertura con fatto concreto (chi, quanto, quando), MAI sezioni generiche o placeholder. **Nessun link in uscita verso testate, blog, sindacati**. Ammessi solo: portale del bando (source_url), link candidatura, PDF ufficiali, siti istituzionali (.gov.it, .europa.eu, ec.europa.eu, regione.*).
 
 `scadenza_stato` NON va calcolato a mano: lo determina automaticamente `create_bando_json` da `scadenza`. In single-bando il JSON si emette SEMPRE, anche se `scaduto`.
+
+**Scadenza autoritativa (`scadenza_source`)** — Per ogni `scadenza` estratta DEVI tracciare la fonte (enum):
+- `official_pdf` — data trovata nel PDF allegato ufficiale del bando.
+- `official_page` — data trovata nella pagina HTML del bando con label esplicita ("Scadenza presentazione domande", "Termine ultimo").
+- `inferred` — data dedotta da contesto (es. "anno scolastico 2026/2027" → 30/06/2026). Non autoritativa.
+- `missing` — nessuna data trovata: `scadenza = null` e `scadenza_source = "missing"`.
+
+L'orchestrator sovrascrive `data_scadenza` nel DB SOLO se `scadenza_source IN ('official_pdf', 'official_page')`. Per `inferred`/`missing` resta il valore originale dello scraper (o NULL). **Quando hai dubbi, preferisci `missing` a inventare una data**.
+
+### STEP 6b — Data di pubblicazione del bando (dalla fonte, mai la nostra)
+
+Insieme alla `scadenza`, devi estrarre la `data_pubblicazione` REALE del bando — la data in cui l'ente l'ha pubblicato sulla **fonte ufficiale** (decreto, delibera, BUR, Gazzetta, comunicato istituzionale). **NON la data in cui noi l'abbiamo scrapato** e **MAI la data odierna**.
+
+Cerca, in ordine di affidabilita':
+- Data del decreto/avviso ("Decreto dirigenziale n. 1234 del 15/03/2026")
+- Data della delibera ("DGR n. 567 del 28/02/2026")
+- Data del protocollo ("Protocollo n. 0123 del 10/03/2026")
+- "Pubblicato il …" o "Data di pubblicazione: …"
+- Data sul BUR / BURL / BURC / Gazzetta Ufficiale citata dal bando ("GU n. 50 del 28/02/2026")
+
+Compila anche `data_pubblicazione_source` (enum, identico a `scadenza_source`):
+- `official_pdf` — data trovata nel PDF ufficiale del bando.
+- `official_page` — data trovata nella pagina HTML con label esplicita.
+- `inferred` — data dedotta da contesto (es. "anno scolastico 2026/2027" senza altre prove → 01/09/2026). Non autoritativa.
+- `missing` — niente data sulla fonte: `data_pubblicazione = null` e `data_pubblicazione_source = "missing"`.
+
+L'orchestrator sovrascrive `data_pubblicazione` nel DB SOLO se `data_pubblicazione_source IN ('official_pdf','official_page')` (stessa policy della scadenza). Il listing `/bandi` ordina per `data_pubblicazione DESC`, quindi una data corretta porta il bando in vetta; `missing` lo manda in fondo.
 
 ### STEP 7 — Assembla e valida il JSON
 
@@ -175,10 +230,14 @@ Il JSON emesso segue questo schema, allineato 1:1 alla tabella Supabase:
     "beneficiari": ["...", "..."],
     "tematica": ["...", "..."],
     "scadenza": "YYYY-MM-DD | null",
+    "scadenza_source": "official_pdf | official_page | inferred | missing",
     "scadenza_stato": "aperto | in_scadenza | scaduto | null",
+    "data_pubblicazione": "YYYY-MM-DD | null",
+    "data_pubblicazione_source": "official_pdf | official_page | inferred | missing",
     "importo_totale_eur": 12500000,
     "importo_max_per_progetto_eur": 250000,
-    "link_candidatura": "...",
+    "link_candidatura": "... | null",
+    "link_candidatura_verified": true,
     "riferimento_normativo": "..."
   },
 
@@ -198,6 +257,9 @@ Il JSON emesso segue questo schema, allineato 1:1 alla tabella Supabase:
 
   "validation": {
     "passed": true,
+    "is_valid_bando": true,
+    "validation_reason": "Pagina ufficiale del bando voucher scuola Piemonte 2026/2027 con PDF allegato, ente erogatore, scadenza esplicita.",
+    "rejection_category": null,
     "warnings": [],
     "word_count": 980,
     "meta_title_length": 56,
@@ -214,22 +276,30 @@ Il JSON emesso segue questo schema, allineato 1:1 alla tabella Supabase:
 - **Scaduto** — Emetti SEMPRE il JSON; `scadenza_stato="scaduto"` (calcolato). È il progetto a valle a decidere se pubblicare. Il testo resta fattuale (può indicare che i termini sono chiusi).
 - **Scadenza null (a sportello)** — Lascia `scadenza=null` → `scadenza_stato=null`. Scrivi "sportello aperto fino a esaurimento risorse" SOLO se il bando lo dichiara; altrimenti di' che la scadenza non è indicata. Mai inventare date.
 - **Bando in inglese (Interreg)** — L'estrattore IT-centrico spesso dà `scadenza`/`ente` null: compila tu dai testi con prova testuale; ente/tipologia/area dall'hint. Editoriale SEMPRE in italiano (traduzione editoriale), mantenendo nomi propri e `riferimento_normativo` originale.
-- **Landing / pagina elenco bandi** — Se l'URL è una pagina che linka molti bandi (nessuna scadenza/importo unico, molti link a sotto-pagine, titolo generico tipo "Bandi aperti"): **NON inventare e non sceglierne uno a caso.** STOP, riporta che è una pagina elenco, elenca i link candidati trovati e chiedi l'URL specifico. Nessun JSON.
-- **link_candidatura non verificabile** — Usa `source_url` + nota in `fonti`/`factcheck_report`.
-- **`ente_erogatore` mancante (NOT NULL)** — Prova: estrattore → hint `sources.json` → derivazione da dominio/contenuto. Non deve mai uscire `null`. Se davvero ignoto, la validazione blocca: segnala all'utente invece di emettere un record non valido.
+- **Landing / pagina elenco bandi** — Se l'URL è una pagina che linka molti bandi (nessuna scadenza/importo unico, molti link a sotto-pagine, titolo generico tipo "Bandi aperti"): emetti il JSON con `validation.is_valid_bando=false` e `validation.rejection_category="index_page"` (vedi STEP 2.5). Compila `validation_reason` con una frase descrittiva. Puoi lasciare null/placeholder gli altri campi: l'orchestrator nascondera' il record dal frontend. **NON inventare campi a partire dai link figli.**
+- **link_candidatura non verificabile** — Imposta `link_candidatura=null` e `link_candidatura_verified=false`. NON usare `source_url` come fallback. Il frontend mostrera' solo `link_bando` come CTA secondaria.
+- **`ente_erogatore` mancante (NOT NULL)** — Prova: estrattore → hint dal backend → derivazione da dominio/contenuto. Non deve mai uscire `null`. Se davvero ignoto, la validazione blocca: segnala all'utente invece di emettere un record non valido.
 - **Word count fuori range** — guida insufficiente → declassa a flash; flash troppo corto → aggiungi dettaglio fattuale (mai riempitivi/blacklist). Itera finché in range.
-- **Dominio non mappato in `sources.json`** — Nessun hint: deriva ente/area dal contenuto; `tipologia` solo tra i valori canonici (`FESR|FSE|Interreg|nazionale|regionale|misto|JTF`) o `null`. Annota in `factcheck_report` che l'hint è derivato.
+- **Hint vuoto / dominio non riconosciuto dal backend** — Nessun prior: deriva ente/area dal contenuto; `tipologia` solo tra i valori canonici (`FESR|FSE|Interreg|nazionale|regionale|misto|JTF`) o `null`. Annota in `factcheck_report` che l'hint è derivato.
 
 ## Checklist Pre-Output
 
-**Campi strutturati:**
+**Validita' (sempre, anche se is_valid_bando=false):**
+- [ ] `validation.is_valid_bando` settato (true | false)
+- [ ] Se false: `validation.rejection_category` + `validation.validation_reason` valorizzati
+- [ ] Se false: il JSON viene comunque emesso (l'orchestrator si occupa di nasconderlo)
+
+**Campi strutturati (se is_valid_bando=true):**
 - [ ] `source_url` presente e raggiungibile
 - [ ] `ente_erogatore` valorizzato (mai null)
 - [ ] `slug` valido lowercase/kebab-case ≤ 80 char (l'unicità la gestisce il progetto a valle)
 - [ ] `scadenza` in formato ISO o null (mai stringhe libere)
+- [ ] `scadenza_source` valorizzato (official_pdf | official_page | inferred | missing)
 - [ ] `scadenza_stato` coerente con `scadenza` e data odierna
+- [ ] `data_pubblicazione` in formato ISO o null (estratta dalla fonte, MAI dalla data odierna o dal nostro scraping)
+- [ ] `data_pubblicazione_source` valorizzato (official_pdf | official_page | inferred | missing)
 - [ ] `importo_totale_eur` e `importo_max_per_progetto_eur` interi in euro (no centesimi, no float)
-- [ ] `link_candidatura` verificato o ricondotto a `source_url` con nota
+- [ ] `link_candidatura` verificato (verified=true) oppure null (verified=false). MAI uguale a `source_url` come fallback
 - [ ] `beneficiari` e `tematica` array (anche vuoti, mai null)
 - [ ] `allegati` array (vuoto se la pagina non ha file), URL assoluti, tipo nell'enum, deduplicato per url
 
@@ -280,8 +350,8 @@ Utente: "Scheda questo bando: https://www.interreg-alcotra.eu/.../call"
 - `generate_json_output.py` — **Unico output ufficiale.** `--build-from <inputs.json>` costruisce + valida + emette il JSON del bando (stdout o `--out <file>`). Espone anche `create_bando_json()` e `--validate-only`.
 
 ### Config & reference
-- `config/sources.json` — Mapping dominio → hint (ente, tipologia, area).
 - `references/*.md` — Guide di estrazione, struttura articolo, SEO, blacklist.
+- Hint dominio: NON da file. Ti arriva come parametro nel prompt dall'orchestrator (vedi STEP 1).
 
 ### Archivio
 - `archive/` — Vecchia modalità batch (`run_batch.py`, `load_csv.py`, `upload_to_supabase.py`, `state/`), non più usata: orchestrazione/dedup/storage sono ora responsabilità del progetto che incorpora la skill.
