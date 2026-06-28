@@ -132,8 +132,24 @@ def _log_tool_use(block) -> None:
         _logger.debug("[BANDI_SKILL][TOOL] tool={} input={}", name, preview)
 
 
-def _build_system_override(output_path: str) -> str:
+def _build_system_override(output_path: str, markdown_input_path: str | None = None) -> str:
     """System prompt appendice: forza output a path specifico e regola file ausiliari in /tmp/."""
+    markdown_block = ""
+    if markdown_input_path:
+        markdown_block = f"""
+MARKDOWN SORGENTE GIA' SCARICATO (v4):
+L'orchestrator ha gia' scaricato il markdown della pagina del bando via Firecrawl e
+salvato in:
+
+    MARKDOWN_INPUT_PATH = {markdown_input_path}
+
+Leggilo con `Read file_path={markdown_input_path}` come PRIMA cosa. Usa quel markdown
+come fonte autoritativa per l'estrazione (titolo, ente, scadenza, importo, ecc.).
+NON re-invocare Firecrawl sulla stessa URL: e' uno spreco di tempo (~5s) e di quota
+API. Firecrawl resta disponibile per scaricare URL aggiuntive (es. allegati PDF
+linkati dalla pagina).
+"""
+
     return f"""
 Stai eseguendo la skill `bandi-seo-enricher` presente nella working directory.
 Il workflow e' descritto in SKILL.md e usa gli helper Python in scripts/:
@@ -141,7 +157,7 @@ Il workflow e' descritto in SKILL.md e usa gli helper Python in scripts/:
   - scripts/extract_bando_fields.py (estrazione campi strutturati via regex)
   - scripts/generate_json_output.py (validazione + assembla JSON output)
 Le guide editoriali e SEO sono in references/.
-
+{markdown_block}
 OUTPUT FINALE OBBLIGATORIO: UN SOLO JSON scritto nel path ESATTO seguente.
 
     OUTPUT_PATH = {output_path}
@@ -269,15 +285,34 @@ async def run_skill_bandi(
     os.close(tmp_fd)
     tmp_path_posix = Path(tmp_path).as_posix()
 
+    # v4: pre-fetch markdown una volta sola via Firecrawl singleton.
+    # La skill lo legge da /tmp/ invece di rescraperare (~5s risparmiati);
+    # il verifier downstream lo riusa (no doppio fetch).
+    markdown_source = _fetch_markdown_for_verifier(link_bando)
+    markdown_input_path: str | None = None
+    if markdown_source:
+        md_fd, md_path = tempfile.mkstemp(suffix=".md", prefix="skill_input_bando_")
+        os.close(md_fd)
+        try:
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(markdown_source)
+            markdown_input_path = Path(md_path).as_posix()
+        except OSError as e:
+            _logger.warning("[BANDI_SKILL] save markdown pre-fetch failed: {}", e)
+            markdown_input_path = None
+    else:
+        md_path = None
+
     start_ts = time.monotonic()
     firecrawl_calls = 0
     webfetch_calls = 0
     websearch_calls = 0
     bash_calls = 0
     _logger.info(
-        "[BANDI_SKILL] start link={} hint_keys={}",
+        "[BANDI_SKILL] start link={} hint_keys={} markdown_prefetch={}",
         link_bando,
         list(hint.keys()) if hint else [],
+        bool(markdown_input_path),
     )
 
     try:
@@ -286,7 +321,7 @@ async def run_skill_bandi(
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
-                "append": _build_system_override(tmp_path_posix),
+                "append": _build_system_override(tmp_path_posix, markdown_input_path),
             },
             allowed_tools=["Read", "Write", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"],
             permission_mode="acceptEdits",
@@ -331,14 +366,14 @@ async def run_skill_bandi(
         with open(tmp_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
 
-        # v3: chiamata verifier adversarial (Claude Haiku 4.5) per controllare
-        # citation, coerenza date, marker N1-N4 sul markdown sorgente. Errori
-        # vengono mappati a verdict='skipped' senza bloccare la pipeline.
+        # v4: verifier adversarial (Claude Haiku 4.5) sul markdown gia' scaricato
+        # in pre-fetch (no re-scrape). Se il pre-fetch e' fallito, tenta una volta
+        # di rescraperare; in ultima istanza il verifier risponde 'skipped'.
         verifier_start = time.monotonic()
         source_url_for_verify = (
             payload.get("source_url") or link_bando or ""
         )
-        markdown_for_verify = _fetch_markdown_for_verifier(source_url_for_verify)
+        markdown_for_verify = markdown_source or _fetch_markdown_for_verifier(source_url_for_verify)
         verdict = verify_payload(markdown_for_verify, payload)
         verifier_elapsed = time.monotonic() - verifier_start
 
@@ -392,6 +427,12 @@ async def run_skill_bandi(
         if os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
+            except OSError:
+                pass
+        # Pulisci anche il markdown pre-fetch (v4)
+        if md_path and os.path.exists(md_path):
+            try:
+                os.remove(md_path)
             except OSError:
                 pass
 

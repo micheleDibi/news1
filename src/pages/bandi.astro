@@ -6,6 +6,7 @@ import {
   supabaseBandi,
   TIPOLOGIE_BANDO,
   STATI_SCADENZA,
+  computeScadenzaStato,
   type Bando,
   type Regione,
   type Settore,
@@ -23,31 +24,26 @@ const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_BANDI_URL;
 const supabaseKey = import.meta.env.PUBLIC_SUPABASE_BANDI_ANON_KEY;
 const PAGE_SIZE = 20;
 
+// v4: schema collassato. La RLS filtra `state='confirmed' AND slug IS NOT NULL`,
+// quindi qui non serve duplicare il filtro. `state_detail` e `date_quotes`
+// non li mostriamo in lista ma li carichiamo per il debug-overlay (audit).
 const BANDO_SELECT_LIST =
-  'id, slug, seo_titolo, seo_descrizione_breve, ente_erogatore, ' +
-  'tipologia_normalizzata, area_geografica, scadenza_stato, ' +
-  'data_scadenza, data_pubblicazione, data_pubblicazione_source, ' +
-  // v3 — quote citation + verifier verdict (per audit; non mostrati in card lista).
-  'data_scadenza_quote, data_pubblicazione_quote, skill_verifier_verdict, ' +
+  'id, slug, titolo, titolo_breve, descrizione_breve, ente_erogatore, ' +
+  'tipologia, area_geografica, programma, modalita_erogazione, ' +
+  'data_scadenza, data_pubblicazione, ' +
   'importo_totale_eur, importo_max_per_progetto_eur, ' +
-  'tematica, beneficiari_norm, codici_ateco_norm, programma_nome, ' +
-  'modalita_erogazione_nome, link_bando, titolo';
+  'tematica, beneficiari, codici_ateco, ' +
+  'link_bando, state, date_quotes';
 
 async function loadBandiData(): Promise<{ items: Bando[]; total: number }> {
   try {
     if (!supabaseUrl || !supabaseKey) return { items: [], total: 0 };
     const { count } = await supabaseBandi
       .from('bando')
-      .select('id', { count: 'exact', head: true })
-      .eq('skill_processing_status', 'completed')
-      .eq('is_bando_confermato', true)
-      .not('slug', 'is', null);
+      .select('id', { count: 'exact', head: true });
     const { data, error } = await supabaseBandi
       .from('bando')
       .select(BANDO_SELECT_LIST)
-      .eq('skill_processing_status', 'completed')
-      .eq('is_bando_confermato', true)
-      .not('slug', 'is', null)
       .order('data_pubblicazione', { ascending: false, nullsFirst: false })
       .range(0, PAGE_SIZE - 1);
     if (error) return { items: [], total: 0 };
@@ -368,11 +364,11 @@ const pageKeywords =
                     <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
                       <div class="flex-1 min-w-0">
                         <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">
-                          {bando.seo_titolo || bando.titolo}
+                          {bando.titolo}
                         </h2>
                       </div>
-                      <span class={`shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${scadenzaBadgeClasses(bando.scadenza_stato)}`}>
-                        {scadenzaBadgeLabel(bando.scadenza_stato)}
+                      <span class={`shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${scadenzaBadgeClasses(computeScadenzaStato(bando.data_scadenza))}`}>
+                        {scadenzaBadgeLabel(computeScadenzaStato(bando.data_scadenza))}
                       </span>
                     </div>
 
@@ -389,9 +385,9 @@ const pageKeywords =
                           <span>{bando.area_geografica}</span>
                         </span>
                       )}
-                      {bando.tipologia_normalizzata && (
+                      {bando.tipologia && (
                         <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">
-                          {bando.tipologia_normalizzata}
+                          {bando.tipologia}
                         </span>
                       )}
                     </div>
@@ -417,9 +413,9 @@ const pageKeywords =
                       )}
                     </div>
 
-                    {bando.seo_descrizione_breve && (
+                    {bando.descrizione_breve && (
                       <p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">
-                        {bando.seo_descrizione_breve}
+                        {bando.descrizione_breve}
                       </p>
                     )}
                   </div>
@@ -800,6 +796,18 @@ const pageKeywords =
     return '—';
   }
 
+  // v4: scadenza_stato calcolato in-app at-render-time (NON colonna DB).
+  function computeScadenzaStatoJs(dataScadenza) {
+    if (!dataScadenza) return null;
+    const scad = new Date(dataScadenza);
+    if (isNaN(scad.getTime())) return null;
+    const now = new Date();
+    const diffDays = Math.ceil((scad.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays < 0) return 'scaduto';
+    if (diffDays <= 7) return 'in_scadenza';
+    return 'aperto';
+  }
+
   function renderItems(items) {
     bandiList.querySelectorAll('.bando-item').forEach(el => el.remove());
 
@@ -813,26 +821,27 @@ const pageKeywords =
     items.forEach(b => {
       const article = document.createElement('article');
       article.className = 'bando-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200';
+      const scadStato = computeScadenzaStatoJs(b.data_scadenza);
       article.innerHTML = `
         <a href="/bandi/${encodeURIComponent(b.slug)}" class="block">
           <div class="p-5 sm:p-6">
             <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
               <div class="flex-1 min-w-0">
-                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">${escapeHtml(b.seo_titolo || b.titolo || '')}</h2>
+                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">${escapeHtml(b.titolo || '')}</h2>
               </div>
-              <span class="shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${badgeClasses(b.scadenza_stato)}">${badgeLabel(b.scadenza_stato)}</span>
+              <span class="shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${badgeClasses(scadStato)}">${badgeLabel(scadStato)}</span>
             </div>
             <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
               ${b.ente_erogatore ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg><span class="line-clamp-1">${escapeHtml(b.ente_erogatore)}</span></span>` : ''}
               ${b.area_geografica ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg><span>${escapeHtml(b.area_geografica)}</span></span>` : ''}
-              ${b.tipologia_normalizzata ? `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">${escapeHtml(b.tipologia_normalizzata)}</span>` : ''}
+              ${b.tipologia ? `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">${escapeHtml(b.tipologia)}</span>` : ''}
             </div>
             <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
               ${b.data_pubblicazione ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Pubblicato il <span class="font-medium">${formatDateDisplay(b.data_pubblicazione)}</span></span>` : ''}
               ${b.data_scadenza ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Scadenza: <span class="font-medium">${formatDateDisplay(b.data_scadenza)}</span></span>` : ''}
               ${b.importo_totale_eur != null ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Totale: <span class="font-medium">${formatEuro(b.importo_totale_eur)}</span></span>` : ''}
             </div>
-            ${b.seo_descrizione_breve ? `<p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">${escapeHtml(b.seo_descrizione_breve)}</p>` : ''}
+            ${b.descrizione_breve ? `<p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">${escapeHtml(b.descrizione_breve)}</p>` : ''}
           </div>
         </a>`;
       fragment.appendChild(article);
@@ -889,59 +898,44 @@ const pageKeywords =
     const scadA = scadenzaA.value || '';
 
     const from = (currentPage - 1) * PAGE_SIZE;
+    // v4: RLS filtra `state='confirmed' AND slug IS NOT NULL` lato DB,
+    // qui non duplichiamo. `scadenza_stato` non e' colonna DB → filtro post-fetch.
     const params = {
       'select': SELECT_LIST,
-      'skill_processing_status': 'eq.completed',
-      'is_bando_confermato': 'is.true',
-      'slug': 'not.is.null',
       'order': 'data_pubblicazione.desc.nullslast',
       'offset': String(from),
       'limit': String(PAGE_SIZE),
     };
 
-    // Combiniamo tutti i predicati custom in un singolo `and=()`.
     const andParts = [];
 
-    // Ricerca testuale: OR su 3 colonne
     if (searchTerm) {
       const t = safe(searchTerm);
-      andParts.push(`or(seo_titolo.ilike.*${t}*,seo_descrizione_breve.ilike.*${t}*,ente_erogatore.ilike.*${t}*)`);
+      andParts.push(`or(titolo.ilike.*${t}*,descrizione_breve.ilike.*${t}*,ente_erogatore.ilike.*${t}*)`);
     }
 
-    // Regione: area_geografica e' TEXT free-form, usiamo OR di ilike
     if (sel.regione.length) {
       const ors = sel.regione.map(v => `area_geografica.ilike.*${safe(v)}*`);
       andParts.push(`or(${ors.join(',')})`);
     }
-    // Settore: tematica e' TEXT[], overlap
     if (sel.settore.length) {
       andParts.push(`tematica.ov.{${sel.settore.map(quoteVal).join(',')}}`);
     }
-    // Beneficiario: beneficiari_norm e' TEXT[], overlap
     if (sel.beneficiario.length) {
-      andParts.push(`beneficiari_norm.ov.{${sel.beneficiario.map(quoteVal).join(',')}}`);
+      andParts.push(`beneficiari.ov.{${sel.beneficiario.map(quoteVal).join(',')}}`);
     }
-    // ATECO: codici_ateco_norm e' TEXT[], overlap
     if (sel.ateco.length) {
-      andParts.push(`codici_ateco_norm.ov.{${sel.ateco.map(quoteVal).join(',')}}`);
+      andParts.push(`codici_ateco.ov.{${sel.ateco.map(quoteVal).join(',')}}`);
     }
-    // Programma: TEXT, IN
     if (sel.programma.length) {
-      andParts.push(`programma_nome.in.(${sel.programma.map(quoteVal).join(',')})`);
+      andParts.push(`programma.in.(${sel.programma.map(quoteVal).join(',')})`);
     }
-    // Modalita: TEXT, IN
     if (sel.modalita.length) {
-      andParts.push(`modalita_erogazione_nome.in.(${sel.modalita.map(quoteVal).join(',')})`);
+      andParts.push(`modalita_erogazione.in.(${sel.modalita.map(quoteVal).join(',')})`);
     }
-    // Tipologia chip
     if (tipologie.length) {
-      andParts.push(`tipologia_normalizzata.in.(${tipologie.map(quoteVal).join(',')})`);
+      andParts.push(`tipologia.in.(${tipologie.map(quoteVal).join(',')})`);
     }
-    // Stato scadenza chip
-    if (stati.length) {
-      andParts.push(`scadenza_stato.in.(${stati.map(quoteVal).join(',')})`);
-    }
-    // Range filters
     if (impMin != null) andParts.push(`importo_totale_eur.gte.${impMin}`);
     if (impMax != null) andParts.push(`importo_totale_eur.lte.${impMax}`);
     if (scadDa) andParts.push(`data_scadenza.gte.${scadDa}`);
@@ -953,8 +947,14 @@ const pageKeywords =
 
     try {
       const { data, total } = await supabaseFetch('bando', params);
-      renderItems(data || []);
-      if (visibleCountSpan) visibleCountSpan.textContent = total;
+      // v4: filtro scadenza_stato in post-processing (non colonna DB).
+      let items = data || [];
+      if (stati.length) {
+        const wanted = new Set(stati);
+        items = items.filter(b => wanted.has(computeScadenzaStatoJs(b.data_scadenza)));
+      }
+      renderItems(items);
+      if (visibleCountSpan) visibleCountSpan.textContent = stati.length ? items.length : total;
       if (heroCountSpan) heroCountSpan.textContent = total;
       updatePagination(total);
     } catch (e) {

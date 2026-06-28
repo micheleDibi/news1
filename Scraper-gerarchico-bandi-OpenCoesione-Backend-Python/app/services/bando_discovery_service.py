@@ -174,10 +174,9 @@ class BandoDiscoveryService:
                             item["data_extra"] = {**existing_extra, "force_ocr": True}
                             quality_totals["gate1_low_quality_ocr_flagged"] += 1
 
-                    ai_stats = self.ai_pipeline.enqueue_from_candidates(
-                        payload,
-                        stats.get("bando_ids", []),
-                    )
+                    # v4: AI pipeline pre-skill deprecata. I bandi vanno direttamente
+                    # in stato `discovered`, drenati dal sender (skill autoritativa).
+                    ai_stats = {"considered": 0, "enqueued": 0, "already_present": 0, "not_required": int(stats.get("inserted", 0)) + int(stats.get("updated", 0))}
                     for key in ai_totals:
                         ai_totals[key] += int(ai_stats.get(key, 0))
 
@@ -560,7 +559,8 @@ class BandoDiscoveryService:
             for key in upsert_totals:
                 upsert_totals[key] += int(stats.get(key, 0))
 
-            ai_stats = self.ai_pipeline.enqueue_from_candidates(payload, stats.get("bando_ids", []))
+            # v4: AI pipeline pre-skill deprecata.
+            ai_stats = {"considered": 0, "enqueued": 0, "already_present": 0, "not_required": int(stats.get("inserted", 0)) + int(stats.get("updated", 0))}
             for key in ai_totals:
                 ai_totals[key] += int(ai_stats.get(key, 0))
 
@@ -713,7 +713,8 @@ class BandoDiscoveryService:
                 for key in upsert_totals:
                     upsert_totals[key] += int(stats.get(key, 0))
 
-                ai_stats = self.ai_pipeline.enqueue_from_candidates(payload, stats.get("bando_ids", []))
+                # v4: AI pipeline pre-skill deprecata.
+                ai_stats = {"considered": 0, "enqueued": 0, "already_present": 0, "not_required": int(stats.get("inserted", 0)) + int(stats.get("updated", 0))}
                 for key in ai_totals:
                     ai_totals[key] += int(ai_stats.get(key, 0))
 

@@ -433,13 +433,22 @@ def create_bando_json(
         if not isinstance(v, list):
             warnings.append(f"{k} deve essere una lista (anche vuota), trovato: {type(v).__name__}")
 
-    # NIENTE fallback link_candidatura = source_url. La skill deve esplicitamente
-    # decidere: NULL + verified=false oppure URL verificato + verified=true.
-    link_candidatura_verified = bool(bando_data.get("link_candidatura_verified", False))
-    if bando_data.get("link_candidatura") and not link_candidatura_verified:
-        # Avvertimento: link presente ma non verificato. La skill dovrebbe verificarlo (STEP 5)
-        # o impostarlo a null. L'orchestrator manterra' verified=false.
-        warnings.append("link_candidatura presente ma link_candidatura_verified=false: verificalo o impostalo a null")
+    # v4: link_candidatura_source enum (extracted | fallback_source | missing).
+    # Backward-compat: se il chiamante usa ancora link_candidatura_verified bool,
+    # lo deriva. Niente fallback automatico a source_url: la skill decide.
+    link_candidatura_source = bando_data.get("link_candidatura_source")
+    if not link_candidatura_source:
+        legacy_verified = bando_data.get("link_candidatura_verified")
+        if legacy_verified is True:
+            link_candidatura_source = "extracted"
+        elif bando_data.get("link_candidatura"):
+            link_candidatura_source = "missing"  # link presente ma non verificato → richiede attenzione
+        else:
+            link_candidatura_source = "missing"
+    if link_candidatura_source not in ("extracted", "fallback_source", "missing"):
+        warnings.append(f"link_candidatura_source non valido: {link_candidatura_source}")
+    if bando_data.get("link_candidatura") and link_candidatura_source == "missing":
+        warnings.append("link_candidatura presente ma source='missing': verificalo o azzera il link")
 
     payload = {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -456,8 +465,11 @@ def create_bando_json(
         "bando": {
             "ente_erogatore": bando_data.get("ente_erogatore"),
             "tipologia": bando_data.get("tipologia"),
+            "programma": bando_data.get("programma"),
+            "modalita_erogazione": bando_data.get("modalita_erogazione"),
             "area_geografica": bando_data.get("area_geografica"),
             "beneficiari": bando_data.get("beneficiari") or [],
+            "codici_ateco": bando_data.get("codici_ateco") or [],
             "tematica": bando_data.get("tematica") or [],
             "scadenza": bando_data.get("scadenza"),
             "scadenza_source": scadenza_source,
@@ -469,8 +481,7 @@ def create_bando_json(
             "importo_totale_eur": bando_data.get("importo_totale_eur"),
             "importo_max_per_progetto_eur": bando_data.get("importo_max_per_progetto_eur"),
             "link_candidatura": bando_data.get("link_candidatura"),
-            "link_candidatura_verified": link_candidatura_verified,
-            "riferimento_normativo": bando_data.get("riferimento_normativo"),
+            "link_candidatura_source": link_candidatura_source,
         },
         "allegati": allegati_clean,
         "factcheck_report": factcheck_report or [],

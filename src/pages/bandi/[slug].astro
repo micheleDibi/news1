@@ -2,7 +2,7 @@
 import Layout from '../../layouts/Layout.astro';
 import { format, parseISO, isValid, differenceInCalendarDays } from 'date-fns';
 import { it } from 'date-fns/locale';
-import { supabaseBandi, type Bando, type BandoSection } from '../../lib/supabase-bandi';
+import { supabaseBandi, computeScadenzaStato, type Bando, type BandoSection } from '../../lib/supabase-bandi';
 import BandiExpertCta from '../../components/BandiExpertCta.astro';
 import ContactForm from '../../components/ContactForm';
 
@@ -10,19 +10,17 @@ export const prerender = false;
 
 const { slug } = Astro.params;
 
+// v4: schema collassato. RLS filtra `state='confirmed' AND slug IS NOT NULL`
+// lato DB, quindi qui non serve replicare. `date_quotes` JSONB include
+// {pubblicazione, scadenza} con {value, source, quote}.
 const SELECT_LIST =
-  'id, slug, seo_titolo, seo_occhiello, seo_descrizione_breve, ' +
-  'seo_meta_title, seo_meta_description, seo_contenuto, ' +
-  'ente_erogatore, tipologia_normalizzata, area_geografica, tematica, beneficiari_norm, ' +
-  'scadenza_stato, data_scadenza, importo_totale_eur, importo_max_per_progetto_eur, ' +
-  'link_candidatura, link_candidatura_verified, riferimento_normativo, link_bando, ' +
-  'titolo, descrizione, data_pubblicazione, codice_bando, fondo, ' +
-  'allegati, codici_ateco_norm, programma_nome, modalita_erogazione_nome, ' +
-  'is_bando_confermato, data_scadenza_source, data_pubblicazione_source, ' +
-  'validation_reason, rejection_category, ' +
-  // v3 — citation strict + verifier verdict (defense in depth)
-  'data_scadenza_quote, data_pubblicazione_quote, ' +
-  'skill_verifier_verdict, skill_verifier_notes, skill_verifier_refuted_fields';
+  'id, slug, titolo, titolo_breve, descrizione_breve, contenuto, ' +
+  'ente_erogatore, tipologia, area_geografica, tematica, beneficiari, ' +
+  'data_scadenza, data_pubblicazione, date_quotes, ' +
+  'importo_totale_eur, importo_max_per_progetto_eur, ' +
+  'link_candidatura, link_candidatura_source, link_bando, ' +
+  'codice_bando, allegati, codici_ateco, programma, modalita_erogazione, ' +
+  'state, state_detail';
 
 let bando: Bando | null = null;
 try {
@@ -30,8 +28,6 @@ try {
     .from('bando')
     .select(SELECT_LIST)
     .eq('slug', slug)
-    .eq('skill_processing_status', 'completed')
-    .eq('is_bando_confermato', true)
     .single();
   if (!error && data) bando = data as unknown as Bando;
 } catch {
@@ -45,7 +41,7 @@ if (!bando) {
   );
 }
 
-const sections: BandoSection[] = bando.seo_contenuto?.sections || [];
+const sections: BandoSection[] = bando.contenuto?.sections || [];
 
 const formatDate = (s: string | null | undefined): string => {
   if (!s) return '—';
@@ -75,7 +71,8 @@ const daysToDeadline = (() => {
 })();
 
 const scadenzaBadge = (() => {
-  const stato = bando.scadenza_stato;
+  // v4: scadenza_stato calcolato in-app (NON colonna DB).
+  const stato = computeScadenzaStato(bando.data_scadenza);
   if (stato === 'aperto') return { label: 'Aperto', cls: 'bg-blue-100 text-blue-700 ring-1 ring-blue-200' };
   if (stato === 'in_scadenza') return { label: 'In scadenza', cls: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200' };
   if (stato === 'scaduto') return { label: 'Scaduto', cls: 'bg-gray-100 text-gray-600 ring-1 ring-gray-200' };
@@ -114,14 +111,17 @@ function escapeText(s: string): string {
 }
 function escapeAttr(s: string): string { return escapeText(s); }
 
-const metaTitle = bando.seo_meta_title || bando.seo_titolo || bando.titolo || 'Bando';
-const metaDescription = bando.seo_meta_description || bando.seo_descrizione_breve || '';
+// v4: meta_title/meta_description NON sono piu' colonne. Li derivo da titolo/descrizione_breve.
+const titoloDisplay = bando.titolo || 'Bando';
+const descrizioneDisplay = bando.descrizione_breve || '';
+const metaTitle = titoloDisplay.length > 60 ? titoloDisplay.slice(0, 57) + '…' : titoloDisplay;
+const metaDescription = descrizioneDisplay.length > 155 ? descrizioneDisplay.slice(0, 152) + '…' : descrizioneDisplay;
 const canonicalUrl = `https://edunews24.it/bandi/${bando.slug}`;
 
 // Context per il form di richiesta esperto (passato a /api/contact tramite ContactForm).
 const expertContext = {
   source: 'bando-detail',
-  bando_titolo: bando.seo_titolo || bando.titolo || 'Bando',
+  bando_titolo: titoloDisplay,
   bando_slug: bando.slug,
   bando_url: canonicalUrl,
 };
@@ -133,8 +133,8 @@ const expertPrefilledNotes =
 const jsonLd: Record<string, unknown> = {
   '@context': 'https://schema.org',
   '@type': 'Article',
-  headline: bando.seo_titolo || bando.titolo,
-  description: bando.seo_descrizione_breve,
+  headline: titoloDisplay,
+  description: descrizioneDisplay,
   url: canonicalUrl,
   datePublished: bando.data_pubblicazione,
   author: { '@type': 'Organization', name: 'EduNews24' },
@@ -145,8 +145,8 @@ const jsonLd: Record<string, unknown> = {
   },
   about: {
     '@type': 'GovernmentService',
-    name: bando.seo_titolo || bando.titolo,
-    serviceType: bando.tipologia_normalizzata,
+    name: titoloDisplay,
+    serviceType: bando.tipologia,
     provider: bando.ente_erogatore ? { '@type': 'GovernmentOrganization', name: bando.ente_erogatore } : undefined,
     areaServed: bando.area_geografica,
   },
@@ -178,17 +178,17 @@ const jsonLd: Record<string, unknown> = {
             </li>
             <li class="flex items-center">
               <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <span class="text-white font-medium line-clamp-1">{bando.seo_titolo || bando.titolo}</span>
+              <span class="text-white font-medium line-clamp-1">{titoloDisplay}</span>
             </li>
           </ol>
         </nav>
-        {bando.seo_occhiello && (
-          <p class="text-blue-200 text-sm uppercase tracking-wider mb-2">{bando.seo_occhiello}</p>
+        {bando.titolo_breve && (
+          <p class="text-blue-200 text-sm uppercase tracking-wider mb-2">{bando.titolo_breve}</p>
         )}
-        <h1 class="text-2xl md:text-4xl font-bold mb-3 leading-tight">{bando.seo_titolo || bando.titolo}</h1>
+        <h1 class="text-2xl md:text-4xl font-bold mb-3 leading-tight">{titoloDisplay}</h1>
         <div class="flex flex-wrap items-center gap-3 text-sm">
-          {bando.tipologia_normalizzata && (
-            <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold">{bando.tipologia_normalizzata}</span>
+          {bando.tipologia && (
+            <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold">{bando.tipologia}</span>
           )}
           {bando.ente_erogatore && (
             <span class="inline-flex items-center gap-1.5 text-blue-100">
@@ -211,8 +211,8 @@ const jsonLd: Record<string, unknown> = {
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Main content */}
         <article class="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-100 p-6 sm:p-8">
-          {bando.seo_descrizione_breve && (
-            <p class="text-lg text-gray-700 leading-relaxed mb-6 font-medium">{bando.seo_descrizione_breve}</p>
+          {bando.descrizione_breve && (
+            <p class="text-lg text-gray-700 leading-relaxed mb-6 font-medium">{bando.descrizione_breve}</p>
           )}
           <div class="prose prose-blue max-w-none">
             {sections.map((section) => {
@@ -258,13 +258,13 @@ const jsonLd: Record<string, unknown> = {
         {/* Sidebar */}
         <aside class="space-y-4">
           {/* CTA — una sola, la piu' autoritativa disponibile:
-              1. link_candidatura SOLO se verificato dalla skill (link_candidatura_verified=true)
+              1. link_candidatura SOLO se source='extracted' (skill ha trovato un link vero)
               2. altrimenti fallback su link_bando (pagina ufficiale)
               Niente piu' due link affiancati: confondeva l'utente quando la skill
               ricadeva su source_url come link_candidatura. */}
           {(() => {
             const hasVerifiedCandidatura =
-              bando.link_candidatura_verified === true && !!bando.link_candidatura;
+              bando.link_candidatura_source === 'extracted' && !!bando.link_candidatura;
             const ctaUrl: string | null = hasVerifiedCandidatura
               ? bando.link_candidatura
               : (bando.link_bando || null);
@@ -322,7 +322,7 @@ const jsonLd: Record<string, unknown> = {
               <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Data di pubblicazione</h3>
               <p class="text-lg font-semibold text-gray-900">
                 {formatDate(bando.data_pubblicazione)}
-                {bando.data_pubblicazione_source === 'inferred' && (
+                {bando.date_quotes?.pubblicazione?.source === 'inferred' && (
                   <span
                     title="Data dedotta da contesto, non da label esplicita sulla fonte"
                     class="ml-1 text-xs text-amber-600 align-top"
@@ -369,11 +369,11 @@ const jsonLd: Record<string, unknown> = {
           )}
 
           {/* Beneficiari */}
-          {bando.beneficiari_norm && bando.beneficiari_norm.length > 0 && (
+          {bando.beneficiari && bando.beneficiari.length > 0 && (
             <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
               <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">A chi si rivolge</h3>
               <ul class="space-y-1.5">
-                {bando.beneficiari_norm.map(b => (
+                {bando.beneficiari.map(b => (
                   <li class="text-sm text-gray-700 flex items-start gap-2">
                     <svg class="w-4 h-4 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
                     {b}
@@ -396,11 +396,11 @@ const jsonLd: Record<string, unknown> = {
           )}
 
           {/* Codici ATECO */}
-          {bando.codici_ateco_norm && bando.codici_ateco_norm.length > 0 && (
+          {bando.codici_ateco && bando.codici_ateco.length > 0 && (
             <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
               <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Codici ATECO</h3>
               <ul class="space-y-1.5">
-                {bando.codici_ateco_norm.map(c => (
+                {bando.codici_ateco.map(c => (
                   <li class="text-sm text-gray-700 flex items-start gap-2">
                     <svg class="w-4 h-4 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
                     <span class="leading-snug">{c}</span>
@@ -411,29 +411,21 @@ const jsonLd: Record<string, unknown> = {
           )}
 
           {/* Programma + Modalita */}
-          {(bando.programma_nome || bando.modalita_erogazione_nome) && (
+          {(bando.programma || bando.modalita_erogazione) && (
             <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
               <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Programma e modalita</h3>
-              {bando.programma_nome && (
+              {bando.programma && (
                 <div class="mb-3">
                   <p class="text-xs text-gray-500 mb-0.5">Programma</p>
-                  <p class="text-sm font-medium text-gray-800">{bando.programma_nome}</p>
+                  <p class="text-sm font-medium text-gray-800">{bando.programma}</p>
                 </div>
               )}
-              {bando.modalita_erogazione_nome && (
+              {bando.modalita_erogazione && (
                 <div>
                   <p class="text-xs text-gray-500 mb-0.5">Modalita erogazione</p>
-                  <p class="text-sm font-medium text-gray-800">{bando.modalita_erogazione_nome}</p>
+                  <p class="text-sm font-medium text-gray-800">{bando.modalita_erogazione}</p>
                 </div>
               )}
-            </div>
-          )}
-
-          {/* Riferimento normativo */}
-          {bando.riferimento_normativo && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Riferimento normativo</h3>
-              <p class="text-sm text-gray-700">{bando.riferimento_normativo}</p>
             </div>
           )}
         </aside>

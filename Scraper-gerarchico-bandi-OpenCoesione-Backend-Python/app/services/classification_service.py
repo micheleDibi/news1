@@ -94,9 +94,10 @@ class ControlledClassificationService:
 
         result: dict[str, Any] = {}
 
-        is_bando_confermato = self._infer_is_bando_confermato(payload, normalized_fragments)
-        if is_bando_confermato is not None:
-            result["is_bando_confermato"] = is_bando_confermato
+        # v4: `is_bando_confermato` non e' piu' popolato in fase 1. La skill autoritativa
+        # (fase 2) emette il verdetto su `state` ('confirmed'|'rejected'|'refuted') tramite
+        # update_bando_from_payload. Il match catalogo qui sotto resta come "hint" per il
+        # frontend (denormalizzato) ma non e' bloccante per nessun record.
 
         tipologia = self._match_single(self.catalog.tipologie_bando, normalized_fragments)
         if tipologia is None:
@@ -265,88 +266,14 @@ class ControlledClassificationService:
                 return option
         return None
 
-    # Path segments che identificano pagine indice/ricerca/archivio (NON bandi singoli).
-    # Defense in depth: anche se il filtro upstream in fonte_level2.py li scarta,
-    # qui ricontrolliamo per record gia' nel DB o ingressi alternativi.
-    _INDEX_PAGE_PATH_PARTS: tuple[str, ...] = (
-        "/ricerca", "/search", "/cerca",
-        "/categoria/", "/categorie/", "/category/",
-        "/tag/", "/tags/",
-        "/portale", "/elenco-bandi", "/lista-bandi",
-        "/archivio", "/archive",
-        "/indice", "/filtra", "/filter/",
-        # v3: aggregatori / cronoprogrammi che NON sono bandi singoli
-        "/stay-informed", "/opportunities",
-        "/news-and-events",
-        "/calendario-preavvisi", "/preavvisi",
-        "/cronoprogramma", "/programmazione-bandi",
-    )
-
-    # v3: URL del tipo `/call-7-mediterranean-multiprogramme-mechanism` indica
-    # la pagina del programma (descrittiva, no scadenza specifica). NON e' hard-deny
-    # in fonte_level2.py per non bloccare `call-2-progetti-tematici` validi:
-    # qui e' un signal che declassa `is_bando_confermato` a False. La skill fase 2
-    # potra' comunque promuoverlo se trova marker M1+M2+M3 espliciti.
-    _CALL_PROGRAMME_PATTERN: re.Pattern = re.compile(r"/call-\d+-", re.IGNORECASE)
-
-    @classmethod
-    def _url_looks_like_index_page(cls, url: str | None) -> bool:
-        if not url:
-            return False
-        lowered = url.lower()
-        return any(part in lowered for part in cls._INDEX_PAGE_PATH_PARTS)
-
-    @classmethod
-    def _url_matches_call_pattern(cls, url: str | None) -> bool:
-        """True se URL contiene `/call-NN-` (programme landing page sospetta)."""
-        if not url:
-            return False
-        return bool(cls._CALL_PROGRAMME_PATTERN.search(url))
-
     def _infer_is_bando_confermato(self, payload: dict[str, Any], normalized_fragments: list[str]) -> bool | None:
-        raw_data_obj = payload.get("raw_data_obj") or {}
-        diagnostics = raw_data_obj.get("link_diagnostics") or {}
+        """v4: sempre None.
 
-        accepted = bool(diagnostics.get("accepted", False))
-        score = int(diagnostics.get("score") or 0)
-        reason_reject = str(diagnostics.get("reason_reject") or "")
-
-        # Defense in depth: URL con segmenti tipici delle pagine indice -> False.
-        # Defense in depth = anche se fonte_level2.DENY_PATH_PARTS gia' scarta,
-        # questo blocco protegge da record gia' presenti in DB o ingressi alternativi.
-        candidate_url = str(
-            raw_data_obj.get("candidate_url")
-            or raw_data_obj.get("source_url")
-            or payload.get("link_bando")
-            or ""
-        )
-        if self._url_looks_like_index_page(candidate_url):
-            return False
-
-        # v3: programme landing page (`/call-7-mediterranean-multiprogramme-...`).
-        # Conservativo: se l'URL matcha il pattern, non promuovere a is_bando_confermato.
-        # La skill fase 2 con marker M1+M2+M3 puo' eventualmente sovrascriverlo.
-        if self._url_matches_call_pattern(candidate_url):
-            return False
-
-        if accepted and score >= 2:
-            return True
-
-        lowered_blob = " ".join(normalized_fragments)
-        if any(term in lowered_blob for term in ["privacy", "cookie", "login", "logout", "mappa del sito"]):
-            return False
-
-        if reason_reject in {
-            "DENY_HOST", "DENY_PATH", "DENY_KEYWORD", "NON_HTML_OR_PDF",
-            # v3: nuovi reason_reject che fonte_level2 emette per pattern aggressivi
-            "DENY_PATH_REGEX", "DENY_PDF_CALENDAR",
-        }:
-            return False
-
-        # Conservativo: niente piu' "True solo perche' c'e' la parola bando/voucher".
-        # La skill di fase 2 (bandi-seo-enricher) e' ora la fonte autoritativa: se davvero
-        # e' un bando, lei lo promuovera' a True via update_bando_from_payload.
-        return False
+        La fase 1 ora e' solo discovery: la skill+verifier (fase 2) decidono autoritariamente
+        lo `state` del bando ('confirmed' | 'rejected' | 'refuted'). Mantenuta per
+        retrocompatibilita' con i caller esistenti, ma non emette piu' un verdetto.
+        """
+        return None
 
 
 def _extract_strings(value: Any) -> list[str]:

@@ -46,87 +46,18 @@ class FonteLevel2Error(RuntimeError):
 
 
 class FonteLevel2Scanner:
-    _HOST_SPECIFIC_DENY_EXACT_PATHS: dict[str, tuple[str, ...]] = {
-        "interreg-marittimo.eu": (
-            "/avvisi",
-            "/progetti-finanziati1",
-        ),
-        "www.interreg-italiasvizzera.eu": (
-            "/wps/portal/site/interreg-italia-svizzera/avvisi",
-            "/wps/portal/site/interreg-italia-svizzera/progetti/progetti-finanziati",
-        ),
-        "www.interreg-central.eu": (
-            "/calls-for-proposals",
-            "/capitalisation-call-closed",
-            "/third-call-results",
-            "/second-call-results",
-            "/project-gateway",
-        ),
-        # P3 — fonti con alta incidenza sospetti: pagine indice/lista/archivio non-bando
-        "calabriaeuropa.regione.calabria.it": (
-            "/bandi",  # lista filtrata; sito richiede cookie/JS → redirect a "Contatti"
-        ),
-        "www.lazioeuropa.it": (
-            "/bandi",                                      # lista generale bandi
-            "/psr-feasr/psr-bandi-e-graduatorie",          # archivio PSR 2014-2022 concluso
-            "/psr-feasr/psr-cronoprogramma-bandi",         # cronoprogramma PSR 2014-2022 concluso
-            "/pnrr-pnc/misure-pnrr-e-pnc-regione-lazio",  # indice misure PNRR (no bando singolo)
-        ),
-        "www.regione.sardegna.it": (
-            "/atti-bandi-archivi",  # indice generale atti/bandi/archivi (non bando specifico)
-        ),
-    }
+    # v4: discovery puro. Solo i filtri che NON possono mai contenere un bando
+    # vengono applicati a fase 1; tutto il resto va alla skill+verifier.
+    #
+    # Rimossi rispetto alla v3:
+    #   - _HOST_SPECIFIC_DENY_EXACT_PATHS  (host-specific listing): la skill decide.
+    #   - _ALLOW_KEYWORDS + scoring signals>=2: false-negative su pagine JS-rendered.
+    #   - _DENY_KEYWORDS (privacy/cookie/login/...): sovrapposto a _DENY_PATH_PARTS.
+    #   - _DENY_PATH_REGEX (/opportunities/?$, ...): skill+verifier sufficienti.
+    #   - _DENY_PDF_FILENAME_TOKENS (calendario/preavvisi/...): la skill leggera' il PDF.
+    #   - Tutti i _DENY_PATH_PARTS narrative (search/archivio/categorie/...).
 
-    _ALLOW_KEYWORDS = (
-        "bando",
-        "bandi",
-        "avviso",
-        "avvisi",
-        "opportunit",
-        "call",
-        "voucher",
-        "contribut",
-        "finanzi",
-        "incentiv",
-        "manifestazione",
-        "domanda",
-        "graduatoria",
-        "selezione",
-        "invito",
-        "agevolaz",
-    )
-
-    _DENY_KEYWORDS = (
-        "privacy",
-        "cookie",
-        "accessibil",
-        "note legali",
-        "contatti",
-        "call center",
-        "numero verde",
-        "regione utile",
-        "direzioni-settori-regionali",
-        "raccordo amministrativo",
-        "facebook",
-        "instagram",
-        "linkedin",
-        "twitter",
-        "youtube",
-        "whatsapp",
-        "telegram",
-        "feed",
-        "rss",
-        "wp-content",
-        "wp-json",
-        "wordpress.org",
-        "login",
-        "logout",
-        "amministrazione trasparente",
-        "mappa del sito",
-        "newsletter",
-        "lavora con noi",
-    )
-
+    # Social media e simili: non contengono bandi nella sub-page.
     _DENY_HOSTS = (
         "facebook.com",
         "instagram.com",
@@ -138,64 +69,14 @@ class FonteLevel2Scanner:
         "wa.me",
     )
 
+    # Path che per definizione non possono essere bandi (auth/cookie).
+    # Tutto il resto (categorie, archivi, search, opportunities, calendari)
+    # viene rimandato alla skill+verifier per giudizio autoritativo.
     _DENY_PATH_PARTS = (
         "/privacy",
         "/cookie",
-        "/contatti",
-        "/call-center",
-        "/regione-utile",
         "/login",
         "/logout",
-        "/rss",
-        "/feed",
-        "/tag/",
-        "/tags/",
-        "/categoria/",
-        "/categorie/",
-        "/category/",
-        "/author/",
-        # Pagine indice / ricerca / archivio che NON sono bandi singoli.
-        # Inclusi per evitare slug tipo "regione-piemonte-ricerca-voucher" o
-        # "bandi-finanziamenti-regione-piemonte-portale-ricerca" che superavano
-        # il filtro di 2 segnali keyword.
-        "/ricerca",
-        "/search",
-        "/cerca",
-        "/portale",
-        "/elenco-bandi",
-        "/lista-bandi",
-        "/archivio",
-        "/archive",
-        "/indice",
-        "/filtra",
-        "/filter/",
-        # v3: aggregatori / preavvisi / pagine "stay informed" che NON sono bandi singoli
-        # ma indici di future call o opportunità. Caso reale: interregnextmed.eu/stay-informed/opportunities,
-        # PR Valle d'Aosta cronoprogramma, vari "news ed eventi" istituzionali.
-        "/stay-informed",
-        "/news-and-events",
-        "/calendario-preavvisi",
-        "/preavvisi",
-        "/cronoprogramma",
-        "/programmazione-bandi",
-    )
-
-    # v3: pattern regex precompilati per match piu' precisi (es. ultimo segmento).
-    # Usati subito dopo _DENY_PATH_PARTS nella funzione di diagnostica.
-    _DENY_PATH_REGEX = (
-        re.compile(r"/opportunities/?$"),  # ultimo segmento = aggregatore (caso A)
-        re.compile(r"/stay-informed/?$"),
-    )
-
-    # v3: token nel basename di un file PDF che indicano calendario/preavvisi
-    # (NON un bando singolo). Caso reale: "Calendario preavvisi FESR_III agg.2025-1.pdf".
-    _DENY_PDF_FILENAME_TOKENS = (
-        "calendario",
-        "preavvisi",
-        "cronoprogramma",
-        "programmazione-bandi",
-        "piano-attivita",
-        "piano-bandi",
     )
 
     def __init__(self, timeout_seconds: int | None = None) -> None:
@@ -386,23 +267,18 @@ class FonteLevel2Scanner:
 
     @staticmethod
     def _link_diagnostics(title: str, url: str, context: str) -> dict[str, Any]:
-        lowered_title = (title or "").lower()
-        lowered_context = (context or "").lower()
+        # v4: discovery puro. Tutto cio' che NON e' palesemente non-bando
+        # (social, asset binari, auth/cookie) viene accettato e mandato alla skill.
         parsed = urlparse(url or "")
         lowered_host = (parsed.netloc or "").lower()
         lowered_path = (parsed.path or "").lower()
-        lowered_path_normalized = lowered_path.rstrip("/") or "/"
 
         diagnostics: dict[str, Any] = {
             "accepted": False,
             "score": 0,
             "reason_accept": None,
             "reason_reject": None,
-            "signals": {
-                "title_has_allow": False,
-                "path_has_allow": False,
-                "context_has_allow": False,
-            },
+            "signals": {},
         }
 
         if any(lowered_host.endswith(host) for host in FonteLevel2Scanner._DENY_HOSTS):
@@ -413,75 +289,15 @@ class FonteLevel2Scanner:
             diagnostics["reason_reject"] = "DENY_PATH"
             return diagnostics
 
-        # v3: pattern regex per cattura piu' stretta (es. ultimo segmento `/opportunities`).
-        if any(pat.search(lowered_path) for pat in FonteLevel2Scanner._DENY_PATH_REGEX):
-            diagnostics["reason_reject"] = "DENY_PATH_REGEX"
-            return diagnostics
-
-        # v3: PDF il cui basename contiene token di calendario/preavvisi → non e' un bando.
-        if re.search(r"\.pdf(?:\?|$)", lowered_path):
-            basename = lowered_path.rstrip("/").rsplit("/", 1)[-1]
-            if any(tok in basename for tok in FonteLevel2Scanner._DENY_PDF_FILENAME_TOKENS):
-                diagnostics["reason_reject"] = "DENY_PDF_CALENDAR"
-                return diagnostics
-
-        for host, denied_paths in FonteLevel2Scanner._HOST_SPECIFIC_DENY_EXACT_PATHS.items():
-            if lowered_host.endswith(host) and any(lowered_path_normalized == path.rstrip("/") for path in denied_paths):
-                diagnostics["reason_reject"] = "HOST_SPECIFIC_DENY_PATH"
-                return diagnostics
-
-        if "regione.piemonte.it" in lowered_host:
-            # P1.1: blocca pagine istituzionali Piemonte che storicamente generano falsi positivi.
-            if not lowered_path or lowered_path == "/":
-                diagnostics["reason_reject"] = "ROOT_DOMAIN_NO_PATH"
-                return diagnostics
-            if any(
-                part in lowered_path
-                for part in (
-                    "/web/amministrazione/",
-                    "/web/temi/protezione-civile",
-                    "/web/organizzazione/",
-                    "/direzioni-settori-regionali/",
-                )
-            ):
-                diagnostics["reason_reject"] = "PIEMONTE_INSTITUTIONAL_PATH"
-                return diagnostics
-
-        combined = f"{lowered_title} {lowered_host} {lowered_path} {lowered_context}"
-        if any(k in combined for k in FonteLevel2Scanner._DENY_KEYWORDS):
-            diagnostics["reason_reject"] = "DENY_KEYWORD"
-            return diagnostics
-
-        # Scarta file evidentemente non pertinenti alla pubblicazione del bando.
-        if re.search(r"\.(?:jpg|jpeg|png|gif|svg|ico|css|js|xml)(?:\?|$)", lowered_path):
+        # Asset binari (immagini, font, CSS/JS, feed XML): nessun bando.
+        if re.search(r"\.(?:jpg|jpeg|png|gif|svg|ico|css|js|xml|woff|woff2)(?:\?|$)", lowered_path):
             diagnostics["reason_reject"] = "NON_HTML_OR_PDF"
             return diagnostics
 
-        title_has_allow = any(k in lowered_title for k in FonteLevel2Scanner._ALLOW_KEYWORDS)
-        path_has_allow = any(k in lowered_path for k in FonteLevel2Scanner._ALLOW_KEYWORDS)
-        context_has_allow = any(k in lowered_context for k in FonteLevel2Scanner._ALLOW_KEYWORDS)
-        diagnostics["signals"] = {
-            "title_has_allow": title_has_allow,
-            "path_has_allow": path_has_allow,
-            "context_has_allow": context_has_allow,
-        }
-
-        # Richiede almeno due segnali indipendenti per ridurre i falsi positivi.
-        signals = int(title_has_allow) + int(path_has_allow) + int(context_has_allow)
-        diagnostics["score"] = signals
-        if signals >= 2:
-            diagnostics["accepted"] = True
-            diagnostics["reason_accept"] = "MULTI_SIGNAL"
-            return diagnostics
-
-        # Eccezione: titolo forte + riferimento temporale tipico di pubblicazione.
-        if title_has_allow and re.search(r"\b20\d{2}\b", lowered_title):
-            diagnostics["accepted"] = True
-            diagnostics["score"] = max(diagnostics["score"], 2)
-            diagnostics["reason_accept"] = "TITLE_PLUS_YEAR"
-            return diagnostics
-
-        diagnostics["reason_reject"] = "INSUFFICIENT_SIGNALS"
+        # v4: tutto il resto va alla skill+verifier per giudizio autoritativo.
+        diagnostics["accepted"] = True
+        diagnostics["score"] = 99
+        diagnostics["reason_accept"] = "FORWARD_TO_SKILL"
         return diagnostics
 
 

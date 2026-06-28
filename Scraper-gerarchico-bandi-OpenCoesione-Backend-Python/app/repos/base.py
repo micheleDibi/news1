@@ -755,13 +755,13 @@ class BandoRepo:
             with conn.cursor() as cur:
                 for item in candidates:
                     hash_bando = str(item["hash_bando"])
+                    # v4: stato_bando, importo, importo_numerico, is_bando_confermato rimossi.
                     cur.execute(
                         """
-                        SELECT id, titolo, descrizione, codice_bando, stato_bando,
+                        SELECT id, titolo, descrizione, codice_bando,
                                data_pubblicazione, data_apertura, data_scadenza,
-                               link_bando, importo, importo_numerico, data_extra, raw_data,
-                               tipologia_bando_id, modalita_erogazione_id, programma_id,
-                               is_bando_confermato
+                               link_bando, data_extra, raw_data,
+                               tipologia_bando_id, modalita_erogazione_id, programma_id
                         FROM public.bando
                         WHERE hash_bando = %s
                         """,
@@ -783,6 +783,8 @@ class BandoRepo:
                     raw_data_json = _safe_json_dumps(item.get("raw_data_obj") or {})
 
                     if existing is None:
+                        # v4: is_bando_confermato e stato_bando rimossi (state machine
+                        # autoritativa della skill via update_bando_from_payload).
                         cur.execute(
                             """
                             INSERT INTO public.bando (
@@ -791,17 +793,13 @@ class BandoRepo:
                                 titolo,
                                 descrizione,
                                 codice_bando,
-                                stato_bando,
                                 data_pubblicazione,
                                 data_apertura,
                                 data_scadenza,
                                 link_bando,
-                                importo,
-                                importo_numerico,
                                 tipologia_bando_id,
                                 modalita_erogazione_id,
                                 programma_id,
-                                is_bando_confermato,
                                 data_extra,
                                 raw_data,
                                 primo_scraping_at,
@@ -810,8 +808,8 @@ class BandoRepo:
                                 retry_count,
                                 max_retry
                             ) VALUES (
-                                %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
+                                %s, %s, %s, %s, %s, %s, %s, %s,
+                                %s, %s, %s, %s, %s::jsonb, %s::jsonb,
                                 NOW(), NOW(), 'ready', 0, %s
                             )
                             RETURNING id
@@ -822,17 +820,13 @@ class BandoRepo:
                                 item["titolo"],
                                 item.get("descrizione"),
                                 item.get("codice_bando"),
-                                item.get("stato_bando", "programmato"),
                                 item.get("data_pubblicazione"),
                                 item.get("data_apertura"),
                                 item.get("data_scadenza"),
                                 item["link_bando"],
-                                item.get("importo"),
-                                item.get("importo_numerico"),
                                 tipologia_bando_id,
                                 modalita_erogazione_id,
                                 programma_id,
-                                item.get("is_bando_confermato"),
                                 _safe_json_dumps(item.get("data_extra") or {}),
                                 raw_data_json,
                                 settings.scraper_retry_max,
@@ -845,22 +839,21 @@ class BandoRepo:
                         inserted += 1
                         continue
 
+                    # v4: stato_bando/is_bando_confermato/importo/importo_numerico rimossi.
+                    # La skill emette: titolo/descrizione_breve via update_bando_from_payload.
+                    # Lo scraper conserva titolo/descrizione "raw" come hint iniziale (sovrascritti).
                     changed_fields: list[str] = []
                     compare_fields = {
                         "titolo": item.get("titolo"),
                         "descrizione": item.get("descrizione"),
                         "codice_bando": item.get("codice_bando"),
-                        "stato_bando": item.get("stato_bando", "programmato"),
                         "data_pubblicazione": item.get("data_pubblicazione"),
                         "data_apertura": item.get("data_apertura"),
                         "data_scadenza": item.get("data_scadenza"),
                         "link_bando": item.get("link_bando"),
-                        "importo": item.get("importo"),
-                        "importo_numerico": item.get("importo_numerico"),
                         "tipologia_bando_id": tipologia_bando_id,
                         "modalita_erogazione_id": modalita_erogazione_id,
                         "programma_id": programma_id,
-                        "is_bando_confermato": item.get("is_bando_confermato"),
                         "data_extra": item.get("data_extra") or {},
                         "raw_data": item.get("raw_data_obj") or {},
                     }
@@ -870,9 +863,6 @@ class BandoRepo:
                         if field in {"data_pubblicazione", "data_apertura", "data_scadenza"}:
                             old_val = _date_to_iso(old_val)
                             new_val = _date_to_iso(new_val)
-                        elif field == "importo_numerico":
-                            old_val = _decimal_to_str(old_val)
-                            new_val = _decimal_to_str(new_val)
 
                         if old_val != new_val:
                             changed_fields.append(field)
@@ -886,17 +876,13 @@ class BandoRepo:
                             SET titolo = %s,
                                 descrizione = %s,
                                 codice_bando = %s,
-                                stato_bando = %s,
                                 data_pubblicazione = %s,
                                 data_apertura = %s,
                                 data_scadenza = %s,
                                 link_bando = %s,
-                                importo = %s,
-                                importo_numerico = %s,
                                 tipologia_bando_id = %s,
                                 modalita_erogazione_id = %s,
                                 programma_id = %s,
-                                is_bando_confermato = %s,
                                 data_extra = %s::jsonb,
                                 raw_data = %s::jsonb,
                                 ultimo_scraping_at = NOW(),
@@ -913,17 +899,13 @@ class BandoRepo:
                                 item["titolo"],
                                 item.get("descrizione"),
                                 item.get("codice_bando"),
-                                item.get("stato_bando", "programmato"),
                                 item.get("data_pubblicazione"),
                                 item.get("data_apertura"),
                                 item.get("data_scadenza"),
                                 item["link_bando"],
-                                item.get("importo"),
-                                item.get("importo_numerico"),
                                 tipologia_bando_id,
                                 modalita_erogazione_id,
                                 programma_id,
-                                item.get("is_bando_confermato"),
                                 _safe_json_dumps(item.get("data_extra") or {}),
                                 raw_data_json,
                                 settings.scraper_retry_max,
@@ -937,17 +919,13 @@ class BandoRepo:
                                 "titolo",
                                 "descrizione",
                                 "codice_bando",
-                                "stato_bando",
                                 "data_pubblicazione",
                                 "data_apertura",
                                 "data_scadenza",
                                 "link_bando",
-                                "importo",
-                                "importo_numerico",
                                 "tipologia_bando_id",
                                 "modalita_erogazione_id",
                                 "programma_id",
-                                "is_bando_confermato",
                                 "data_extra",
                                 "raw_data",
                             ]
@@ -956,17 +934,13 @@ class BandoRepo:
                             "titolo": _jsonable(item.get("titolo")),
                             "descrizione": _jsonable(item.get("descrizione")),
                             "codice_bando": _jsonable(item.get("codice_bando")),
-                            "stato_bando": _jsonable(item.get("stato_bando", "programmato")),
                             "data_pubblicazione": _jsonable(item.get("data_pubblicazione")),
                             "data_apertura": _jsonable(item.get("data_apertura")),
                             "data_scadenza": _jsonable(item.get("data_scadenza")),
                             "link_bando": _jsonable(item.get("link_bando")),
-                            "importo": _jsonable(item.get("importo")),
-                            "importo_numerico": _jsonable(item.get("importo_numerico")),
                             "tipologia_bando_id": _jsonable(tipologia_bando_id),
                             "modalita_erogazione_id": _jsonable(modalita_erogazione_id),
                             "programma_id": _jsonable(programma_id),
-                            "is_bando_confermato": _jsonable(item.get("is_bando_confermato")),
                             "data_extra": _jsonable(item.get("data_extra") or {}),
                             "raw_data": _jsonable(item.get("raw_data_obj") or {}),
                         }

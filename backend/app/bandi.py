@@ -149,15 +149,27 @@ def run_ai_worker_drain() -> int:
 # Fase 2 — skill enrichment
 # ---------------------------------------------------------------------------
 
-# Campi del bando rilevanti da passare come hint alla skill.
+# Campi del bando rilevanti da passare come hint alla skill (schema v4).
+# Solo colonne sopravvissute alla migrazione v4: niente seo_*, niente skill_*,
+# niente *_norm, niente is_bando_confermato/rejection_category.
 _BANDO_CORE_COLUMNS = (
     "id, titolo, descrizione, codice_bando, fondo, link_bando, "
-    "stato_bando, data_pubblicazione, data_apertura, data_scadenza, "
-    "importo, importo_numerico, "
+    "data_pubblicazione, data_apertura, data_scadenza, "
     "tipologia_bando_id, modalita_erogazione_id, programma_id, "
-    "ai_processing_status, skill_processing_status, skill_attempts, "
+    "state, state_detail, attempts, "
     "ultimo_scraping_at, raw_data, data_extra"
 )
+
+
+# Stati ammessi della tabella `bando` (vedi backend/sql/bando_v4_collapse.sql).
+class BandoState:
+    DISCOVERED = "discovered"
+    ENRICHING = "enriching"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    REFUTED = "refuted"
+    ERROR = "error"
+    STALE = "stale"
 
 
 def _slugify(text: str) -> str:
@@ -325,166 +337,178 @@ def _read_existing_for_audit(sb, bando_id: int) -> dict[str, Any] | None:
         return None
 
 
-def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> None:
-    """Persiste il JSON output della skill nelle colonne di `bando`.
+def _derive_state(payload: dict[str, Any], verifier: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
+    """Calcola lo state machine target a partire dal payload skill + verdetto verifier.
 
-    Verdetto autoritativo: la skill (fase 2) sovrascrive `is_bando_confermato`,
-    e — se la data ha source autorevole (PDF/pagina ufficiale) — anche
-    `data_scadenza` e `data_pubblicazione`. Per audit, prima della sovrascrittura
-    salva i valori precedenti in `raw_data["data_scadenza_pre_skill"]` e
-    `raw_data["data_pubblicazione_pre_skill"]`.
+    Ritorna una tupla (state, state_detail). Priorita':
+        1. verifier='refuted' -> state=refuted (skill smentita)
+        2. date incoerenti (pub>scad) -> state=rejected con rejection_category=not_a_funding_call
+        3. skill ha bocciato (is_valid_bando=false o rejection_category presente) -> state=rejected
+        4. skill ha confermato -> state=confirmed
+
+    Il verifier='skipped' (API down/markdown vuoto) NON blocca: la skill resta autoritativa.
+    """
+    verifier = verifier or {}
+    validation_obj = payload.get("validation") or {}
+    bando_obj = payload.get("bando") or {}
+
+    detail: dict[str, Any] = {
+        "rejection_category": validation_obj.get("rejection_category"),
+        "validation_reason": validation_obj.get("validation_reason"),
+        "verifier_verdict": verifier.get("verdict"),
+        "verifier_notes": verifier.get("notes"),
+        "refuted_fields": verifier.get("refuted_fields"),
+        "last_error": None,
+        "last_error_at": None,
+    }
+
+    if (verifier.get("verdict") or "").lower() == "refuted":
+        return BandoState.REFUTED, detail
+
+    scadenza_iso = _pick(bando_obj, "scadenza")
+    pubblicazione_iso = _pick(bando_obj, "data_pubblicazione")
+    if scadenza_iso and pubblicazione_iso:
+        try:
+            if date.fromisoformat(pubblicazione_iso) > date.fromisoformat(scadenza_iso):
+                detail["rejection_category"] = detail.get("rejection_category") or "not_a_funding_call"
+                prior = detail.get("validation_reason") or ""
+                detail["validation_reason"] = f"{prior} [orchestrator: inconsistent dates]".strip()
+                return BandoState.REJECTED, detail
+        except ValueError:
+            pass  # formato non-ISO: lascia al CHECK constraint DB
+
+    is_valid_bando = validation_obj.get("is_valid_bando")
+    if is_valid_bando is False or validation_obj.get("rejection_category"):
+        if not detail.get("rejection_category"):
+            detail["rejection_category"] = "not_a_funding_call"
+        return BandoState.REJECTED, detail
+
+    return BandoState.CONFIRMED, detail
+
+
+def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> None:
+    """Persiste il payload della skill (schema v4) nelle colonne di `bando`.
+
+    Schema v4: la tabella ha una sola colonna `state` (state machine) + `state_detail` JSONB
+    per il "perche'". La skill emette il payload, il verifier (gia' incorporato dal caller in
+    payload['skill_verifier_*']) corregge, l'orchestrator decide lo stato finale via
+    `_derive_state`. Le date hanno citazione embedded in `date_quotes` JSONB.
 
     Risolve eventuali collisioni di `slug` aggiungendo suffisso `-{bando_id}`.
     """
     bando_obj = payload.get("bando") or {}
-    validation_obj = payload.get("validation") or {}
 
-    is_valid_bando = validation_obj.get("is_valid_bando")
-    if not isinstance(is_valid_bando, bool):
-        # Retrocompatibilita': vecchi payload senza il blocco validation → assume True.
-        is_valid_bando = True
-
-    seo: dict[str, Any] = {
-        "slug": payload.get("slug"),
-        "seo_livello": payload.get("livello"),
-        "seo_titolo": payload.get("titolo"),
-        "seo_occhiello": payload.get("occhiello"),
-        "seo_descrizione_breve": payload.get("descrizione_breve"),
-        "seo_meta_title": payload.get("meta_title"),
-        "seo_meta_description": payload.get("meta_description"),
-        "seo_contenuto": payload.get("contenuto"),
-        "seo_factcheck": payload.get("factcheck_report"),
-        "seo_fonti": payload.get("fonti"),
-        "seo_validation": validation_obj or None,
-        "allegati": payload.get("allegati"),
-        "ente_erogatore": _pick(bando_obj, "ente_erogatore"),
-        "tipologia_normalizzata": _pick(bando_obj, "tipologia"),
-        "area_geografica": _pick(bando_obj, "area_geografica"),
-        "tematica": _pick(bando_obj, "tematica"),
-        "beneficiari_norm": _pick(bando_obj, "beneficiari"),
-        "scadenza_stato": _pick(bando_obj, "scadenza_stato"),
-        "importo_totale_eur": _pick(bando_obj, "importo_totale_eur"),
-        "importo_max_per_progetto_eur": _pick(bando_obj, "importo_max_per_progetto_eur"),
-        "link_candidatura": _pick(bando_obj, "link_candidatura"),
-        "riferimento_normativo": _pick(bando_obj, "riferimento_normativo"),
-        # Verdetto autoritativo della skill (override fase 1)
-        "is_bando_confermato": is_valid_bando,
-        "validation_reason": validation_obj.get("validation_reason"),
-        "rejection_category": validation_obj.get("rejection_category"),
-        # Provenienza delle date (sempre persistite per audit)
-        "data_scadenza_source": _pick(bando_obj, "scadenza_source"),
-        "data_pubblicazione_source": _pick(bando_obj, "data_pubblicazione_source"),
-        # v3 — citation strict: frammento letterale del markdown/PDF che contiene la data.
-        # NULL se source='missing'. CHECK length<=300 a livello DB.
-        "data_scadenza_quote": _pick(bando_obj, "scadenza_quote"),
-        "data_pubblicazione_quote": _pick(bando_obj, "data_pubblicazione_quote"),
-        # v3 — verifier adversarial Haiku 4.5
-        "skill_verifier_verdict": payload.get("skill_verifier_verdict"),
-        "skill_verifier_notes": payload.get("skill_verifier_notes"),
-        "skill_verifier_refuted_fields": payload.get("skill_verifier_refuted_fields"),
-        # Verifica link candidatura: bool sempre persistito (anche False).
-        "link_candidatura_verified": bool(_pick(bando_obj, "link_candidatura_verified")),
+    # Composizione verifier (campi flat persistiti dall'orchestrator)
+    verifier = {
+        "verdict": payload.get("skill_verifier_verdict"),
+        "notes": payload.get("skill_verifier_notes"),
+        "refuted_fields": payload.get("skill_verifier_refuted_fields"),
     }
 
-    # Sovrascrittura date autoritative: SOLO se la skill ha una source autorevole
-    # (PDF o pagina ufficiale). Per inferred/missing manteniamo il valore di fase 1
-    # — meglio una buona stima che NULL, e l'ordinamento DESC NULLS LAST nel listing
-    # frontend mette in fondo i record senza data.
+    new_state, state_detail = _derive_state(payload, verifier)
+
+    # Estrazione date dal payload + costruzione date_quotes JSONB
     scadenza_iso = _pick(bando_obj, "scadenza")
     scadenza_source = _pick(bando_obj, "scadenza_source")
+    scadenza_quote = _pick(bando_obj, "scadenza_quote")
     pubblicazione_iso = _pick(bando_obj, "data_pubblicazione")
     pubblicazione_source = _pick(bando_obj, "data_pubblicazione_source")
+    pubblicazione_quote = _pick(bando_obj, "data_pubblicazione_quote")
 
-    # v3 — Guardia consistenza date PRIMA dell'override.
-    # Se la skill restituisce date incoerenti (pub > scad), una delle due e' inventata:
-    # azzera entrambe per non persistere dati incoerenti, marca rejection_category e
-    # forza is_bando_confermato=false. Il DB ha anche un CHECK bando_dates_consistency_check
-    # come ultima difesa.
-    if scadenza_iso and pubblicazione_iso:
-        try:
-            if date.fromisoformat(pubblicazione_iso) > date.fromisoformat(scadenza_iso):
-                logger.warning(
-                    "[bandi] date incoerenti bando_id={} pub={} > scad={}: "
-                    "force is_bando_confermato=false + azzera entrambe",
-                    bando_id, pubblicazione_iso, scadenza_iso,
-                )
-                seo["is_bando_confermato"] = False
-                if not seo.get("rejection_category"):
-                    seo["rejection_category"] = "not_a_funding_call"
-                prior_reason = seo.get("validation_reason") or ""
-                seo["validation_reason"] = (
-                    f"{prior_reason} [orchestrator: inconsistent dates]".strip()
-                )
-                # Azzera per evitare override e per non far esplodere il CHECK del DB.
-                scadenza_iso = None
-                pubblicazione_iso = None
-                seo["data_scadenza_quote"] = None
-                seo["data_pubblicazione_quote"] = None
-        except ValueError:
-            pass  # formato non-ISO: lascia il caso al CHECK constraint
+    # Se state='rejected' per inconsistenza date, azzera le date persistite (CHECK DB).
+    if new_state == BandoState.REJECTED and state_detail.get("rejection_category") == "not_a_funding_call":
+        if scadenza_iso and pubblicazione_iso:
+            try:
+                if date.fromisoformat(pubblicazione_iso) > date.fromisoformat(scadenza_iso):
+                    logger.warning(
+                        "[bandi] date incoerenti bando_id={} pub={} > scad={}: azzero entrambe",
+                        bando_id, pubblicazione_iso, scadenza_iso,
+                    )
+                    scadenza_iso = None
+                    pubblicazione_iso = None
+                    scadenza_quote = None
+                    pubblicazione_quote = None
+            except ValueError:
+                pass
 
-    # v3 — Override verifier: se Haiku 4.5 ha bocciato il payload, forza il record
-    # come non confermato. Il verdetto "skipped" non blocca (anthropic API down,
-    # markdown vuoto, ecc) — la pipeline procede con il verdetto della skill.
-    if (payload.get("skill_verifier_verdict") or "").lower() == "refuted":
-        seo["is_bando_confermato"] = False
-        if not seo.get("rejection_category"):
-            seo["rejection_category"] = "not_a_funding_call"
+    date_quotes = {
+        "pubblicazione": {
+            "value": pubblicazione_iso,
+            "source": pubblicazione_source,
+            "quote": pubblicazione_quote,
+        },
+        "scadenza": {
+            "value": scadenza_iso,
+            "source": scadenza_source,
+            "quote": scadenza_quote,
+        },
+    }
 
-    will_override_scadenza = (
-        scadenza_iso and scadenza_source in _SCADENZA_OVERRIDE_SOURCES
-    )
-    will_override_pubblicazione = (
-        pubblicazione_iso and pubblicazione_source in _SCADENZA_OVERRIDE_SOURCES
-    )
+    record: dict[str, Any] = {
+        "state": new_state,
+        "state_detail": state_detail,
+        "state_updated_at": datetime.now(timezone.utc).isoformat(),
+        # Editorial (skill autoritativa)
+        "slug": payload.get("slug"),
+        "livello": payload.get("livello"),
+        "titolo": payload.get("titolo"),
+        "titolo_breve": payload.get("occhiello"),
+        "descrizione_breve": payload.get("descrizione_breve"),
+        "contenuto": payload.get("contenuto"),
+        # Dates + citation
+        "date_quotes": date_quotes,
+        # Classification (skill normalized)
+        "tipologia": _pick(bando_obj, "tipologia"),
+        "programma": _pick(bando_obj, "programma"),
+        "modalita_erogazione": _pick(bando_obj, "modalita_erogazione"),
+        "area_geografica": _pick(bando_obj, "area_geografica"),
+        "tematica": _pick(bando_obj, "tematica"),
+        "beneficiari": _pick(bando_obj, "beneficiari"),
+        "codici_ateco": _pick(bando_obj, "codici_ateco"),
+        # Amounts
+        "importo_totale_eur": _pick(bando_obj, "importo_totale_eur"),
+        "importo_max_per_progetto_eur": _pick(bando_obj, "importo_max_per_progetto_eur"),
+        # Source/Ente
+        "ente_erogatore": _pick(bando_obj, "ente_erogatore"),
+        # Links
+        "link_candidatura": _pick(bando_obj, "link_candidatura"),
+        "link_candidatura_source": _pick(bando_obj, "link_candidatura_source"),
+        # Allegati
+        "allegati": payload.get("allegati") or _pick(bando_obj, "allegati"),
+    }
 
-    if will_override_scadenza or will_override_pubblicazione:
-        existing = _read_existing_for_audit(sb, bando_id)
-        merged_raw: dict[str, Any] | None = None
-        if existing is not None:
-            prev_raw = existing.get("raw_data") or {}
-            if not isinstance(prev_raw, dict):
-                prev_raw = {}
-            merged_raw = dict(prev_raw)
-            if will_override_scadenza:
-                prev_scadenza = existing.get("data_scadenza")
-                if prev_scadenza and str(prev_scadenza) != str(scadenza_iso):
-                    merged_raw["data_scadenza_pre_skill"] = str(prev_scadenza)
-                    merged_raw["data_scadenza_pre_skill_source"] = "scraper_fallback"
-            if will_override_pubblicazione:
-                prev_pubblicazione = existing.get("data_pubblicazione")
-                if prev_pubblicazione and str(prev_pubblicazione) != str(pubblicazione_iso):
-                    merged_raw["data_pubblicazione_pre_skill"] = str(prev_pubblicazione)
-                    merged_raw["data_pubblicazione_pre_skill_source"] = "scraper_fallback"
-        if merged_raw is not None:
-            seo["raw_data"] = merged_raw
-        if will_override_scadenza:
-            seo["data_scadenza"] = scadenza_iso
-        if will_override_pubblicazione:
-            seo["data_pubblicazione"] = pubblicazione_iso
+    # Override scraper-side date SOLO se la skill ha source autorevole.
+    # Per inferred/missing manteniamo il valore scraper di fase 1.
+    if scadenza_iso and scadenza_source in _SCADENZA_OVERRIDE_SOURCES:
+        record["data_scadenza"] = scadenza_iso
+    if pubblicazione_iso and pubblicazione_source in _SCADENZA_OVERRIDE_SOURCES:
+        record["data_pubblicazione"] = pubblicazione_iso
 
-    # Rimuovi solo i None che NON sono verdetti booleani / campi di flag espliciti.
-    # is_bando_confermato e link_candidatura_verified DEVONO essere persistiti anche
-    # quando False — sono il verdetto della skill, non assenza di dato.
-    always_keep = {"is_bando_confermato", "link_candidatura_verified"}
-    seo_clean = {k: v for k, v in seo.items() if (v is not None or k in always_keep)}
+    # Rimuovi i None — Postgres mantiene il valore esistente se non specificato.
+    record_clean = {k: v for k, v in record.items() if v is not None}
 
-    if "slug" not in seo_clean or not seo_clean.get("slug"):
-        seo_clean["slug"] = _slugify(seo.get("seo_titolo") or "") + f"-{bando_id}"
+    # Slug obbligatorio solo se state='confirmed' (record pubblico).
+    if new_state == BandoState.CONFIRMED:
+        if not record_clean.get("slug"):
+            record_clean["slug"] = _slugify(payload.get("titolo") or "") + f"-{bando_id}"
+    else:
+        # Per i record non pubblici lo slug non e' necessario; rimuovilo se vuoto
+        # per non violare CHECK / UNIQUE inutilmente.
+        if not record_clean.get("slug"):
+            record_clean.pop("slug", None)
 
     try:
-        sb.table("bando").update(seo_clean).eq("id", bando_id).execute()
+        sb.table("bando").update(record_clean).eq("id", bando_id).execute()
     except Exception as e:
         msg = str(e)
         if "23505" in msg or "duplicate key" in msg.lower() or "unique" in msg.lower():
-            # Collisione slug: aggiungi suffisso e ritenta una volta
-            original_slug = seo_clean.get("slug", _slugify(""))
-            seo_clean["slug"] = f"{original_slug}-{bando_id}"
+            original_slug = record_clean.get("slug") or _slugify(payload.get("titolo") or "")
+            record_clean["slug"] = f"{original_slug}-{bando_id}"
             logger.warning(
                 "[bandi] slug collision bando_id={} → retry con slug={}",
-                bando_id, seo_clean["slug"],
+                bando_id, record_clean["slug"],
             )
-            sb.table("bando").update(seo_clean).eq("id", bando_id).execute()
+            sb.table("bando").update(record_clean).eq("id", bando_id).execute()
         else:
             raise
 
@@ -549,117 +573,129 @@ def _max_attempts() -> int:
         return 3
 
 
+def _set_error_state(sb, bando_id: int, current_attempts: int, error_msg: str) -> None:
+    """Marca un bando come error con incremento attempts e dettaglio errore."""
+    sb.table("bando").update({
+        "state": BandoState.ERROR,
+        "state_detail": {
+            "last_error": error_msg[:500],
+            "last_error_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "state_updated_at": datetime.now(timezone.utc).isoformat(),
+        "attempts": current_attempts + 1,
+    }).eq("id", bando_id).execute()
+
+
 async def _enrich_one(sb, bando: dict[str, Any]) -> bool:
-    """Arricchisce un singolo bando. Ritorna True se completato, False altrimenti."""
+    """Arricchisce un singolo bando. Ritorna True se confermato, False altrimenti.
+
+    Flow v4:
+      1. Lock soft: state='enriching', attempts+=1
+      2. Costruisci hint dai dati relazionali (catalogo legacy, junction tables)
+      3. Invoca skill — su errore: state='error', attempts++ (riprovabile)
+      4. update_bando_from_payload: la skill scrive payload + il derive_state decide
+         lo stato finale (confirmed/rejected/refuted) in base a verifier + coerenza date
+      5. Denormalizza lookups legacy (best-effort)
+    """
     bando_id = bando["id"]
     link = bando.get("link_bando")
+    current_attempts = int(bando.get("attempts") or 0)
+
     if not link:
         logger.warning("[bandi/skill] bando_id={} salto: link_bando assente", bando_id)
         sb.table("bando").update({
-            "skill_processing_status": "skipped",
-            "skill_last_error": "link_bando assente",
+            "state": BandoState.STALE,
+            "state_detail": {"last_error": "link_bando assente", "last_error_at": datetime.now(timezone.utc).isoformat()},
+            "state_updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", bando_id).execute()
         return False
 
-    # 1) marca processing
-    sb.table("bando").update({"skill_processing_status": "processing"}).eq("id", bando_id).execute()
+    # 1) Lock soft (ottimistico, no transaction): state='enriching', attempts++
+    sb.table("bando").update({
+        "state": BandoState.ENRICHING,
+        "state_updated_at": datetime.now(timezone.utc).isoformat(),
+        "attempts": current_attempts + 1,
+    }).eq("id", bando_id).execute()
 
-    # 2) costruisci hint
+    # 2) Hint dai dati relazionali (catalogo legacy + junction)
     hint = build_hint_from_bando(sb, bando)
 
-    # 3) invoca skill
+    # 3) Invoca skill
     try:
         payload = await run_bandi_skill(link_bando=link, hint=hint)
     except Exception as e:
-        attempts = (bando.get("skill_attempts") or 0) + 1
-        logger.exception("[bandi/skill] bando_id={} skill fallita (attempt {}): {}", bando_id, attempts, e)
-        sb.table("bando").update({
-            "skill_processing_status": "failed",
-            "skill_last_error": str(e)[:500],
-            "skill_attempts": attempts,
-        }).eq("id", bando_id).execute()
+        logger.exception("[bandi/skill] bando_id={} skill fallita (attempt {}): {}", bando_id, current_attempts + 1, e)
+        _set_error_state(sb, bando_id, current_attempts, str(e))
         return False
 
-    # 4) persisti payload + mark completed
+    # 4) Persisti payload — derive_state interno decide stato finale (confirmed/rejected/refuted)
     try:
         update_bando_from_payload(sb, bando_id, payload)
     except Exception as e:
-        attempts = (bando.get("skill_attempts") or 0) + 1
         logger.exception("[bandi/skill] bando_id={} update DB fallito: {}", bando_id, e)
-        sb.table("bando").update({
-            "skill_processing_status": "failed",
-            "skill_last_error": f"db update: {str(e)[:480]}",
-            "skill_attempts": attempts,
-        }).eq("id", bando_id).execute()
+        _set_error_state(sb, bando_id, current_attempts, f"db update: {str(e)[:480]}")
         return False
 
-    # 5) denormalizza lookup (programma/modalita/ATECO) per i filtri del frontend.
+    # 5) Denormalizza lookup (programma/modalita/ATECO) per i filtri del frontend.
     # Best-effort: errori qui non invalidano l'enrichment.
     _denormalize_bando_lookups(sb, bando_id, bando)
 
-    sb.table("bando").update({
-        "skill_processing_status": "completed",
-        "skill_processing_at": datetime.now(timezone.utc).isoformat(),
-        "skill_last_error": None,
-    }).eq("id", bando_id).execute()
-    logger.info("[bandi/skill] bando_id={} arricchito OK (slug={})", bando_id, payload.get("slug"))
+    logger.info("[bandi/skill] bando_id={} processato (slug={})", bando_id, payload.get("slug"))
     return True
 
 
 async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
-    """Arricchisce fino a `batch_size` bandi pronti per la skill.
+    """Arricchisce fino a `batch_size` bandi in stato `discovered`.
 
-    Selezione:
-      - `ai_processing_status='completed'` (classificazione AI dello scraper terminata)
-      - `skill_processing_status IN ('queued','failed')`
-      - `skill_attempts < BANDI_SKILL_MAX_ATTEMPTS`
-    Ordinati per `ultimo_scraping_at DESC` (priorita' ai bandi piu' freschi).
+    Selezione v4:
+      - `state = 'discovered'` (oppure 'error' per retry)
+      - `attempts < BANDI_SKILL_MAX_ATTEMPTS`
+    Ordinati per `ultimo_scraping_at ASC` (FIFO, priorita' ai bandi piu' vecchi non processati).
 
     Esegue serialmente (1 skill alla volta) per controllare il consumo token Claude.
-    Restituisce un dict con i contatori `{processed, completed, failed, skipped}`.
+    Restituisce un dict con i contatori `{processed, confirmed, rejected, refuted, error}`.
     """
     sb = get_bandi_supabase()
     max_att = _max_attempts()
 
     logger.info("[bandi/skill] batch start: size={} max_attempts={}", batch_size, max_att)
     try:
-        # Fase 1 conclusa = AI completata OPPURE non necessaria (deterministico bastava).
-        # Senza `not_required` perderemmo i bandi con matching pulito.
         res = (
             sb.table("bando")
             .select(_BANDO_CORE_COLUMNS)
-            .in_("ai_processing_status", ["completed", "not_required"])
-            .in_("skill_processing_status", ["queued", "failed"])
-            .lt("skill_attempts", max_att)
-            .order("ultimo_scraping_at", desc=True)
+            .in_("state", [BandoState.DISCOVERED, BandoState.ERROR])
+            .lt("attempts", max_att)
+            .order("ultimo_scraping_at", desc=False)
             .limit(batch_size)
             .execute()
         )
     except Exception as e:
         logger.exception("[bandi/skill] SELECT batch fallito: {}", e)
-        return {"processed": 0, "completed": 0, "failed": 0, "skipped": 0}
+        return {"processed": 0, "confirmed": 0, "rejected": 0, "refuted": 0, "error": 0}
 
     rows = res.data or []
-    counters = {"processed": 0, "completed": 0, "failed": 0, "skipped": 0}
+    counters = {"processed": 0, "confirmed": 0, "rejected": 0, "refuted": 0, "error": 0}
     if not rows:
         logger.info("[bandi/skill] nessun bando pronto per enrichment")
         return counters
 
     for bando in rows:
         counters["processed"] += 1
-        ok = await _enrich_one(sb, bando)
-        # Ri-leggi lo status per distinguere completed/skipped/failed
+        await _enrich_one(sb, bando)
+        # Ri-leggi lo state finale per i contatori (confirmed/rejected/refuted/error)
         try:
-            cur = sb.table("bando").select("skill_processing_status").eq("id", bando["id"]).single().execute()
-            status = (cur.data or {}).get("skill_processing_status")
+            cur = sb.table("bando").select("state").eq("id", bando["id"]).single().execute()
+            new_state = (cur.data or {}).get("state")
         except Exception:
-            status = "completed" if ok else "failed"
-        if status == "completed":
-            counters["completed"] += 1
-        elif status == "skipped":
-            counters["skipped"] += 1
+            new_state = BandoState.ERROR
+        if new_state == BandoState.CONFIRMED:
+            counters["confirmed"] += 1
+        elif new_state == BandoState.REJECTED:
+            counters["rejected"] += 1
+        elif new_state == BandoState.REFUTED:
+            counters["refuted"] += 1
         else:
-            counters["failed"] += 1
+            counters["error"] += 1
 
     logger.info("[bandi/skill] batch done: {}", counters)
     return counters
