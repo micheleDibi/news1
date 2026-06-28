@@ -29,7 +29,7 @@ import re
 import subprocess
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from dotenv import load_dotenv
@@ -374,6 +374,14 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
         # Provenienza delle date (sempre persistite per audit)
         "data_scadenza_source": _pick(bando_obj, "scadenza_source"),
         "data_pubblicazione_source": _pick(bando_obj, "data_pubblicazione_source"),
+        # v3 — citation strict: frammento letterale del markdown/PDF che contiene la data.
+        # NULL se source='missing'. CHECK length<=300 a livello DB.
+        "data_scadenza_quote": _pick(bando_obj, "scadenza_quote"),
+        "data_pubblicazione_quote": _pick(bando_obj, "data_pubblicazione_quote"),
+        # v3 — verifier adversarial Haiku 4.5
+        "skill_verifier_verdict": payload.get("skill_verifier_verdict"),
+        "skill_verifier_notes": payload.get("skill_verifier_notes"),
+        "skill_verifier_refuted_fields": payload.get("skill_verifier_refuted_fields"),
         # Verifica link candidatura: bool sempre persistito (anche False).
         "link_candidatura_verified": bool(_pick(bando_obj, "link_candidatura_verified")),
     }
@@ -386,6 +394,42 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
     scadenza_source = _pick(bando_obj, "scadenza_source")
     pubblicazione_iso = _pick(bando_obj, "data_pubblicazione")
     pubblicazione_source = _pick(bando_obj, "data_pubblicazione_source")
+
+    # v3 — Guardia consistenza date PRIMA dell'override.
+    # Se la skill restituisce date incoerenti (pub > scad), una delle due e' inventata:
+    # azzera entrambe per non persistere dati incoerenti, marca rejection_category e
+    # forza is_bando_confermato=false. Il DB ha anche un CHECK bando_dates_consistency_check
+    # come ultima difesa.
+    if scadenza_iso and pubblicazione_iso:
+        try:
+            if date.fromisoformat(pubblicazione_iso) > date.fromisoformat(scadenza_iso):
+                logger.warning(
+                    "[bandi] date incoerenti bando_id={} pub={} > scad={}: "
+                    "force is_bando_confermato=false + azzera entrambe",
+                    bando_id, pubblicazione_iso, scadenza_iso,
+                )
+                seo["is_bando_confermato"] = False
+                if not seo.get("rejection_category"):
+                    seo["rejection_category"] = "not_a_funding_call"
+                prior_reason = seo.get("validation_reason") or ""
+                seo["validation_reason"] = (
+                    f"{prior_reason} [orchestrator: inconsistent dates]".strip()
+                )
+                # Azzera per evitare override e per non far esplodere il CHECK del DB.
+                scadenza_iso = None
+                pubblicazione_iso = None
+                seo["data_scadenza_quote"] = None
+                seo["data_pubblicazione_quote"] = None
+        except ValueError:
+            pass  # formato non-ISO: lascia il caso al CHECK constraint
+
+    # v3 — Override verifier: se Haiku 4.5 ha bocciato il payload, forza il record
+    # come non confermato. Il verdetto "skipped" non blocca (anthropic API down,
+    # markdown vuoto, ecc) — la pipeline procede con il verdetto della skill.
+    if (payload.get("skill_verifier_verdict") or "").lower() == "refuted":
+        seo["is_bando_confermato"] = False
+        if not seo.get("rejection_category"):
+            seo["rejection_category"] = "not_a_funding_call"
 
     will_override_scadenza = (
         scadenza_iso and scadenza_source in _SCADENZA_OVERRIDE_SOURCES

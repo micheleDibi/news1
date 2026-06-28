@@ -77,6 +77,43 @@ PUBLICATION_CONTEXTS = [
 ]
 PUBLICATION_CONTEXT_RE = re.compile("|".join(PUBLICATION_CONTEXTS), re.IGNORECASE)
 
+# v3: blacklist context per evitare false-positive da decreti citati come BASE NORMATIVA
+# ("ai sensi del...", "in attuazione del...", "visto il..."): in quel caso il "del X/Y/Z"
+# NON e' la data di pubblicazione del bando corrente ma una citazione storica.
+PUBLICATION_BLACKLIST_CONTEXTS = [
+    r"in attuazione",
+    r"ai sensi (?:del|della|dell|di)",
+    r"vist[oa] (?:il|la|l'|lo|gli|le|i)",
+    r"visto il decreto",
+    r"in conformit[aà]",
+    r"in coerenza con",
+    r"sulla base (?:del|della|dei|delle)",
+    r"a norma (?:del|della|dell)",
+    r"come previsto (?:dal|dalla|dai|dalle)",
+    r"emanat[oa] (?:in attuazione|ai sensi)",
+]
+PUBLICATION_BLACKLIST_RE = re.compile("|".join(PUBLICATION_BLACKLIST_CONTEXTS), re.IGNORECASE)
+
+# v3: lunghezza del frammento citato (consistente con DB CHECK e validator Python).
+QUOTE_MAX_LEN = 300
+QUOTE_CTX_BEFORE = 25
+QUOTE_CTX_AFTER = 200
+
+
+def _build_quote(text: str, match_start: int) -> str:
+    """Estrae un frammento del testo intorno a `match_start` per uso come quote autoritativo.
+
+    Bilanciato: ~25 char di contesto prima, ~200 dopo (la data + label di solito ci sta).
+    Tronca a QUOTE_MAX_LEN. Whitespace normalizzato a singolo spazio.
+    """
+    start = max(0, match_start - QUOTE_CTX_BEFORE)
+    end = min(len(text), match_start + QUOTE_CTX_AFTER)
+    fragment = text[start:end]
+    fragment = re.sub(r"\s+", " ", fragment).strip()
+    if len(fragment) > QUOTE_MAX_LEN:
+        fragment = fragment[:QUOTE_MAX_LEN]
+    return fragment
+
 
 def _parse_match(m: re.Match, pattern_idx: int) -> Optional[str]:
     try:
@@ -99,8 +136,11 @@ def extract_scadenza(text: str) -> dict:
       di esso entro 200 caratteri.
     - Se ce ne sono piu' d'una, sceglie la PROSSIMA dalla data odierna; se
       tutte sono passate, sceglie l'ultima.
+
+    Restituisce anche `scadenza_quote`: frammento letterale del testo intorno
+    al match scelto (v3 — citation strict, max 300 char).
     """
-    candidates: list[str] = []
+    candidates: list[tuple[str, int]] = []  # (iso, ctx_start)
     for ctx_match in DEADLINE_CONTEXT_RE.finditer(text):
         window = text[ctx_match.start(): ctx_match.start() + 200]
         for idx, pat in enumerate(DATE_PATTERNS):
@@ -108,17 +148,27 @@ def extract_scadenza(text: str) -> dict:
             if m:
                 iso = _parse_match(m, idx)
                 if iso:
-                    candidates.append(iso)
+                    candidates.append((iso, ctx_match.start()))
                     break
 
     if not candidates:
-        return {"scadenza": None, "candidates_count": 0, "method": "no_context_match"}
+        return {
+            "scadenza": None,
+            "scadenza_quote": None,
+            "candidates_count": 0,
+            "method": "no_context_match",
+        }
 
     today = date.today().isoformat()
-    future = sorted(c for c in candidates if c >= today)
-    chosen = future[0] if future else sorted(candidates)[-1]
+    future = sorted((iso, ctx) for iso, ctx in candidates if iso >= today)
+    if future:
+        chosen_iso, chosen_ctx = future[0]
+    else:
+        sorted_desc = sorted(candidates, key=lambda t: t[0])
+        chosen_iso, chosen_ctx = sorted_desc[-1]
     return {
-        "scadenza": chosen,
+        "scadenza": chosen_iso,
+        "scadenza_quote": _build_quote(text, chosen_ctx),
         "candidates_count": len(candidates),
         "method": "context_proximity",
     }
@@ -131,38 +181,54 @@ def extract_data_pubblicazione(text: str) -> dict:
 
     Strategia analoga a `extract_scadenza` ma diversa per filtro semantico:
     - cerca finestra di 200 char dopo un contesto di pubblicazione (PUBLICATION_CONTEXTS)
+    - **v3**: scarta il candidato se nella finestra ±200 char compare un blacklist context
+      (es. "in attuazione del", "ai sensi del", "visto il decreto") — segno che il decreto
+      e' citato come BASE NORMATIVA, non come pubblicazione del bando corrente.
     - prende la prima data trovata in quella finestra
     - preferisce la data piu' RECENTE tra i candidati (la pubblicazione e' un evento singolo:
       su pagine con piu' decreti vince quello piu' recente, di solito quello attuale).
 
     Ritorna sempre `source` enum: `official_page` se trovato qui (la skill puo' poi
     promuoverlo a `official_pdf` se viene dal parse di un PDF), o `missing`.
+    Include anche `data_pubblicazione_quote` (frammento letterale del testo).
     """
-    candidates: list[str] = []
+    candidates: list[tuple[str, int]] = []  # (iso, ctx_start)
     for ctx_match in PUBLICATION_CONTEXT_RE.finditer(text):
-        window = text[ctx_match.start(): ctx_match.start() + 200]
+        ctx_start = ctx_match.start()
+        # v3: blacklist context window — se la finestra contiene "ai sensi del", "in attuazione",
+        # "visto il", il match e' una citazione storica, non la pubblicazione corrente. Scarta.
+        blacklist_window_start = max(0, ctx_start - 200)
+        blacklist_window_end = min(len(text), ctx_start + 200)
+        blacklist_window = text[blacklist_window_start:blacklist_window_end]
+        if PUBLICATION_BLACKLIST_RE.search(blacklist_window):
+            continue
+
+        window = text[ctx_start: ctx_start + 200]
         for idx, pat in enumerate(DATE_PATTERNS):
             m = pat.search(window)
             if m:
                 iso = _parse_match(m, idx)
                 if iso:
-                    candidates.append(iso)
+                    candidates.append((iso, ctx_start))
                     break
 
     if not candidates:
         return {
             "data_pubblicazione": None,
             "data_pubblicazione_source": "missing",
+            "data_pubblicazione_quote": None,
             "candidates_count": 0,
             "method": "no_context_match",
         }
 
-    # Tra i candidati di pubblicazione preferiamo la data piu' recente (top di lista
-    # dopo sorted desc) perche' i bandi spesso citano decreti precedenti come storia.
-    chosen = sorted(candidates, reverse=True)[0]
+    # Tra i candidati preferiamo la data piu' recente: i bandi spesso citano decreti
+    # precedenti come storia, e quello piu' recente e' di solito la pubblicazione attuale.
+    sorted_desc = sorted(candidates, key=lambda t: t[0], reverse=True)
+    chosen_iso, chosen_ctx = sorted_desc[0]
     return {
-        "data_pubblicazione": chosen,
+        "data_pubblicazione": chosen_iso,
         "data_pubblicazione_source": "official_page",
+        "data_pubblicazione_quote": _build_quote(text, chosen_ctx),
         "candidates_count": len(candidates),
         "method": "context_proximity",
     }
@@ -374,12 +440,14 @@ def main() -> int:
         "source_url": args.url,
         "hint_used": hint,
         "scadenza": scad["scadenza"],
+        "scadenza_quote": scad.get("scadenza_quote"),
         "scadenza_extraction": {
             "candidates_count": scad["candidates_count"],
             "method": scad["method"],
         },
         "data_pubblicazione": pub["data_pubblicazione"],
         "data_pubblicazione_source": pub["data_pubblicazione_source"],
+        "data_pubblicazione_quote": pub.get("data_pubblicazione_quote"),
         "data_pubblicazione_extraction": {
             "candidates_count": pub["candidates_count"],
             "method": pub["method"],

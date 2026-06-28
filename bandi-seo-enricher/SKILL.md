@@ -36,6 +36,9 @@ L'utente PUÒ opzionalmente fornire:
 7. **SEMPRE produrre JSON valido** che mappa 1:1 le colonne della tabella `bandi` su Supabase.
 8. **MAI contenuto generico/placeholder** — Genera SEMPRE contenuto editoriale ricco e specifico per quel bando (vedi STEP 6). Niente sezioni stub.
 9. **SEMPRE dare un verdetto di validita'** — Compila `validation.is_valid_bando` (true/false). Sei l'autorita' finale: l'orchestrator usa il tuo verdetto per decidere se mostrare il record. Le pagine indice/ricerca/categoria/archivio = `is_valid_bando: false` con `rejection_category` (vedi STEP 2.5).
+10. **COERENZA DATE** — `data_pubblicazione <= data_scadenza` SEMPRE. Se la tua estrazione produce date incoerenti (pubblicazione futura rispetto a scadenza, scadenza nel passato remoto rispetto a oggi senza essere uno storico chiaro), ALMENO una delle due e' sbagliata: lascia entrambe `null` con `source = "missing"` invece di persistere dati incoerenti. Un downstream verifier adversarial (Claude Haiku) controlla questa coerenza e bocciera' il payload se viola.
+11. **DEFAULT REJECT** — In assenza di markers M1+M2+M3 espliciti (vedi STEP 2.5), `is_valid_bando = false`. NIENTE "true perche' nel titolo del sito c'e' la parola bando/call/opportunity". L'assenza di prove e' una bocciatura, non un dubbio.
+12. **CITATION OBBLIGATORIA SULLE DATE** — Per ogni `scadenza` e `data_pubblicazione` non-null DEVI emettere il rispettivo `*_quote`: frammento LETTERALE del markdown/PDF sorgente (max 300 char) che contiene la data + 20-30 char di contesto. Se non riesci a citare letteralmente: `source = "missing"`, data `null`, quote `null`. Il validator Python rifiuta JSON con date senza quote.
 
 ## Workflow
 
@@ -67,27 +70,40 @@ Richiede la variabile d'ambiente `FIRECRAWL_API_KEY`.
 
 ### STEP 2.5 — Verdetto di validita' (prima dell'estrazione)
 
-Prima di estrarre qualsiasi campo, decidi se la pagina e' davvero un **bando candidabile**. Compila `validation.is_valid_bando`:
+Prima di estrarre qualsiasi campo, decidi se la pagina e' davvero **UN bando candidabile, singolo, attivo**. Usa il **check markers** sotto, NON una valutazione "a sentimento". Default: `is_valid_bando = false`. Si promuove a `true` SOLO se tutti i positive markers M1+M2+M3 sono presenti **e** nessun negative marker (N1-N4) scatta.
 
-- **true** se la pagina ha: titolo del bando, ente erogatore identificabile, almeno una scadenza o range temporale, criteri di partecipazione, link a moduli/documenti. Una pagina che pubblica UN bando specifico.
-- **false** se la pagina e' un'**indice/lista**, una **ricerca**, una **categoria/tag**, un **archivio storico**, una pagina **istituzionale generale**, o contenuto **non riconducibile a un'opportunita' di finanziamento candidabile**.
+#### Positive markers — TUTTI E TRE richiesti per `is_valid_bando = true`
 
-Se `is_valid_bando = false` devi compilare `validation.rejection_category` (enum):
-- `index_page` — pagina che lista/indicizza piu' bandi (es. "Tutti i bandi della Regione X")
-- `search_results` — risultati di una ricerca interna ("ricerca voucher")
-- `category_page` — pagina categoria/tag (es. "/categoria/agricoltura")
-- `expired_archive` — archivio di bandi chiusi senza bando attivo specifico
-- `not_a_funding_call` — la pagina non parla di finanziamenti (es. modulistica generale, pagina istituzionale)
-- `unreachable` — URL non raggiungibile o redirect verso pagina non-bando
+- **M1 — Titolo specifico di UNA call univoca**: identifica un'unica opportunita'. Esempi BOCCIATI: "Opportunities", "Bandi in corso", "Calendario preavvisi 2025", "Programma X 2021-2027", "Call 7 — Mediterranean Multiprogramme Mechanism", "Tutti i bandi della Regione Y". Esempi BUONI: "Voucher scuola Piemonte 2026-2027", "Avviso pubblico SUAP per esercizi vicinato 2026", "Interreg Euro-MED Call 2 — Progetti tematici 2022".
+- **M2 — Ente erogatore identificabile come riga di testo nel contenuto** della pagina (non solo come logo nell'header del sito o footer istituzionale). Deve essere il soggetto che eroga il finanziamento per QUESTA call specifica.
+- **M3 — Scadenza esplicita con LABEL** ("Termine presentazione domande", "Deadline", "Closing date", "Scade il", "Entro il giorno", "Termine ultimo") **+** una data parsabile (`YYYY-MM-DD`, `DD/MM/YYYY`, `30 settembre 2026`). **Senza label esplicita una data presente nel testo NON conta**: una data generica nel contenuto puo' essere un riferimento normativo, una data storica, una data di pubblicazione del programma, ecc.
 
-E un `validation.validation_reason` breve (1-2 frasi che spiegano la decisione).
+#### Negative markers — UNO SOLO basta per `is_valid_bando = false`
+
+- **N1 — Aggregator/listing**: la pagina enumera ≥3 sub-call con propri link figlio (`<a>` distinti verso URL diversi, ognuno con label tipo "Bando X", "Call Y", "Apply now"). Mappatura: `rejection_category = "index_page"`. Caso reale: `interregnextmed.eu/stay-informed/opportunities`.
+- **N2 — Calendar / preavvisi / cronoprogramma**: filename PDF contiene `calendario|preavvisi|cronoprogramma|programmazione`, oppure il documento e' una tabella di future call previste con multiple scadenze in righe diverse. Mappatura: `rejection_category = "not_a_funding_call"`. Caso reale: `Calendario preavvisi FESR_III agg.2025-1.pdf` (Valle d'Aosta).
+- **N3 — Programme landing page**: la pagina descrive il programma generale (priorita', assi tematici, governance, totale risorse pluriennale, organi di gestione) senza una scadenza specifica della call corrente. Mappatura: `rejection_category = "category_page"`. Tipico match: URL `/call-N-mechanism|programme|coordinated-call|annual`. Caso reale: `interreg-euro-med.eu/en/call-7-mediterranean-multiprogramme-mechanism-coordinated-call`.
+- **N4 — URL match `/call-\d+-...` ma contenuto solo descrittivo**: senza M3 esplicito → `category_page`. Pagina del programma, non della call.
+
+#### Enum `rejection_category` (fissi sei valori; mappa i casi sopra ai valori esistenti)
+
+- `index_page` — pagina aggregatrice / listing di piu' bandi (N1, e classico "Tutti i bandi della Regione X").
+- `search_results` — risultati di una ricerca interna ("ricerca voucher").
+- `category_page` — pagina categoria/tag, programme landing page (N3, N4).
+- `expired_archive` — archivio di bandi chiusi senza bando attivo specifico.
+- `not_a_funding_call` — pagina che non parla di finanziamenti, calendari preavvisi (N2), modulistica generale, pagina istituzionale.
+- `unreachable` — URL non raggiungibile o redirect verso pagina non-bando.
+
+#### Output e comportamento
+
+Sempre compila `validation.validation_reason` (1-2 frasi che spiegano la decisione, citando il marker scattato: "M3 mancante: nessuna label di scadenza nel markdown", "N1: 5 sub-call elencate nel listing", ecc).
 
 **Se `is_valid_bando = false`:**
-- Puoi saltare gli STEP 3-6 (estrazione, contenuto SEO) e produrre placeholder/null per i campi mancanti.
-- DEVI comunque emettere il JSON con `validation.is_valid_bando = false` e `validation.rejection_category` valorizzato.
-- L'orchestrator usera' questo verdetto per nascondere il record dal frontend (filtro RLS su `is_bando_confermato`).
+- Puoi saltare STEP 3-7 (estrazione, contenuto SEO) e produrre placeholder/null per i campi mancanti.
+- DEVI comunque emettere il JSON con `validation.is_valid_bando = false`, `validation.rejection_category` valorizzato, `validation.validation_reason` esplicito.
+- L'orchestrator usera' questo verdetto per nascondere il record dal frontend (RLS filtra `is_bando_confermato=false` e `rejection_category IS NOT NULL`).
 
-**Se `is_valid_bando = true`:** procedi normalmente con STEP 3 → STEP 7.
+**Se `is_valid_bando = true`:** procedi con STEP 3 → STEP 7, ricordando **regola critica #12 (citation obbligatoria sulle date)**.
 
 ### STEP 3 — PDF allegati e raccolta link documenti
 
@@ -147,13 +163,29 @@ Il contenuto deve essere **specifico per quel bando**: apertura con fatto concre
 
 `scadenza_stato` NON va calcolato a mano: lo determina automaticamente `create_bando_json` da `scadenza`. In single-bando il JSON si emette SEMPRE, anche se `scaduto`.
 
-**Scadenza autoritativa (`scadenza_source`)** — Per ogni `scadenza` estratta DEVI tracciare la fonte (enum):
-- `official_pdf` — data trovata nel PDF allegato ufficiale del bando.
-- `official_page` — data trovata nella pagina HTML del bando con label esplicita ("Scadenza presentazione domande", "Termine ultimo").
-- `inferred` — data dedotta da contesto (es. "anno scolastico 2026/2027" → 30/06/2026). Non autoritativa.
-- `missing` — nessuna data trovata: `scadenza = null` e `scadenza_source = "missing"`.
+**Scadenza autoritativa (`scadenza_source` + `scadenza_quote`)** — Per ogni `scadenza` estratta DEVI tracciare:
 
-L'orchestrator sovrascrive `data_scadenza` nel DB SOLO se `scadenza_source IN ('official_pdf', 'official_page')`. Per `inferred`/`missing` resta il valore originale dello scraper (o NULL). **Quando hai dubbi, preferisci `missing` a inventare una data**.
+- `scadenza_source` (enum):
+  - `official_pdf` — data trovata nel PDF allegato ufficiale del bando.
+  - `official_page` — data trovata nella pagina HTML del bando con label esplicita ("Scadenza presentazione domande", "Termine ultimo").
+  - `inferred` — data dedotta da contesto (es. "anno scolastico 2026/2027" → 30/06/2026). Non autoritativa.
+  - `missing` — nessuna data trovata: `scadenza = null`, `scadenza_source = "missing"`, `scadenza_quote = null`.
+
+- `scadenza_quote` (TEXT, max 300 char) — **OBBLIGATORIO se `scadenza` non-null e `source != "missing"`**. Deve essere un frammento **letterale** del markdown/PDF sorgente che contiene la data, con 20-30 char di contesto su entrambi i lati. NO parafrasi, NO traduzione, NO ricostruzione: il frammento deve essere ricercabile via `substring` (case-insensitive) sul markdown.
+
+**Esempio positivo** (scadenza valida + quote ricercabile):
+```
+"scadenza": "2026-09-30",
+"scadenza_source": "official_page",
+"scadenza_quote": "...presentazione domande entro il **30 settembre 2026** alle ore 12:00, pena esclusione..."
+```
+
+**Esempi negativi** (rifiutati dal validator):
+- `"scadenza_quote": "deadline TBD"` — la data nel quote non e' parsabile.
+- `"scadenza_quote": "Bando con scadenza il prossimo settembre"` — la data citata non c'e' letteralmente.
+- `"scadenza": "2026-09-30"` con `"scadenza_quote": null` (e source != "missing") — manca la prova.
+
+L'orchestrator sovrascrive `data_scadenza` nel DB SOLO se `scadenza_source IN ('official_pdf', 'official_page')`. Per `inferred`/`missing` resta il valore originale dello scraper (o NULL). **Quando hai dubbi, preferisci `missing` a inventare una data**. Il validator Python rifiuta JSON con `scadenza` non-null senza `scadenza_quote` (eccetto `source = "missing"`).
 
 ### STEP 6b — Data di pubblicazione del bando (dalla fonte, mai la nostra)
 
@@ -166,13 +198,29 @@ Cerca, in ordine di affidabilita':
 - "Pubblicato il …" o "Data di pubblicazione: …"
 - Data sul BUR / BURL / BURC / Gazzetta Ufficiale citata dal bando ("GU n. 50 del 28/02/2026")
 
-Compila anche `data_pubblicazione_source` (enum, identico a `scadenza_source`):
-- `official_pdf` — data trovata nel PDF ufficiale del bando.
-- `official_page` — data trovata nella pagina HTML con label esplicita.
-- `inferred` — data dedotta da contesto (es. "anno scolastico 2026/2027" senza altre prove → 01/09/2026). Non autoritativa.
-- `missing` — niente data sulla fonte: `data_pubblicazione = null` e `data_pubblicazione_source = "missing"`.
+Compila anche `data_pubblicazione_source` (enum, identico a `scadenza_source`) **e `data_pubblicazione_quote`** (obbligatorio se data non-null e source != "missing"):
+
+- `data_pubblicazione_source`:
+  - `official_pdf` — data trovata nel PDF ufficiale del bando.
+  - `official_page` — data trovata nella pagina HTML con label esplicita.
+  - `inferred` — data dedotta da contesto (es. "anno scolastico 2026/2027" senza altre prove → 01/09/2026). Non autoritativa.
+  - `missing` — niente data sulla fonte: `data_pubblicazione = null`, `data_pubblicazione_source = "missing"`, `data_pubblicazione_quote = null`.
+- `data_pubblicazione_quote` (TEXT, max 300 char) — frammento **letterale** del markdown/PDF che contiene la data, con 20-30 char di contesto. Stessa regola del `scadenza_quote`.
+
+**Esempio positivo**:
+```
+"data_pubblicazione": "2026-02-28",
+"data_pubblicazione_source": "official_page",
+"data_pubblicazione_quote": "...DGR n. 567 del **28/02/2026** pubblicata sul BURL n. 9..."
+```
+
+**Anti-hallucination cruciale**: NON estrarre date di decreti citati come base normativa ("ai sensi del DM n. 123 del 10/01/2020", "in attuazione della L. 78/2020 del 15/03/2020") — quelle sono riferimenti storici, NON pubblicazione del bando corrente. Una data e' di pubblicazione del bando SOLO se l'autorita' competente sta pubblicando proprio questa call (decreto/avviso/delibera che istituisce e apre il bando).
+
+**Coerenza con scadenza (regola critica #10)**: `data_pubblicazione <= scadenza` sempre. Se la tua estrazione restituisce `pub > scad` → almeno una delle due e' un'allucinazione: lascia entrambe `null` con `source = "missing"`.
 
 L'orchestrator sovrascrive `data_pubblicazione` nel DB SOLO se `data_pubblicazione_source IN ('official_pdf','official_page')` (stessa policy della scadenza). Il listing `/bandi` ordina per `data_pubblicazione DESC`, quindi una data corretta porta il bando in vetta; `missing` lo manda in fondo.
+
+Un downstream verifier adversarial (Claude Haiku) controlla che il `data_pubblicazione_quote` sia substring del markdown e che le date siano coerenti. Se il verifier rifiuta, l'orchestrator imposta `is_bando_confermato = false`.
 
 ### STEP 7 — Assembla e valida il JSON
 
@@ -231,9 +279,11 @@ Il JSON emesso segue questo schema, allineato 1:1 alla tabella Supabase:
     "tematica": ["...", "..."],
     "scadenza": "YYYY-MM-DD | null",
     "scadenza_source": "official_pdf | official_page | inferred | missing",
+    "scadenza_quote": "... frammento letterale dal markdown (max 300 char) | null",
     "scadenza_stato": "aperto | in_scadenza | scaduto | null",
     "data_pubblicazione": "YYYY-MM-DD | null",
     "data_pubblicazione_source": "official_pdf | official_page | inferred | missing",
+    "data_pubblicazione_quote": "... frammento letterale dal markdown (max 300 char) | null",
     "importo_totale_eur": 12500000,
     "importo_max_per_progetto_eur": 250000,
     "link_candidatura": "... | null",
@@ -295,9 +345,12 @@ Il JSON emesso segue questo schema, allineato 1:1 alla tabella Supabase:
 - [ ] `slug` valido lowercase/kebab-case ≤ 80 char (l'unicità la gestisce il progetto a valle)
 - [ ] `scadenza` in formato ISO o null (mai stringhe libere)
 - [ ] `scadenza_source` valorizzato (official_pdf | official_page | inferred | missing)
+- [ ] `scadenza_quote` presente e letterale (substring del markdown) se `scadenza` non-null e `source != "missing"`
 - [ ] `scadenza_stato` coerente con `scadenza` e data odierna
 - [ ] `data_pubblicazione` in formato ISO o null (estratta dalla fonte, MAI dalla data odierna o dal nostro scraping)
 - [ ] `data_pubblicazione_source` valorizzato (official_pdf | official_page | inferred | missing)
+- [ ] `data_pubblicazione_quote` presente e letterale se `data_pubblicazione` non-null e `source != "missing"`
+- [ ] **Coerenza date**: `data_pubblicazione <= scadenza` SEMPRE (regola critica #10). Se incoerenti → entrambe null + source missing.
 - [ ] `importo_totale_eur` e `importo_max_per_progetto_eur` interi in euro (no centesimi, no float)
 - [ ] `link_candidatura` verificato (verified=true) oppure null (verified=false). MAI uguale a `source_url` come fallback
 - [ ] `beneficiari` e `tematica` array (anche vuoti, mai null)

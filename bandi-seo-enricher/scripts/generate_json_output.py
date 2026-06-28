@@ -54,6 +54,10 @@ REJECTION_CATEGORIES = {
     "expired_archive", "not_a_funding_call", "unreachable",
 }
 
+# v3: lunghezza massima del frammento del markdown citato come prova della data.
+# Allineata a DB CHECK constraint bando_quote_length_check.
+QUOTE_MAX_LEN = 300
+
 STOPWORDS_IT = {
     "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
     "di", "a", "da", "in", "con", "su", "per", "tra", "fra",
@@ -355,6 +359,69 @@ def create_bando_json(
         warnings.append(
             "data_pubblicazione_source mancante: necessario per decidere se sovrascrivere data_pubblicazione nel DB"
         )
+
+    # v3 — V1: quote OBBLIGATORIA quando data presente e source != "missing".
+    # Anti-hallucination: la skill DEVE citare letteralmente il frammento del markdown
+    # che contiene la data. Senza quote → date non verificabili → bocciate dal validator.
+    scadenza_quote_raw = bando_data.get("scadenza_quote")
+    pubblicazione_quote_raw = bando_data.get("data_pubblicazione_quote")
+
+    if bando_data.get("scadenza") and scadenza_source not in (None, "missing") and not scadenza_quote_raw:
+        warnings.append(
+            "V1_QUOTE_REQUIRED: scadenza_quote obbligatorio quando scadenza non-null e source != 'missing'"
+        )
+    if (
+        bando_data.get("data_pubblicazione")
+        and data_pubblicazione_source not in (None, "missing")
+        and not pubblicazione_quote_raw
+    ):
+        warnings.append(
+            "V1_QUOTE_REQUIRED: data_pubblicazione_quote obbligatorio quando data_pubblicazione non-null e source != 'missing'"
+        )
+
+    # v3 — V3: tronca quote troppo lunghi (DB CHECK constraint = 300 char).
+    # Tronca con warning invece di fallire per non perdere il payload intero.
+    scadenza_quote: str | None = None
+    if isinstance(scadenza_quote_raw, str) and scadenza_quote_raw:
+        if len(scadenza_quote_raw) > QUOTE_MAX_LEN:
+            warnings.append(f"V3_QUOTE_TRUNCATED: scadenza_quote {len(scadenza_quote_raw)} > {QUOTE_MAX_LEN}")
+            scadenza_quote = scadenza_quote_raw[:QUOTE_MAX_LEN]
+        else:
+            scadenza_quote = scadenza_quote_raw
+    pubblicazione_quote: str | None = None
+    if isinstance(pubblicazione_quote_raw, str) and pubblicazione_quote_raw:
+        if len(pubblicazione_quote_raw) > QUOTE_MAX_LEN:
+            warnings.append(
+                f"V3_QUOTE_TRUNCATED: data_pubblicazione_quote {len(pubblicazione_quote_raw)} > {QUOTE_MAX_LEN}"
+            )
+            pubblicazione_quote = pubblicazione_quote_raw[:QUOTE_MAX_LEN]
+        else:
+            pubblicazione_quote = pubblicazione_quote_raw
+
+    # v3 — V4: coerenza date (regola critica #10). Se incoerenti, forza entrambe a null
+    # con source='missing': non possiamo persistere dati incoerenti, e il DB ha un CHECK
+    # constraint bando_dates_consistency_check che bloccherebbe l'UPDATE comunque.
+    scad_iso = bando_data.get("scadenza")
+    pub_iso = bando_data.get("data_pubblicazione")
+    if scad_iso and pub_iso and _validate_date_iso(scad_iso) and _validate_date_iso(pub_iso):
+        try:
+            if dt.date.fromisoformat(pub_iso) > dt.date.fromisoformat(scad_iso):
+                warnings.append(
+                    f"V4_INCONSISTENT_DATES: data_pubblicazione={pub_iso} > scadenza={scad_iso}: "
+                    "force entrambe a null/missing per non persistere dati incoerenti"
+                )
+                bando_data["scadenza"] = None
+                bando_data["scadenza_source"] = "missing"
+                bando_data["data_pubblicazione"] = None
+                bando_data["data_pubblicazione_source"] = "missing"
+                scadenza_source = "missing"
+                data_pubblicazione_source = "missing"
+                scadenza_quote = None
+                pubblicazione_quote = None
+                # Ricomputa stato (auto_stato e' None se scadenza=None).
+                bando_data["scadenza_stato"] = None
+        except ValueError:
+            pass  # gia' segnalato sopra come "non in formato ISO"
     for k in ("importo_totale_eur", "importo_max_per_progetto_eur"):
         v = bando_data.get(k)
         if v is not None and (not isinstance(v, int) or v < 0):
@@ -394,9 +461,11 @@ def create_bando_json(
             "tematica": bando_data.get("tematica") or [],
             "scadenza": bando_data.get("scadenza"),
             "scadenza_source": scadenza_source,
+            "scadenza_quote": scadenza_quote,
             "scadenza_stato": bando_data.get("scadenza_stato"),
             "data_pubblicazione": bando_data.get("data_pubblicazione"),
             "data_pubblicazione_source": data_pubblicazione_source,
+            "data_pubblicazione_quote": pubblicazione_quote,
             "importo_totale_eur": bando_data.get("importo_totale_eur"),
             "importo_max_per_progetto_eur": bando_data.get("importo_max_per_progetto_eur"),
             "link_candidatura": bando_data.get("link_candidatura"),

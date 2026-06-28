@@ -44,6 +44,14 @@ export const REJECTION_CATEGORIES = [
 ] as const;
 export type RejectionCategory = typeof REJECTION_CATEGORIES[number];
 
+// v3 — Verdetto del verifier adversarial (Claude Haiku 4.5) sul payload skill.
+// 'verified' = il verifier ha confermato citation + coerenza date + verdetto is_valid_bando.
+// 'refuted'  = il verifier ha trovato citazioni inventate, date incoerenti, aggregator passato come bando, ecc.
+// 'skipped'  = il verifier non e' stato eseguibile (API down, markdown vuoto, anthropic SDK non configurato).
+// La RLS nasconde solo 'refuted': NULL/verified/skipped sono visibili (skipped non e' un giudizio negativo).
+export const VERIFIER_VERDICTS = ['verified', 'refuted', 'skipped'] as const;
+export type VerifierVerdict = typeof VERIFIER_VERDICTS[number];
+
 export const ALLEGATO_TIPI = [
   'pdf', 'doc', 'docx', 'zip', 'rtf', 'xlsx', 'xls', 'odt', 'ods', 'altro',
 ] as const;
@@ -108,6 +116,12 @@ export interface Bando {
   rejection_category: RejectionCategory | null;
   // Colonne nuove (bando_alter_data_pubblicazione_source.sql)
   data_pubblicazione_source: ScadenzaSource | null;
+  // Colonne nuove v3 (bando_alter_date_quotes_and_verifier.sql) — citation strict + verifier
+  data_scadenza_quote: string | null;
+  data_pubblicazione_quote: string | null;
+  skill_verifier_verdict: VerifierVerdict | null;
+  skill_verifier_notes: string | null;
+  skill_verifier_refuted_fields: string[] | null;
 }
 
 // Sezioni del contenuto editoriale generato dalla skill.

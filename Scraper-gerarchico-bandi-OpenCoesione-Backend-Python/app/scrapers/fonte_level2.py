@@ -169,6 +169,33 @@ class FonteLevel2Scanner:
         "/indice",
         "/filtra",
         "/filter/",
+        # v3: aggregatori / preavvisi / pagine "stay informed" che NON sono bandi singoli
+        # ma indici di future call o opportunità. Caso reale: interregnextmed.eu/stay-informed/opportunities,
+        # PR Valle d'Aosta cronoprogramma, vari "news ed eventi" istituzionali.
+        "/stay-informed",
+        "/news-and-events",
+        "/calendario-preavvisi",
+        "/preavvisi",
+        "/cronoprogramma",
+        "/programmazione-bandi",
+    )
+
+    # v3: pattern regex precompilati per match piu' precisi (es. ultimo segmento).
+    # Usati subito dopo _DENY_PATH_PARTS nella funzione di diagnostica.
+    _DENY_PATH_REGEX = (
+        re.compile(r"/opportunities/?$"),  # ultimo segmento = aggregatore (caso A)
+        re.compile(r"/stay-informed/?$"),
+    )
+
+    # v3: token nel basename di un file PDF che indicano calendario/preavvisi
+    # (NON un bando singolo). Caso reale: "Calendario preavvisi FESR_III agg.2025-1.pdf".
+    _DENY_PDF_FILENAME_TOKENS = (
+        "calendario",
+        "preavvisi",
+        "cronoprogramma",
+        "programmazione-bandi",
+        "piano-attivita",
+        "piano-bandi",
     )
 
     def __init__(self, timeout_seconds: int | None = None) -> None:
@@ -385,6 +412,18 @@ class FonteLevel2Scanner:
         if any(part in lowered_path for part in FonteLevel2Scanner._DENY_PATH_PARTS):
             diagnostics["reason_reject"] = "DENY_PATH"
             return diagnostics
+
+        # v3: pattern regex per cattura piu' stretta (es. ultimo segmento `/opportunities`).
+        if any(pat.search(lowered_path) for pat in FonteLevel2Scanner._DENY_PATH_REGEX):
+            diagnostics["reason_reject"] = "DENY_PATH_REGEX"
+            return diagnostics
+
+        # v3: PDF il cui basename contiene token di calendario/preavvisi → non e' un bando.
+        if re.search(r"\.pdf(?:\?|$)", lowered_path):
+            basename = lowered_path.rstrip("/").rsplit("/", 1)[-1]
+            if any(tok in basename for tok in FonteLevel2Scanner._DENY_PDF_FILENAME_TOKENS):
+                diagnostics["reason_reject"] = "DENY_PDF_CALENDAR"
+                return diagnostics
 
         for host, denied_paths in FonteLevel2Scanner._HOST_SPECIFIC_DENY_EXACT_PATHS.items():
             if lowered_host.endswith(host) and any(lowered_path_normalized == path.rstrip("/") for path in denied_paths):

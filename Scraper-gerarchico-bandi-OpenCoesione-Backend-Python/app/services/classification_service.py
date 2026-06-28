@@ -275,7 +275,19 @@ class ControlledClassificationService:
         "/portale", "/elenco-bandi", "/lista-bandi",
         "/archivio", "/archive",
         "/indice", "/filtra", "/filter/",
+        # v3: aggregatori / cronoprogrammi che NON sono bandi singoli
+        "/stay-informed", "/opportunities",
+        "/news-and-events",
+        "/calendario-preavvisi", "/preavvisi",
+        "/cronoprogramma", "/programmazione-bandi",
     )
+
+    # v3: URL del tipo `/call-7-mediterranean-multiprogramme-mechanism` indica
+    # la pagina del programma (descrittiva, no scadenza specifica). NON e' hard-deny
+    # in fonte_level2.py per non bloccare `call-2-progetti-tematici` validi:
+    # qui e' un signal che declassa `is_bando_confermato` a False. La skill fase 2
+    # potra' comunque promuoverlo se trova marker M1+M2+M3 espliciti.
+    _CALL_PROGRAMME_PATTERN: re.Pattern = re.compile(r"/call-\d+-", re.IGNORECASE)
 
     @classmethod
     def _url_looks_like_index_page(cls, url: str | None) -> bool:
@@ -283,6 +295,13 @@ class ControlledClassificationService:
             return False
         lowered = url.lower()
         return any(part in lowered for part in cls._INDEX_PAGE_PATH_PARTS)
+
+    @classmethod
+    def _url_matches_call_pattern(cls, url: str | None) -> bool:
+        """True se URL contiene `/call-NN-` (programme landing page sospetta)."""
+        if not url:
+            return False
+        return bool(cls._CALL_PROGRAMME_PATTERN.search(url))
 
     def _infer_is_bando_confermato(self, payload: dict[str, Any], normalized_fragments: list[str]) -> bool | None:
         raw_data_obj = payload.get("raw_data_obj") or {}
@@ -304,6 +323,12 @@ class ControlledClassificationService:
         if self._url_looks_like_index_page(candidate_url):
             return False
 
+        # v3: programme landing page (`/call-7-mediterranean-multiprogramme-...`).
+        # Conservativo: se l'URL matcha il pattern, non promuovere a is_bando_confermato.
+        # La skill fase 2 con marker M1+M2+M3 puo' eventualmente sovrascriverlo.
+        if self._url_matches_call_pattern(candidate_url):
+            return False
+
         if accepted and score >= 2:
             return True
 
@@ -311,7 +336,11 @@ class ControlledClassificationService:
         if any(term in lowered_blob for term in ["privacy", "cookie", "login", "logout", "mappa del sito"]):
             return False
 
-        if reason_reject in {"DENY_HOST", "DENY_PATH", "DENY_KEYWORD", "NON_HTML_OR_PDF"}:
+        if reason_reject in {
+            "DENY_HOST", "DENY_PATH", "DENY_KEYWORD", "NON_HTML_OR_PDF",
+            # v3: nuovi reason_reject che fonte_level2 emette per pattern aggressivi
+            "DENY_PATH_REGEX", "DENY_PDF_CALENDAR",
+        }:
             return False
 
         # Conservativo: niente piu' "True solo perche' c'e' la parola bando/voucher".

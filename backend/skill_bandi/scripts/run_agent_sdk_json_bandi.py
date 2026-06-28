@@ -30,8 +30,18 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
 from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
+
+# v3: verifier adversarial e re-scrape Firecrawl per il controllo citation.
+# Import locale (stessa cartella) — anyio/asyncio safe perche' verify_payload e' sync.
+from verifier_haiku import verify_payload  # type: ignore  # noqa: E402
+
+try:
+    from firecrawl import Firecrawl  # type: ignore
+except ImportError:  # pragma: no cover
+    Firecrawl = None  # type: ignore
 
 
 # La skill vive nella root del monorepo (bandi-seo-enricher/),
@@ -41,6 +51,53 @@ from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBl
 _HERE = Path(__file__).resolve()
 SKILL_DIR = _HERE.parent.parent.parent.parent / "bandi-seo-enricher"
 OUTPUT_DIR = _HERE.parent.parent / "output"
+
+# v3: cache singleton del client Firecrawl per il verifier re-scrape.
+# Inizializzato lazy alla prima invocazione.
+_firecrawl_app_for_verifier: Any = None  # noqa: F821 — Any importato sotto
+
+
+def _get_firecrawl_for_verifier():  # type: ignore[no-untyped-def]
+    """Restituisce un client Firecrawl per il re-scrape del markdown verifier.
+
+    Cache singleton: il client e' costoso da inizializzare. Restituisce None
+    se la chiave non e' configurata o il SDK non e' installato: in tal caso
+    il verifier viene saltato (verdict='skipped').
+    """
+    global _firecrawl_app_for_verifier
+    if _firecrawl_app_for_verifier is not None:
+        return _firecrawl_app_for_verifier
+    if Firecrawl is None:
+        return None
+    api_key = os.environ.get("FIRECRAWL_API_KEY")
+    if not api_key:
+        return None
+    try:
+        _firecrawl_app_for_verifier = Firecrawl(api_key=api_key)
+    except Exception as e:  # pragma: no cover
+        _logger.warning("[VERIFIER] init Firecrawl fallita: {}", e)
+        return None
+    return _firecrawl_app_for_verifier
+
+
+def _fetch_markdown_for_verifier(source_url: str) -> str:
+    """Re-scrape della pagina del bando per verificare le quote citation.
+
+    Idempotente con Firecrawl (cache lato server). Best-effort: in caso di errore
+    ritorna stringa vuota e il verifier risponde 'skipped'.
+    """
+    if not source_url:
+        return ""
+    app = _get_firecrawl_for_verifier()
+    if app is None:
+        return ""
+    try:
+        result = app.scrape(source_url, formats=["markdown"])
+        markdown = getattr(result, "markdown", None) or ""
+        return markdown if isinstance(markdown, str) else ""
+    except Exception as e:
+        _logger.warning("[VERIFIER] re-scrape fallito url={} err={}", source_url, e)
+        return ""
 
 try:
     from loguru import logger as _logger  # type: ignore
@@ -130,6 +187,38 @@ NON esiste. Per scaricare la pagina del bando e gli allegati PDF DEVI usare:
 
 Solo se Firecrawl fallisce (exit code != 0 o output vuoto) ricadi su
 WebFetch/WebSearch.
+
+ANTI-HALLUCINATION SULLE DATE (v3 — regola critica #12 di SKILL.md):
+Non emettere MAI `scadenza` o `data_pubblicazione` che non puoi citare LETTERALMENTE
+dal markdown/PDF sorgente. Per ogni data emetti il rispettivo `*_quote` (frammento
+ESATTO del source, max 300 char, con 20-30 char di contesto). Se non riesci a
+citare il sorgente: `source = "missing"`, data `null`, quote `null`.
+
+Esempio CORRETTO:
+    "scadenza": "2026-09-30",
+    "scadenza_source": "official_page",
+    "scadenza_quote": "...presentazione domande entro il 30 settembre 2026 alle ore 12:00..."
+
+Esempio VIETATO (date inventate):
+    "scadenza": "2022-02-24",      ← non presente nel markdown
+    "scadenza_quote": null         ← niente prova
+
+Coerenza temporale OBBLIGATORIA: `data_pubblicazione <= scadenza` SEMPRE. Se la tua
+estrazione produce date incoerenti (pub > scad o scad in passato remoto irragionevole),
+una delle due e' allucinata: lascia entrambe `null` con `source = "missing"`.
+
+VERDETTO DI VALIDITA' STRETTO (v3 — STEP 2.5 di SKILL.md):
+Default = `is_valid_bando: false`. Promuovi a true SOLO se TUTTI i positive markers
+sono presenti:
+  M1 — titolo specifico di UNA call univoca (no "Opportunities", "Bandi in corso", "Programma X 2021-2027")
+  M2 — ente erogatore identificabile come riga di testo nel contenuto
+  M3 — scadenza esplicita con LABEL ("Termine presentazione", "Deadline", "Closing date", "Scade il") + data parsabile
+E nessun negative marker (N1 aggregator >=3 sub-call, N2 calendario/preavvisi nel filename,
+N3 programme landing page descrittiva, N4 URL `/call-N-...` senza deadline label).
+
+Un downstream verifier adversarial (Claude Haiku 4.5) controlla il tuo output sul
+markdown sorgente. Se rifiuta le tue date o il tuo verdetto, l'orchestrator imposta
+`is_bando_confermato = false` automaticamente.
 
 Tutto il resto del workflow (STEP 0-8 di SKILL.md) resta invariato:
 lettura references/, hint dominio passato in input dall'orchestrator (gia' costruito
@@ -242,11 +331,51 @@ async def run_skill_bandi(
         with open(tmp_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
 
+        # v3: chiamata verifier adversarial (Claude Haiku 4.5) per controllare
+        # citation, coerenza date, marker N1-N4 sul markdown sorgente. Errori
+        # vengono mappati a verdict='skipped' senza bloccare la pipeline.
+        verifier_start = time.monotonic()
+        source_url_for_verify = (
+            payload.get("source_url") or link_bando or ""
+        )
+        markdown_for_verify = _fetch_markdown_for_verifier(source_url_for_verify)
+        verdict = verify_payload(markdown_for_verify, payload)
+        verifier_elapsed = time.monotonic() - verifier_start
+
+        payload["skill_verifier_verdict"] = verdict.get("verdict", "skipped")
+        payload["skill_verifier_notes"] = verdict.get("notes", "")
+        payload["skill_verifier_refuted_fields"] = verdict.get("refuted_fields", []) or []
+
+        if verdict.get("verdict") == "refuted":
+            # Sovrascrivi il verdetto della skill: il verifier e' autoritativo
+            # quando rileva citazioni inventate / aggregator / programme landing.
+            validation = payload.setdefault("validation", {})
+            validation["is_valid_bando"] = False
+            if not validation.get("rejection_category"):
+                # Inferenza categoria dal refuted_fields:
+                refuted = set(verdict.get("refuted_fields", []) or [])
+                if "is_valid_bando" in refuted:
+                    validation["rejection_category"] = "index_page"
+                elif "consistency" in refuted or "scadenza" in refuted or "data_pubblicazione" in refuted:
+                    validation["rejection_category"] = "not_a_funding_call"
+                else:
+                    validation["rejection_category"] = "not_a_funding_call"
+            prior_reason = validation.get("validation_reason") or ""
+            notes = verdict.get("notes", "")
+            validation["validation_reason"] = (
+                f"{prior_reason} [verifier-haiku: refuted — {notes}]".strip()
+            )
+            _logger.warning(
+                "[BANDI_SKILL][VERIFIER] REFUTED url={} refuted_fields={} notes={!r}",
+                source_url_for_verify, verdict.get("refuted_fields"), notes[:200],
+            )
+
         elapsed = time.monotonic() - start_ts
         _logger.info(
-            "[BANDI_SKILL] done in {:.1f}s | firecrawl={} webfetch={} websearch={} bash={} "
+            "[BANDI_SKILL] done in {:.1f}s (verifier {:.1f}s) | verifier_verdict={} "
+            "| firecrawl={} webfetch={} websearch={} bash={} "
             "| livello={} slug={!r}",
-            elapsed,
+            elapsed, verifier_elapsed, payload.get("skill_verifier_verdict"),
             firecrawl_calls, webfetch_calls, websearch_calls, bash_calls,
             payload.get("livello"), payload.get("slug"),
         )

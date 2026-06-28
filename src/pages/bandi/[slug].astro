@@ -19,7 +19,10 @@ const SELECT_LIST =
   'titolo, descrizione, data_pubblicazione, codice_bando, fondo, ' +
   'allegati, codici_ateco_norm, programma_nome, modalita_erogazione_nome, ' +
   'is_bando_confermato, data_scadenza_source, data_pubblicazione_source, ' +
-  'validation_reason, rejection_category';
+  'validation_reason, rejection_category, ' +
+  // v3 — citation strict + verifier verdict (defense in depth)
+  'data_scadenza_quote, data_pubblicazione_quote, ' +
+  'skill_verifier_verdict, skill_verifier_notes, skill_verifier_refuted_fields';
 
 let bando: Bando | null = null;
 try {
