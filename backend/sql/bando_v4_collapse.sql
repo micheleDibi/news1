@@ -96,57 +96,108 @@ END $$;
 
 -- 4. Backfill date_quotes JSONB dai 4 campi flat (sources + quotes).
 -- Idempotente: solo se le colonne legacy esistono e date_quotes non e' gia' popolato.
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='bando' AND column_name='data_pubblicazione_source')
-     AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='bando' AND column_name='data_scadenza_source')
-  THEN
-    UPDATE bando SET date_quotes = jsonb_build_object(
-      'pubblicazione', jsonb_build_object(
-        'value', data_pubblicazione,
-        'source', data_pubblicazione_source,
-        'quote', COALESCE(
-          (SELECT data_pubblicazione_quote FROM bando b2 WHERE b2.id = bando.id),
-          NULL
-        )
-      ),
-      'scadenza', jsonb_build_object(
-        'value', data_scadenza,
-        'source', data_scadenza_source,
-        'quote', COALESCE(
-          (SELECT data_scadenza_quote FROM bando b2 WHERE b2.id = bando.id),
-          NULL
-        )
-      )
-    ) WHERE date_quotes = '{}'::jsonb;
+-- Robusto: i 4 campi (pub_source, scad_source, pub_quote, scad_quote) sono opzionali —
+-- popola solo i sotto-oggetti per cui esistono le colonne corrispondenti.
+DO $$
+DECLARE
+  has_pub_source BOOLEAN;
+  has_scad_source BOOLEAN;
+  has_pub_quote BOOLEAN;
+  has_scad_quote BOOLEAN;
+BEGIN
+  has_pub_source := EXISTS (SELECT 1 FROM information_schema.columns
+                            WHERE table_name='bando' AND column_name='data_pubblicazione_source');
+  has_scad_source := EXISTS (SELECT 1 FROM information_schema.columns
+                             WHERE table_name='bando' AND column_name='data_scadenza_source');
+  has_pub_quote := EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name='bando' AND column_name='data_pubblicazione_quote');
+  has_scad_quote := EXISTS (SELECT 1 FROM information_schema.columns
+                            WHERE table_name='bando' AND column_name='data_scadenza_quote');
+
+  -- Se nessuna colonna legacy delle date e' presente, lascia date_quotes vuoto (verra'
+  -- popolato dalla skill al primo enrichment).
+  IF has_pub_source OR has_scad_source OR has_pub_quote OR has_scad_quote THEN
+    EXECUTE format(
+      'UPDATE bando SET date_quotes = jsonb_build_object(
+         ''pubblicazione'', jsonb_build_object(
+           ''value'', data_pubblicazione,
+           ''source'', %s,
+           ''quote'', %s
+         ),
+         ''scadenza'', jsonb_build_object(
+           ''value'', data_scadenza,
+           ''source'', %s,
+           ''quote'', %s
+         )
+       ) WHERE date_quotes = ''{}''::jsonb',
+      CASE WHEN has_pub_source THEN 'data_pubblicazione_source' ELSE 'NULL::text' END,
+      CASE WHEN has_pub_quote THEN 'data_pubblicazione_quote' ELSE 'NULL::text' END,
+      CASE WHEN has_scad_source THEN 'data_scadenza_source' ELSE 'NULL::text' END,
+      CASE WHEN has_scad_quote THEN 'data_scadenza_quote' ELSE 'NULL::text' END
+    );
   END IF;
 END $$;
 
--- 5. Backfill state machine da vecchi campi (defense in depth: anche se la colonna non esiste,
--- mantieni 'discovered' come default).
-DO $$ BEGIN
+-- 5. Backfill state machine da vecchi campi (defense in depth: anche se le colonne
+-- legacy non esistono, mantieni 'discovered' come default).
+-- Robusto a colonne mancanti: ricostruisce dinamicamente lo SET in base
+-- a quali colonne legacy sono presenti nel DB (alcuni DB B in produzione non
+-- hanno mai avuto skill_processing_at / skill_last_error / skill_attempts).
+DO $$
+DECLARE
+  has_processed_at BOOLEAN;
+  has_last_error BOOLEAN;
+  has_attempts BOOLEAN;
+  has_verifier_notes BOOLEAN;
+  has_verifier_refuted BOOLEAN;
+  has_validation_reason BOOLEAN;
+BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='bando' AND column_name='skill_verifier_verdict')
      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='bando' AND column_name='rejection_category')
      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='bando' AND column_name='is_bando_confermato')
      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='bando' AND column_name='skill_processing_status')
   THEN
-    UPDATE bando SET
-      state = CASE
-        WHEN skill_verifier_verdict = 'refuted' THEN 'refuted'::bando_state
-        WHEN rejection_category IS NOT NULL THEN 'rejected'::bando_state
-        WHEN is_bando_confermato IS TRUE AND skill_processing_status = 'completed' THEN 'confirmed'::bando_state
-        WHEN skill_processing_status = 'failed' THEN 'error'::bando_state
-        ELSE 'discovered'::bando_state
-      END,
-      state_detail = jsonb_build_object(
-        'rejection_category', rejection_category,
-        'validation_reason', validation_reason,
-        'verifier_verdict', skill_verifier_verdict,
-        'verifier_notes', skill_verifier_notes,
-        'refuted_fields', skill_verifier_refuted_fields,
-        'last_error', skill_last_error,
-        'last_error_at', skill_last_processed_at
-      ),
-      attempts = COALESCE(skill_attempts, 0);
+    -- Probe campi opzionali: nei DB v2/v3 i nomi e l'esistenza variavano.
+    -- skill_processing_at era il nome reale della colonna (NON skill_last_processed_at).
+    has_processed_at := EXISTS (SELECT 1 FROM information_schema.columns
+                                WHERE table_name='bando' AND column_name='skill_processing_at');
+    has_last_error := EXISTS (SELECT 1 FROM information_schema.columns
+                              WHERE table_name='bando' AND column_name='skill_last_error');
+    has_attempts := EXISTS (SELECT 1 FROM information_schema.columns
+                            WHERE table_name='bando' AND column_name='skill_attempts');
+    has_verifier_notes := EXISTS (SELECT 1 FROM information_schema.columns
+                                  WHERE table_name='bando' AND column_name='skill_verifier_notes');
+    has_verifier_refuted := EXISTS (SELECT 1 FROM information_schema.columns
+                                    WHERE table_name='bando' AND column_name='skill_verifier_refuted_fields');
+    has_validation_reason := EXISTS (SELECT 1 FROM information_schema.columns
+                                     WHERE table_name='bando' AND column_name='validation_reason');
+
+    EXECUTE format(
+      'UPDATE bando SET
+         state = CASE
+           WHEN skill_verifier_verdict = ''refuted'' THEN ''refuted''::bando_state
+           WHEN rejection_category IS NOT NULL THEN ''rejected''::bando_state
+           WHEN is_bando_confermato IS TRUE AND skill_processing_status = ''completed'' THEN ''confirmed''::bando_state
+           WHEN skill_processing_status = ''failed'' THEN ''error''::bando_state
+           ELSE ''discovered''::bando_state
+         END,
+         state_detail = jsonb_build_object(
+           ''rejection_category'', rejection_category,
+           ''validation_reason'', %s,
+           ''verifier_verdict'', skill_verifier_verdict,
+           ''verifier_notes'', %s,
+           ''refuted_fields'', %s,
+           ''last_error'', %s,
+           ''last_error_at'', %s
+         ),
+         attempts = %s',
+      CASE WHEN has_validation_reason THEN 'validation_reason' ELSE 'NULL::text' END,
+      CASE WHEN has_verifier_notes THEN 'skill_verifier_notes' ELSE 'NULL::text' END,
+      CASE WHEN has_verifier_refuted THEN 'skill_verifier_refuted_fields' ELSE 'NULL::text[]' END,
+      CASE WHEN has_last_error THEN 'skill_last_error' ELSE 'NULL::text' END,
+      CASE WHEN has_processed_at THEN 'skill_processing_at::text' ELSE 'NULL::text' END,
+      CASE WHEN has_attempts THEN 'COALESCE(skill_attempts, 0)' ELSE '0' END
+    );
   END IF;
 END $$;
 
