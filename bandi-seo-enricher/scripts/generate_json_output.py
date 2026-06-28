@@ -225,6 +225,75 @@ def _compute_scadenza_stato(scadenza: str | None) -> str | None:
     return "aperto"
 
 
+_SUBLINKS_MAX = 50
+_SUBLINK_LABEL_MAX = 200
+_REDISCOVERABLE_REJECTIONS = {"index_page", "category_page"}
+
+
+def _normalize_sublinks(raw_sublinks: object, rejection_category: str | None) -> tuple[list[dict], list[str]]:
+    """Normalizza e valida `validation.discovered_sublinks` emessi dalla skill.
+
+    v4 (discovery-by-skill): quando la skill marca un record come index_page o
+    category_page, puo' emettere un array `discovered_sublinks` con i link figli
+    visibili nel markdown. L'orchestrator li accodera' come nuovi BandoCandidate.
+
+    Ritorna (lista_normalizzata, warnings).
+    """
+    warnings: list[str] = []
+    if raw_sublinks is None:
+        return [], warnings
+    if not isinstance(raw_sublinks, list):
+        warnings.append(f"discovered_sublinks deve essere una lista, ricevuto: {type(raw_sublinks).__name__}")
+        return [], warnings
+
+    # I sublinks hanno senso solo per index_page e category_page. Per gli altri
+    # rejection_category li scartiamo silenziosamente con warning.
+    if rejection_category not in _REDISCOVERABLE_REJECTIONS and raw_sublinks:
+        warnings.append(
+            f"discovered_sublinks emessi con rejection_category={rejection_category!r}: "
+            f"ignorati (consentiti solo per {sorted(_REDISCOVERABLE_REJECTIONS)})"
+        )
+        return [], warnings
+
+    normalized: list[dict] = []
+    seen_urls: set[str] = set()
+    for idx, entry in enumerate(raw_sublinks):
+        if not isinstance(entry, dict):
+            warnings.append(f"discovered_sublinks[{idx}] non e' un oggetto: skip")
+            continue
+        url = entry.get("url")
+        label = entry.get("label")
+        if not isinstance(url, str) or not url.strip():
+            warnings.append(f"discovered_sublinks[{idx}].url assente o non stringa: skip")
+            continue
+        url_s = url.strip()
+        # Solo http/https assoluti
+        if not (url_s.startswith("http://") or url_s.startswith("https://")):
+            warnings.append(f"discovered_sublinks[{idx}].url non e' http/https assoluto: {url_s[:80]!r}: skip")
+            continue
+        # Dedup intra-payload
+        if url_s in seen_urls:
+            continue
+        seen_urls.add(url_s)
+        # Label normalizzata
+        if label is None:
+            label_s = url_s
+        elif isinstance(label, str):
+            label_s = label.strip() or url_s
+        else:
+            label_s = str(label)[:_SUBLINK_LABEL_MAX]
+        if len(label_s) > _SUBLINK_LABEL_MAX:
+            label_s = label_s[: _SUBLINK_LABEL_MAX - 1] + "…"
+        normalized.append({"url": url_s, "label": label_s})
+
+    if len(normalized) > _SUBLINKS_MAX:
+        warnings.append(
+            f"discovered_sublinks troncati a {_SUBLINKS_MAX} (ricevuti {len(normalized)})"
+        )
+        normalized = normalized[:_SUBLINKS_MAX]
+    return normalized, warnings
+
+
 def _normalize_validation(validation_data: dict | None) -> dict:
     """Normalizza il blocco validation in input.
 
@@ -240,10 +309,16 @@ def _normalize_validation(validation_data: dict | None) -> dict:
     rejection = raw.get("rejection_category")
     if rejection is not None and not isinstance(rejection, str):
         rejection = str(rejection)
+
+    sublinks, sublink_warnings = _normalize_sublinks(raw.get("discovered_sublinks"), rejection)
+
     return {
         "is_valid_bando": is_valid,
         "validation_reason": reason,
         "rejection_category": rejection,
+        "discovered_sublinks": sublinks,
+        # warnings interni propagati al chiamante via _normalize_validation_warnings
+        "_warnings": sublink_warnings,
     }
 
 
@@ -296,6 +371,11 @@ def create_bando_json(
 
     # Validation
     warnings: list[str] = []
+
+    # Propaga warnings dalla normalizzazione di discovered_sublinks (v4).
+    sublink_warnings = validation.pop("_warnings", [])
+    if sublink_warnings:
+        warnings.extend(sublink_warnings)
 
     # Per i record bocciati (is_valid_bando=False) salta tutte le validazioni di
     # forma editoriale/SEO: il payload e' un placeholder, non un articolo.
@@ -491,6 +571,10 @@ def create_bando_json(
             "is_valid_bando": is_valid_bando,
             "validation_reason": validation["validation_reason"],
             "rejection_category": validation["rejection_category"],
+            # v4 — discovery-by-skill: sub-link visibili nella pagina-indice/categoria
+            # da accodare come nuovi BandoCandidate. Sempre presente (lista, anche vuota)
+            # per semplificare il consumer in update_bando_from_payload.
+            "discovered_sublinks": validation.get("discovered_sublinks") or [],
             "warnings": warnings,
             "word_count": word_count,
             "meta_title_length": len(meta_title),

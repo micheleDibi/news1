@@ -104,6 +104,36 @@ Prima di estrarre qualsiasi campo, decidi se la pagina e' davvero **UN bando can
 
 Sempre compila `validation.validation_reason` (1-2 frasi che spiegano la decisione, citando il marker scattato: "M3 mancante: nessuna label di scadenza nel markdown", "N1: 5 sub-call elencate nel listing", ecc).
 
+#### Discovery di sub-link (v4 — recupero bandi figli)
+
+Se hai assegnato `rejection_category ∈ {"index_page", "category_page"}` e nel markdown sorgente sono visibili **link diretti verso singole call/avvisi figli** (es. la pagina e' un aggregator come `interregnextmed.eu/stay-informed/opportunities` con 5 link a bandi distinti), DEVI emettere `validation.discovered_sublinks` come array di oggetti `{url, label}` con UN'ENTRY per ogni sub-link che sembra puntare a un singolo bando.
+
+L'orchestrator usera' questo array per accodare i sub-link come nuovi `BandoCandidate` (state='discovered') e ri-processarli individualmente alla iterazione successiva del sender. Senza questa lista, i bandi figli di una pagina-indice **vengono persi** (perche' fase 1 dello scraper non ricorre).
+
+**Regole**:
+- Emetti solo URL **assoluti** (`https://...`) — risolvi i relativi con il `source_url` come base.
+- Per ogni entry: `url` (string, http/https, NO fragment-only), `label` (string, testo del link nel markdown, max 200 char).
+- Massimo **50 entries**. Se nella pagina ce ne sono di piu', emetti le 50 piu' rilevanti (link in posizione prominente, con label tipo "Bando X", "Call Y", "Avviso Z").
+- **NON emettere** link verso: pagine di navigazione (footer, social), file PDF di regolamento generale, allegati, contatti, accessibilita'.
+- **NON emettere** se `rejection_category ∉ {"index_page", "category_page"}` (es. per `not_a_funding_call` non ha senso — un calendario non ha sub-call).
+- Se la pagina e' una index_page MA ognuno dei sub-link ha la stessa URL (es. tutti puntano a `mailto:` o a `source_url#anchor`), lascia l'array vuoto.
+
+**Esempio**:
+```json
+"validation": {
+  "is_valid_bando": false,
+  "rejection_category": "index_page",
+  "validation_reason": "Pagina aggregatrice 'Stay informed - Opportunities' con 5 sub-call elencate.",
+  "discovered_sublinks": [
+    {"url": "https://interregnextmed.eu/calls/medfin-2026", "label": "MEDFIN - Mediterranean Financial Cooperation 2026"},
+    {"url": "https://interregnextmed.eu/calls/medtour-spring-2026", "label": "MEDTOUR Spring Call 2026"},
+    {"url": "https://interregnextmed.eu/calls/medenergy-cluster-2026", "label": "MEDENERGY Cluster Call 2026"}
+  ]
+}
+```
+
+**Anti-loop**: l'orchestrator tiene un `discovery_depth` nel `state_detail` del bando figlio (parent_depth + 1). Oltre `depth=3` i sub-link non vengono piu' accodati (defense contro siti che linkano in cerchio). Tu come skill puoi ignorare questo — emetti sempre i sublinks se la pagina e' davvero un aggregator.
+
 **Se `is_valid_bando = false`:**
 - Puoi saltare STEP 3-7 (estrazione, contenuto SEO) e produrre placeholder/null per i campi mancanti.
 - DEVI comunque emettere il JSON con `validation.is_valid_bando = false`, `validation.rejection_category` valorizzato, `validation.validation_reason` esplicito.

@@ -24,6 +24,7 @@ il bando resta in stato `failed` e va revisionato manualmente.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import subprocess
@@ -316,6 +317,120 @@ def _pick(d: Any, key: str) -> Any:
 
 _SCADENZA_OVERRIDE_SOURCES = {"official_pdf", "official_page"}
 
+# v4 — discovery-by-skill: quando la skill marca un record come index_page o
+# category_page, puo' emettere validation.discovered_sublinks con i sub-link
+# figli da accodare come nuovi BandoCandidate. Limiti contro loop / spam.
+_DISCOVERY_MAX_DEPTH = 3
+_DISCOVERY_REDISCOVERABLE_REJECTIONS = {"index_page", "category_page"}
+_DISCOVERY_SUBLINKS_PER_PARENT_MAX = 50
+
+
+def _hash_bando_for_discovery(fonte_id: int, link_bando: str) -> str:
+    """Stesso schema hash usato dal scraper (SHA256 'fonte_id|link_bando'),
+    cosi' che il vincolo UNIQUE su `bando.hash_bando` faccia naturalmente
+    dedup tra discovery-by-skill e ri-scrape successivo della stessa fonte.
+    """
+    payload = f"{int(fonte_id)}|{link_bando}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _insert_discovered_sublinks(
+    sb,
+    parent_bando_id: int,
+    parent_fonte_id: int | None,
+    parent_state_detail: dict[str, Any] | None,
+    parent_source_url: str | None,
+    payload: dict[str, Any],
+    new_state: str,
+    new_state_detail: dict[str, Any],
+) -> int:
+    """Accoda i sub-link emessi dalla skill come nuovi BandoCandidate.
+
+    Eseguito solo se `new_state='rejected'` e `rejection_category` ∈ {index_page, category_page}.
+    Best-effort: errori non bloccano l'enrichment del parent.
+    Ritorna il numero di sublink effettivamente inseriti (gli altri sono duplicati gia' presenti).
+    """
+    rej = (new_state_detail or {}).get("rejection_category")
+    if new_state != BandoState.REJECTED or rej not in _DISCOVERY_REDISCOVERABLE_REJECTIONS:
+        return 0
+    if parent_fonte_id is None:
+        logger.warning("[bandi/discovery] parent bando_id={} senza fonte_id: skip sublinks", parent_bando_id)
+        return 0
+
+    validation = (payload or {}).get("validation") or {}
+    raw_sublinks = validation.get("discovered_sublinks") or []
+    if not isinstance(raw_sublinks, list) or not raw_sublinks:
+        return 0
+
+    # Anti-loop: profondita' del parent +1. Oltre _DISCOVERY_MAX_DEPTH stop.
+    parent_depth = 0
+    if isinstance(parent_state_detail, dict):
+        try:
+            parent_depth = int(parent_state_detail.get("discovery_depth") or 0)
+        except (TypeError, ValueError):
+            parent_depth = 0
+    child_depth = parent_depth + 1
+    if child_depth > _DISCOVERY_MAX_DEPTH:
+        logger.info(
+            "[bandi/discovery] depth max raggiunta parent_bando_id={} parent_depth={}: skip {} sublinks",
+            parent_bando_id, parent_depth, len(raw_sublinks),
+        )
+        return 0
+
+    # Limita il numero per parent (defense contro skill rumorosa).
+    sublinks = list(raw_sublinks)[:_DISCOVERY_SUBLINKS_PER_PARENT_MAX]
+    inserted = 0
+    skipped_duplicate = 0
+    skipped_error = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for entry in sublinks:
+        if not isinstance(entry, dict):
+            continue
+        url = (entry.get("url") or "").strip()
+        label = (entry.get("label") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        hash_val = _hash_bando_for_discovery(parent_fonte_id, url)
+        record = {
+            "fonte_id": parent_fonte_id,
+            "hash_bando": hash_val,
+            "link_bando": url,
+            "titolo": label or url,
+            "state": BandoState.DISCOVERED,
+            "state_detail": {
+                "discovery_depth": child_depth,
+                "parent_bando_id": parent_bando_id,
+                "parent_source_url": parent_source_url,
+            },
+            "state_updated_at": now_iso,
+            "attempts": 0,
+            "raw_data": {"discovered_via": "skill_sublinks", "discovered_at": now_iso},
+            "primo_scraping_at": now_iso,
+            "ultimo_scraping_at": now_iso,
+        }
+        try:
+            # ON CONFLICT (hash_bando) DO NOTHING — duplicato silenzioso = OK.
+            sb.table("bando").upsert(
+                record, on_conflict="hash_bando", ignore_duplicates=True
+            ).execute()
+            inserted += 1
+        except Exception as e:
+            msg = str(e).lower()
+            if "duplicate" in msg or "unique" in msg or "23505" in msg:
+                skipped_duplicate += 1
+            else:
+                skipped_error += 1
+                logger.warning("[bandi/discovery] insert sublink failed url={}: {}", url, e)
+
+    logger.info(
+        "[bandi/discovery] parent_bando_id={} depth={}/{} → {} candidati nuovi "
+        "(dup={}, err={}, ricevuti={})",
+        parent_bando_id, child_depth, _DISCOVERY_MAX_DEPTH,
+        inserted, skipped_duplicate, skipped_error, len(sublinks),
+    )
+    return inserted
+
 
 def _read_existing_for_audit(sb, bando_id: int) -> dict[str, Any] | None:
     """Legge (data_scadenza, data_pubblicazione, raw_data) per audit pre-skill override.
@@ -511,6 +626,36 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
             sb.table("bando").update(record_clean).eq("id", bando_id).execute()
         else:
             raise
+
+    # v4 — discovery-by-skill: se la skill ha bocciato come index_page / category_page
+    # e ha emesso `validation.discovered_sublinks`, accodali come nuovi BandoCandidate.
+    # Best-effort: errori non bloccano il salvataggio del parent (gia' fatto sopra).
+    rejection_cat = (state_detail or {}).get("rejection_category")
+    if new_state == BandoState.REJECTED and rejection_cat in _DISCOVERY_REDISCOVERABLE_REJECTIONS:
+        try:
+            parent_row = (
+                sb.table("bando")
+                .select("fonte_id, state_detail, link_bando")
+                .eq("id", bando_id)
+                .single()
+                .execute()
+            )
+            parent_data = parent_row.data or {}
+            _insert_discovered_sublinks(
+                sb,
+                parent_bando_id=bando_id,
+                parent_fonte_id=parent_data.get("fonte_id"),
+                parent_state_detail=parent_data.get("state_detail"),
+                parent_source_url=parent_data.get("link_bando"),
+                payload=payload,
+                new_state=new_state,
+                new_state_detail=state_detail,
+            )
+        except Exception as e:
+            logger.warning(
+                "[bandi/discovery] fetch parent_bando_id={} for sublinks failed: {}",
+                bando_id, e,
+            )
 
 
 def _denormalize_bando_lookups(sb, bando_id: int, bando: dict[str, Any]) -> None:
