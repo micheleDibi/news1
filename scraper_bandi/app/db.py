@@ -227,31 +227,58 @@ def enrich_fonti_with_names(fonti_by_id: dict[int, dict[str, Any]]) -> dict[int,
     return fonti_by_id
 
 
-def update_bandi_postanalysis(updates: list[dict[str, Any]]) -> dict[str, int]:
+async def update_bandi_postanalysis(
+    updates: list[dict[str, Any]],
+    concurrency: int = 20,
+) -> dict[str, int]:
     """UPDATE batch dei bandi post-analisi LLM.
 
-    Ogni update: {id, stato_processing, confidence_score, stato_bando|None, rejection_reason|None}.
-    Supabase REST non ha bulk UPDATE WHERE id IN (...): facciamo UPSERT su id
-    (richiede che la tabella abbia PK su id, cosa standard).
+    Ogni update: {id, stato_processing, confidence_score, stato_bando|None,
+    rejection_reason|None}.
 
-    Chunking 100 record per non superare il payload limit.
+    NB: NON usiamo upsert(on_conflict='id') perche' postgrest interpreta
+    quella sintassi come INSERT ... ON CONFLICT DO UPDATE: prova prima
+    l'INSERT con i soli campi passati, che fallisce sul NOT NULL di
+    fonte_id (non passato perche' gia' presente nel DB).
+
+    Soluzione: UPDATE per id, in parallelo con asyncio.Semaphore +
+    asyncio.to_thread (il client supabase-py e' sync).
     """
+    import asyncio
+
     if not updates:
         return {"updated": 0}
+
     sb = get_supabase()
-    CHUNK = 100
-    total = 0
-    for i in range(0, len(updates), CHUNK):
-        chunk = updates[i : i + CHUNK]
-        try:
-            sb.table("bando").upsert(chunk, on_conflict="id").execute()
-            total += len(chunk)
-            logger.debug("[db] update bando chunk {}-{}", i, i + len(chunk))
-        except Exception as e:
-            logger.exception("[db] update bando chunk {}-{} fallito: {}", i, i + len(chunk), e)
-            raise
-    logger.info("[db] update_bandi_postanalysis: {} record aggiornati", total)
-    return {"updated": total}
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _update_one(rec: dict[str, Any]) -> bool:
+        rec_id = rec.get("id")
+        if rec_id is None:
+            logger.warning("[db] update_bandi_postanalysis: record senza id, skip")
+            return False
+        payload = {k: v for k, v in rec.items() if k != "id"}
+        async with sem:
+            try:
+                await asyncio.to_thread(
+                    lambda: sb.table("bando").update(payload).eq("id", rec_id).execute()
+                )
+                return True
+            except Exception as e:
+                logger.exception("[db] update bando id={} fallito: {}", rec_id, e)
+                return False
+
+    results = await asyncio.gather(*[_update_one(r) for r in updates])
+    n_ok = sum(1 for r in results if r)
+    n_failed = len(updates) - n_ok
+    if n_failed:
+        logger.warning(
+            "[db] update_bandi_postanalysis: {} OK, {} FALLITI",
+            n_ok, n_failed,
+        )
+    else:
+        logger.info("[db] update_bandi_postanalysis: {}/{} OK", n_ok, len(updates))
+    return {"updated": n_ok, "failed": n_failed}
 
 
 def upsert_bandi(records: list[dict[str, Any]]) -> dict[str, int]:

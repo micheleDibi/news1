@@ -127,12 +127,14 @@ async def run(
         else:
             rejected_updates.append(update)
 
-    # UPDATE DB
+    # UPDATE DB (async: UPDATE per id con concorrenza interna)
     n_updated = 0
+    n_failed = 0
     if not dry_run:
         all_updates = valid_updates + rejected_updates
-        res_upd = update_bandi_postanalysis(all_updates)
+        res_upd = await update_bandi_postanalysis(all_updates)
         n_updated = res_upd.get("updated", 0)
+        n_failed = res_upd.get("failed", 0)
 
     avg_conf = confidence_sum / confidence_n if confidence_n else 0.0
     elapsed = time.monotonic() - started
@@ -145,6 +147,7 @@ async def run(
         "by_stato_bando": dict(stato_bando_dist),
         "avg_confidence": round(avg_conf, 3),
         "db_updated": n_updated,
+        "db_failed": n_failed,
         "dry_run": dry_run,
         "elapsed_s": round(elapsed, 1),
     }
