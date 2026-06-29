@@ -50,4 +50,15 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- CHECK constraint su `stato_processing`: ammette solo i 3 valori usati
+-- dal nuovo scraper. Il vecchio constraint del subproject rimosso aveva
+-- valori diversi (es. 'ready', 'pending', 'failed_final', ...) che ora
+-- non vogliamo piu'.
+ALTER TABLE public.fonte
+  DROP CONSTRAINT IF EXISTS fonte_stato_processing_check;
+
+ALTER TABLE public.fonte
+  ADD CONSTRAINT fonte_stato_processing_check
+  CHECK (stato_processing IN ('ready', 'connection error', 'deprecated'));
+
 COMMIT;

@@ -53,10 +53,10 @@ Esegue:
 4. Detect del `formato_link` (HTML / PDF / CSV) via estensione URL o Content-Type.
 5. **UPSERT** in tabella `fonte` (on_conflict=`link`):
    - `attivo = TRUE` → `stato_processing = 'ready'`
-   - `attivo = FALSE` (timeout/DNS/4xx/5xx) → `stato_processing = 'connection_error'`
+   - `attivo = FALSE` (timeout/DNS/4xx/5xx) → `stato_processing = 'connection error'`
 6. **Mark deprecato**: per ogni record gia' in DB ma non piu' presente nella pagina sorgente → `stato_processing = 'deprecated'`.
 
-Log finale: `{discovered, inserted, updated, deprecated, connection_error}`.
+Log finale: `{discovered, inserted, updated, deprecated, connection error}`.
 
 ## Tabella `fonte` (schema post-v5)
 
@@ -69,7 +69,7 @@ Log finale: `{discovered, inserted, updated, deprecated, connection_error}`.
 | `link` | text UNIQUE | Scraper (URL originale, no redirect) |
 | `formato_link` | text (`HTML` \| `PDF` \| `CSV`) | Scraper (estensione + Content-Type) |
 | `attivo` | bool | Scraper (HEAD/GET 2xx) |
-| `stato_processing` | text (`ready` \| `connection_error` \| `deprecated`) | Scraper |
+| `stato_processing` | text (`ready` \| `connection error` \| `deprecated`) | Scraper |
 | `created_at`, `updated_at` | timestamptz | DB triggers |
 
 ## Mapping classificazioni

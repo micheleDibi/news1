@@ -23,11 +23,11 @@ def _records_from_results(
             # Fallback (non dovrebbe accadere): segnaliamo errore.
             attivo = False
             formato_link = "HTML"
-            stato = "connection_error"
+            stato = "connection error"
         else:
             attivo = r.attivo
             formato_link = r.formato_link
-            stato = "ready" if attivo else "connection_error"
+            stato = "ready" if attivo else "connection error"
 
         records.append({
             "link": c.link,
