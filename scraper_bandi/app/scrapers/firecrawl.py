@@ -166,14 +166,18 @@ class FirecrawlExtractScraper(BandoScraper):
         logger.info("[firecrawl_extract] fonte_id={} url={} extract...", fonte.get("id"), url)
 
         def _extract() -> Any:
+            # firecrawl-py v4+: il JSON extraction si specifica come
+            # dict {"type": "json", "prompt": ..., "schema": ...} dentro
+            # `formats`. Niente piu' kwarg `json_options`.
+            from firecrawl.v2.types import JsonFormat
             app = _get_firecrawl_client()
             return app.scrape_url(
                 url,
-                formats=["json"],
-                json_options={
-                    "prompt": self.prompt,
-                    "schema": self.schema,
-                },
+                formats=[JsonFormat(
+                    type="json",
+                    prompt=self.prompt,
+                    schema=self.schema,
+                )],
             )
 
         try:
@@ -182,16 +186,20 @@ class FirecrawlExtractScraper(BandoScraper):
             logger.exception("[firecrawl_extract] fonte_id={} fallito: {}", fonte.get("id"), e)
             return []
 
-        # Estrai il json dal result
+        # Estrai il json dal result. In firecrawl-py v4 il risultato e' un
+        # oggetto pydantic `Document` con attributo `.json` (dict).
         bandi_data: list[dict] = []
-        if isinstance(result, dict):
+        json_obj: dict | None = None
+        if hasattr(result, "json") and isinstance(getattr(result, "json", None), dict):
+            json_obj = result.json
+        elif hasattr(result, "data") and hasattr(getattr(result, "data", None), "json"):
+            json_obj = result.data.json
+        elif isinstance(result, dict):
             data = result.get("data", result)
             json_obj = data.get("json") or data.get("extract") or {}
+
+        if json_obj:
             bandi_data = json_obj.get("bandi", []) or []
-        elif hasattr(result, "json") and isinstance(result.json, dict):
-            bandi_data = result.json.get("bandi", []) or []
-        elif hasattr(result, "data") and hasattr(result.data, "json"):
-            bandi_data = result.data.json.get("bandi", []) or []
 
         items: list[BandoItem] = []
         for b in bandi_data:
