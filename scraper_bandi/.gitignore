@@ -1,0 +1,19 @@
+# venv
+.venv/
+venv/
+
+# env locale (mai committare secret!)
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Logs
+logs/*.log
+
+# OS
+.DS_Store

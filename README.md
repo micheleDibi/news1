@@ -122,9 +122,14 @@ Tutta la scrittura su DB B avviene **solo** dal backend con service-role key. Il
 | **boto3** | Upload media su S3 |
 | **google-cloud-texttospeech** | Generazione audio articoli |
 
-### Backend bandi (transizione — v5)
+### Backend bandi — Nuovo scraper (`/scraper_bandi`, in costruzione)
 
-Il vecchio subproject scraper `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/` e' stato **rimosso**. Un nuovo scraper sara' progettato in un piano successivo. Per ora resta operativa solo la **skill SEO** lato Claude + le tabelle DB editorial — drenabili a mano.
+Il vecchio subproject `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/` e' stato **rimosso in v5**. Al suo posto sta nascendo `scraper_bandi/` — sub-progetto Python autonomo (venv dedicato, ~9 file totali), costruito in step incrementali:
+
+- **Step 1 (completato)**: discovery delle **fonti** dalla pagina indice di OpenCoesione → popola la tabella `fonte` (httpx + BeautifulSoup, no Firecrawl). Vedi `scraper_bandi/README.md` per setup e comando `python -m app discover`.
+- **Step 2 (prossimo)**: scraping di ogni fonte estratta → popola la tabella `bando`.
+
+Schema `fonte` ridotto in v5 (drop 8 colonne legacy: `titolo`, `note_aggiuntive`, retry/error tracking). Vedi `backend/sql/fonte_alter_v5_drop_legacy.sql`.
 
 ### Skill bandi (`/bandi-seo-enricher`)
 
