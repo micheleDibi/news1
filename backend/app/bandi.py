@@ -25,15 +25,20 @@ Parallelismo (v4):
     scraper UPDATE tocca solo i campi raw — nessuna race in DB).
   - Skill enrichment processa fino a `BANDI_SKILL_CONCURRENCY` bandi
     in parallelo via `asyncio.Semaphore` (default 3).
+  - `run_skill_enrichment_batch` drena la coda FINO A ESAURIMENTO via loop
+    round-per-round (chunk SELECT = `BANDI_SKILL_BATCH_SIZE`, default 10):
+    nessun cap hard sul totale, lo scraper in parallelo puo' aggiungere
+    candidati che il loop raccoglie al round successivo.
 
 ENV vars:
   - BANDI_SCRAPER_DIR         path al sotto-progetto scraper (obbligatoria)
   - BANDI_SCRAPER_PYTHON      interprete python del scraper (default: 'python')
   - BANDI_SCRAPER_TIMEOUT_S   timeout subprocess scraper in s (default: 1800 = 30 min)
   - BANDI_SCRAPER_RUN_LIMIT   limite fonti per ciclo scraper (opzionale)
-  - BANDI_SKILL_BATCH_SIZE    bandi per ciclo skill (default: 10)
-  - BANDI_SKILL_MAX_ATTEMPTS  retry skill (default: 3)
-  - BANDI_SKILL_CONCURRENCY   skill paralleli max (default: 3)
+  - BANDI_SKILL_BATCH_SIZE    chunk SELECT per round drain (default: 10).
+                              NON e' un cap totale: il loop drena fino a coda vuota.
+  - BANDI_SKILL_MAX_ATTEMPTS  retry skill su singolo bando (default: 3)
+  - BANDI_SKILL_CONCURRENCY   skill paralleli max per round (default: 3)
 """
 from __future__ import annotations
 
@@ -975,104 +980,136 @@ def _skill_concurrency() -> int:
 
 
 async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
-    """Arricchisce fino a `batch_size` bandi in stato `discovered`.
+    """Drena la coda della skill enrichment FINO A ESAURIMENTO.
+
+    NON e' piu' un "batch one-shot" con cap fisso: ogni round fa SELECT di
+    `batch_size` record (chunk per non scaricare migliaia di righe in memoria),
+    processa in parallelo (Semaphore=BANDI_SKILL_CONCURRENCY), e poi ri-SELECT
+    finche' la coda e' vuota. Lo scraper in parallelo puo' aggiungere nuovi
+    candidati: il loop li raccoglie nel round successivo.
 
     Selezione v4:
       - `state = 'discovered'` (oppure 'error' per retry)
       - `attempts < BANDI_SKILL_MAX_ATTEMPTS`
-    Ordinati per `ultimo_scraping_at ASC` (FIFO, priorita' ai bandi piu' vecchi non processati).
+    Ordinati per `ultimo_scraping_at ASC` (FIFO, priorita' ai bandi piu' vecchi).
 
-    Esegue in **parallelo** fino a `BANDI_SKILL_CONCURRENCY` skill alla volta
-    via `asyncio.Semaphore`. I counter sono safe in asyncio cooperative.
-    Restituisce un dict con i contatori `{processed, confirmed, rejected, refuted, error}`.
+    Restituisce i contatori cumulativi su tutti i round.
     """
     sb = get_bandi_supabase()
     max_att = _max_attempts()
     concurrency = _skill_concurrency()
-    batch_started = time.monotonic()
-
-    logger.info(
-        "[bandi/skill] BATCH START size={} max_attempts={} concurrency={} ordering=ultimo_scraping_at:asc",
-        batch_size, max_att, concurrency,
-    )
-    try:
-        res = (
-            sb.table("bando")
-            .select(_BANDO_CORE_COLUMNS)
-            .in_("state", [BandoState.DISCOVERED, BandoState.ERROR])
-            .lt("attempts", max_att)
-            .order("ultimo_scraping_at", desc=False)
-            .limit(batch_size)
-            .execute()
-        )
-    except Exception as e:
-        logger.exception("[bandi/skill] SELECT batch fallito: {}", e)
-        return {"processed": 0, "confirmed": 0, "rejected": 0, "refuted": 0, "error": 0}
-
-    rows = res.data or []
+    overall_started = time.monotonic()
     counters = {"processed": 0, "confirmed": 0, "rejected": 0, "refuted": 0, "error": 0}
-    if not rows:
-        logger.info("[bandi/skill] BATCH EMPTY: nessun bando in state IN (discovered,error) con attempts<{}", max_att)
-        return counters
+    rounds = 0
 
-    # Breakdown stati pre-batch
-    state_breakdown: dict[str, int] = {}
-    for r in rows:
-        s = r.get("state") or "?"
-        state_breakdown[s] = state_breakdown.get(s, 0) + 1
-    total = len(rows)
     logger.info(
-        "[bandi/skill] BATCH selezione: {} bandi ({}) | processero' fino a {} in parallelo",
-        total,
-        " + ".join(f"{n} {s}" for s, n in sorted(state_breakdown.items())),
-        concurrency,
+        "[bandi/skill] DRAIN START chunk={} max_attempts={} concurrency={} ordering=ultimo_scraping_at:asc",
+        batch_size, max_att, concurrency,
     )
 
     sem = asyncio.Semaphore(concurrency)
-    progress = {"completed": 0}
 
-    async def _process_bando(idx: int, bando: dict[str, Any]) -> None:
-        bando_id = bando.get("id")
-        async with sem:
-            counters["processed"] += 1
-            logger.info(
-                "[bandi/skill] >>> START {}/{} bando_id={} state={} attempts={}/{} (in-flight={}/{})",
-                idx, total, bando_id, bando.get("state"),
-                int(bando.get("attempts") or 0), max_att,
-                concurrency - sem._value, concurrency,
+    while True:
+        rounds += 1
+        round_started = time.monotonic()
+        try:
+            res = (
+                sb.table("bando")
+                .select(_BANDO_CORE_COLUMNS)
+                .in_("state", [BandoState.DISCOVERED, BandoState.ERROR])
+                .lt("attempts", max_att)
+                .order("ultimo_scraping_at", desc=False)
+                .limit(batch_size)
+                .execute()
             )
-            await _enrich_one(sb, bando)
-            try:
-                cur = sb.table("bando").select("state, slug").eq("id", bando_id).single().execute()
-                data = cur.data or {}
-                new_state = data.get("state")
-                new_slug = data.get("slug")
-            except Exception:
-                logger.exception("[bandi/skill] re-read state fallito bando_id={}", bando_id)
-                new_state = BandoState.ERROR
-                new_slug = None
-            if new_state == BandoState.CONFIRMED:
-                counters["confirmed"] += 1
-            elif new_state == BandoState.REJECTED:
-                counters["rejected"] += 1
-            elif new_state == BandoState.REFUTED:
-                counters["refuted"] += 1
+        except Exception as e:
+            logger.exception("[bandi/skill] SELECT round {} fallito: {}", rounds, e)
+            break
+
+        rows = res.data or []
+        if not rows:
+            if rounds == 1:
+                logger.info(
+                    "[bandi/skill] DRAIN coda vuota all'avvio: nessun bando in state IN "
+                    "(discovered,error) con attempts<{}",
+                    max_att,
+                )
             else:
-                counters["error"] += 1
-            progress["completed"] += 1
-            logger.info(
-                "[bandi/skill] <<< END {}/{} ({}/{} completati) bando_id={} -> state={} slug={} | counters={}",
-                idx, total, progress["completed"], total, bando_id, new_state, new_slug, counters,
+                logger.info("[bandi/skill] DRAIN coda esaurita dopo {} round", rounds - 1)
+            break
+
+        # Breakdown stati pre-round
+        state_breakdown: dict[str, int] = {}
+        for r in rows:
+            s = r.get("state") or "?"
+            state_breakdown[s] = state_breakdown.get(s, 0) + 1
+        round_total = len(rows)
+        logger.info(
+            "[bandi/skill] === ROUND {} === {} bandi ({}) | concurrency={} (totale gia' processati={})",
+            rounds, round_total,
+            " + ".join(f"{n} {s}" for s, n in sorted(state_breakdown.items())),
+            concurrency, counters["processed"],
+        )
+
+        round_progress = {"completed": 0}
+
+        async def _process_bando(idx: int, bando: dict[str, Any]) -> None:
+            bando_id = bando.get("id")
+            async with sem:
+                counters["processed"] += 1
+                logger.info(
+                    "[bandi/skill] >>> START round={} {}/{} bando_id={} state={} attempts={}/{} (in-flight={}/{})",
+                    rounds, idx, round_total, bando_id, bando.get("state"),
+                    int(bando.get("attempts") or 0), max_att,
+                    concurrency - sem._value, concurrency,
+                )
+                await _enrich_one(sb, bando)
+                try:
+                    cur = sb.table("bando").select("state, slug").eq("id", bando_id).single().execute()
+                    data = cur.data or {}
+                    new_state = data.get("state")
+                    new_slug = data.get("slug")
+                except Exception:
+                    logger.exception("[bandi/skill] re-read state fallito bando_id={}", bando_id)
+                    new_state = BandoState.ERROR
+                    new_slug = None
+                if new_state == BandoState.CONFIRMED:
+                    counters["confirmed"] += 1
+                elif new_state == BandoState.REJECTED:
+                    counters["rejected"] += 1
+                elif new_state == BandoState.REFUTED:
+                    counters["refuted"] += 1
+                else:
+                    counters["error"] += 1
+                round_progress["completed"] += 1
+                logger.info(
+                    "[bandi/skill] <<< END round={} {}/{} ({}/{} round) bando_id={} -> state={} slug={} | totale={}",
+                    rounds, idx, round_total, round_progress["completed"], round_total,
+                    bando_id, new_state, new_slug, counters,
+                )
+
+        await asyncio.gather(*[_process_bando(i, b) for i, b in enumerate(rows, start=1)])
+
+        round_elapsed = time.monotonic() - round_started
+        logger.info(
+            "[bandi/skill] === ROUND {} DONE in {:.1f}s ({} bandi, totale processati={}) ===",
+            rounds, round_elapsed, round_total, counters["processed"],
+        )
+
+        # Safety: se il round non ha completato nessuno (es. tutti gli enrich
+        # hanno crashato), evita loop infinito.
+        if round_progress["completed"] == 0:
+            logger.warning(
+                "[bandi/skill] DRAIN round {} non ha completato nessun bando: stop",
+                rounds,
             )
+            break
 
-    # asyncio.gather su tutti i bandi, Semaphore limita la concorrenza effettiva.
-    await asyncio.gather(*[_process_bando(i, b) for i, b in enumerate(rows, start=1)])
-
-    batch_elapsed = time.monotonic() - batch_started
-    rate_per_min = (counters["processed"] / batch_elapsed * 60) if batch_elapsed > 0 else 0
+    overall_elapsed = time.monotonic() - overall_started
+    rate_per_min = (counters["processed"] / overall_elapsed * 60) if overall_elapsed > 0 else 0
     logger.info(
-        "[bandi/skill] BATCH DONE in {:.1f}s ({:.1f} bandi/min, concurrency={}) | counters={}",
-        batch_elapsed, rate_per_min, concurrency, counters,
+        "[bandi/skill] DRAIN DONE in {:.1f}s, {} round, {:.1f} bandi/min, concurrency={} | counters={}",
+        overall_elapsed, rounds, rate_per_min, concurrency, counters,
     )
     return counters
 
