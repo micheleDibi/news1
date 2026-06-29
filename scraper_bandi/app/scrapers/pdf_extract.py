@@ -33,6 +33,21 @@ def _open_pdf(content: bytes):
     return pdfplumber.open(io.BytesIO(content))
 
 
+def _looks_like_pdf(content: bytes) -> bool:
+    """True se il contenuto inizia con il magic byte PDF (%PDF-)."""
+    return content[:5] == b"%PDF-"
+
+
+def _looks_like_html(content: bytes) -> bool:
+    """True se il contenuto e' HTML invece di PDF (URL mal-mappato)."""
+    head = content[:256].lstrip().lower()
+    return (
+        head.startswith(b"<!doctype html")
+        or head.startswith(b"<html")
+        or b"<head" in head[:200]
+    )
+
+
 def _pick_titolo_index_from_header(header_row: list[str]) -> int | None:
     """Trova l'indice della colonna 'titolo'/'oggetto' nell'header."""
     if not header_row:
@@ -77,6 +92,19 @@ class PdfTableScraper(BandoScraper):
         except Exception as e:
             logger.exception("[pdf_tab] fonte_id={} download fallito: {}", fonte.get("id"), e)
             return []
+
+        if _looks_like_html(content):
+            logger.error(
+                "[pdf_tab] fonte_id={} URL e' una pagina HTML, non un PDF. "
+                "Registry mal-mappato: cambia strategy a hybrid_httpx_firecrawl. url={}",
+                fonte.get("id"), url,
+            )
+            return []
+        if not _looks_like_pdf(content):
+            logger.warning(
+                "[pdf_tab] fonte_id={} content non sembra un PDF (magic byte non %PDF-). url={}",
+                fonte.get("id"), url,
+            )
 
         items: list[BandoItem] = []
         try:
@@ -183,6 +211,14 @@ class PdfTextScraper(BandoScraper):
             content = await fetch_bytes(url, timeout_s=120.0)
         except Exception as e:
             logger.exception("[pdf_txt] fonte_id={} download fallito: {}", fonte.get("id"), e)
+            return []
+
+        if _looks_like_html(content):
+            logger.error(
+                "[pdf_txt] fonte_id={} URL e' una pagina HTML, non un PDF. "
+                "Registry mal-mappato: cambia strategy a hybrid_httpx_firecrawl. url={}",
+                fonte.get("id"), url,
+            )
             return []
 
         text_pages: list[str] = []

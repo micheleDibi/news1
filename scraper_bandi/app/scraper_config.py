@@ -318,9 +318,11 @@ SCRAPER_CONFIG: dict[str, dict] = {
         "url_pattern": None,
     },
     'https://www.provincia.tn.it/Documenti-e-dati/Risorse/FESR-Calendario-degli-avvisi-e-degli-inviti-a-partecipare': {
-        "strategy": 'csv_parser',
-        "columns_map": [],
-        "note": 'Righe del CSV calendario: titolo avviso/invito, data prevista uscita, descrizione/oggetto, beneficiari, importo/dotazione, asse/azione FESR. Nessun URL di dettaglio (preavvisi non ancora pubblicati...',
+        # FIX: URL e' una pagina HTML wrapper, non un CSV diretto.
+        # hybrid scopre i file CSV/XLSX/PDF allegati e li parsa.
+        "strategy": 'hybrid_httpx_firecrawl',
+        "discovery_selector": "a[href$='.csv'], a[href$='.xlsx'], a[href$='.xls'], a[href$='.pdf']",
+        "file_strategy_default": 'csv_parser',
     },
     'https://www.provincia.tn.it/Argomenti/Europa-e-attivita-internazionali/Europa/Fondo-sociale-europeo-plus-FSE': {
         "strategy": 'hybrid_httpx_firecrawl',
@@ -328,9 +330,10 @@ SCRAPER_CONFIG: dict[str, dict] = {
         "file_strategy_default": 'pdf_extract_tables_pdfplumber',
     },
     'https://www.provincia.tn.it/Documenti-e-dati/Risorse/FSE-Calendario-degli-avvisi-e-degli-inviti-a-partecipare': {
-        "strategy": 'csv_parser',
-        "columns_map": [],
-        "note": "Righe del CSV calendario FSE+: titolo avviso, data prevista uscita, descrizione/oggetto, beneficiari (es. studenti, lavoratori, enti formativi), dotazione, priorita'/obiettivo specifico. Nessun URL...",
+        # FIX: URL e' una pagina HTML wrapper, non un CSV diretto.
+        "strategy": 'hybrid_httpx_firecrawl',
+        "discovery_selector": "a[href$='.csv'], a[href$='.xlsx'], a[href$='.xls'], a[href$='.pdf']",
+        "file_strategy_default": 'csv_parser',
     },
 
     # ============================================================
@@ -445,9 +448,10 @@ SCRAPER_CONFIG: dict[str, dict] = {
         "reason": "Pagina solo informativa che reindirizza l'utente a due portali esterni (regione.umbria.it/la-regione/bandi e sviluppumbria.it); non contiene alcun titolo o link di bando individ...",
     },
     'https://www.regione.umbria.it/calendario-degli-inviti-a-presentare-proposte': {
-        "strategy": 'csv_parser',
-        "columns_map": [],
-        "note": "Righe calendario CSV/PDF: titolo invito/avviso, programma (PR FESR o PR FSE+), priorita'/obiettivo specifico, data prevista pubblicazione, beneficiari, dotazione finanziaria, ufficio/servizio respo...",
+        # FIX: URL e' una pagina HTML wrapper, non un CSV/PDF diretto.
+        "strategy": 'hybrid_httpx_firecrawl',
+        "discovery_selector": "a[href$='.csv'], a[href$='.xlsx'], a[href$='.xls'], a[href$='.pdf']",
+        "file_strategy_default": 'csv_parser',
     },
     'https://www.regione.umbria.it/bandi-fse': {
         "strategy": 'skip_no_bandi',
@@ -464,14 +468,16 @@ SCRAPER_CONFIG: dict[str, dict] = {
         "note": "Se anche con rendering JS i singoli bandi restano senza href, salvare in raw_data: titolo (h3), data_scadenza, data_pubblicazione, tag (categorie). Esempio osservato: 'Avviso pubblico 26AB - Attivi...",
     },
     'https://new.regione.vda.it/europa/fondi-e-programmi/fondo-europeo-di-sviluppo-regionale/fesr-2021-27/calendario-degli-inviti-a-presentare-proposte': {
-        "strategy": 'pdf_extract_tables_pdfplumber',
-        "columns_map": [],
-        "note": 'Ogni riga del PDF rappresenta un preavviso/bando: salvare in raw_data {titolo, asse/obiettivo, beneficiari, dotazione_finanziaria, data_prevista_apertura, mese_riferimento, versione_calendario}. No...',
+        # FIX: URL e' una pagina HTML wrapper, non un PDF diretto.
+        "strategy": 'hybrid_httpx_firecrawl',
+        "discovery_selector": "a[href$='.pdf'], a[href$='.csv'], a[href$='.xlsx']",
+        "file_strategy_default": 'pdf_extract_tables_pdfplumber',
     },
     'https://new.regione.vda.it/europa/fondi-e-programmi/fondo-sociale-europeo-plus/bandi-e-avvisi/calendario-degli-inviti-a-presentare-proposte': {
-        "strategy": 'csv_parser',
-        "columns_map": [],
-        "note": "Ogni riga del CSV/PDF e' un preavviso: salvare in raw_data {titolo_invito, priorita/obiettivo_specifico, destinatari, dotazione, data_prevista_pubblicazione, riferimento_DGR, mese_calendario}. Ness...",
+        # FIX: URL e' una pagina HTML wrapper, non un CSV/PDF diretto.
+        "strategy": 'hybrid_httpx_firecrawl',
+        "discovery_selector": "a[href$='.pdf'], a[href$='.csv'], a[href$='.xlsx']",
+        "file_strategy_default": 'csv_parser',
     },
 
     # ============================================================
@@ -554,9 +560,10 @@ SCRAPER_CONFIG: dict[str, dict] = {
         "url_pattern": r"^https?://pninclusione21-27\.lavoro\.gov\.it/preavvisi/[a-z0-9-]+$",
     },
     'https://www.ponic.gov.it/sites/PON/pnric-calendarioinviti': {
-        "strategy": 'csv_parser',
-        "columns_map": [],
-        "note": "Scaricare l'ultima versione del CSV (pattern /sites/pnric.mise.gov.it/files/calendario_unico_degli_inviti_a_presentare_proposte_<MESE_ANNO>_<vN>.csv); ogni riga rappresenta un invito con titolo, da...",
+        # FIX: URL e' una pagina HTML che linka un CSV, non il CSV diretto.
+        "strategy": 'hybrid_httpx_firecrawl',
+        "discovery_selector": "a[href$='.csv'], a[href$='.xlsx'], a[href*='calendario_unico']",
+        "file_strategy_default": 'csv_parser',
     },
 
     # ============================================================

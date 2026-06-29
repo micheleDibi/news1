@@ -118,6 +118,16 @@ class CsvParserScraper(BandoScraper):
             logger.exception("[csv] fonte_id={} download fallito: {}", fonte.get("id"), e)
             return []
 
+        # Difesa: rileva content HTML restituito da una URL che doveva essere CSV
+        head = content[:256].lstrip().lower()
+        if head.startswith(b"<!doctype html") or head.startswith(b"<html") or b"<head" in head[:200]:
+            logger.error(
+                "[csv] fonte_id={} URL e' una pagina HTML, non un CSV/XLSX. "
+                "Registry mal-mappato: cambia strategy a hybrid_httpx_firecrawl. url={}",
+                fonte.get("id"), url,
+            )
+            return []
+
         try:
             if _is_xlsx(url):
                 df = _read_xlsx(content, self.sheet_name)
