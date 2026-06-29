@@ -1,10 +1,15 @@
-"""CLI entry-point: `python -m app <comando>`.
+"""CLI entry-point: `python -m app <comando> [opzioni]`.
 
 Comandi:
   discover       Step 1 — Estrae le fonti dalla pagina OpenCoesione e popola
                  la tabella `fonte` su Supabase DB B.
   scrape-bandi   Step 2 — Per ogni fonte ready+attivo, esegue scraping della
                  pagina + popola la tabella `bando`.
+  preprocess     Step intermedio — Per ogni bando in stato 'scraped',
+                 analizza con Claude Haiku 4.5: valida + stato_bando +
+                 confidence_score. Opzioni:
+                   --dry-run    Non scrive il DB, solo log dei risultati.
+                   --limit N    Processa solo i primi N (smoke test).
 """
 from __future__ import annotations
 
@@ -26,9 +31,24 @@ def _cmd_scrape_bandi() -> None:
     logger.info("[main] counters finali: {}", counters)
 
 
+def _cmd_preprocess(argv: list[str]) -> None:
+    from .bando_preprocess_runner import run as preprocess_run
+    dry_run = "--dry-run" in argv
+    limit: int | None = None
+    if "--limit" in argv:
+        try:
+            limit = int(argv[argv.index("--limit") + 1])
+        except (IndexError, ValueError):
+            print("--limit richiede un intero (es. --limit 10)", file=sys.stderr)
+            sys.exit(2)
+    counters = asyncio.run(preprocess_run(dry_run=dry_run, limit=limit))
+    logger.info("[main] counters finali: {}", counters)
+
+
 _COMMANDS: dict[str, callable] = {
     "discover": _cmd_discover,
     "scrape-bandi": _cmd_scrape_bandi,
+    "preprocess": None,  # gestito a parte per parsing argv
 }
 
 
@@ -43,14 +63,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cmd = args[0]
-    fn = _COMMANDS.get(cmd)
-    if fn is None:
+    cmd_argv = args[1:]
+
+    if cmd not in _COMMANDS:
         print(f"Comando sconosciuto: {cmd}", file=sys.stderr)
         print("Comandi disponibili: " + ", ".join(_COMMANDS.keys()), file=sys.stderr)
         return 2
 
     try:
-        fn()
+        if cmd == "preprocess":
+            _cmd_preprocess(cmd_argv)
+        else:
+            _COMMANDS[cmd]()
     except Exception:
         logger.exception("[main] errore fatale durante {}", cmd)
         return 1

@@ -40,6 +40,11 @@ class Settings:
     # Step 2 (scraping bandi)
     firecrawl_api_key: str        # vuota se non impostata: strategie firecrawl_* falliranno
     host_throttle_delay_s: float  # delay min tra request stesso host
+    # Step intermedio: pre-processing via LLM
+    anthropic_api_key: str        # obbligatoria per preprocess
+    preprocess_model: str
+    preprocess_concurrency: int
+    preprocess_max_tokens: int
 
 
 def _int_env(name: str, default: int) -> int:
@@ -89,4 +94,9 @@ def get_settings() -> Settings:
             or _DEFAULT_USER_AGENT,
         firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY", "").strip(),
         host_throttle_delay_s=_float_env("HOST_THROTTLE_DELAY_S", 1.0),
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
+        preprocess_model=os.getenv("PREPROCESS_MODEL", "claude-haiku-4-5-20251001").strip()
+            or "claude-haiku-4-5-20251001",
+        preprocess_concurrency=max(1, _int_env("PREPROCESS_CONCURRENCY", 20)),
+        preprocess_max_tokens=max(64, _int_env("PREPROCESS_MAX_TOKENS", 256)),
     )

@@ -156,6 +156,104 @@ def select_fonti_ready() -> list[dict[str, Any]]:
     return rows
 
 
+def select_bandi_scraped(limit: int | None = None) -> list[dict[str, Any]]:
+    """SELECT bandi pronti per pre-processing (stato_processing='scraped')."""
+    sb = get_supabase()
+    q = (
+        sb.table("bando")
+        .select("id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link")
+        .eq("stato_processing", "scraped")
+        .order("id")
+    )
+    if limit:
+        q = q.limit(limit)
+    try:
+        res = q.execute()
+    except Exception as e:
+        logger.exception("[db] select_bandi_scraped fallito: {}", e)
+        raise
+    rows = res.data or []
+    logger.info("[db] select_bandi_scraped: {} bandi pronti", len(rows))
+    return rows
+
+
+def select_fonti_by_ids(fonte_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """SELECT delle fonti per gli id specificati. Ritorna dict {id: fonte_row}."""
+    if not fonte_ids:
+        return {}
+    sb = get_supabase()
+    try:
+        res = (
+            sb.table("fonte")
+            .select("id, link, tipo_link, categoria_programma_id, tipologia_programma_id")
+            .in_("id", fonte_ids)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("[db] select_fonti_by_ids fallito: {}", e)
+        raise
+    return {row["id"]: row for row in (res.data or [])}
+
+
+@lru_cache(maxsize=1)
+def _categoria_lookup() -> dict[int, str]:
+    sb = get_supabase()
+    try:
+        res = sb.table("categoria_programma").select("id, nome").execute()
+        return {r["id"]: r["nome"] for r in (res.data or [])}
+    except Exception as e:
+        logger.warning("[db] categoria_lookup fallito: {}", e)
+        return {}
+
+
+@lru_cache(maxsize=1)
+def _tipologia_lookup() -> dict[int, str]:
+    sb = get_supabase()
+    try:
+        res = sb.table("tipologia_programma").select("id, nome").execute()
+        return {r["id"]: r["nome"] for r in (res.data or [])}
+    except Exception as e:
+        logger.warning("[db] tipologia_lookup fallito: {}", e)
+        return {}
+
+
+def enrich_fonti_with_names(fonti_by_id: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """Aggiunge categoria_nome e tipologia_nome a ogni fonte (lookup in cache)."""
+    cat_map = _categoria_lookup()
+    tip_map = _tipologia_lookup()
+    for fonte in fonti_by_id.values():
+        fonte["categoria_nome"] = cat_map.get(fonte.get("categoria_programma_id"), "")
+        fonte["tipologia_nome"] = tip_map.get(fonte.get("tipologia_programma_id"), "")
+    return fonti_by_id
+
+
+def update_bandi_postanalysis(updates: list[dict[str, Any]]) -> dict[str, int]:
+    """UPDATE batch dei bandi post-analisi LLM.
+
+    Ogni update: {id, stato_processing, confidence_score, stato_bando|None, rejection_reason|None}.
+    Supabase REST non ha bulk UPDATE WHERE id IN (...): facciamo UPSERT su id
+    (richiede che la tabella abbia PK su id, cosa standard).
+
+    Chunking 100 record per non superare il payload limit.
+    """
+    if not updates:
+        return {"updated": 0}
+    sb = get_supabase()
+    CHUNK = 100
+    total = 0
+    for i in range(0, len(updates), CHUNK):
+        chunk = updates[i : i + CHUNK]
+        try:
+            sb.table("bando").upsert(chunk, on_conflict="id").execute()
+            total += len(chunk)
+            logger.debug("[db] update bando chunk {}-{}", i, i + len(chunk))
+        except Exception as e:
+            logger.exception("[db] update bando chunk {}-{} fallito: {}", i, i + len(chunk), e)
+            raise
+    logger.info("[db] update_bandi_postanalysis: {} record aggiornati", total)
+    return {"updated": total}
+
+
 def upsert_bandi(records: list[dict[str, Any]]) -> dict[str, int]:
     """UPSERT idempotente in `bando` con on_conflict='hash_bando'.
 

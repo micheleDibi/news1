@@ -4,9 +4,10 @@ Nuovo scraper bandi per il progetto news1. Sostituisce il precedente subproject 
 
 Costruito in **step incrementali**:
 
-- **Step 1 (completato)**: discovery delle **fonti** dalla pagina indice di OpenCoesione (`https://opencoesione.gov.it/it/opportunita_2021_2027/`) → popola la tabella `fonte` su Supabase DB B.
-- **Step 2 (questo)**: scraping di ogni fonte estratta → popola la tabella `bando`. Strategia per fonte mappata in `app/scraper_config.py` (108 entry).
-- **Step 3+**: enrichment skill SEO (gia' esistente in `bandi-seo-enricher/`).
+- **Step 1 (completato)**: discovery delle **fonti** dalla pagina indice di OpenCoesione → popola la tabella `fonte`.
+- **Step 2 (completato)**: scraping di ogni fonte → popola la tabella `bando`. Strategia per fonte in `app/scraper_config.py`.
+- **Step intermedio (questo)**: pre-processing via Claude Haiku 4.5 — valida ogni bando, calcola confidence + stato_bando.
+- **Step 3+**: enrichment skill SEO (`bandi-seo-enricher/`).
 
 ## Stack
 
@@ -96,6 +97,28 @@ cd scraper_bandi
 .venv/bin/python -m app scrape-bandi
 ```
 
+### Step intermedio — pre-processing via LLM
+
+```bash
+cd scraper_bandi
+.venv/bin/python -m app preprocess
+
+# Smoke test su 10 record senza scrivere DB:
+.venv/bin/python -m app preprocess --dry-run --limit 10
+```
+
+Per ogni bando in `stato_processing='scraped'`:
+1. Costruisce un payload con titolo, descrizione, link, raw_data + contesto fonte (categoria, programma).
+2. Chiama **Claude Haiku 4.5** via Anthropic SDK con tool use API (JSON enforcement).
+3. Riceve `{is_valid_bando, confidence_score, rejection_reason, stato_bando}`.
+4. UPDATE DB:
+   - `is_valid_bando=true` → `stato_processing='processed'` + `stato_bando` + `confidence_score`
+   - `is_valid_bando=false` → `stato_processing='rejected'` + `rejection_reason` + `confidence_score`
+
+**Concorrenza**: asyncio.Semaphore(20) → ~3-5 min su 2820 bandi.
+**Costo**: ~$2-3 totali (Haiku 4.5: $1/M input + $5/M output, ~500+50 tok/bando).
+**Idempotente**: re-eseguendo, solo i record ancora 'scraped' vengono presi.
+
 Esegue:
 1. SELECT `fonte` WHERE `stato_processing='ready' AND attivo=TRUE` (~108).
 2. Per ogni fonte: lookup in `app/scraper_config.py` -> strategia + parametri.
@@ -125,6 +148,9 @@ Droppa 8 colonne legacy (`titolo`, `note_aggiuntive`, retry_*, last_error_*), cr
 **Step 2** — `backend/sql/bando_alter_v5_for_new_scraper.sql`
 Rinomina `titolo`→`titolo_raw`, `descrizione`→`descrizione_raw`. Aggiunge `tipo_link` con CHECK. Droppa 12 colonne legacy (codice_bando, scraping_at, retry, ocr). UNIQUE constraint su `hash_bando` + INDEX su `fonte_id`.
 
+**Step intermedio** — `backend/sql/bando_alter_v6_preprocessing.sql`
+Droppa 4 colonne v4 (`data_extra`, `state`, `state_detail`, `state_updated_at`). Aggiunge `stato_bando` (CHECK aperto/chiuso/in apertura prossimamente), `confidence_score REAL [0,1]`, `rejection_reason TEXT`. Cambia default `stato_processing` da `'ready'` a `'scraped'` + CHECK nuovi 5 valori (`scraped`, `processed`, `rejected`, `enriched`, `completed`).
+
 ## Tabella `bando` (schema post-Step 2)
 
 | Colonna | Tipo | Origine |
@@ -137,6 +163,10 @@ Rinomina `titolo`→`titolo_raw`, `descrizione`→`descrizione_raw`. Aggiunge `t
 | `titolo_raw` | text | Scraper (testo del link / titolo da CSV/PDF) |
 | `descrizione_raw` | text | Scraper |
 | `raw_data` | jsonb nullable | NULL se ha link; JSONB con info estratte se non ha link |
+| `stato_processing` | text | `scraped` \| `processed` \| `rejected` \| `enriched` \| `completed` |
+| `stato_bando` | text nullable | `aperto` \| `chiuso` \| `in apertura prossimamente` (post-LLM) |
+| `confidence_score` | real [0,1] | Confidenza LLM (post-preprocess) |
+| `rejection_reason` | text nullable | Motivo se `stato_processing='rejected'` |
 | `created_at`, `updated_at` | timestamptz | DB |
 
 ## Strategie di scraping
