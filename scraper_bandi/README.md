@@ -97,6 +97,41 @@ cd scraper_bandi
 .venv/bin/python -m app scrape-bandi
 ```
 
+### Step v7 — enrichment FK + junction
+
+```bash
+cd scraper_bandi
+.venv/bin/python -m app enrich
+
+# Smoke su 5 bandi senza scrivere DB:
+.venv/bin/python -m app enrich --dry-run --limit 5
+```
+
+Due fasi interne:
+
+**PHASE A** — Refinement (per bandi con `stato_bando=NULL`):
+- Firecrawl scrape della pagina del bando.
+- Claude Haiku 4.5 determina lo stato: `aperto` / `chiuso` / `in apertura prossimamente`.
+- I bandi che risultano `chiuso` restano in `stato_processing='processed'` (saltati).
+
+**PHASE B** — Classificazione FK + junction (per `aperto` o `in apertura prossimamente`):
+- 7 LLM call **PARALLELE** per bando (asyncio.gather):
+  - `tipologia_bando_id` (single)
+  - `modalita_erogazione_id` (single)
+  - `programma_id` (single)
+  - `bando_beneficiari` (multi)
+  - `bando_codici_ateco` (multi)
+  - `bando_regioni` (multi)
+  - `bando_settori` (multi)
+- Tool use API forza `enum` sui valori catalogo (no nuovi valori).
+- UPDATE bando + DELETE/INSERT junction tables.
+- Stato finale: `stato_processing='enriched'`.
+
+**Concorrenza**: `ENRICH_CONCURRENCY_REFINE=3` (Firecrawl rate-limit), `ENRICH_CONCURRENCY=5` (5 bandi × 7 call = 35 in-flight Anthropic).
+**Costo**: ~$3-4 totali su ~450 bandi.
+**Durata**: ~15 min.
+**Idempotente**: re-run salta i già `enriched`.
+
 ### Step intermedio — pre-processing via LLM
 
 ```bash
@@ -150,6 +185,9 @@ Rinomina `titolo`→`titolo_raw`, `descrizione`→`descrizione_raw`. Aggiunge `t
 
 **Step intermedio** — `backend/sql/bando_alter_v6_preprocessing.sql`
 Droppa 4 colonne v4 (`data_extra`, `state`, `state_detail`, `state_updated_at`). Aggiunge `stato_bando` (CHECK aperto/chiuso/in apertura prossimamente), `confidence_score REAL [0,1]`, `rejection_reason TEXT`. Cambia default `stato_processing` da `'ready'` a `'scraped'` + CHECK nuovi 5 valori (`scraped`, `processed`, `rejected`, `enriched`, `completed`).
+
+**Step v7** — `backend/sql/bando_alter_v7_enrichment.sql`
+Droppa 11 colonne string/array/denormalized (`programma`, `modalita_erogazione`, `beneficiari`, `codici_ateco`, `fondo`, `programma_nome`, `modalita_erogazione_nome`, `codici_ateco_norm`, `beneficiari_norm`, `tipologia`, `tipologia_normalizzata`). Le 3 FK `tipologia_bando_id`, `modalita_erogazione_id`, `programma_id` sono assicurate nullable + INDEX su `(stato_processing, stato_bando)`.
 
 ## Tabella `bando` (schema post-Step 2)
 

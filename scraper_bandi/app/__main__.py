@@ -10,6 +10,11 @@ Comandi:
                  confidence_score. Opzioni:
                    --dry-run    Non scrive il DB, solo log dei risultati.
                    --limit N    Processa solo i primi N (smoke test).
+  enrich         Step v7 — Per ogni bando 'processed' con stato_bando
+                 aperto/in_apertura/NULL: refinement stato (se NULL) +
+                 estrazione FK (tipologia, modalita, programma) +
+                 junction (beneficiari, ateco, regioni, settori).
+                 Stato finale: 'enriched'. Opzioni: --dry-run, --limit N.
 """
 from __future__ import annotations
 
@@ -45,10 +50,25 @@ def _cmd_preprocess(argv: list[str]) -> None:
     logger.info("[main] counters finali: {}", counters)
 
 
+def _cmd_enrich(argv: list[str]) -> None:
+    from .bando_enrich_runner import run as enrich_run
+    dry_run = "--dry-run" in argv
+    limit: int | None = None
+    if "--limit" in argv:
+        try:
+            limit = int(argv[argv.index("--limit") + 1])
+        except (IndexError, ValueError):
+            print("--limit richiede un intero (es. --limit 10)", file=sys.stderr)
+            sys.exit(2)
+    counters = asyncio.run(enrich_run(dry_run=dry_run, limit=limit))
+    logger.info("[main] counters finali: {}", counters)
+
+
 _COMMANDS: dict[str, callable] = {
     "discover": _cmd_discover,
     "scrape-bandi": _cmd_scrape_bandi,
     "preprocess": None,  # gestito a parte per parsing argv
+    "enrich": None,      # gestito a parte per parsing argv
 }
 
 
@@ -73,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if cmd == "preprocess":
             _cmd_preprocess(cmd_argv)
+        elif cmd == "enrich":
+            _cmd_enrich(cmd_argv)
         else:
             _COMMANDS[cmd]()
     except Exception:

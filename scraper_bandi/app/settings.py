@@ -45,6 +45,11 @@ class Settings:
     preprocess_model: str
     preprocess_concurrency: int
     preprocess_max_tokens: int
+    # Step v7: enrichment via LLM + Firecrawl
+    enrich_model: str
+    enrich_concurrency: int
+    enrich_concurrency_refine: int
+    enrich_max_tokens: int
 
 
 def _int_env(name: str, default: int) -> int:
@@ -99,4 +104,9 @@ def get_settings() -> Settings:
             or "claude-haiku-4-5-20251001",
         preprocess_concurrency=max(1, _int_env("PREPROCESS_CONCURRENCY", 20)),
         preprocess_max_tokens=max(64, _int_env("PREPROCESS_MAX_TOKENS", 256)),
+        enrich_model=os.getenv("ENRICH_MODEL", "claude-haiku-4-5-20251001").strip()
+            or "claude-haiku-4-5-20251001",
+        enrich_concurrency=max(1, _int_env("ENRICH_CONCURRENCY", 5)),
+        enrich_concurrency_refine=max(1, _int_env("ENRICH_CONCURRENCY_REFINE", 3)),
+        enrich_max_tokens=max(64, _int_env("ENRICH_MAX_TOKENS", 200)),
     )

@@ -419,3 +419,215 @@ def upsert_bandi(records: list[dict[str, Any]]) -> dict[str, int]:
         total_processed, len(records), collisions,
     )
     return {"processed": total_processed, "dedup_collisions": collisions}
+
+
+# ---------------------------------------------------------------------------
+# Step v7: enrichment
+# ---------------------------------------------------------------------------
+
+def select_bandi_to_enrich(limit: int | None = None) -> list[dict[str, Any]]:
+    """SELECT bandi candidati al enrichment.
+
+    Criterio: stato_processing='processed' AND
+              (stato_bando IN ('aperto','in apertura prossimamente') OR stato_bando IS NULL).
+    Paginato 1000 alla volta per superare il cap default Supabase.
+    """
+    sb = get_supabase()
+    PAGE = 1000
+    all_rows: list[dict[str, Any]] = []
+    offset = 0
+
+    # Costruisco il filtro: stato_processing='processed' AND
+    # (stato_bando=aperto OR stato_bando=in_apertura OR stato_bando IS NULL).
+    # supabase-py non ha OR diretto su clausole eterogenee; uso .or_().
+    or_clause = (
+        "stato_bando.eq.aperto,"
+        "stato_bando.eq.in apertura prossimamente,"
+        "stato_bando.is.null"
+    )
+
+    while True:
+        remaining = (limit - len(all_rows)) if limit else None
+        page_size = PAGE if not remaining else min(PAGE, remaining)
+        if page_size <= 0:
+            break
+
+        try:
+            res = (
+                sb.table("bando")
+                .select(
+                    "id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, "
+                    "tipo_link, stato_bando"
+                )
+                .eq("stato_processing", "processed")
+                .or_(or_clause)
+                .order("id")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+        except Exception as e:
+            logger.exception("[db] select_bandi_to_enrich offset={} fallito: {}", offset, e)
+            raise
+
+        rows = res.data or []
+        if not rows:
+            break
+        all_rows.extend(rows)
+        logger.debug("[db] select_bandi_to_enrich pagina offset={} -> {} righe (totale {})",
+                     offset, len(rows), len(all_rows))
+        if len(rows) < page_size:
+            break
+        offset += page_size
+        if limit and len(all_rows) >= limit:
+            break
+
+    logger.info("[db] select_bandi_to_enrich: {} bandi candidati", len(all_rows))
+    return all_rows
+
+
+_CATALOGO_TABLES = {
+    "tipologie": ("tipologie_bando", "id, nome"),
+    "programmi": ("programmi", "id, nome"),
+    "modalita": ("modalita_erogazione", "id, nome"),
+    "beneficiari": ("beneficiari", "id, nome"),
+    "codici_ateco": ("codici_ateco", "id, codice, descrizione"),
+    "regioni": ("regioni", "id, nome"),
+    "settori": ("settori", "id, nome"),
+}
+
+
+@lru_cache(maxsize=1)
+def load_catalogo() -> dict[str, list[dict[str, Any]]]:
+    """Carica tutte le 7 tabelle catalogo. Cache singleton.
+
+    Schema:
+      tipologie:    {id, nome}
+      programmi:    {id, nome}
+      modalita:     {id, nome}
+      beneficiari:  {id, nome}
+      codici_ateco: {id, codice, descrizione}
+      regioni:      {id, nome}
+      settori:      {id, nome}
+
+    Se una tabella non esiste o e' vuota, ritorna [].
+    """
+    sb = get_supabase()
+    catalogo: dict[str, list[dict[str, Any]]] = {}
+    for key, (table, columns) in _CATALOGO_TABLES.items():
+        try:
+            res = sb.table(table).select(columns).order("id").execute()
+            rows = res.data or []
+            catalogo[key] = rows
+            logger.info("[db] catalogo `{}`: {} record", table, len(rows))
+        except Exception as e:
+            logger.warning("[db] catalogo `{}` lookup fallito: {}", table, e)
+            catalogo[key] = []
+    return catalogo
+
+
+def _is_transient_error_local(exc: Exception) -> bool:
+    """Riusa la heuristic gia' definita."""
+    return _is_transient_error(exc)
+
+
+async def update_bando_refinement(bando_id: int, stato_bando: str) -> bool:
+    """UPDATE solo stato_bando per la fase A (refinement). NON cambia
+    stato_processing (resta 'processed')."""
+    import asyncio
+
+    sb = get_supabase()
+    payload = {"stato_bando": stato_bando}
+    try:
+        await asyncio.to_thread(
+            lambda: sb.table("bando").update(payload).eq("id", bando_id).execute()
+        )
+        return True
+    except Exception as e:
+        logger.exception("[db] update_bando_refinement id={} fallito: {}", bando_id, e)
+        return False
+
+
+_JUNCTION_TABLES = {
+    "beneficiari": ("bando_beneficiari", "beneficiario_id"),
+    "codici_ateco": ("bando_codici_ateco", "codice_ateco_id"),
+    "regioni": ("bando_regioni", "regione_id"),
+    "settori": ("bando_settori", "settore_id"),
+}
+
+
+async def update_bando_enriched(
+    bando_id: int,
+    stato_bando: str,
+    tipologia_bando_id: int | None,
+    modalita_erogazione_id: int | None,
+    programma_id: int | None,
+    beneficiari_ids: list[int],
+    codici_ateco_ids: list[int],
+    regioni_ids: list[int],
+    settori_ids: list[int],
+) -> bool:
+    """UPDATE bando (FK + stato_processing='enriched') + DELETE-then-INSERT
+    per le 4 junction tables.
+
+    NB: Supabase REST non ha transazioni multi-table. Se uno step fallisce,
+    log WARNING e RETURN False. Il bando resta in 'processed' (la transition
+    a 'enriched' viene fatta SOLO se tutti gli UPDATE/INSERT sono OK).
+    Idempotente: re-run sostituisce le junction esistenti.
+    """
+    import asyncio
+
+    sb = get_supabase()
+
+    # Step 1: DELETE junction esistenti
+    for key, (table, _fk) in _JUNCTION_TABLES.items():
+        try:
+            await asyncio.to_thread(
+                lambda t=table: sb.table(t).delete().eq("bando_id", bando_id).execute()
+            )
+        except Exception as e:
+            logger.warning(
+                "[db] DELETE junction {} per bando_id={} fallito: {}",
+                table, bando_id, e,
+            )
+            # Continue anyway: l'INSERT successivo potrebbe duplicare ma in
+            # genere le junction hanno UNIQUE (bando_id, xxx_id) o PK composta.
+
+    # Step 2: INSERT junction nuove
+    junction_data = [
+        ("beneficiari", beneficiari_ids),
+        ("codici_ateco", codici_ateco_ids),
+        ("regioni", regioni_ids),
+        ("settori", settori_ids),
+    ]
+    for key, ids in junction_data:
+        if not ids:
+            continue
+        table, fk = _JUNCTION_TABLES[key]
+        records = [{"bando_id": bando_id, fk: i} for i in ids]
+        try:
+            await asyncio.to_thread(
+                lambda t=table, r=records: sb.table(t).insert(r).execute()
+            )
+        except Exception as e:
+            logger.exception(
+                "[db] INSERT junction {} per bando_id={} fallito: {}",
+                table, bando_id, e,
+            )
+            return False
+
+    # Step 3: UPDATE bando (FK + stato_processing='enriched' + stato_bando)
+    payload: dict[str, Any] = {
+        "tipologia_bando_id": tipologia_bando_id,
+        "modalita_erogazione_id": modalita_erogazione_id,
+        "programma_id": programma_id,
+        "stato_bando": stato_bando,
+        "stato_processing": "enriched",
+    }
+    try:
+        await asyncio.to_thread(
+            lambda: sb.table("bando").update(payload).eq("id", bando_id).execute()
+        )
+        return True
+    except Exception as e:
+        logger.exception("[db] UPDATE bando id={} fallito: {}", bando_id, e)
+        return False
