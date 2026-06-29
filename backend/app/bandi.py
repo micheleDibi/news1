@@ -1,40 +1,22 @@
-"""Orchestratore della pipeline bandi (v4 — skill autoritativa totale).
+"""Skill enrichment dei bandi (v5 — solo skill, no scraper).
 
-Due fasi compongono il flusso end-to-end:
+Il vecchio subproject scraper `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python`
+e' stato rimosso (commit "Bandi v5: rm scraper subproject"); un nuovo scraper
+sara' progettato in un piano successivo. Questo modulo conserva SOLO:
 
-1. **Scraper** (sotto-progetto Python autonomo `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python`):
-   invocato come subprocess (`python -m app.cli run`) con `cwd=BANDI_SCRAPER_DIR`.
-   Lo scraper fa discovery dei link e inserisce i candidati nella tabella `bando`
-   con `state='discovered'`. Niente piu' classificazione AI pre-skill (deprecata in v4).
+- Skill SEO enrichment (`bandi-seo-enricher`) invocata in-process via
+  Claude Agent SDK (vedi `bandi_skill_runner.py`).
+- State machine v4 (`state`/`state_detail`/`attempts`) su `bando`.
+- Hint dominio costruiti da tabelle catalogo (`tipologie_bando`, `programmi`,
+  `regioni`, `settori`, `beneficiari`, `codici_ateco`, junction tables).
+- Drain loop in parallelo con `asyncio.Semaphore` (default 3 skill insieme).
+- Discovery-by-skill: la skill emette `validation.discovered_sublinks` che
+  vengono accodati come nuovi candidati `bando` (`state='discovered'`).
 
-2. **Skill SEO enrichment** (`bandi-seo-enricher`): in-process via Claude Agent SDK
-   (vedi `bandi_skill_runner.py`). Per ogni bando in `state='discovered'`:
-   - costruisce `hint_dominio` dai dati relazionali gia' presenti nel DB,
-   - invoca la skill che produce JSON validato (livello flash_bando o guida_bando)
-     + verifier adversarial Haiku 4.5,
-   - persiste l'output via `update_bando_from_payload` che decide lo stato finale
-     (`confirmed`/`rejected`/`refuted`/`error`).
-
-I bandi non vengono cancellati ne' duplicati: la skill arricchisce il record
-esistente. In caso di errore transient (`attempts < BANDI_SKILL_MAX_ATTEMPTS`)
-il record resta in `state='error'` e viene riprovato dal batch successivo.
-
-Parallelismo (v4):
-  - Scraper subprocess gira in `asyncio.to_thread` PARALLELO alla skill batch
-    (la state machine `state` e' interamente di proprieta' della skill, lo
-    scraper UPDATE tocca solo i campi raw — nessuna race in DB).
-  - Skill enrichment processa fino a `BANDI_SKILL_CONCURRENCY` bandi
-    in parallelo via `asyncio.Semaphore` (default 3).
-  - `run_skill_enrichment_batch` drena la coda FINO A ESAURIMENTO via loop
-    round-per-round (chunk SELECT = `BANDI_SKILL_BATCH_SIZE`, default 10):
-    nessun cap hard sul totale, lo scraper in parallelo puo' aggiungere
-    candidati che il loop raccoglie al round successivo.
+Drain manuale: `python -m backend.app.bandi skill-drain` dalla root del repo
+(nessuno scheduler ne' systemd unit — il `bandi_sender.py` e' stato rimosso).
 
 ENV vars:
-  - BANDI_SCRAPER_DIR         path al sotto-progetto scraper (obbligatoria)
-  - BANDI_SCRAPER_PYTHON      interprete python del scraper (default: 'python')
-  - BANDI_SCRAPER_TIMEOUT_S   timeout subprocess scraper in s (default: 1800 = 30 min)
-  - BANDI_SCRAPER_RUN_LIMIT   limite fonti per ciclo scraper (opzionale)
   - BANDI_SKILL_BATCH_SIZE    chunk SELECT per round drain (default: 10).
                               NON e' un cap totale: il loop drena fino a coda vuota.
   - BANDI_SKILL_MAX_ATTEMPTS  retry skill su singolo bando (default: 3)
@@ -46,8 +28,6 @@ import asyncio
 import hashlib
 import os
 import re
-import subprocess
-import threading
 import time
 import unicodedata
 from datetime import date, datetime, timezone
@@ -63,201 +43,14 @@ from .bandi_supabase import get_bandi_supabase
 from .logger import logger
 
 
-# ---------------------------------------------------------------------------
-# Fase 1 — scraper come subprocess
-# ---------------------------------------------------------------------------
-
-def _scraper_dir() -> str:
-    d = os.getenv("BANDI_SCRAPER_DIR")
-    if not d:
-        raise RuntimeError("BANDI_SCRAPER_DIR non impostato in env")
-    return d
-
-
-def _scraper_python() -> str:
-    return os.getenv("BANDI_SCRAPER_PYTHON") or "python"
-
-
-# Variabili che lo scraper deve leggere dal suo `.env` interno (non da quello di
-# news1). Pydantic-settings legge prima dall'env del processo e poi cade sul
-# `.env`: se lasciamo passare le variabili del parent (es. `DATABASE_URL` di
-# news1 = sqlite di sviluppo), sovrascrivono il `DATABASE_URL` Supabase del DB B
-# atteso dallo scraper.
-_SCRAPER_ENV_BLOCKLIST = (
-    "DATABASE_URL",
-    "DATABASE_POOLER_HOST", "DATABASE_POOLER_PORT",
-    "DATABASE_CONNECT_TIMEOUT_SECONDS", "DATABASE_SSLMODE",
-    "SUPABASE_URL", "SUPABASE_KEY",
-    "OPENAI_API_KEY", "OPENAI_MODEL",
-    "TESSERACT_CMD", "OCR_LANGUAGE",
-    "SOURCE_ROOT_URL",
-    "SCRAPER_CONCURRENCY", "SCRAPER_TIMEOUT_SECONDS",
-    "SCRAPER_RETRY_MAX", "SCRAPER_RETRY_DELAY_SECONDS",
-    "REDIS_URL", "CELERY_BROKER_URL", "CELERY_RESULT_BACKEND",
-    "LOG_LEVEL", "LOG_JSON",
-)
-
-
-def _scraper_subprocess_env() -> dict[str, str]:
-    env = os.environ.copy()
-    for var in _SCRAPER_ENV_BLOCKLIST:
-        env.pop(var, None)
-    return env
-
-
-def _scraper_timeout_s() -> int:
-    """Timeout del subprocess scraper in secondi. Default 30 min.
-
-    Override via `BANDI_SCRAPER_TIMEOUT_S` per scraper lunghi (50+ fonti × Firecrawl).
-    """
-    try:
-        return int(os.getenv("BANDI_SCRAPER_TIMEOUT_S", "1800"))
-    except ValueError:
-        return 1800
-
-
-def _stream_log_to_logger(log_path: str, label: str, stop_event: threading.Event) -> None:
-    """Thread reader: tail-follow del log file del subprocess.
-
-    Rilancia ogni riga al logger principale come `[bandi/<label>/stream] ...`
-    cosi' che `journalctl -u edunews-bandi-sender -f` veda il progress del
-    subprocess in tempo reale (non solo al termine).
-    """
-    try:
-        # Apertura ritardata: il subprocess sta scrivendo, il file potrebbe
-        # non esistere ancora per qualche istante. Aspetta fino a 5s.
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not os.path.exists(log_path):
-            time.sleep(0.1)
-        if not os.path.exists(log_path):
-            logger.warning("[bandi/{}/stream] log file non disponibile dopo 5s: {}", label, log_path)
-            return
-
-        with open(log_path, "r", errors="replace") as f:
-            while not stop_event.is_set():
-                line = f.readline()
-                if not line:
-                    time.sleep(0.5)
-                    continue
-                logger.info("[bandi/{}/stream] {}", label, line.rstrip())
-            # Drain finale: leggi le righe scritte tra l'ultimo readline e stop_event.
-            for line in f.readlines():
-                if line.strip():
-                    logger.info("[bandi/{}/stream] {}", label, line.rstrip())
-    except Exception:
-        logger.exception("[bandi/{}/stream] reader thread crash", label)
-
-
-def _run_scraper_module(module: str, args: list[str], label: str) -> int:
-    """Esegue `python -m <module> [args...]` con cwd e env dello scraper.
-
-    Lo stdout/stderr e' rediretto a `/tmp/bandi_<label>_<timestamp>.log`
-    in line-buffered. Un thread reader (`_stream_log_to_logger`) tail-follow
-    il file e rilancia ogni riga al logger principale, cosi' che la console
-    journalctl veda il progress del subprocess in real-time.
-
-    Su timeout (`BANDI_SCRAPER_TIMEOUT_S`, default 30 min) il subprocess
-    e' killato e la funzione ritorna rc=-2.
-    """
-    cmd = [_scraper_python(), "-m", module, *args]
-    timeout = _scraper_timeout_s()
-    log_path = f"/tmp/bandi_{label}_{int(time.time())}.log"
-    logger.info(
-        "[bandi/{}] START cwd={} cmd={} log={} timeout={}s",
-        label, _scraper_dir(), " ".join(cmd), log_path, timeout,
-    )
-    started = time.monotonic()
-    log_fp = open(log_path, "w", buffering=1)
-    stop_event = threading.Event()
-    reader = threading.Thread(
-        target=_stream_log_to_logger,
-        args=(log_path, label, stop_event),
-        daemon=True,
-        name=f"scraper-stream-{label}",
-    )
-    reader.start()
-    proc: subprocess.Popen[str] | None = None
-    rc = -1
-    try:
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=_scraper_dir(),
-                env=_scraper_subprocess_env(),
-                stdout=log_fp,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-        except FileNotFoundError as e:
-            logger.error("[bandi/{}] python non trovato: {}", label, e)
-            return -1
-
-        logger.info("[bandi/{}] subprocess pid={} attendo (timeout={}s)", label, proc.pid, timeout)
-        try:
-            rc = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            logger.error(
-                "[bandi/{}] TIMEOUT raggiunto ({}s) -> killing pid={}",
-                label, timeout, proc.pid,
-            )
-            proc.kill()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                logger.error("[bandi/{}] kill non risponde entro 10s, lascio zombie", label)
-            elapsed = time.monotonic() - started
-            logger.error(
-                "[bandi/{}] TIMEOUT after {:.0f}s rc=-2 (log={})",
-                label, elapsed, log_path,
-            )
-            return -2
-    finally:
-        # Da' qualche istante extra al reader per drenare le ultime righe
-        # scritte tra la fine del subprocess e lo stop_event.
-        time.sleep(0.5)
-        stop_event.set()
-        try:
-            log_fp.close()
-        except Exception:
-            pass
-        reader.join(timeout=5)
-        if reader.is_alive():
-            logger.warning("[bandi/{}/stream] reader thread non si e' chiuso entro 5s", label)
-
-    elapsed = time.monotonic() - started
-    logger.info(
-        "[bandi/{}] DONE in {:.1f}s rc={} log={}",
-        label, elapsed, rc, log_path,
-    )
-    return rc
-
-
-def run_scraper_full() -> int:
-    """Esegue una scan completa di tutte le fonti attive (cli `run`).
-
-    v4: lo scraping inserisce direttamente i candidati con `state='discovered'`
-    (l'enqueue su `ai_job_queue` e' deprecato). La skill enrichment li drena.
-    """
-    args: list[str] = ["run"]
-    limit = os.getenv("BANDI_SCRAPER_RUN_LIMIT")
-    if limit:
-        args += ["--limit", str(limit)]
-    return _run_scraper_module("app.cli", args, "scraper-full")
-
-
-def run_scraper_pending() -> int:
-    """Retry sulle fonti/bandi in coda `pending` (cli `run-pending`)."""
-    return _run_scraper_module("app.cli", ["run-pending"], "scraper-pending")
-
-
-# v4: il worker AI Opus pre-skill (`run_ai_worker_drain`) e' stato deprecato.
-# La skill `bandi-seo-enricher` e' ora autoritativa sull'estrazione + validazione,
-# quindi non c'e' piu' classificazione intermedia. Lo scraper passa direttamente
-# alla skill enrichment via state='discovered'.
+# v5: subproject scraper rimosso. Tutto il codice subprocess/streaming
+# (run_scraper_full, run_scraper_pending, _run_scraper_module,
+# _stream_log_to_logger, _scraper_*) e' stato cancellato. Un nuovo scraper
+# sara' progettato in un piano successivo.
 
 
 # ---------------------------------------------------------------------------
-# Fase 2 — skill enrichment
+# Skill enrichment
 # ---------------------------------------------------------------------------
 
 # Campi del bando rilevanti da passare come hint alla skill (schema v4).
@@ -1115,74 +908,35 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline composite (usate dal sender)
+# Pipeline / drain manuale
 # ---------------------------------------------------------------------------
-
-async def _run_parallel_scraper_skill(
-    scraper_fn: "callable", scraper_label: str
-) -> None:
-    """Esegue scraper subprocess (via `asyncio.to_thread`) IN PARALLELO alla
-    skill enrichment batch.
-
-    La state machine `state` e' di proprieta' della skill: lo scraper UPDATE
-    tocca solo titolo/descrizione/raw_data/ultimo_scraping_at — nessuna race
-    su `state`/`state_detail`/`attempts`/`slug`/editorial fields.
-
-    Se uno dei due task solleva, l'altro continua (return_exceptions=True):
-    cosi' un eventuale errore scraper non blocca il drain skill (e viceversa).
-    """
-    logger.info("[bandi/pipeline] {} + skill batch IN PARALLELO", scraper_label)
-    scraper_task = asyncio.create_task(asyncio.to_thread(scraper_fn))
-    skill_task = asyncio.create_task(run_skill_enrichment_batch(_batch_size()))
-
-    results = await asyncio.gather(scraper_task, skill_task, return_exceptions=True)
-    scraper_result, skill_result = results
-
-    if isinstance(scraper_result, Exception):
-        logger.exception(
-            "[bandi/pipeline] {} FALLITO: {}", scraper_label, scraper_result,
-        )
-    else:
-        logger.info("[bandi/pipeline] {} -> rc={}", scraper_label, scraper_result)
-
-    if isinstance(skill_result, Exception):
-        logger.exception(
-            "[bandi/pipeline] skill batch FALLITO: {}", skill_result,
-        )
-    else:
-        logger.info("[bandi/pipeline] skill batch -> counters={}", skill_result)
-
-
-def run_full_pipeline() -> None:
-    """Pipeline 4x/giorno: scraper full ∥ skill enrichment batch (PARALLELI).
-
-    v4: rimossa fase intermedia `run_ai_worker_drain()` (worker AI deprecato,
-    la skill e' ora autoritativa sulla classificazione). Scraper + skill
-    girano in parallelo via `asyncio.gather` — la skill drena i bandi gia'
-    in coda (state='discovered'/'error') mentre lo scraper scopre quelli
-    nuovi che entreranno nel batch successivo.
-    """
-    logger.info("[bandi] pipeline FULL: start")
-    asyncio.run(_run_parallel_scraper_skill(run_scraper_full, "scraper-full"))
-    logger.info("[bandi] pipeline FULL: done")
-
-
-def run_pending_pipeline() -> None:
-    """Pipeline pending (1x/4h): retry scraper ∥ skill enrichment batch (PARALLELI)."""
-    logger.info("[bandi] pipeline PENDING: start")
-    asyncio.run(_run_parallel_scraper_skill(run_scraper_pending, "scraper-pending"))
-    logger.info("[bandi] pipeline PENDING: done")
-
-
-def run_skill_only_pipeline() -> None:
-    """Pipeline 30min: solo skill backfill (smaltisce lo storico)."""
-    logger.info("[bandi] pipeline skill-only: start")
-    asyncio.run(run_skill_enrichment_batch(_batch_size()))
-    logger.info("[bandi] pipeline skill-only: done")
-
 
 def _batch_size() -> int:
     try:
         return int(os.getenv("BANDI_SKILL_BATCH_SIZE", "10"))
     except ValueError:
         return 10
+
+
+def run_skill_drain() -> None:
+    """Drain manuale della coda skill: processa tutti i bandi in
+    state='discovered'/'error' fino a esaurimento.
+
+    Wrapper sync di `run_skill_enrichment_batch` per uso da CLI o
+    da un futuro orchestrator. v5: NON c'e' piu' uno scheduler systemd
+    che la invoca automaticamente — va lanciata a mano:
+
+        python -m backend.app.bandi skill-drain
+    """
+    logger.info("[bandi] skill-drain: start")
+    asyncio.run(run_skill_enrichment_batch(_batch_size()))
+    logger.info("[bandi] skill-drain: done")
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) >= 2 and sys.argv[1] == "skill-drain":
+        run_skill_drain()
+    else:
+        print("Usage: python -m backend.app.bandi skill-drain", file=sys.stderr)
+        sys.exit(2)

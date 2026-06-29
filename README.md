@@ -122,15 +122,9 @@ Tutta la scrittura su DB B avviene **solo** dal backend con service-role key. Il
 | **boto3** | Upload media su S3 |
 | **google-cloud-texttospeech** | Generazione audio articoli |
 
-### Backend bandi — scraping (`/Scraper-gerarchico-bandi-OpenCoesione-Backend-Python`)
+### Backend bandi (transizione — v5)
 
-| Modulo | Utilizzo |
-|---|---|
-| **Scraper gerarchico** | Crawl fonti → discovery bandi → parsing dettaglio |
-| **Firecrawl client** | Singleton stealth → auto → httpx fallback (logging stdlib, NON loguru) |
-| **OCR / page detail** | Estrazione testo da PDF e pagine HTML |
-| **AI classification** | OpenAI gpt-4o-mini per pre-classificazione bando |
-| **pydantic-settings** | Config env-driven |
+Il vecchio subproject scraper `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/` e' stato **rimosso**. Un nuovo scraper sara' progettato in un piano successivo. Per ora resta operativa solo la **skill SEO** lato Claude + le tabelle DB editorial — drenabili a mano.
 
 ### Skill bandi (`/bandi-seo-enricher`)
 
@@ -210,33 +204,18 @@ Vedi la sezione [Pipeline Bandi](#pipeline-bandi) sotto per il dettaglio.
 
 ## Pipeline Bandi
 
-La sezione Bandi e il fiore all'occhiello della piattaforma e merita una descrizione dedicata.
+> **Stato (v5)**: il vecchio subproject scraper e' stato rimosso (vedi commit "Bandi v5: rm scraper subproject"). Un nuovo scraper sara' progettato in un piano successivo. La sezione editorial (DB, skill, frontend) e' intatta — i bandi gia' in `state='confirmed'` sono pubblicati normalmente; quelli in `state='discovered'/'error'` possono essere drenati a mano con la skill.
 
-### Fase 1 — Scraping ed enrichment (Python)
+### Drain manuale skill
 
-Modulo: `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/`
-
-```
-┌──────────────────┐    ┌────────────────────┐    ┌─────────────────────┐
-│ Fonti istituz.   │    │  Scraper L2        │    │  Classification AI  │
-│ + OpenCoesione   │───►│  Firecrawl primary │───►│  gpt-4o-mini        │
-│ (registry)       │    │  httpx fallback    │    │  pre-classificazione│
-└──────────────────┘    └────────────────────┘    └──────────┬──────────┘
-                                                              │
-                                                              ▼
-                                            ┌─────────────────────────────┐
-                                            │  Supabase B — tabella       │
-                                            │  bando (status='queued')    │
-                                            └─────────────────────────────┘
+```bash
+# Dalla root del repo
+backend/venv/bin/python -m backend.app.bandi skill-drain
 ```
 
-**Scraping**: `firecrawl_client.py` espone un singleton con strategia stealth → auto → httpx, logging stdlib (`logging.getLogger(__name__)` con placeholder `%s`, NON loguru — distinzione importante per evitare ImportError). Path-filter espliciti escludono pagine indice/ricerca/categoria (`/ricerca`, `/categoria/`, `/elenco-bandi`, `/archivio`, ecc).
+Processa tutti i bandi in `state='discovered'`/`'error'` con `attempts < BANDI_SKILL_MAX_ATTEMPTS` fino a esaurimento, con concorrenza `BANDI_SKILL_CONCURRENCY` (default 3). Niente piu' systemd unit (`edunews-bandi-sender` disabilitato).
 
-**Classification**: `classification_service.py` con `_url_looks_like_index_page` rifiuta gli URL che assomigliano a pagine non-bando; rimosso il fallback keyword "bando/voucher" che dava troppi falsi positivi.
-
-**Parsing**: `bando_parser.py` rifiuta date generiche in posizione finale (causa di scadenze sbagliate tipo "21/12/2015" su bandi 2026); estrae `data_scadenza_raw` per audit.
-
-### Fase 2 — Skill SEO bandi (Claude)
+### Fase skill SEO bandi (Claude)
 
 Modulo: `bandi-seo-enricher/` invocato da `backend/skill_bandi/scripts/run_agent_sdk_json_bandi.py` via Claude Agent SDK.
 
@@ -286,26 +265,19 @@ Modulo: `bandi-seo-enricher/` invocato da `backend/skill_bandi/scripts/run_agent
 └──────────────────────────────────────────────────────┘
 ```
 
-### Colonne chiave su `bando` (DB B)
+### Colonne chiave su `bando` (DB B, schema v4)
 
 | Colonna | Origine | Note |
 |---|---|---|
-| `is_bando_confermato` | Skill (STEP 2.5) | RLS filter — solo `true` visibile al frontend |
-| `validation_reason` | Skill | Testo libero motivazione |
-| `rejection_category` | Skill | Enum: `index_page \| search_results \| category_page \| expired_archive \| not_a_funding_call \| unreachable` |
-| `data_scadenza_source` | Skill (STEP 6) | Enum: `official_pdf \| official_page \| inferred \| missing \| scraper_fallback` |
-| `data_pubblicazione_source` | Skill (STEP 6b) | Stesso enum |
-| `link_candidatura_verified` | Skill (STEP 5) | Boolean — se false, frontend mostra solo "Apri pagina ufficiale" |
-| `skill_processing_status` | Backend | `queued \| processing \| completed \| failed` |
+| `state` | Skill + orchestrator | Enum: `discovered \| enriching \| confirmed \| rejected \| refuted \| error \| stale`. RLS filtra `state='confirmed'` per il frontend. |
+| `state_detail` | Orchestrator | JSONB con `rejection_category`, `validation_reason`, `verifier_verdict`, `refuted_fields`, `last_error*`. |
+| `attempts` | Orchestrator | Contatore retry per `BANDI_SKILL_MAX_ATTEMPTS`. |
+| `date_quotes` | Skill (STEP 6/6b) | JSONB `{pubblicazione, scadenza}` con `value`, `source` (enum `official_pdf \| official_page \| inferred \| missing \| scraper_fallback`), `quote`. |
+| `link_candidatura_source` | Skill (STEP 5) | Enum `extracted \| fallback_source \| missing` — frontend mostra CTA solo se `extracted`. |
 
 ### Orchestrazione
 
-Sender: `backend/app/bandi_sender.py` — schedule:
-- Run completo scraper ogni giorno (compreso AI worker drain)
-- Run skill-only ogni 30 min (batch da `BANDI_SKILL_BATCH_SIZE`, default 10)
-- Retry pending fonti ogni 4h
-
-Tutto isolato: il subprocess scraper riceve un env pulito (`_scraper_subprocess_env`) per non leakare credenziali del backend news1.
+v5: nessuno scheduler attivo. La skill si invoca manualmente via `python -m backend.app.bandi skill-drain`. Vedi sezione "Drain manuale skill" sopra.
 
 ---
 
@@ -369,8 +341,7 @@ news1/
 │   │   ├── main.py                            # App FastAPI + endpoint principali
 │   │   ├── models.py, schemas.py              # SQLAlchemy + Pydantic
 │   │   ├── sender.py                          # Scheduler pipeline news
-│   │   ├── bandi.py                           # Orchestrazione bandi (hint, override)
-│   │   ├── bandi_sender.py                    # Scheduler pipeline bandi
+│   │   ├── bandi.py                           # Skill enrichment + state machine v4 + CLI skill-drain
 │   │   ├── bandi_skill_runner.py              # Invocazione skill bandi
 │   │   ├── bandi_supabase.py                  # Client Supabase B
 │   │   ├── interpelli.py, interpelli_sender.py
@@ -398,24 +369,6 @@ news1/
 │   │   ├── selezione_personale.sql
 │   │   └── persona_jobs.sql
 │   └── requirements.txt
-│
-├── Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/   # Scraper bandi (sub-progetto)
-│   ├── app/
-│   │   ├── cli.py, scheduler.py
-│   │   ├── config/, db/, models/, repos/
-│   │   ├── scrapers/
-│   │   │   ├── firecrawl_client.py            # Singleton stealth/auto/httpx
-│   │   │   ├── fonte_level2.py                # Crawl L2 con deny-list
-│   │   │   ├── root_discovery.py
-│   │   │   └── run_*.py                       # Entrypoint CLI
-│   │   ├── parsers/bando_parser.py            # Estrazione campi grezzi
-│   │   ├── services/classification_service.py # Pre-classificazione AI
-│   │   ├── ocr/page_detail_fetcher.py         # Estrazione pagina + markdown
-│   │   ├── ai/                                # Pipeline AI gpt-4o-mini
-│   │   └── queues/
-│   ├── docs/                                  # Documentazione operativa
-│   ├── requirements.txt
-│   └── .env.example
 │
 ├── bandi-seo-enricher/                        # Skill Claude single-bando
 │   ├── SKILL.md
@@ -534,20 +487,7 @@ pip install -r requirements.txt
 cd ..
 ```
 
-### 5. Scraper bandi (sub-progetto)
-
-Il scraper bandi gira in un venv dedicato per isolare le dipendenze:
-
-```bash
-cd Scraper-gerarchico-bandi-OpenCoesione-Backend-Python
-python -m venv venv
-venv/bin/pip install -r requirements.txt
-cp .env.example .env
-# editare .env e settare FIRECRAWL_API_KEY + credenziali Supabase B
-cd ..
-```
-
-### 6. Migrazioni database
+### 5. Migrazioni database
 
 Sul **DB A** (news1) le migrazioni sono in `backend/sql/articles_alter_*.sql` e `interpelli_tables.sql`/`selezione_personale.sql`/`persona_jobs.sql`.
 
@@ -579,10 +519,9 @@ uvicorn app.main:app --reload --port 8000
 
 > In produzione girare `uvicorn` **senza `--reload`** — il `reload=True` nel `__main__` e solo per dev.
 
-**Bandi sender** (scheduler):
+**Bandi — drain skill manuale** (no scheduler in v5):
 ```bash
-cd backend
-python -m app.bandi_sender
+python -m backend.app.bandi skill-drain
 ```
 
 ---
@@ -609,7 +548,7 @@ OPENAI_API_KEY="sk-proj-..."
 ANTHROPIC_API_KEY="sk-ant-..."
 
 # === Scraping ===
-FIRECRAWL_API_KEY="fc-..."     # Usata anche dal scraper bandi
+FIRECRAWL_API_KEY="fc-..."     # Usata da news scraping + skill bandi
 
 # === Storage ===
 AWS_ACCESS_KEY_ID="..."
@@ -634,14 +573,11 @@ INDEXNOW_API_KEY="..."
 # === Backend Python ===
 BACKEND_URL="http://localhost:8000"
 
-# === Bandi: subprocess scraper ===
-BANDI_SCRAPER_DIR="/root/projects/news1/Scraper-gerarchico-bandi-OpenCoesione-Backend-Python"
-BANDI_SCRAPER_PYTHON="/root/projects/news1/Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/venv/bin/python"
-BANDI_SCRAPER_RUN_LIMIT=""    # vuoto = scraping completo
-
 # === Bandi: skill enrichment ===
-BANDI_SKILL_BATCH_SIZE=10
-BANDI_SKILL_MAX_ATTEMPTS=3
+# v5: nessuno scraper, solo skill drain manuale (`python -m backend.app.bandi skill-drain`).
+BANDI_SKILL_BATCH_SIZE=10        # chunk SELECT per round drain
+BANDI_SKILL_MAX_ATTEMPTS=3       # retry massimi per singolo bando
+BANDI_SKILL_CONCURRENCY=3        # skill paralleli per round (asyncio.Semaphore)
 ```
 
 > ⚠️ **Mai committare `.env` con segreti reali**. La chiave `SUPABASE_SERVICE_KEY_BANDI` da accesso pieno al DB bandi e va usata SOLO lato backend.
@@ -674,7 +610,7 @@ In produzione tipicamente:
 - `edunews-frontend.service` — `npm run build` + node entry
 - `edunews-backend.service` — `uvicorn app.main:app` (no `--reload`)
 - `edunews-news-sender.service` — `python -m app.sender`
-- `edunews-bandi-sender.service` — `python -m app.bandi_sender`
+- ~~`edunews-bandi-sender.service`~~ — **disabilitato in v5** (`systemctl disable edunews-bandi-sender`); il drain skill si invoca a mano
 - `edunews-interpelli-sender.service` — `python -m app.interpelli_sender`
 - `edunews-selezione-sender.service` — `python -m app.selezione_personale_sender`
 
@@ -709,7 +645,7 @@ In produzione tipicamente:
 | `programma`, `bando_programma` | Programmi di finanziamento |
 | `modalita_erogazione` | Modalita erogazione (sussidio, prestito, ecc) |
 
-**RLS attiva**: policy `bando_public_read` filtra `is_bando_confermato IS TRUE` per l'anon key — il frontend non vede mai bandi rigettati dalla skill.
+**RLS attiva (v4)**: policy `bando_public_read` filtra `state = 'confirmed' AND slug IS NOT NULL` per l'anon key — il frontend vede solo i bandi confermati dalla skill (con slug pubblicabile).
 
 ---
 
@@ -736,11 +672,11 @@ Ogni categoria ha un colore identificativo proprio:
 
 ## Documentazione aggiuntiva
 
-- `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/README.md` — comandi CLI scraper, scheduler, AI worker
-- `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/docs/avvio_manuale_scraper.md` — procedura operativa completa
 - `bandi-seo-enricher/SKILL.md` — manifest skill bandi (workflow + regole critiche)
 - `bandi-seo-enricher/references/` — linee guida estrazione campi, struttura articoli, SEO, blacklist
 - `backend/skill/SKILL.md` — skill ricostruzione articoli news
+- `backend/sql/bando_v4_collapse.sql` — migrazione state machine v4
+- `backend/sql/bando_v5_purge_legacy_scraper.sql` — drop tabelle scraper-internal
 
 ---
 
