@@ -66,7 +66,7 @@ WITH
 
 INSERT INTO public.fonte (
   link, tipo_link, formato_link, stato_processing, attivo,
-  categoria_programma_id, tipologia_programma_id
+  categoria_programma_id, tipologia_programma_id, discoverable
 )
 SELECT
   v.link,
@@ -75,7 +75,8 @@ SELECT
   v.stato_processing::text,
   v.attivo,
   v.categoria_id,
-  v.tipologia_id
+  v.tipologia_id,
+  FALSE  -- v10: fonti manuali, NON da discover OpenCoesione
 FROM (
   VALUES
     -- Obiettivo Europa: aggregatore europeo + nazionale (API JSON)
@@ -112,7 +113,8 @@ FROM (
 ON CONFLICT (link) DO UPDATE
   SET stato_processing = EXCLUDED.stato_processing,
       attivo = EXCLUDED.attivo,
-      formato_link = EXCLUDED.formato_link;
+      formato_link = EXCLUDED.formato_link,
+      discoverable = EXCLUDED.discoverable;
 
 COMMIT;
 

@@ -63,16 +63,21 @@ def mark_deprecated(active_links: set[str]) -> int:
     """Marca come `deprecated` ogni fonte gia' in DB il cui `link` NON e' tra
     quelli appena scoperti. Skip i record gia' deprecati (no UPDATE noop).
 
+    v10: le fonti con `discoverable=FALSE` (es. fonti esterne manuali come
+    Obiettivo Europa) sono ESCLUSE dal deprecation: non sono in OpenCoesione
+    ma sono comunque attive e gestite separatamente.
+
     Ritorna il numero di righe segnate come deprecate in questo run.
     """
     sb = get_supabase()
 
     # Per evitare un IN gigante via Supabase REST (URL troppo lungo), facciamo
     # SELECT di tutti i link non-deprecated e diffidiamo lato Python.
+    # v10: filtra solo discoverable=TRUE.
     try:
         res = (
             sb.table("fonte")
-            .select("id, link, stato_processing")
+            .select("id, link, stato_processing, discoverable")
             .neq("stato_processing", "deprecated")
             .execute()
         )
@@ -83,7 +88,9 @@ def mark_deprecated(active_links: set[str]) -> int:
     rows = res.data or []
     to_deprecate_ids = [
         r["id"] for r in rows
-        if r.get("link") and r["link"] not in active_links
+        if r.get("link")
+           and r["link"] not in active_links
+           and r.get("discoverable", True)  # default TRUE per back-compat
     ]
 
     if not to_deprecate_ids:
