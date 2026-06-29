@@ -1,450 +1,176 @@
 ---
 import Layout from '../../layouts/Layout.astro';
-import { format, parseISO, isValid, differenceInCalendarDays } from 'date-fns';
-import { it } from 'date-fns/locale';
-import { supabaseBandi, computeScadenzaStato, type Bando, type BandoSection } from '../../lib/supabase-bandi';
+import BandoContenuto from '../../components/bandi/BandoContenuto.astro';
+import BandoSidebar from '../../components/bandi/BandoSidebar.astro';
 import BandiExpertCta from '../../components/BandiExpertCta.astro';
-import ContactForm from '../../components/ContactForm';
+import {
+  supabaseBandi, loadCatalogo, resolveBandoRelations,
+  BANDO_SELECT_DETAIL, computeScadenzaStato,
+  type Bando, type BandoDetail,
+} from '../../lib/supabase-bandi';
+import { format } from 'date-fns';
+import { it } from 'date-fns/locale';
 
 export const prerender = false;
 
 const { slug } = Astro.params;
+const host = Astro.url.origin;
 
-// v4: schema collassato. RLS filtra `state='confirmed' AND slug IS NOT NULL`
-// lato DB, quindi qui non serve replicare. `date_quotes` JSONB include
-// {pubblicazione, scadenza} con {value, source, quote}.
-const SELECT_LIST =
-  'id, slug, titolo, titolo_breve, descrizione_breve, contenuto, ' +
-  'ente_erogatore, tipologia, area_geografica, tematica, beneficiari, ' +
-  'data_scadenza, data_pubblicazione, date_quotes, ' +
-  'importo_totale_eur, importo_max_per_progetto_eur, ' +
-  'link_candidatura, link_candidatura_source, link_bando, ' +
-  'codice_bando, allegati, codici_ateco, programma, modalita_erogazione, ' +
-  'state, state_detail';
-
-let bando: Bando | null = null;
-try {
-  const { data, error } = await supabaseBandi
-    .from('bando')
-    .select(SELECT_LIST)
-    .eq('slug', slug)
-    .single();
-  if (!error && data) bando = data as unknown as Bando;
-} catch {
-  bando = null;
+if (!slug) {
+  return new Response('Slug mancante', { status: 400 });
 }
 
-if (!bando) {
-  return new Response(
-    `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>404 - Bando non trovato</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#ef4444;margin:0">404</h1><p style="font-size:1.5rem;font-weight:bold">Bando non trovato</p><p>Il bando richiesto non esiste o e' stato rimosso.</p><a href="/bandi" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#2563eb;color:white;border-radius:0.375rem;text-decoration:none">Torna ai bandi</a></div></body></html>`,
-    { status: 404, headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' } },
-  );
+const { data, error } = await supabaseBandi
+  .from('bando')
+  .select(BANDO_SELECT_DETAIL)
+  .eq('slug', slug)
+  .maybeSingle();
+
+if (error || !data) {
+  Astro.response.status = 404;
 }
 
-const sections: BandoSection[] = bando.contenuto?.sections || [];
+const bando = data as Bando | null;
+const catalogo = bando ? await loadCatalogo() : null;
+const bandoDetail: BandoDetail | null = bando && catalogo
+  ? await resolveBandoRelations(bando, catalogo)
+  : null;
 
-const formatDate = (s: string | null | undefined): string => {
-  if (!s) return '—';
-  try {
-    const d = parseISO(s);
-    if (!isValid(d)) return s;
-    return format(d, 'd MMMM yyyy', { locale: it });
-  } catch {
-    return s;
-  }
-};
+const publicUrl = `${host}/bandi/${slug}`;
+const ogImage = `${host}/og/bandi/${slug}.svg`;
+const titoloDisplay = bando?.titolo ?? bando?.titolo_raw ?? 'Bando senza titolo';
+const descrShort = bando?.descrizione_breve ?? '';
+const metaTitle = titoloDisplay.length > 60 ? titoloDisplay.slice(0, 57) + '...' : titoloDisplay;
+const metaDescription = descrShort.length > 155 ? descrShort.slice(0, 152) + '...' : descrShort;
 
-const formatImporto = (n: number | null): string => {
-  if (n == null) return '—';
-  return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n);
-};
+const scadenzaDisplay = bando?.data_scadenza
+  ? format(new Date(bando.data_scadenza), 'd MMMM yyyy', { locale: it })
+  : null;
+const pubblicazioneDisplay = bando?.data_pubblicazione
+  ? format(new Date(bando.data_pubblicazione), 'd MMMM yyyy', { locale: it })
+  : null;
+const scadenzaStato = bando ? computeScadenzaStato(bando.data_scadenza) : null;
 
-const daysToDeadline = (() => {
-  if (!bando.data_scadenza) return null;
-  try {
-    const d = parseISO(bando.data_scadenza);
-    if (!isValid(d)) return null;
-    return differenceInCalendarDays(d, new Date());
-  } catch {
-    return null;
-  }
-})();
-
-const scadenzaBadge = (() => {
-  // v4: scadenza_stato calcolato in-app (NON colonna DB).
-  const stato = computeScadenzaStato(bando.data_scadenza);
-  if (stato === 'aperto') return { label: 'Aperto', cls: 'bg-blue-100 text-blue-700 ring-1 ring-blue-200' };
-  if (stato === 'in_scadenza') return { label: 'In scadenza', cls: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200' };
-  if (stato === 'scaduto') return { label: 'Scaduto', cls: 'bg-gray-100 text-gray-600 ring-1 ring-gray-200' };
-  return { label: '—', cls: 'bg-gray-100 text-gray-500 ring-1 ring-gray-200' };
-})();
-
-// Tipo allegato → icona/colore
-const allegatoTipoLabel = (tipo: string): string => {
-  if (tipo === 'pdf') return 'PDF';
-  if (tipo === 'doc' || tipo === 'docx') return 'DOC';
-  if (tipo === 'xls' || tipo === 'xlsx' || tipo === 'ods') return 'XLS';
-  if (tipo === 'odt' || tipo === 'rtf') return 'TXT';
-  if (tipo === 'zip') return 'ZIP';
-  return 'FILE';
-};
-
-const allegatoTipoClasses = (tipo: string): string => {
-  if (tipo === 'pdf') return 'bg-red-50 text-red-700';
-  if (tipo === 'doc' || tipo === 'docx' || tipo === 'odt' || tipo === 'rtf') return 'bg-blue-50 text-blue-700';
-  if (tipo === 'xls' || tipo === 'xlsx' || tipo === 'ods') return 'bg-green-50 text-green-700';
-  if (tipo === 'zip') return 'bg-amber-50 text-amber-700';
-  return 'bg-gray-100 text-gray-600';
-};
-
-// Inline segment renderer
-const renderSegments = (segments: Array<{ kind: 'text' | 'bold' | 'link'; text: string; url?: string }>) => {
-  return segments.map(seg => {
-    if (seg.kind === 'bold') return `<strong>${escapeText(seg.text)}</strong>`;
-    if (seg.kind === 'link' && seg.url) return `<a href="${escapeAttr(seg.url)}" class="text-blue-700 hover:underline" target="_blank" rel="noopener noreferrer">${escapeText(seg.text)}</a>`;
-    return escapeText(seg.text);
-  }).join('');
-};
-
-function escapeText(s: string): string {
-  return s.replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]!));
+// JSON-LD
+let jsonLd: any = null;
+if (bandoDetail) {
+  jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline: titoloDisplay,
+    description: metaDescription || undefined,
+    datePublished: bandoDetail.data_pubblicazione ?? undefined,
+    dateModified: bandoDetail.updated_at ?? undefined,
+    author: { '@type': 'Organization', name: 'EduNews24', url: 'https://edunews24.it' },
+    publisher: {
+      '@type': 'Organization',
+      name: 'EduNews24',
+      logo: { '@type': 'ImageObject', url: 'https://edunews24.it/logo.png' },
+    },
+    image: ogImage,
+    mainEntityOfPage: publicUrl,
+    about: {
+      '@type': 'GovernmentService',
+      name: titoloDisplay,
+      serviceType: bandoDetail.tipologia_nome ?? undefined,
+      provider: bandoDetail.ente_erogatore
+        ? { '@type': 'GovernmentOrganization', name: bandoDetail.ente_erogatore }
+        : undefined,
+      areaServed: bandoDetail.area_geografica
+        ? { '@type': 'AdministrativeArea', name: bandoDetail.area_geografica }
+        : undefined,
+    },
+  };
 }
-function escapeAttr(s: string): string { return escapeText(s); }
-
-// v4: meta_title/meta_description NON sono piu' colonne. Li derivo da titolo/descrizione_breve.
-const titoloDisplay = bando.titolo || 'Bando';
-const descrizioneDisplay = bando.descrizione_breve || '';
-const metaTitle = titoloDisplay.length > 60 ? titoloDisplay.slice(0, 57) + '…' : titoloDisplay;
-const metaDescription = descrizioneDisplay.length > 155 ? descrizioneDisplay.slice(0, 152) + '…' : descrizioneDisplay;
-const canonicalUrl = `https://edunews24.it/bandi/${bando.slug}`;
-
-// Context per il form di richiesta esperto (passato a /api/contact tramite ContactForm).
-const expertContext = {
-  source: 'bando-detail',
-  bando_titolo: titoloDisplay,
-  bando_slug: bando.slug,
-  bando_url: canonicalUrl,
-};
-const expertPrefilledNotes =
-  `Sono interessato al bando: ${expertContext.bando_titolo}.\n` +
-  `Vorrei essere supportato nella candidatura.\n\n`;
-
-// JSON-LD GovernmentService / Article ibrido
-const jsonLd: Record<string, unknown> = {
-  '@context': 'https://schema.org',
-  '@type': 'Article',
-  headline: titoloDisplay,
-  description: descrizioneDisplay,
-  url: canonicalUrl,
-  datePublished: bando.data_pubblicazione,
-  author: { '@type': 'Organization', name: 'EduNews24' },
-  publisher: {
-    '@type': 'Organization',
-    name: 'EduNews24',
-    logo: { '@type': 'ImageObject', url: 'https://edunews24.it/logo.png' },
-  },
-  about: {
-    '@type': 'GovernmentService',
-    name: titoloDisplay,
-    serviceType: bando.tipologia,
-    provider: bando.ente_erogatore ? { '@type': 'GovernmentOrganization', name: bando.ente_erogatore } : undefined,
-    areaServed: bando.area_geografica,
-  },
-};
 ---
 
-<Layout
-  title={metaTitle}
-  description={metaDescription}
-  canonicalUrl={canonicalUrl}
->
-  <Fragment slot="head">
-    <meta property="og:title" content={metaTitle} />
-    <meta property="og:description" content={metaDescription} />
-    <meta property="og:type" content="article" />
-    <meta property="og:url" content={canonicalUrl} />
-    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
-  </Fragment>
+{!bando && (
+  <Layout title="Bando non trovato - EduNews24" description="Il bando richiesto non è disponibile." robots="noindex,nofollow">
+    <main class="bg-slate-50 min-h-screen flex items-center justify-center px-4 py-12">
+      <div class="max-w-md text-center">
+        <h1 class="text-2xl font-bold text-slate-900 mb-3">Bando non trovato</h1>
+        <p class="text-slate-600 mb-6">
+          Il bando che stai cercando non è disponibile o è stato rimosso. Potrebbe non essere
+          ancora stato pubblicato oppure non superare i nostri criteri di validazione.
+        </p>
+        <a href="/bandi" class="inline-block bg-blue-600 text-white font-semibold px-5 py-2.5 rounded-lg hover:bg-blue-700 transition">
+          Torna alla lista bandi
+        </a>
+      </div>
+    </main>
+  </Layout>
+)}
 
-  <main class="bg-gray-50 min-h-screen">
-    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
-      <div class="container mx-auto max-w-6xl">
-        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
-          <ol class="inline-flex items-center space-x-1">
-            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
-            <li class="flex items-center">
-              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <a href="/bandi" class="hover:text-white transition-colors">Bandi</a>
-            </li>
-            <li class="flex items-center">
-              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <span class="text-white font-medium line-clamp-1">{titoloDisplay}</span>
-            </li>
-          </ol>
+{bando && bandoDetail && (
+  <Layout
+    title={`${metaTitle} - EduNews24`}
+    description={metaDescription}
+    canonicalUrl={publicUrl}
+    image={ogImage}
+    ogType="article"
+    publishedTime={bandoDetail.data_pubblicazione ?? undefined}
+    modifiedTime={bandoDetail.updated_at ?? undefined}
+  >
+    {jsonLd && (
+      <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    )}
+
+    <main class="bg-slate-50 min-h-screen">
+      <article class="max-w-6xl mx-auto px-4 py-8">
+        <nav class="text-sm text-slate-600 mb-4" aria-label="Breadcrumb">
+          <a href="/" class="hover:underline">Home</a>
+          <span class="mx-1.5">›</span>
+          <a href="/bandi" class="hover:underline">Bandi</a>
+          <span class="mx-1.5">›</span>
+          <span class="text-slate-800">{bandoDetail.titolo_breve ?? 'Dettaglio'}</span>
         </nav>
-        {bando.titolo_breve && (
-          <p class="text-blue-200 text-sm uppercase tracking-wider mb-2">{bando.titolo_breve}</p>
-        )}
-        <h1 class="text-2xl md:text-4xl font-bold mb-3 leading-tight">{titoloDisplay}</h1>
-        <div class="flex flex-wrap items-center gap-3 text-sm">
-          {bando.tipologia && (
-            <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold">{bando.tipologia}</span>
-          )}
-          {bando.ente_erogatore && (
-            <span class="inline-flex items-center gap-1.5 text-blue-100">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5"/></svg>
-              {bando.ente_erogatore}
-            </span>
-          )}
-          {bando.area_geografica && (
-            <span class="inline-flex items-center gap-1.5 text-blue-100">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
-              {bando.area_geografica}
-            </span>
-          )}
-          <span class={`inline-flex items-center px-2.5 py-1 rounded-full font-semibold ${scadenzaBadge.cls}`}>{scadenzaBadge.label}</span>
-        </div>
-      </div>
-    </div>
 
-    <div class="container mx-auto px-4 max-w-6xl py-8">
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Main content */}
-        <article class="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-100 p-6 sm:p-8">
-          {bando.descrizione_breve && (
-            <p class="text-lg text-gray-700 leading-relaxed mb-6 font-medium">{bando.descrizione_breve}</p>
+        <header class="mb-6">
+          {bandoDetail.titolo_breve && (
+            <p class="text-sm uppercase tracking-wider text-blue-700 font-semibold mb-2">
+              {bandoDetail.titolo_breve}
+            </p>
           )}
-          <div class="prose prose-blue max-w-none">
-            {sections.map((section) => {
-              if (section.type === 'h2') return <h2 class="text-2xl font-bold text-gray-900 mt-8 mb-3">{section.text}</h2>;
-              if (section.type === 'h3') return <h3 class="text-xl font-semibold text-gray-900 mt-6 mb-2">{section.text}</h3>;
-              if (section.type === 'paragraph') {
-                return <p class="text-gray-700 leading-relaxed mb-4" set:html={renderSegments(section.segments)} />;
-              }
-              if (section.type === 'bullet_list') {
-                return (
-                  <ul class="list-disc list-inside space-y-2 mb-4 text-gray-700">
-                    {section.items.map(item => <li set:html={renderSegments(item.segments)} />)}
-                  </ul>
-                );
-              }
-              if (section.type === 'numbered_list') {
-                return (
-                  <ol class="list-decimal list-inside space-y-2 mb-4 text-gray-700">
-                    {section.items.map(item => <li set:html={renderSegments(item.segments)} />)}
-                  </ol>
-                );
-              }
-              if (section.type === 'faq') {
-                return (
-                  <div class="mt-6 space-y-3">
-                    {section.items.map(item => (
-                      <details class="bg-gray-50 rounded-lg p-4 group">
-                        <summary class="cursor-pointer font-semibold text-gray-900 list-none flex items-center justify-between">
-                          {item.question}
-                          <svg class="w-5 h-5 text-gray-400 group-open:rotate-180 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                        </summary>
-                        <p class="mt-3 text-gray-700 leading-relaxed">{item.answer}</p>
-                      </details>
-                    ))}
-                  </div>
-                );
-              }
-              return null;
-            })}
+          <h1 class="text-3xl md:text-4xl font-bold text-slate-900 leading-tight mb-3">
+            {titoloDisplay}
+          </h1>
+          {bandoDetail.descrizione_breve && (
+            <p class="text-lg text-slate-700 max-w-3xl">{bandoDetail.descrizione_breve}</p>
+          )}
+
+          <div class="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
+            {bandoDetail.ente_erogatore && (
+              <span>
+                <span class="text-slate-500">Ente:</span>{' '}
+                <strong class="text-slate-900">{bandoDetail.ente_erogatore}</strong>
+              </span>
+            )}
+            {scadenzaDisplay && (
+              <span class={scadenzaStato === 'scaduto' ? 'text-slate-500 line-through' : ''}>
+                <span class="text-slate-500">Scadenza:</span>{' '}
+                <strong class={scadenzaStato === 'scaduto' ? 'text-slate-500' : 'text-slate-900'}>{scadenzaDisplay}</strong>
+              </span>
+            )}
+            {pubblicazioneDisplay && (
+              <span>
+                <span class="text-slate-500">Pubblicato:</span>{' '}
+                <strong class="text-slate-900">{pubblicazioneDisplay}</strong>
+              </span>
+            )}
           </div>
-        </article>
+        </header>
 
-        {/* Sidebar */}
-        <aside class="space-y-4">
-          {/* CTA — una sola, la piu' autoritativa disponibile:
-              1. link_candidatura SOLO se source='extracted' (skill ha trovato un link vero)
-              2. altrimenti fallback su link_bando (pagina ufficiale)
-              Niente piu' due link affiancati: confondeva l'utente quando la skill
-              ricadeva su source_url come link_candidatura. */}
-          {(() => {
-            const hasVerifiedCandidatura =
-              bando.link_candidatura_source === 'extracted' && !!bando.link_candidatura;
-            const ctaUrl: string | null = hasVerifiedCandidatura
-              ? bando.link_candidatura
-              : (bando.link_bando || null);
-            if (!ctaUrl) return null;
-            const ctaLabel = hasVerifiedCandidatura
-              ? 'Vai al modulo di candidatura'
-              : 'Apri la pagina ufficiale del bando';
-            return (
-              <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-                <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Partecipa al bando</h3>
-                <a
-                  href={ctaUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="block w-full text-center px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
-                >
-                  {ctaLabel}
-                  <svg class="inline w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-                </a>
-              </div>
-            );
-          })()}
-
-          {/* Banner CTA "Hai bisogno di un esperto?" */}
-          <BandiExpertCta variant="sidebar" />
-
-          {/* Documenti e allegati */}
-          {bando.allegati && bando.allegati.length > 0 && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Documenti e allegati</h3>
-              <ul class="space-y-2">
-                {bando.allegati.map(a => (
-                  <li>
-                    <a
-                      href={a.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="flex items-start gap-2.5 text-sm text-gray-700 hover:text-blue-700 transition-colors group"
-                    >
-                      <span class={`shrink-0 inline-flex items-center justify-center min-w-[2.25rem] px-1.5 py-0.5 rounded text-[10px] font-bold mt-0.5 ${allegatoTipoClasses(a.tipo)}`}>
-                        {allegatoTipoLabel(a.tipo)}
-                      </span>
-                      <span class="flex-1 leading-snug group-hover:underline">{a.label}</span>
-                      <svg class="shrink-0 w-3.5 h-3.5 text-gray-400 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Pubblicazione (data della fonte, NON la nostra) */}
-          {bando.data_pubblicazione && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Data di pubblicazione</h3>
-              <p class="text-lg font-semibold text-gray-900">
-                {formatDate(bando.data_pubblicazione)}
-                {bando.date_quotes?.pubblicazione?.source === 'inferred' && (
-                  <span
-                    title="Data dedotta da contesto, non da label esplicita sulla fonte"
-                    class="ml-1 text-xs text-amber-600 align-top"
-                  >*</span>
-                )}
-              </p>
-            </div>
-          )}
-
-          {/* Scadenza */}
-          {bando.data_scadenza && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Scadenza</h3>
-              <p class="text-2xl font-bold text-gray-900">{formatDate(bando.data_scadenza)}</p>
-              {daysToDeadline != null && (
-                <p class="text-sm text-gray-500 mt-1">
-                  {daysToDeadline > 0
-                    ? `${daysToDeadline} giorni rimanenti`
-                    : daysToDeadline === 0
-                    ? 'Scade oggi'
-                    : `Scaduto da ${-daysToDeadline} giorni`}
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Importi */}
-          {(bando.importo_totale_eur != null || bando.importo_max_per_progetto_eur != null) && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Importi</h3>
-              {bando.importo_totale_eur != null && (
-                <div class="mb-2">
-                  <p class="text-xs text-gray-500">Totale stanziato</p>
-                  <p class="text-lg font-bold text-gray-900">{formatImporto(bando.importo_totale_eur)}</p>
-                </div>
-              )}
-              {bando.importo_max_per_progetto_eur != null && (
-                <div>
-                  <p class="text-xs text-gray-500">Massimo per progetto</p>
-                  <p class="text-lg font-bold text-gray-900">{formatImporto(bando.importo_max_per_progetto_eur)}</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Beneficiari */}
-          {bando.beneficiari && bando.beneficiari.length > 0 && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">A chi si rivolge</h3>
-              <ul class="space-y-1.5">
-                {bando.beneficiari.map(b => (
-                  <li class="text-sm text-gray-700 flex items-start gap-2">
-                    <svg class="w-4 h-4 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                    {b}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Tematica */}
-          {bando.tematica && bando.tematica.length > 0 && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Tematica</h3>
-              <div class="flex flex-wrap gap-2">
-                {bando.tematica.map(t => (
-                  <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 text-xs font-medium">{t}</span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Codici ATECO */}
-          {bando.codici_ateco && bando.codici_ateco.length > 0 && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Codici ATECO</h3>
-              <ul class="space-y-1.5">
-                {bando.codici_ateco.map(c => (
-                  <li class="text-sm text-gray-700 flex items-start gap-2">
-                    <svg class="w-4 h-4 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-                    <span class="leading-snug">{c}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Programma + Modalita */}
-          {(bando.programma || bando.modalita_erogazione) && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Programma e modalita</h3>
-              {bando.programma && (
-                <div class="mb-3">
-                  <p class="text-xs text-gray-500 mb-0.5">Programma</p>
-                  <p class="text-sm font-medium text-gray-800">{bando.programma}</p>
-                </div>
-              )}
-              {bando.modalita_erogazione && (
-                <div>
-                  <p class="text-xs text-gray-500 mb-0.5">Modalita erogazione</p>
-                  <p class="text-sm font-medium text-gray-800">{bando.modalita_erogazione}</p>
-                </div>
-              )}
-            </div>
-          )}
-        </aside>
-      </div>
-    </div>
-
-    {/* Sezione contatto esperto (target dello smooth scroll del banner) */}
-    <section id="contact-esperto" class="scroll-mt-20 bg-gradient-to-b from-gray-50 to-gray-100 py-14 sm:py-16 border-t border-gray-200">
-      <div class="container mx-auto px-4 max-w-4xl">
-        <div class="text-center mb-8">
-          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-blue-100 text-blue-700 mb-4">Supporto progettuale</span>
-          <h2 class="text-2xl md:text-3xl font-bold text-gray-900 mb-3">Parla con un esperto</h2>
-          <p class="text-gray-600 max-w-2xl mx-auto leading-relaxed">
-            Compila il form e ti contatteremo per supportarti nella candidatura a <span class="font-semibold text-gray-800">{expertContext.bando_titolo}</span>.
-            Il nostro staff valuta il tuo profilo insieme agli strumenti AI sviluppati dai migliori progettisti italiani.
-          </p>
+        <div class="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8">
+          <div>
+            <BandoContenuto contenuto={bandoDetail.contenuto} descrizioneBreve={bandoDetail.descrizione_breve} />
+          </div>
+          <BandoSidebar bando={bandoDetail} publicUrl={publicUrl} />
         </div>
-        <ContactForm client:load context={expertContext} prefilledNotes={expertPrefilledNotes} />
-      </div>
-    </section>
-  </main>
-</Layout>
+
+        <div class="mt-10">
+          <BandiExpertCta variant="full" />
+        </div>
+      </article>
+    </main>
+  </Layout>
+)}

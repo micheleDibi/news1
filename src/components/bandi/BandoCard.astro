@@ -1,0 +1,105 @@
+---
+// Card riusabile per la lista bandi.
+// Render: titolo, ente, area, tipologia (FK lookup), data_scadenza con badge,
+// importo. Pure Astro.
+import { format } from 'date-fns';
+import { it } from 'date-fns/locale';
+import {
+  type Bando, type Catalogo,
+  computeScadenzaStato, formatImportoEur, lookupNome,
+} from '../../lib/supabase-bandi';
+
+export interface Props {
+  bando: Bando;
+  catalogo: Catalogo;
+}
+
+const { bando, catalogo } = Astro.props;
+const tipologia_nome = lookupNome(catalogo.tipologie, bando.tipologia_bando_id);
+const programma_nome = lookupNome(catalogo.programmi, bando.programma_id);
+const scadenzaStato = computeScadenzaStato(bando.data_scadenza);
+const scadenzaLabel = bando.data_scadenza
+  ? format(new Date(bando.data_scadenza), 'd MMMM yyyy', { locale: it })
+  : null;
+const pubblLabel = bando.data_pubblicazione
+  ? format(new Date(bando.data_pubblicazione), 'd MMM yyyy', { locale: it })
+  : null;
+const importoLabel = formatImportoEur(bando.importo_totale_eur);
+
+const badgeStyles: Record<string, string> = {
+  aperto: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  in_scadenza: 'bg-amber-50 text-amber-700 border-amber-200',
+  scaduto: 'bg-slate-100 text-slate-500 border-slate-200',
+};
+const badgeLabel: Record<string, string> = {
+  aperto: 'Aperto',
+  in_scadenza: 'In scadenza',
+  scaduto: 'Scaduto',
+};
+---
+
+<article class="group bg-white border border-slate-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition flex flex-col h-full">
+  <div class="flex items-start gap-3 mb-3">
+    <div class="flex-1 min-w-0">
+      {bando.titolo_breve && (
+        <p class="text-xs uppercase tracking-wider text-blue-700 font-semibold mb-1 line-clamp-1">
+          {bando.titolo_breve}
+        </p>
+      )}
+      <h2 class="text-lg font-semibold text-slate-900 group-hover:text-blue-700 transition leading-snug line-clamp-2">
+        <a href={`/bandi/${bando.slug}`}>{bando.titolo ?? bando.titolo_raw ?? 'Bando senza titolo'}</a>
+      </h2>
+    </div>
+    {scadenzaStato && (
+      <span class={`text-xs px-2 py-1 rounded-full border whitespace-nowrap ${badgeStyles[scadenzaStato] ?? badgeStyles.aperto}`}>
+        {badgeLabel[scadenzaStato] ?? scadenzaStato}
+      </span>
+    )}
+  </div>
+
+  {bando.descrizione_breve && (
+    <p class="text-sm text-slate-600 line-clamp-2 mb-3">{bando.descrizione_breve}</p>
+  )}
+
+  <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600 mb-3">
+    {bando.ente_erogatore && (
+      <span class="inline-flex items-center gap-1">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0H5m14 0h2m-2 0v-5m-12 5H3m2 0v-5M9 7h6m-6 4h6m-6 4h6"/>
+        </svg>
+        <span class="line-clamp-1">{bando.ente_erogatore}</span>
+      </span>
+    )}
+    {bando.area_geografica && (
+      <span class="inline-flex items-center gap-1">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        <span>{bando.area_geografica}</span>
+      </span>
+    )}
+  </div>
+
+  <div class="flex flex-wrap gap-2 mb-3">
+    {tipologia_nome && (
+      <span class="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded">{tipologia_nome}</span>
+    )}
+    {programma_nome && (
+      <span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-700 rounded line-clamp-1 max-w-[200px]">{programma_nome}</span>
+    )}
+  </div>
+
+  <div class="mt-auto flex items-end justify-between gap-2 pt-3 border-t border-slate-100">
+    <div class="text-xs text-slate-500">
+      {pubblLabel && <div>Pubbl. {pubblLabel}</div>}
+      {scadenzaLabel && <div class="text-slate-700 font-medium">Scad. {scadenzaLabel}</div>}
+    </div>
+    {importoLabel && (
+      <div class="text-right">
+        <div class="text-xs text-slate-500">Dotazione</div>
+        <div class="text-sm font-semibold text-slate-900">{importoLabel}</div>
+      </div>
+    )}
+  </div>
+</article>

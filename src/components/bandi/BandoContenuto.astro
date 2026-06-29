@@ -1,0 +1,89 @@
+---
+// Renderer del contenuto editoriale JSONB emesso dalla skill SEO v8.
+// Schema:
+//   { sections: BandoSection[] }
+// dove BandoSection ∈ { h2|h3, paragraph, bullet_list, numbered_list, faq }.
+//
+// Fallback: se contenuto/sections vuoto o NULL -> mostra descrizione_breve come
+// placeholder testuale, in modo che la pagina dettaglio non sia vuota.
+import type { BandoSection, BandoSegment } from '../../lib/supabase-bandi';
+
+export interface Props {
+  contenuto: { sections: BandoSection[] } | null;
+  descrizioneBreve: string | null;
+}
+
+const { contenuto, descrizioneBreve } = Astro.props;
+const sections = contenuto?.sections ?? [];
+const hasContent = sections.length > 0;
+
+function renderSegments(segments: BandoSegment[] | undefined): string {
+  if (!segments || segments.length === 0) return '';
+  return segments
+    .map(s => {
+      if (!s || !('kind' in s)) return '';
+      const text = (s.text ?? '').replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
+      if (s.kind === 'bold') return `<strong>${text}</strong>`;
+      if (s.kind === 'link' && 'url' in s && s.url) {
+        const url = String(s.url).replace(/"/g, '&quot;');
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer nofollow" class="text-blue-700 underline hover:text-blue-900">${text}</a>`;
+      }
+      return text;
+    })
+    .join('');
+}
+---
+
+<div class="prose prose-slate max-w-none prose-headings:font-semibold prose-headings:text-slate-900 prose-a:text-blue-700 prose-a:no-underline hover:prose-a:underline">
+  {!hasContent && descrizioneBreve && (
+    <p class="text-slate-700 italic">{descrizioneBreve}</p>
+  )}
+  {!hasContent && !descrizioneBreve && (
+    <p class="text-slate-500 italic">Contenuto non ancora disponibile per questo bando.</p>
+  )}
+
+  {sections.map((section) => {
+    if (!section || typeof section !== 'object' || !('type' in section)) return null;
+
+    if (section.type === 'h2') {
+      return <h2 class="mt-8 mb-3 text-2xl">{section.text}</h2>;
+    }
+    if (section.type === 'h3') {
+      return <h3 class="mt-6 mb-2 text-xl">{section.text}</h3>;
+    }
+    if (section.type === 'paragraph') {
+      return <p set:html={renderSegments(section.segments)} />;
+    }
+    if (section.type === 'bullet_list') {
+      return (
+        <ul class="list-disc list-outside ml-6 my-4 space-y-1">
+          {section.items?.map((item) => (
+            <li set:html={renderSegments(item.segments)} />
+          ))}
+        </ul>
+      );
+    }
+    if (section.type === 'numbered_list') {
+      return (
+        <ol class="list-decimal list-outside ml-6 my-4 space-y-1">
+          {section.items?.map((item) => (
+            <li set:html={renderSegments(item.segments)} />
+          ))}
+        </ol>
+      );
+    }
+    if (section.type === 'faq') {
+      return (
+        <div class="my-6 space-y-3">
+          {section.items?.map((item) => (
+            <details class="bg-slate-50 rounded-lg p-4 border border-slate-200">
+              <summary class="font-semibold cursor-pointer text-slate-800">{item.q}</summary>
+              <div class="mt-3 text-slate-700" set:html={renderSegments(item.a?.segments)} />
+            </details>
+          ))}
+        </div>
+      );
+    }
+    return null;
+  })}
+</div>

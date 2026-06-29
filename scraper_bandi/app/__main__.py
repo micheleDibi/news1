@@ -13,8 +13,18 @@ Comandi:
   enrich         Step v7 — Per ogni bando 'processed' con stato_bando
                  aperto/in_apertura/NULL: refinement stato (se NULL) +
                  estrazione FK (tipologia, modalita, programma) +
-                 junction (beneficiari, ateco, regioni, settori).
-                 Stato finale: 'enriched'. Opzioni: --dry-run, --limit N.
+                 junction (beneficiari, ateco, regioni, settori) +
+                 estrazione date (pubblicazione/apertura/scadenza con gate
+                 substring + source autoritativo).
+                 Stato finale: 'enriched'.
+                 Opzioni: --dry-run, --limit N, --rerun-enriched
+                 (--rerun-enriched include anche bandi gia' 'enriched').
+  seo            Step v8 — Skill SEO Opus 4.7: per ogni bando 'enriched'
+                 genera contenuto editoriale + meta (slug, titolo,
+                 titolo_breve, descrizione_breve, contenuto, livello,
+                 allegati, ente_erogatore, area_geografica, tematica,
+                 importi, link_candidatura). Stato finale: 'completed'.
+                 Opzioni: --dry-run, --limit N, --rerun-completed.
 """
 from __future__ import annotations
 
@@ -53,6 +63,7 @@ def _cmd_preprocess(argv: list[str]) -> None:
 def _cmd_enrich(argv: list[str]) -> None:
     from .bando_enrich_runner import run as enrich_run
     dry_run = "--dry-run" in argv
+    include_enriched = "--rerun-enriched" in argv
     limit: int | None = None
     if "--limit" in argv:
         try:
@@ -60,7 +71,26 @@ def _cmd_enrich(argv: list[str]) -> None:
         except (IndexError, ValueError):
             print("--limit richiede un intero (es. --limit 10)", file=sys.stderr)
             sys.exit(2)
-    counters = asyncio.run(enrich_run(dry_run=dry_run, limit=limit))
+    counters = asyncio.run(
+        enrich_run(dry_run=dry_run, limit=limit, include_enriched=include_enriched)
+    )
+    logger.info("[main] counters finali: {}", counters)
+
+
+def _cmd_seo(argv: list[str]) -> None:
+    from .bando_seo_runner import run as seo_run
+    dry_run = "--dry-run" in argv
+    include_completed = "--rerun-completed" in argv
+    limit: int | None = None
+    if "--limit" in argv:
+        try:
+            limit = int(argv[argv.index("--limit") + 1])
+        except (IndexError, ValueError):
+            print("--limit richiede un intero (es. --limit 10)", file=sys.stderr)
+            sys.exit(2)
+    counters = asyncio.run(
+        seo_run(dry_run=dry_run, limit=limit, include_completed=include_completed)
+    )
     logger.info("[main] counters finali: {}", counters)
 
 
@@ -69,6 +99,7 @@ _COMMANDS: dict[str, callable] = {
     "scrape-bandi": _cmd_scrape_bandi,
     "preprocess": None,  # gestito a parte per parsing argv
     "enrich": None,      # gestito a parte per parsing argv
+    "seo": None,         # gestito a parte per parsing argv
 }
 
 
@@ -95,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
             _cmd_preprocess(cmd_argv)
         elif cmd == "enrich":
             _cmd_enrich(cmd_argv)
+        elif cmd == "seo":
+            _cmd_seo(cmd_argv)
         else:
             _COMMANDS[cmd]()
     except Exception:

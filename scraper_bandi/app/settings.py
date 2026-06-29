@@ -50,6 +50,15 @@ class Settings:
     enrich_concurrency: int
     enrich_concurrency_refine: int
     enrich_max_tokens: int
+    # Step v8: skill SEO (enriched -> completed) via Claude Opus 4.7
+    seo_model: str
+    seo_concurrency: int
+    seo_max_tokens: int
+    seo_reachability_check: bool
+    # Step v9: preprocess v2 (Firecrawl + Haiku + Sonnet fallback)
+    preprocess_firecrawl_concurrency: int
+    resolver_model: str
+    resolver_max_tokens: int
 
 
 def _int_env(name: str, default: int) -> int:
@@ -109,4 +118,14 @@ def get_settings() -> Settings:
         enrich_concurrency=max(1, _int_env("ENRICH_CONCURRENCY", 5)),
         enrich_concurrency_refine=max(1, _int_env("ENRICH_CONCURRENCY_REFINE", 3)),
         enrich_max_tokens=max(64, _int_env("ENRICH_MAX_TOKENS", 200)),
+        seo_model=os.getenv("SEO_MODEL", "claude-opus-4-7").strip()
+            or "claude-opus-4-7",
+        seo_concurrency=max(1, _int_env("SEO_CONCURRENCY", 3)),
+        seo_max_tokens=max(512, _int_env("SEO_MAX_TOKENS", 4000)),
+        seo_reachability_check=os.getenv("SEO_REACHABILITY_CHECK", "true").strip().lower()
+            not in ("false", "0", "no", "off"),
+        preprocess_firecrawl_concurrency=max(1, _int_env("PREPROCESS_FIRECRAWL_CONCURRENCY", 5)),
+        resolver_model=os.getenv("RESOLVER_MODEL", "claude-sonnet-4-6").strip()
+            or "claude-sonnet-4-6",
+        resolver_max_tokens=max(256, _int_env("RESOLVER_MAX_TOKENS", 1024)),
     )

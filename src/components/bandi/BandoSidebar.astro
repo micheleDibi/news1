@@ -1,0 +1,241 @@
+---
+// Sidebar dettaglio bando.
+// Mostra: CTA candidatura, allegati, date triple, importi, beneficiari/regioni/
+// settori/ateco risolti a nomi, programma/modalita, share buttons.
+import { format } from 'date-fns';
+import { it } from 'date-fns/locale';
+import type { BandoDetail } from '../../lib/supabase-bandi';
+import { computeScadenzaStato, formatImportoEur } from '../../lib/supabase-bandi';
+import BandoShareButtons from './BandoShareButtons.astro';
+
+export interface Props {
+  bando: BandoDetail;
+  publicUrl: string;
+}
+
+const { bando, publicUrl } = Astro.props;
+
+function fmt(d: string | null) {
+  if (!d) return null;
+  try {
+    return format(new Date(d), 'd MMMM yyyy', { locale: it });
+  } catch {
+    return d;
+  }
+}
+
+const pub = fmt(bando.data_pubblicazione);
+const apt = fmt(bando.data_apertura);
+const scad = fmt(bando.data_scadenza);
+const scadenzaStato = computeScadenzaStato(bando.data_scadenza);
+const giorniMancanti = (() => {
+  if (!bando.data_scadenza) return null;
+  const d = new Date(bando.data_scadenza);
+  if (Number.isNaN(d.getTime())) return null;
+  const diff = Math.ceil((d.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+  return diff;
+})();
+
+const importoTotaleLabel = formatImportoEur(bando.importo_totale_eur);
+const importoMaxLabel = formatImportoEur(bando.importo_max_per_progetto_eur);
+
+const ctaLink = bando.link_candidatura ?? bando.link_bando;
+const ctaSource = bando.link_candidatura_source;
+const ctaLabel =
+  ctaSource === 'extracted'
+    ? 'Candida ora'
+    : ctaSource === 'fallback_source'
+    ? 'Vai alla pagina ufficiale'
+    : bando.link_bando
+    ? 'Vai alla fonte'
+    : null;
+---
+
+<aside class="space-y-5">
+  {ctaLink && ctaLabel && (
+    <div class="bg-blue-600 text-white rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider opacity-90 mb-2">Domanda di partecipazione</p>
+      <a
+        href={ctaLink}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-2 bg-white text-blue-700 font-semibold px-4 py-2 rounded-lg hover:bg-blue-50 transition"
+      >
+        {ctaLabel}
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+        </svg>
+      </a>
+      {ctaSource === 'fallback_source' && (
+        <p class="text-xs opacity-80 mt-2">Link diretto alla pagina ufficiale del bando.</p>
+      )}
+    </div>
+  )}
+
+  {scad && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Scadenza</p>
+      <p class="text-lg font-semibold text-slate-900">{scad}</p>
+      {giorniMancanti != null && (
+        <p class={`text-sm mt-1 ${scadenzaStato === 'scaduto' ? 'text-slate-500' : scadenzaStato === 'in_scadenza' ? 'text-amber-700' : 'text-emerald-700'}`}>
+          {giorniMancanti < 0
+            ? `Scaduto da ${Math.abs(giorniMancanti)} giorni`
+            : giorniMancanti === 0
+            ? 'Scade oggi'
+            : `Mancano ${giorniMancanti} giorni`}
+        </p>
+      )}
+    </div>
+  )}
+
+  {(pub || apt) && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Date</p>
+      <dl class="space-y-2 text-sm">
+        {pub && (
+          <div class="flex justify-between gap-2">
+            <dt class="text-slate-600">Pubblicato</dt>
+            <dd class="text-slate-900 font-medium">{pub}</dd>
+          </div>
+        )}
+        {apt && (
+          <div class="flex justify-between gap-2">
+            <dt class="text-slate-600">Apertura</dt>
+            <dd class="text-slate-900 font-medium">{apt}</dd>
+          </div>
+        )}
+      </dl>
+    </div>
+  )}
+
+  {(importoTotaleLabel || importoMaxLabel) && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Importi</p>
+      <dl class="space-y-2 text-sm">
+        {importoTotaleLabel && (
+          <div>
+            <dt class="text-slate-600">Dotazione totale</dt>
+            <dd class="text-lg font-semibold text-slate-900">{importoTotaleLabel}</dd>
+          </div>
+        )}
+        {importoMaxLabel && (
+          <div>
+            <dt class="text-slate-600">Max per progetto</dt>
+            <dd class="text-lg font-semibold text-slate-900">{importoMaxLabel}</dd>
+          </div>
+        )}
+      </dl>
+    </div>
+  )}
+
+  {bando.allegati && bando.allegati.length > 0 && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-3">Documenti allegati</p>
+      <ul class="space-y-2">
+        {bando.allegati.map((a) => (
+          <li>
+            <a
+              href={a.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="flex items-center gap-2 text-sm text-blue-700 hover:underline"
+            >
+              <span class="inline-flex items-center justify-center w-6 h-6 bg-slate-100 rounded text-xs font-semibold text-slate-700 uppercase">
+                {a.tipo}
+              </span>
+              <span class="line-clamp-2">{a.label}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )}
+
+  {bando.beneficiari_nomi.length > 0 && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Beneficiari</p>
+      <ul class="flex flex-wrap gap-1.5">
+        {bando.beneficiari_nomi.map((b) => (
+          <li class="text-xs bg-blue-50 text-blue-800 px-2 py-1 rounded">{b}</li>
+        ))}
+      </ul>
+    </div>
+  )}
+
+  {bando.regioni_nomi.length > 0 && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Regioni</p>
+      <ul class="flex flex-wrap gap-1.5">
+        {bando.regioni_nomi.map((r) => (
+          <li class="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">{r}</li>
+        ))}
+      </ul>
+    </div>
+  )}
+
+  {bando.settori_nomi.length > 0 && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Settori</p>
+      <ul class="flex flex-wrap gap-1.5">
+        {bando.settori_nomi.map((s) => (
+          <li class="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">{s}</li>
+        ))}
+      </ul>
+    </div>
+  )}
+
+  {(bando.tematica && bando.tematica.length > 0) && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Tematica</p>
+      <ul class="flex flex-wrap gap-1.5">
+        {bando.tematica.map((t) => (
+          <li class="text-xs bg-emerald-50 text-emerald-800 px-2 py-1 rounded">{t}</li>
+        ))}
+      </ul>
+    </div>
+  )}
+
+  {bando.codici_ateco_resolved.length > 0 && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Codici ATECO</p>
+      <ul class="space-y-1.5 text-xs">
+        {bando.codici_ateco_resolved.map((c) => (
+          <li class="text-slate-700">
+            <span class="font-mono font-semibold text-slate-900">{c.codice}</span>
+            {c.descrizione && <span class="ml-1.5 text-slate-600">{c.descrizione}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )}
+
+  {(bando.programma_nome || bando.modalita_nome || bando.tipologia_nome) && (
+    <div class="bg-white border border-slate-200 rounded-xl p-5">
+      <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Programma</p>
+      <dl class="space-y-2 text-sm">
+        {bando.tipologia_nome && (
+          <div>
+            <dt class="text-slate-600 text-xs">Tipologia</dt>
+            <dd class="text-slate-900">{bando.tipologia_nome}</dd>
+          </div>
+        )}
+        {bando.programma_nome && (
+          <div>
+            <dt class="text-slate-600 text-xs">Programma</dt>
+            <dd class="text-slate-900">{bando.programma_nome}</dd>
+          </div>
+        )}
+        {bando.modalita_nome && (
+          <div>
+            <dt class="text-slate-600 text-xs">Modalità</dt>
+            <dd class="text-slate-900">{bando.modalita_nome}</dd>
+          </div>
+        )}
+      </dl>
+    </div>
+  )}
+
+  <div class="bg-white border border-slate-200 rounded-xl p-5">
+    <BandoShareButtons url={publicUrl} titolo={bando.titolo ?? bando.titolo_raw ?? ''} />
+  </div>
+</aside>

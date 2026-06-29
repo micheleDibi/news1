@@ -1,0 +1,187 @@
+---
+// Filtri lista bandi. Render select multi-checkbox per regione/settore/
+// beneficiario/programma/modalita/tipologia + range importi + date scadenza.
+//
+// Comportamento client-side: submit del form ricarica la pagina con query
+// string aggiornata (Astro SSR rilegge i filtri).
+//
+// Sticky mobile + accordion compatto.
+import type { Catalogo } from '../../lib/supabase-bandi';
+
+export interface Props {
+  catalogo: Catalogo;
+  selected: {
+    regione?: string[];
+    settore?: string[];
+    beneficiario?: string[];
+    ateco?: string[];
+    tipologia?: string[];
+    programma?: string[];
+    modalita?: string[];
+    q?: string;
+    importo_min?: string;
+    importo_max?: string;
+    scadenza_da?: string;
+    scadenza_a?: string;
+    sort?: string;
+  };
+  /** Conteggio totale dei risultati attuali (per badge). */
+  resultCount: number;
+}
+
+const { catalogo, selected, resultCount } = Astro.props;
+
+function isSelected(list: string[] | undefined, value: string | number): boolean {
+  if (!list || list.length === 0) return false;
+  return list.includes(String(value));
+}
+
+const sortOptions = [
+  { value: 'data_scadenza_asc', label: 'Scadenza più vicina' },
+  { value: 'data_pubblicazione_desc', label: 'Pubblicazione più recente' },
+  { value: 'importo_totale_eur_desc', label: 'Importo decrescente' },
+];
+---
+
+<form method="GET" action="/bandi" class="space-y-4">
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <label for="q" class="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">Cerca</label>
+    <input
+      type="search"
+      id="q"
+      name="q"
+      value={selected.q ?? ''}
+      placeholder="titolo, ente, parole chiave..."
+      class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
+    />
+  </div>
+
+  <div class="bg-white border border-slate-200 rounded-xl p-4">
+    <label for="sort" class="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">Ordina per</label>
+    <select id="sort" name="sort" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white">
+      {sortOptions.map(opt => (
+        <option value={opt.value} selected={selected.sort === opt.value}>{opt.label}</option>
+      ))}
+    </select>
+  </div>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden" open>
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Tipologia</summary>
+    <div class="p-4 pt-0 space-y-1.5 max-h-64 overflow-y-auto">
+      {catalogo.tipologie.map(t => (
+        <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 px-2 py-1 rounded">
+          <input type="checkbox" name="tipologia" value={t.id} checked={isSelected(selected.tipologia, t.id)} class="rounded text-blue-600" />
+          <span class="text-slate-700">{t.nome}</span>
+        </label>
+      ))}
+    </div>
+  </details>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Regione</summary>
+    <div class="p-4 pt-0 space-y-1.5 max-h-64 overflow-y-auto">
+      {catalogo.regioni.map(r => (
+        <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 px-2 py-1 rounded">
+          <input type="checkbox" name="regione" value={r.id} checked={isSelected(selected.regione, r.id)} class="rounded text-blue-600" />
+          <span class="text-slate-700">{r.nome}</span>
+        </label>
+      ))}
+    </div>
+  </details>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Beneficiari</summary>
+    <div class="p-4 pt-0 space-y-1.5 max-h-64 overflow-y-auto">
+      {catalogo.beneficiari.map(b => (
+        <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 px-2 py-1 rounded">
+          <input type="checkbox" name="beneficiario" value={b.id} checked={isSelected(selected.beneficiario, b.id)} class="rounded text-blue-600" />
+          <span class="text-slate-700">{b.nome}</span>
+        </label>
+      ))}
+    </div>
+  </details>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Settore</summary>
+    <div class="p-4 pt-0 space-y-1.5 max-h-64 overflow-y-auto">
+      {catalogo.settori.map(s => (
+        <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 px-2 py-1 rounded">
+          <input type="checkbox" name="settore" value={s.id} checked={isSelected(selected.settore, s.id)} class="rounded text-blue-600" />
+          <span class="text-slate-700">{s.nome}</span>
+        </label>
+      ))}
+    </div>
+  </details>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Programma</summary>
+    <div class="p-4 pt-0 space-y-1.5 max-h-64 overflow-y-auto">
+      {catalogo.programmi.map(p => (
+        <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 px-2 py-1 rounded">
+          <input type="checkbox" name="programma" value={p.id} checked={isSelected(selected.programma, p.id)} class="rounded text-blue-600" />
+          <span class="text-slate-700">{p.nome}</span>
+        </label>
+      ))}
+    </div>
+  </details>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Modalità erogazione</summary>
+    <div class="p-4 pt-0 space-y-1.5 max-h-64 overflow-y-auto">
+      {catalogo.modalita.map(m => (
+        <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 px-2 py-1 rounded">
+          <input type="checkbox" name="modalita" value={m.id} checked={isSelected(selected.modalita, m.id)} class="rounded text-blue-600" />
+          <span class="text-slate-700">{m.nome}</span>
+        </label>
+      ))}
+    </div>
+  </details>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Codici ATECO</summary>
+    <div class="p-4 pt-0 space-y-1.5 max-h-64 overflow-y-auto">
+      {catalogo.codici_ateco.map(c => (
+        <label class="flex items-center gap-2 text-xs cursor-pointer hover:bg-slate-50 px-2 py-1 rounded">
+          <input type="checkbox" name="ateco" value={c.id} checked={isSelected(selected.ateco, c.id)} class="rounded text-blue-600" />
+          <span class="font-mono text-slate-900">{c.codice}</span>
+          {c.descrizione && <span class="text-slate-600 line-clamp-1">{c.descrizione}</span>}
+        </label>
+      ))}
+    </div>
+  </details>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Importo (€)</summary>
+    <div class="p-4 pt-0 space-y-2">
+      <div>
+        <label class="block text-xs text-slate-600 mb-1">Minimo</label>
+        <input type="number" name="importo_min" value={selected.importo_min ?? ''} min="0" step="100000" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2" />
+      </div>
+      <div>
+        <label class="block text-xs text-slate-600 mb-1">Massimo</label>
+        <input type="number" name="importo_max" value={selected.importo_max ?? ''} min="0" step="100000" class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2" />
+      </div>
+    </div>
+  </details>
+
+  <details class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+    <summary class="cursor-pointer p-4 font-semibold text-slate-800 text-sm hover:bg-slate-50">Scadenza</summary>
+    <div class="p-4 pt-0 space-y-2">
+      <div>
+        <label class="block text-xs text-slate-600 mb-1">Da</label>
+        <input type="date" name="scadenza_da" value={selected.scadenza_da ?? ''} class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2" />
+      </div>
+      <div>
+        <label class="block text-xs text-slate-600 mb-1">A</label>
+        <input type="date" name="scadenza_a" value={selected.scadenza_a ?? ''} class="w-full text-sm border border-slate-300 rounded-lg px-3 py-2" />
+      </div>
+    </div>
+  </details>
+
+  <div class="sticky bottom-0 bg-white border border-slate-200 rounded-xl p-3 flex items-center gap-2">
+    <button type="submit" class="flex-1 bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-blue-700 transition">
+      Applica ({resultCount})
+    </button>
+    <a href="/bandi" class="text-sm text-slate-600 hover:text-slate-800 px-3">Reset</a>
+  </div>
+</form>

@@ -285,7 +285,9 @@ async def update_bandi_postanalysis(
     """UPDATE batch dei bandi post-analisi LLM con retry su errori transient.
 
     Ogni update: {id, stato_processing, confidence_score, stato_bando|None,
-    rejection_reason|None}.
+    rejection_reason|None, data_pubblicazione|None, data_apertura|None,
+    data_scadenza|None}. Tutte le chiavi (eccetto 'id') sono incluse nel payload
+    UPDATE: chi non vuole sovrascrivere un campo deve ometterlo dal dict.
 
     NB: NON usiamo upsert(on_conflict='id') perche' postgrest interpreta
     quella sintassi come INSERT ... ON CONFLICT DO UPDATE: prova prima
@@ -425,11 +427,17 @@ def upsert_bandi(records: list[dict[str, Any]]) -> dict[str, int]:
 # Step v7: enrichment
 # ---------------------------------------------------------------------------
 
-def select_bandi_to_enrich(limit: int | None = None) -> list[dict[str, Any]]:
+def select_bandi_to_enrich(
+    limit: int | None = None,
+    include_enriched: bool = False,
+) -> list[dict[str, Any]]:
     """SELECT bandi candidati al enrichment.
 
-    Criterio: stato_processing='processed' AND
+    Criterio default: stato_processing='processed' AND
               (stato_bando IN ('aperto','in apertura prossimamente') OR stato_bando IS NULL).
+    Se include_enriched=True: include anche i bandi gia' 'enriched' (per re-run
+    idempotente — la fase B sostituira' FK + junction + date eventualmente
+    aggiornate).
     Paginato 1000 alla volta per superare il cap default Supabase.
     """
     sb = get_supabase()
@@ -445,6 +453,9 @@ def select_bandi_to_enrich(limit: int | None = None) -> list[dict[str, Any]]:
         "stato_bando.eq.in apertura prossimamente,"
         "stato_bando.is.null"
     )
+    stato_processing_values = ["processed"]
+    if include_enriched:
+        stato_processing_values.append("enriched")
 
     while True:
         remaining = (limit - len(all_rows)) if limit else None
@@ -457,9 +468,10 @@ def select_bandi_to_enrich(limit: int | None = None) -> list[dict[str, Any]]:
                 sb.table("bando")
                 .select(
                     "id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, "
-                    "tipo_link, stato_bando"
+                    "tipo_link, stato_bando, "
+                    "data_pubblicazione, data_apertura, data_scadenza"
                 )
-                .eq("stato_processing", "processed")
+                .in_("stato_processing", stato_processing_values)
                 .or_(or_clause)
                 .order("id")
                 .range(offset, offset + page_size - 1)
@@ -565,9 +577,15 @@ async def update_bando_enriched(
     codici_ateco_ids: list[int],
     regioni_ids: list[int],
     settori_ids: list[int],
+    data_pubblicazione: str | None = None,
+    data_apertura: str | None = None,
+    data_scadenza: str | None = None,
 ) -> bool:
     """UPDATE bando (FK + stato_processing='enriched') + DELETE-then-INSERT
     per le 4 junction tables.
+
+    Le 3 date sono opzionali: incluse nel payload UPDATE solo se non None
+    (override scraper solo se LLM ha passato il gate substring + source).
 
     NB: Supabase REST non ha transazioni multi-table. Se uno step fallisce,
     log WARNING e RETURN False. Il bando resta in 'processed' (la transition
@@ -615,7 +633,8 @@ async def update_bando_enriched(
             )
             return False
 
-    # Step 3: UPDATE bando (FK + stato_processing='enriched' + stato_bando)
+    # Step 3: UPDATE bando (FK + stato_processing='enriched' + stato_bando +
+    # eventuali date che hanno passato il gate dell'enricher).
     payload: dict[str, Any] = {
         "tipologia_bando_id": tipologia_bando_id,
         "modalita_erogazione_id": modalita_erogazione_id,
@@ -623,6 +642,12 @@ async def update_bando_enriched(
         "stato_bando": stato_bando,
         "stato_processing": "enriched",
     }
+    if data_pubblicazione is not None:
+        payload["data_pubblicazione"] = data_pubblicazione
+    if data_apertura is not None:
+        payload["data_apertura"] = data_apertura
+    if data_scadenza is not None:
+        payload["data_scadenza"] = data_scadenza
     try:
         await asyncio.to_thread(
             lambda: sb.table("bando").update(payload).eq("id", bando_id).execute()
@@ -630,4 +655,213 @@ async def update_bando_enriched(
         return True
     except Exception as e:
         logger.exception("[db] UPDATE bando id={} fallito: {}", bando_id, e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Step v8: skill SEO (enriched -> completed)
+# ---------------------------------------------------------------------------
+
+def select_bandi_to_complete(
+    limit: int | None = None,
+    include_completed: bool = False,
+) -> list[dict[str, Any]]:
+    """SELECT bandi candidati alla skill SEO.
+
+    Criterio default: stato_processing='enriched'.
+    Se include_completed=True: include anche 'completed' (re-run idempotente).
+    Paginato 1000 per superare il cap default Supabase.
+
+    Colonne selezionate: tutto quanto serve a build_bando_input_context (raw
+    scraper + FK + date estratte dall'enricher).
+    """
+    sb = get_supabase()
+    PAGE = 1000
+    all_rows: list[dict[str, Any]] = []
+    offset = 0
+
+    stato_values = ["enriched"]
+    if include_completed:
+        stato_values.append("completed")
+
+    while True:
+        remaining = (limit - len(all_rows)) if limit else None
+        page_size = PAGE if not remaining else min(PAGE, remaining)
+        if page_size <= 0:
+            break
+
+        try:
+            res = (
+                sb.table("bando")
+                .select(
+                    "id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, "
+                    "tipo_link, stato_bando, "
+                    "data_pubblicazione, data_apertura, data_scadenza, "
+                    "tipologia_bando_id, modalita_erogazione_id, programma_id"
+                )
+                .in_("stato_processing", stato_values)
+                .order("id")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+        except Exception as e:
+            logger.exception("[db] select_bandi_to_complete offset={} fallito: {}", offset, e)
+            raise
+
+        rows = res.data or []
+        if not rows:
+            break
+        all_rows.extend(rows)
+        if len(rows) < page_size:
+            break
+        offset += page_size
+        if limit and len(all_rows) >= limit:
+            break
+
+    logger.info("[db] select_bandi_to_complete: {} bandi candidati (include_completed={})",
+                len(all_rows), include_completed)
+    return all_rows
+
+
+def _select_junction_ids(table: str, fk_column: str, bando_id: int) -> list[int]:
+    sb = get_supabase()
+    try:
+        res = sb.table(table).select(fk_column).eq("bando_id", bando_id).execute()
+        return [r[fk_column] for r in (res.data or []) if r.get(fk_column) is not None]
+    except Exception as e:
+        logger.warning("[db] junction {} per bando_id={} fallito: {}", table, bando_id, e)
+        return []
+
+
+def build_bando_input_context(
+    bando_row: dict[str, Any],
+    catalogo: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Compone il dict di contesto per il prompt skill: tutti i dati DB
+    accumulati nelle fasi precedenti, con FK + junction risolte a nomi.
+
+    Riusa load_catalogo() singleton per i nomi.
+    """
+    bando_id = bando_row["id"]
+
+    # FK -> nomi
+    def _lookup_name(catalog_key: str, target_id: int | None) -> str | None:
+        if target_id is None:
+            return None
+        for row in catalogo.get(catalog_key, []):
+            if row.get("id") == target_id:
+                return row.get("nome")
+        return None
+
+    tipologia_nome = _lookup_name("tipologie", bando_row.get("tipologia_bando_id"))
+    modalita_nome = _lookup_name("modalita", bando_row.get("modalita_erogazione_id"))
+    programma_nome = _lookup_name("programmi", bando_row.get("programma_id"))
+
+    # Junction -> nomi
+    beneficiari_ids = _select_junction_ids("bando_beneficiari", "beneficiario_id", bando_id)
+    regioni_ids = _select_junction_ids("bando_regioni", "regione_id", bando_id)
+    settori_ids = _select_junction_ids("bando_settori", "settore_id", bando_id)
+    ateco_ids = _select_junction_ids("bando_codici_ateco", "codice_ateco_id", bando_id)
+
+    def _names_from_catalog(catalog_key: str, ids: list[int]) -> list[str]:
+        if not ids:
+            return []
+        by_id = {row["id"]: row.get("nome") for row in catalogo.get(catalog_key, [])}
+        return [by_id[i] for i in ids if by_id.get(i)]
+
+    beneficiari_nomi = _names_from_catalog("beneficiari", beneficiari_ids)
+    regioni_nomi = _names_from_catalog("regioni", regioni_ids)
+    settori_nomi = _names_from_catalog("settori", settori_ids)
+
+    # Codici ATECO: schema diverso (codice + descrizione)
+    ateco_by_id = {row["id"]: row for row in catalogo.get("codici_ateco", [])}
+    ateco_records: list[dict[str, str]] = []
+    for aid in ateco_ids:
+        row = ateco_by_id.get(aid)
+        if row:
+            ateco_records.append({
+                "codice": row.get("codice", ""),
+                "descrizione": row.get("descrizione", ""),
+            })
+
+    return {
+        "id": bando_id,
+        "fonte_id": bando_row.get("fonte_id"),
+        "titolo_raw": bando_row.get("titolo_raw"),
+        "descrizione_raw": bando_row.get("descrizione_raw"),
+        "raw_data": bando_row.get("raw_data") or {},
+        "link_bando": bando_row.get("link_bando"),
+        "tipo_link": bando_row.get("tipo_link"),
+        "stato_bando": bando_row.get("stato_bando"),
+        "data_pubblicazione": bando_row.get("data_pubblicazione"),
+        "data_apertura": bando_row.get("data_apertura"),
+        "data_scadenza": bando_row.get("data_scadenza"),
+        "tipologia": tipologia_nome,
+        "modalita_erogazione": modalita_nome,
+        "programma": programma_nome,
+        "beneficiari": beneficiari_nomi,
+        "codici_ateco": ateco_records,
+        "regioni": regioni_nomi,
+        "settori": settori_nomi,
+    }
+
+
+def slug_exists(slug: str, exclude_bando_id: int | None = None) -> bool:
+    """True se lo slug e' gia' usato da un altro bando (UNIQUE in DB)."""
+    sb = get_supabase()
+    try:
+        q = sb.table("bando").select("id").eq("slug", slug)
+        if exclude_bando_id is not None:
+            q = q.neq("id", exclude_bando_id)
+        res = q.limit(1).execute()
+        return bool(res.data)
+    except Exception as e:
+        logger.warning("[db] slug_exists({}) fallito: {}", slug, e)
+        return False
+
+
+_SEO_PAYLOAD_COLUMNS = (
+    "slug",
+    "titolo",
+    "titolo_breve",
+    "descrizione_breve",
+    "contenuto",
+    "livello",
+    "allegati",
+    "ente_erogatore",
+    "area_geografica",
+    "tematica",
+    "importo_totale_eur",
+    "importo_max_per_progetto_eur",
+    "link_candidatura",
+    "link_candidatura_source",
+)
+
+
+async def update_bando_completed(
+    bando_id: int,
+    payload: dict[str, Any],
+    mark_completed: bool = True,
+) -> bool:
+    """UPDATE bando con i 14 campi del payload skill + stato_processing='completed'.
+
+    payload deve contenere SOLO i 14 campi consentiti (filtrati comunque per
+    sicurezza). Idempotente: re-run sostituisce i valori esistenti.
+    """
+    import asyncio
+
+    sb = get_supabase()
+    update_dict: dict[str, Any] = {
+        col: payload[col] for col in _SEO_PAYLOAD_COLUMNS if col in payload
+    }
+    if mark_completed:
+        update_dict["stato_processing"] = "completed"
+
+    try:
+        await asyncio.to_thread(
+            lambda: sb.table("bando").update(update_dict).eq("id", bando_id).execute()
+        )
+        return True
+    except Exception as e:
+        logger.exception("[db] update_bando_completed id={} fallito: {}", bando_id, e)
         return False

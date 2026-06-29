@@ -477,8 +477,13 @@ async def extract_settori(bando, fonte_ctx, html_text, settori) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
-# D. Wrapper per bando (7 call PARALLELE)
+# C. Wrapper per bando (7 call PARALLELE: FK + junction)
 # ---------------------------------------------------------------------------
+#
+# Nota v9: la date extraction (precedentemente extract_date qui) e' stata
+# SPOSTATA in preprocessor.py per ottenere stato_bando data-driven gia' a monte
+# (riduce falsi positivi 'aperto' su bandi gia' scaduti). L'enricher si occupa
+# solo di FK + junction.
 
 async def enrich_bando(
     bando: dict[str, Any],
@@ -486,8 +491,8 @@ async def enrich_bando(
     html_text: str,
     catalogo: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    """Esegue le 7 extract_* in parallelo. Ritorna dict pronto per
-    update_bando_enriched."""
+    """Esegue 7 extract_* di classificazione in parallelo (FK + junction).
+    Ritorna dict pronto per update_bando_enriched."""
     results = await asyncio.gather(
         extract_tipologia(bando, fonte_ctx, html_text, catalogo.get("tipologie", [])),
         extract_modalita(bando, fonte_ctx, html_text, catalogo.get("modalita", [])),

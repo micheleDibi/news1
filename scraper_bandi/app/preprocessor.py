@@ -83,11 +83,41 @@ def _extract_slug_title(url: str) -> str:
     return " ".join(tokens).strip().capitalize()
 
 
-# Tool schema: forza struttura JSON via tool use API.
+# Tool schema v2: forza struttura JSON via tool use API. Include estrazione
+# delle 3 date con citation obbligatoria (triple-gate validation post-call).
+_DATE_OBJ_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "date": {
+            "type": ["string", "null"],
+            "description": "ISO YYYY-MM-DD o null se non identificabile dal markdown.",
+        },
+        "source": {
+            "type": "string",
+            "enum": ["official_pdf", "official_page", "inferred", "missing"],
+            "description": (
+                "'official_pdf' = link/citazione PDF ufficiale; "
+                "'official_page' = direttamente nel contenuto HTML; "
+                "'inferred' = ricavata da contesto non esplicito; "
+                "'missing' = non identificabile (in tal caso date=null e quote=null)."
+            ),
+        },
+        "quote": {
+            "type": ["string", "null"],
+            "description": (
+                "Frammento LETTERALE del markdown (max 300 char) contenente la data. "
+                "OBBLIGATORIO se date non null. Sara' verificato come substring esatta."
+            ),
+        },
+    },
+    "required": ["date", "source", "quote"],
+}
+
+
 ANALYZE_TOOL = {
     "name": "save_bando_analysis",
     "description": (
-        "Salva il risultato dell'analisi del bando. "
+        "Salva il risultato dell'analisi del bando + estrai le 3 date dal markdown. "
         "Devi SEMPRE chiamare questo tool con la tua valutazione."
     ),
     "input_schema": {
@@ -119,15 +149,20 @@ ANALYZE_TOOL = {
                 "type": "string",
                 "enum": ["aperto", "chiuso", "in apertura prossimamente", "unknown"],
                 "description": (
-                    "Stato attuale del bando. "
-                    "'aperto'=candidature aperte; "
-                    "'chiuso'=scaduto/completato; "
-                    "'in apertura prossimamente'=preavviso/pre-informativa; "
-                    "'unknown'=impossibile determinare (penalizza confidence)."
+                    "Stato ATTUALE del bando, basato sulle date estratte e sul contenuto. "
+                    "Sara' poi riconciliato automaticamente con le date: "
+                    "data_scadenza < oggi -> forzato 'chiuso'; "
+                    "data_apertura > oggi -> forzato 'in apertura prossimamente'."
                 ),
             },
+            "data_pubblicazione": _DATE_OBJ_SCHEMA,
+            "data_apertura": _DATE_OBJ_SCHEMA,
+            "data_scadenza": _DATE_OBJ_SCHEMA,
         },
-        "required": ["is_valid_bando", "confidence_score", "stato_bando"],
+        "required": [
+            "is_valid_bando", "confidence_score", "stato_bando",
+            "data_pubblicazione", "data_apertura", "data_scadenza",
+        ],
     },
 }
 
@@ -197,6 +232,44 @@ INDIZI utili per lo stato:
 - 0.7-0.9: alta confidenza con piccoli dubbi
 - 0.5-0.7: media (segnali deboli, possibili interpretazioni multiple)
 - <0.5: incerto (usa per casi dubbi: meglio rifiutare con questa confidence)
+
+== ESTRAZIONE DATE (CRITICO) ==
+Data attuale: giugno 2026. Formato italiano DD/MM/YYYY. Output sempre ISO YYYY-MM-DD.
+
+Devi estrarre 3 date dal CONTENUTO PAGINA (markdown Firecrawl) — non dal titolo o raw_data:
+- **data_pubblicazione**: data di PUBBLICAZIONE del bando sulla fonte ufficiale (BUR, GU, sito ente).
+  Frasi tipiche: "pubblicato il", "data di pubblicazione", "avviso pubblicato in data".
+  NON e' la data odierna, NON e' la data di scraping.
+- **data_apertura**: data da cui le candidature sono ACCETTABILI.
+  Frasi tipiche: "presentazione domande dal", "apertura sportello a partire da", "dalle ore X del DD/MM".
+- **data_scadenza**: TERMINE ULTIMO per presentare.
+  Frasi tipiche: "termine presentazione domande", "scade il", "entro le ore X del DD/MM", "deadline".
+
+BLACKLIST contesti NORMATIVI (queste sono date della legge citata, NON del bando):
+- "ai sensi del DPR/L/DGR/DM n. X del DD/MM/YYYY"
+- "in attuazione di [normativa] del DD/MM/YYYY"
+- "visto il [decreto] del DD/MM/YYYY"
+- "richiamato il [provvedimento] del DD/MM/YYYY"
+
+REGOLE:
+1. Se una data non e' chiaramente nel markdown: imposta date=null, source='missing', quote=null.
+2. La quote DEVE essere una sottostringa LETTERALE e CONTIGUA del markdown (max 300 char) contenente la data.
+   Sara' verificata. NON parafrasare, NON ricostruire.
+3. Source:
+   - 'official_pdf' se la data e' in un link/riferimento a PDF ufficiale del bando
+   - 'official_page' se nel contenuto HTML della pagina ufficiale
+   - 'inferred' (sconsigliato) se ricavata da contesto non esplicito
+   - 'missing' se non trovata o se non sei sicuro (date=null, quote=null)
+4. Coerenza: data_pubblicazione <= data_apertura <= data_scadenza.
+5. Se nel markdown NON ci sono date chiare, USA missing per tutte e tre (non indovinare).
+
+== STATO_BANDO DATA-DRIVEN ==
+Lo stato_bando emesso dal LLM sara' RICONCILIATO automaticamente con le date:
+- Se data_scadenza < giugno 2026 (oggi) -> stato forzato a 'chiuso' (ignoro tua scelta)
+- Se data_apertura > giugno 2026 (oggi) -> stato forzato a 'in apertura prossimamente'
+- Altrimenti rispetta la tua decisione (aperto/chiuso/in apertura)
+
+Quindi: emetti lo stato che pensi corretto, ma SAI che le date hanno priorita'.
 """
 
 
@@ -210,8 +283,16 @@ def _truncate(text: str | None, max_chars: int) -> str:
     return s[: max_chars - 3] + "..."
 
 
-def _build_user_prompt(bando: dict[str, Any], fonte_ctx: dict[str, Any]) -> str:
-    """Costruisce il user prompt per un singolo bando."""
+def _build_user_prompt(
+    bando: dict[str, Any],
+    fonte_ctx: dict[str, Any],
+    markdown: str = "",
+) -> str:
+    """Costruisce il user prompt per un singolo bando.
+
+    Se markdown != "", include il contenuto Firecrawl della pagina del bando
+    (usato per estrazione date affidabile).
+    """
     titolo = _truncate(bando.get("titolo_raw"), 500)
     descrizione = _truncate(bando.get("descrizione_raw"), 2000)
 
@@ -252,7 +333,9 @@ def _build_user_prompt(bando: dict[str, Any], fonte_ctx: dict[str, Any]) -> str:
         )
     hints_block = ("\nANALISI URL:\n- " + "\n- ".join(url_hints)) if url_hints else ""
 
-    return f"""Analizza questo record candidato a bando:
+    md_block = _truncate(markdown, 4000) if markdown else "(non disponibile)"
+
+    return f"""Analizza questo record candidato a bando.
 
 CONTESTO FONTE
 - URL fonte: {fonte_url}
@@ -266,7 +349,13 @@ RECORD ESTRATTO
 - Link bando: {link_bando_display}
 - raw_data: {raw_data_str or "(vuoto)"}{hints_block}
 
-Chiama il tool `save_bando_analysis` con la tua valutazione."""
+CONTENUTO PAGINA (markdown Firecrawl del bando):
+{md_block}
+
+Chiama il tool `save_bando_analysis` con:
+1. is_valid_bando, confidence_score, rejection_reason, stato_bando (valutazione qualitativa).
+2. data_pubblicazione, data_apertura, data_scadenza (estratte dal MARKDOWN sopra, con citation).
+   Se markdown non disponibile o non contiene date chiare: imposta date=null, source='missing', quote=null."""
 
 
 @lru_cache(maxsize=1)
@@ -353,8 +442,22 @@ def _extract_tool_input(response: Any) -> dict[str, Any]:
     )
 
 
-def _validate_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
-    """Validazione output LLM. Coerce + default su error."""
+def _validate_analysis(
+    analysis: dict[str, Any],
+    markdown: str,
+    bando_id: Any,
+) -> dict[str, Any]:
+    """Validazione output LLM con triple-gate sulle date.
+
+    Le date vengono validate via _validate_date_candidate (substring + source
+    autoritativo + regex date in quote). Se NON passa il gate -> None.
+
+    Poi applica reconciliation guard data-driven:
+      - data_scadenza < oggi -> stato_bando='chiuso'
+      - data_apertura > oggi -> 'in apertura prossimamente'
+    """
+    from .date_validation import validate_date_candidate, reconcile_stato_bando
+
     is_valid = bool(analysis.get("is_valid_bando", False))
     try:
         conf = float(analysis.get("confidence_score", 0.0))
@@ -362,9 +465,9 @@ def _validate_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         conf = 0.0
 
-    stato = analysis.get("stato_bando", "unknown")
-    if stato not in ("aperto", "chiuso", "in apertura prossimamente", "unknown"):
-        stato = "unknown"
+    stato_llm = analysis.get("stato_bando", "unknown")
+    if stato_llm not in ("aperto", "chiuso", "in apertura prossimamente", "unknown"):
+        stato_llm = "unknown"
 
     rej = analysis.get("rejection_reason")
     if is_valid:
@@ -372,11 +475,49 @@ def _validate_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     elif rej:
         rej = str(rej)[:500]
 
+    # Triple-gate validation sulle 3 date (solo per bandi validi: se rejected, le date
+    # non hanno senso comunque).
+    pub_date = None
+    apt_date = None
+    scad_date = None
+    if is_valid:
+        pub_date = validate_date_candidate(
+            analysis.get("data_pubblicazione"), markdown, bando_id, "pubblicazione",
+            log_prefix="preprocess/date",
+        )
+        apt_date = validate_date_candidate(
+            analysis.get("data_apertura"), markdown, bando_id, "apertura",
+            log_prefix="preprocess/date",
+        )
+        scad_date = validate_date_candidate(
+            analysis.get("data_scadenza"), markdown, bando_id, "scadenza",
+            log_prefix="preprocess/date",
+        )
+        # Coerenza temporale: pub <= apt <= scad. Se incoerente -> coerce tutte a None.
+        from .date_validation import check_dates_coherence
+        if not check_dates_coherence(pub_date, apt_date, scad_date):
+            logger.warning(
+                "[preprocess/{}] date incoerenti pub={} apt={} scad={} -> coerce tutte a None",
+                bando_id, pub_date, apt_date, scad_date,
+            )
+            pub_date = apt_date = scad_date = None
+
+    # Reconciliation data-driven: forza coerenza tra stato_bando e date estratte.
+    stato_final = reconcile_stato_bando(stato_llm, apt_date, scad_date)
+    if is_valid and stato_final != stato_llm and stato_final is not None:
+        logger.info(
+            "[preprocess/{}] stato_bando reconciled: LLM={!r} -> data-driven={!r} (apt={} scad={})",
+            bando_id, stato_llm, stato_final, apt_date, scad_date,
+        )
+
     return {
         "is_valid_bando": is_valid,
         "confidence_score": conf,
         "rejection_reason": rej,
-        "stato_bando": stato,
+        "stato_bando": stato_final,
+        "data_pubblicazione": pub_date.isoformat() if pub_date else None,
+        "data_apertura": apt_date.isoformat() if apt_date else None,
+        "data_scadenza": scad_date.isoformat() if scad_date else None,
     }
 
 
@@ -384,42 +525,96 @@ async def analyze_bando(
     bando: dict[str, Any],
     fonte_ctx: dict[str, Any],
 ) -> dict[str, Any]:
-    """Analizza un singolo bando via Claude Haiku 4.5.
+    """Analizza un singolo bando via Claude Haiku 4.5 con Firecrawl markdown.
+
+    1. Pre-filter auto-reject.
+    2. Firecrawl markdown del link_bando (cache LRU condivisa con enricher).
+    3. Se markdown vuoto/troppo corto -> sentinel _needs_fallback=True per
+       triggerare bando_resolver lato runner.
+    4. LLM Haiku 4.5 con tool use esteso (validita + stato + 3 date).
+    5. Triple-gate validation date + reconciliation data-driven.
 
     Args:
         bando: dict con id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link.
         fonte_ctx: dict con link (URL fonte), tipo_link, categoria_nome, tipologia_nome.
 
     Returns:
-        dict {is_valid_bando, confidence_score, rejection_reason, stato_bando}.
+        dict {is_valid_bando, confidence_score, rejection_reason, stato_bando,
+              data_pubblicazione, data_apertura, data_scadenza,
+              _needs_fallback (bool, true se richiede bando_resolver)}.
     """
-    # Pre-filter difensivo
+    bando_id = bando.get("id")
+
+    # 1. Pre-filter difensivo
     auto = _auto_reject(bando)
     if auto is not None:
-        logger.debug("[preprocess/{}] auto-reject: {}", bando.get("id"), auto["rejection_reason"])
+        logger.debug("[preprocess/{}] auto-reject: {}", bando_id, auto["rejection_reason"])
+        # Aggiungi 3 date null + flag no-fallback (auto-reject e' definitivo)
+        auto = {
+            **auto,
+            "data_pubblicazione": None,
+            "data_apertura": None,
+            "data_scadenza": None,
+            "_needs_fallback": False,
+        }
         return auto
 
+    # 2. Firecrawl markdown del link_bando (se disponibile)
+    link = bando.get("link_bando") or ""
+    markdown = ""
+    if link:
+        from .enricher import _firecrawl_scrape_markdown
+        try:
+            markdown = await _firecrawl_scrape_markdown(link)
+        except Exception as e:
+            logger.debug("[preprocess/{}] Firecrawl fail: {}", bando_id, e)
+
+    # 3. Markdown vuoto/troppo corto -> richiede fallback bando_resolver
+    if not markdown or len(markdown) < 200:
+        logger.info(
+            "[preprocess/{}] markdown vuoto/troppo corto ({} char) -> need fallback",
+            bando_id, len(markdown),
+        )
+        return {
+            "is_valid_bando": False,
+            "confidence_score": 0.0,
+            "rejection_reason": None,
+            "stato_bando": None,
+            "data_pubblicazione": None,
+            "data_apertura": None,
+            "data_scadenza": None,
+            "_needs_fallback": True,
+        }
+
+    # 4. LLM call Haiku 4.5
     settings = get_settings()
     client = _get_anthropic_client()
-    user_prompt = _build_user_prompt(bando, fonte_ctx)
+    user_prompt = _build_user_prompt(bando, fonte_ctx, markdown=markdown)
 
     response = await _call_anthropic_with_retry(
         client,
         model=settings.preprocess_model,
-        max_tokens=settings.preprocess_max_tokens,
+        # max_tokens esteso per ospitare 3 date * 300 char quote + overhead JSON
+        max_tokens=max(settings.preprocess_max_tokens, 800),
         system=SYSTEM_PROMPT,
         user_prompt=user_prompt,
     )
 
     raw_analysis = _extract_tool_input(response)
-    analysis = _validate_analysis(raw_analysis)
+
+    # 5. Validation + reconciliation
+    analysis = _validate_analysis(raw_analysis, markdown, bando_id)
+    analysis["_needs_fallback"] = False
 
     logger.debug(
-        "[preprocess/{}] valid={} conf={:.2f} stato={} rej={!r}",
-        bando.get("id"),
+        "[preprocess/{}] valid={} conf={:.2f} stato={} rej={!r} dates: pub={} apt={} scad={}",
+        bando_id,
         analysis["is_valid_bando"],
         analysis["confidence_score"],
         analysis["stato_bando"],
         analysis.get("rejection_reason"),
+        analysis.get("data_pubblicazione"),
+        analysis.get("data_apertura"),
+        analysis.get("data_scadenza"),
     )
     return analysis

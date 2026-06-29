@@ -41,25 +41,29 @@ from .settings import get_settings
 async def run(
     dry_run: bool = False,
     limit: int | None = None,
+    include_enriched: bool = False,
 ) -> dict[str, Any]:
     """Esegue le 2 fasi di enrichment.
 
     Args:
         dry_run: se True, NON scrive il DB.
         limit: cap totale dei candidati (smoke test).
+        include_enriched: se True, include anche bandi gia' 'enriched' (re-run
+            idempotente — utile per smoke o per ri-applicare prompt aggiornati).
     """
     settings = get_settings()
     started = time.monotonic()
     logger.info(
-        "[enrich] === START | model={} concurrency=({}, {}) dry_run={} ===",
+        "[enrich] === START | model={} concurrency=({}, {}) dry_run={} include_enriched={} ===",
         settings.enrich_model,
         settings.enrich_concurrency_refine,
         settings.enrich_concurrency,
         dry_run,
+        include_enriched,
     )
 
     # 1. SELECT candidati
-    bandi = select_bandi_to_enrich(limit=limit)
+    bandi = select_bandi_to_enrich(limit=limit, include_enriched=include_enriched)
     if not bandi:
         logger.info("[enrich] nessun bando candidato all'enrichment")
         return {"refined_total": 0, "enriched_total": 0, "elapsed_s": 0}
@@ -157,6 +161,8 @@ async def run(
         "sum_ateco": 0,
         "sum_regioni": 0,
         "sum_settori": 0,
+        "safety_net_forced_chiuso": 0,
+        "safety_net_forced_in_apertura": 0,
     }
 
     if enrich_targets:
@@ -218,6 +224,41 @@ async def run(
                 if not bando_record:
                     continue
                 stato_bando = bando_record.get("stato_bando") or "aperto"
+
+                # Safety net guard (v9): controllo coerenza date vs stato_bando.
+                # In teoria il preprocess v2 ha gia' fatto reconciliation, ma se
+                # per qualche motivo (es. bando aggiornato lato fonte fra preprocess
+                # ed enrich) la data_scadenza e' nel passato e stato='aperto',
+                # forza 'chiuso'. Stessa logica per data_apertura futura.
+                from datetime import date as _date_cls
+                today = _date_cls.today()
+                data_scad_str = bando_record.get("data_scadenza")
+                data_apt_str = bando_record.get("data_apertura")
+                if data_scad_str and stato_bando != "chiuso":
+                    try:
+                        scad = _date_cls.fromisoformat(str(data_scad_str)[:10])
+                        if scad < today:
+                            logger.warning(
+                                "[enrich/safety] bando_id={} stato_bando={} ma data_scadenza={} passata -> forzo 'chiuso'",
+                                bid, stato_bando, scad,
+                            )
+                            stato_bando = "chiuso"
+                            enrich_counter["safety_net_forced_chiuso"] += 1
+                    except (ValueError, TypeError):
+                        pass
+                if data_apt_str and stato_bando == "aperto":
+                    try:
+                        apt = _date_cls.fromisoformat(str(data_apt_str)[:10])
+                        if apt > today:
+                            logger.warning(
+                                "[enrich/safety] bando_id={} stato_bando=aperto ma data_apertura={} futura -> forzo 'in apertura prossimamente'",
+                                bid, apt,
+                            )
+                            stato_bando = "in apertura prossimamente"
+                            enrich_counter["safety_net_forced_in_apertura"] += 1
+                    except (ValueError, TypeError):
+                        pass
+
                 ok = await update_bando_enriched(
                     bid,
                     stato_bando,
@@ -251,6 +292,8 @@ async def run(
         "avg_ateco": round(enrich_counter["sum_ateco"] / n_e, 2),
         "avg_regioni": round(enrich_counter["sum_regioni"] / n_e, 2),
         "avg_settori": round(enrich_counter["sum_settori"] / n_e, 2),
+        "safety_net_forced_chiuso": enrich_counter["safety_net_forced_chiuso"],
+        "safety_net_forced_in_apertura": enrich_counter["safety_net_forced_in_apertura"],
         "dry_run": dry_run,
         "elapsed_s": round(elapsed, 1),
     }
