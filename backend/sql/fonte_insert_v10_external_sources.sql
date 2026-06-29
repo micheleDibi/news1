@@ -2,31 +2,45 @@
 -- v10: registra le 3 fonti esterne migrate dal repo ScrapingBandi.
 -- Idempotente via ON CONFLICT (link).
 --
--- categoria_programma_id e' NOT NULL nello schema: usiamo subquery
--- per cercare la categoria piu' appropriata (per nome), con fallback alla
--- prima riga disponibile (id minimo) se nessun match.
+-- categoria_programma_id E tipologia_programma_id sono entrambe NOT NULL.
+-- Usiamo CTE con COALESCE per cercare la categoria/tipologia piu' appropriata
+-- per nome, con fallback al primo ID disponibile (id minimo) se nessun match.
 --
 -- Le strategie associate sono mappate in scraper_bandi/app/scraper_config.py.
 -- ---------------------------------------------------------------------------
 
 BEGIN;
 
--- CTE per risolvere gli ID delle categorie/tipologie con fallback.
 WITH
+  -- Categorie con fallback al primo id disponibile
   cat_nazionale AS (
     SELECT COALESCE(
       (SELECT id FROM categoria_programma WHERE nome ILIKE '%nazionale%' ORDER BY id LIMIT 1),
+      (SELECT id FROM categoria_programma WHERE nome ILIKE '%italia%' ORDER BY id LIMIT 1),
       (SELECT id FROM categoria_programma ORDER BY id LIMIT 1)
     ) AS id
   ),
   cat_europeo AS (
     SELECT COALESCE(
-      (SELECT id FROM categoria_programma WHERE nome ILIKE '%europe%' OR nome ILIKE '%CTE%' OR nome ILIKE '%comunitar%' ORDER BY id LIMIT 1),
+      (SELECT id FROM categoria_programma WHERE nome ILIKE '%europe%' ORDER BY id LIMIT 1),
+      (SELECT id FROM categoria_programma WHERE nome ILIKE '%CTE%' ORDER BY id LIMIT 1),
+      (SELECT id FROM categoria_programma WHERE nome ILIKE '%comunitar%' ORDER BY id LIMIT 1),
       (SELECT id FROM categoria_programma ORDER BY id LIMIT 1)
     ) AS id
   ),
+  -- Tipologie con fallback al primo id disponibile
+  tip_default AS (
+    SELECT COALESCE(
+      (SELECT id FROM tipologia_programma WHERE nome ILIKE '%altro%' ORDER BY id LIMIT 1),
+      (SELECT id FROM tipologia_programma WHERE nome ILIKE '%generic%' ORDER BY id LIMIT 1),
+      (SELECT id FROM tipologia_programma ORDER BY id LIMIT 1)
+    ) AS id
+  ),
   tip_pnrr AS (
-    SELECT id FROM tipologia_programma WHERE nome ILIKE '%pnrr%' ORDER BY id LIMIT 1
+    SELECT COALESCE(
+      (SELECT id FROM tipologia_programma WHERE nome ILIKE '%pnrr%' ORDER BY id LIMIT 1),
+      (SELECT id FROM tip_default)
+    ) AS id
   )
 
 INSERT INTO public.fonte (
@@ -51,7 +65,7 @@ FROM (
       'ready',
       TRUE,
       (SELECT id FROM cat_europeo),
-      NULL::integer
+      (SELECT id FROM tip_default)
     ),
     -- Italia Domani: nazionale, PNRR
     (
@@ -71,7 +85,7 @@ FROM (
       'ready',
       TRUE,
       (SELECT id FROM cat_nazionale),
-      NULL::integer
+      (SELECT id FROM tip_default)
     )
 ) AS v(link, tipo_link, formato_link, stato_processing, attivo, categoria_id, tipologia_id)
 ON CONFLICT (link) DO UPDATE
@@ -92,4 +106,4 @@ COMMIT;
 --     'https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/bandi-amministrazioni-titolari/',
 --     'https://www.incentivi.gov.it/solr/coredrupal/select'
 --   );
---   -- atteso: 3 righe con categoria valorizzata (non NULL), tipologia opzionale
+--   -- atteso: 3 righe con categoria e tipologia entrambe non-NULL
