@@ -35,20 +35,16 @@ ALTER TABLE public.fonte
 -- (i NULL non sono considerati uguali), quindi non ci sono problemi con
 -- righe esistenti che potrebbero avere link=NULL.
 --
--- Drop di un eventuale partial index (versione precedente di questo file)
--- prima di aggiungere il constraint.
+-- Ordine importante: il constraint UNIQUE in PostgreSQL e' supportato
+-- da un index, e PG non permette di droppare l'index se e' "behind" un
+-- constraint. Quindi droppiamo PRIMA il constraint (che droppa anche
+-- l'indice associato) e POI un eventuale indice residuo (solo se era
+-- stato creato come index standalone nella v1 di questo file).
+ALTER TABLE public.fonte DROP CONSTRAINT IF EXISTS fonte_link_unique;
 DROP INDEX IF EXISTS public.fonte_link_unique;
 
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'fonte_link_unique'
-      AND conrelid = 'public.fonte'::regclass
-  ) THEN
-    ALTER TABLE public.fonte
-      ADD CONSTRAINT fonte_link_unique UNIQUE (link);
-  END IF;
-END $$;
+ALTER TABLE public.fonte
+  ADD CONSTRAINT fonte_link_unique UNIQUE (link);
 
 -- CHECK constraint su `stato_processing`: ammette solo i 3 valori usati
 -- dal nuovo scraper. Il vecchio constraint del subproject rimosso aveva
