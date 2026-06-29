@@ -100,8 +100,15 @@ def _read_csv_with_fallback(
 
 
 def _read_xlsx(content: bytes, sheet_name):
+    """Legge un XLSX/ZIP-OOXML.
+
+    Forziamo `engine='openpyxl'`: senza, pandas prova a inferire l'engine
+    dall'estensione del file. Quando il content e' un BytesIO senza nome
+    (es. download da endpoint WPDM senza .xlsx nell'URL) pandas magari
+    rileva il magic byte ZIP e cerca 'io.excel.zip.reader' che non esiste.
+    """
     import pandas as pd
-    return pd.read_excel(io.BytesIO(content), sheet_name=sheet_name)
+    return pd.read_excel(io.BytesIO(content), sheet_name=sheet_name, engine="openpyxl")
 
 
 def _pick_titolo_column(df, titolo_candidates: list[str]) -> str | None:
@@ -191,6 +198,17 @@ class CsvParserScraper(BandoScraper):
             logger.warning("[csv] fonte_id={} dataframe vuoto", fonte.get("id"))
             return []
 
+        # Validazione qualita': se il df ha 1 sola colonna, il sniff sep e'
+        # fallito (probabilmente il file ha un header narrativo che ha
+        # rovinato il riconoscimento delle colonne). Skip con warning.
+        if len(df.columns) < 2:
+            logger.warning(
+                "[csv] fonte_id={} parse degenere ({} colonna): file probabilmente "
+                "mal-formato con header narrativo. Considera 'skiprows' nel registry. cols={}",
+                fonte.get("id"), len(df.columns), list(df.columns),
+            )
+            return []
+
         titolo_col = _pick_titolo_column(df, self.titolo_columns)
         if not titolo_col:
             logger.warning(
@@ -205,7 +223,9 @@ class CsvParserScraper(BandoScraper):
         )
 
         items: list[BandoItem] = []
-        for idx, row in df.iterrows():
+        # Uso enumerate per ottenere SEMPRE un int come row_index (l'indice
+        # nativo del df potrebbe essere una tupla per MultiIndex).
+        for row_position, (_idx, row) in enumerate(df.iterrows()):
             titolo = row.get(titolo_col)
             if titolo is None or (isinstance(titolo, float) and titolo != titolo):  # NaN
                 continue
@@ -214,13 +234,14 @@ class CsvParserScraper(BandoScraper):
                 continue
 
             # raw_data = tutto il record (serializzabile)
-            raw: dict[str, Any] = {"row_index": int(idx), "source_url": url}
+            raw: dict[str, Any] = {"row_index": row_position, "source_url": url}
             for col, val in row.items():
                 if col == titolo_col:
                     continue
                 if val is None or (isinstance(val, float) and val != val):
                     continue
-                raw[str(col)] = str(val).strip() if not isinstance(val, (int, float, bool)) else val
+                key = str(col).strip() or f"col_{row_position}"
+                raw[key] = str(val).strip() if not isinstance(val, (int, float, bool)) else val
 
             items.append(BandoItem(
                 fonte_id=fonte["id"],

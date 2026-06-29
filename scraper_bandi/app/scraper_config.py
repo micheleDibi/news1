@@ -368,6 +368,8 @@ SCRAPER_CONFIG: dict[str, dict] = {
     },
     'https://cmsras.regione.sardegna.it/api/assets/programmazione/ff4fcd73-ae2e-4f66-a900-18664d4a4c56/': {
         "strategy": 'csv_parser',
+        # Skip header narrativo: titolo + sottotitolo + descrizione legale + riga vuota
+        "skiprows": 5,
         "columns_map": [],
         "note": 'Sì — tutte le righe sono preavvisi SENZA link al bando individuale. Salvare in raw_data JSONB con chiavi: {titolo, priorita, obiettivo_specifico, soggetti_ammissibili, dotazione_finanziaria_indicat...',
     },
@@ -383,6 +385,8 @@ SCRAPER_CONFIG: dict[str, dict] = {
     },
     'https://cmsras.regione.sardegna.it/api/assets/programmazione/2a95187d-764b-4a8f-a4ef-a98bd4eaf507/pr-fse-calendario-inviti-3-2023-del-14.12.2023.csv': {
         "strategy": 'csv_parser',
+        # Skip header narrativo: titolo + sottotitolo + descrizione legale + riga vuota
+        "skiprows": 5,
         "columns_map": [],
         "note": 'Tutte le righe sono bandi SENZA link. Per ciascuna riga salvare in raw_data JSONB le 10 colonne: titolo_bando (col1), servizio_responsabile, priorita, obiettivo_specifico, settore_intervento, tipol...',
     },
