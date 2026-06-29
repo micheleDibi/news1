@@ -2,39 +2,94 @@
 -- v10: registra le 3 fonti esterne migrate dal repo ScrapingBandi.
 -- Idempotente via ON CONFLICT (link).
 --
+-- categoria_programma_id e' NOT NULL nello schema: usiamo subquery
+-- per cercare la categoria piu' appropriata (per nome), con fallback alla
+-- prima riga disponibile (id minimo) se nessun match.
+--
 -- Le strategie associate sono mappate in scraper_bandi/app/scraper_config.py.
 -- ---------------------------------------------------------------------------
 
 BEGIN;
 
-INSERT INTO public.fonte (link, tipo_link, formato_link, stato_processing, attivo)
-VALUES
-  ('https://www.obiettivoeuropa.com/api/call/',
-   'Opportunità',
-   'JSON',
-   'ready',
-   TRUE),
-  ('https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/bandi-amministrazioni-titolari/',
-   'Opportunità',
-   'HTML',
-   'ready',
-   TRUE),
-  ('https://www.incentivi.gov.it/solr/coredrupal/select',
-   'Opportunità',
-   'JSON',
-   'ready',
-   TRUE)
+-- CTE per risolvere gli ID delle categorie/tipologie con fallback.
+WITH
+  cat_nazionale AS (
+    SELECT COALESCE(
+      (SELECT id FROM categoria_programma WHERE nome ILIKE '%nazionale%' ORDER BY id LIMIT 1),
+      (SELECT id FROM categoria_programma ORDER BY id LIMIT 1)
+    ) AS id
+  ),
+  cat_europeo AS (
+    SELECT COALESCE(
+      (SELECT id FROM categoria_programma WHERE nome ILIKE '%europe%' OR nome ILIKE '%CTE%' OR nome ILIKE '%comunitar%' ORDER BY id LIMIT 1),
+      (SELECT id FROM categoria_programma ORDER BY id LIMIT 1)
+    ) AS id
+  ),
+  tip_pnrr AS (
+    SELECT id FROM tipologia_programma WHERE nome ILIKE '%pnrr%' ORDER BY id LIMIT 1
+  )
+
+INSERT INTO public.fonte (
+  link, tipo_link, formato_link, stato_processing, attivo,
+  categoria_programma_id, tipologia_programma_id
+)
+SELECT
+  v.link,
+  v.tipo_link::text,
+  v.formato_link::text,
+  v.stato_processing::text,
+  v.attivo,
+  v.categoria_id,
+  v.tipologia_id
+FROM (
+  VALUES
+    -- Obiettivo Europa: aggregatore europeo + nazionale
+    (
+      'https://www.obiettivoeuropa.com/api/call/',
+      'Opportunità',
+      'JSON',
+      'ready',
+      TRUE,
+      (SELECT id FROM cat_europeo),
+      NULL::integer
+    ),
+    -- Italia Domani: nazionale, PNRR
+    (
+      'https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/bandi-amministrazioni-titolari/',
+      'Opportunità',
+      'HTML',
+      'ready',
+      TRUE,
+      (SELECT id FROM cat_nazionale),
+      (SELECT id FROM tip_pnrr)
+    ),
+    -- Incentivi Gov IT: portale governo nazionale
+    (
+      'https://www.incentivi.gov.it/solr/coredrupal/select',
+      'Opportunità',
+      'JSON',
+      'ready',
+      TRUE,
+      (SELECT id FROM cat_nazionale),
+      NULL::integer
+    )
+) AS v(link, tipo_link, formato_link, stato_processing, attivo, categoria_id, tipologia_id)
 ON CONFLICT (link) DO UPDATE
   SET stato_processing = EXCLUDED.stato_processing,
-      attivo = EXCLUDED.attivo;
+      attivo = EXCLUDED.attivo,
+      formato_link = EXCLUDED.formato_link;
 
 COMMIT;
 
 -- Verifica:
---   SELECT id, link, tipo_link, formato_link, stato_processing, attivo
---   FROM fonte WHERE link IN (
+--   SELECT f.id, f.link, f.formato_link, f.stato_processing, f.attivo,
+--          cp.nome AS categoria, tp.nome AS tipologia
+--   FROM fonte f
+--   LEFT JOIN categoria_programma cp ON cp.id = f.categoria_programma_id
+--   LEFT JOIN tipologia_programma tp ON tp.id = f.tipologia_programma_id
+--   WHERE f.link IN (
 --     'https://www.obiettivoeuropa.com/api/call/',
 --     'https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/bandi-amministrazioni-titolari/',
 --     'https://www.incentivi.gov.it/solr/coredrupal/select'
 --   );
---   -- atteso: 3 righe con stato_processing='ready' e attivo=TRUE
+--   -- atteso: 3 righe con categoria valorizzata (non NULL), tipologia opzionale
