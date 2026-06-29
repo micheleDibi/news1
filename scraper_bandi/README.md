@@ -4,9 +4,9 @@ Nuovo scraper bandi per il progetto news1. Sostituisce il precedente subproject 
 
 Costruito in **step incrementali**:
 
-- **Step 1 (questo)**: discovery delle **fonti** dalla pagina indice di OpenCoesione (`https://opencoesione.gov.it/it/opportunita_2021_2027/`) → popola la tabella `fonte` su Supabase DB B.
-- **Step 2 (prossimo)**: scraping di ogni fonte estratta → popola la tabella `bando`.
-- **Step 3+**: TBD.
+- **Step 1 (completato)**: discovery delle **fonti** dalla pagina indice di OpenCoesione (`https://opencoesione.gov.it/it/opportunita_2021_2027/`) → popola la tabella `fonte` su Supabase DB B.
+- **Step 2 (questo)**: scraping di ogni fonte estratta → popola la tabella `bando`. Strategia per fonte mappata in `app/scraper_config.py` (108 entry).
+- **Step 3+**: enrichment skill SEO (gia' esistente in `bandi-seo-enricher/`).
 
 ## Stack
 
@@ -39,7 +39,9 @@ cp .env.example .env
 | `REACHABILITY_CONCURRENCY` | `10` | Numero di test reachability paralleli |
 | `HTTP_USER_AGENT` | browser realistico | UA inviato dalle request |
 
-## Comando
+## Comandi
+
+### Step 1 — discovery fonti
 
 ```bash
 cd scraper_bandi
@@ -87,12 +89,67 @@ Hardcoded nel codice (`app/classifier.py`), basato sull'organizzazione della pag
 - PN FESR, PN FSE+, PN FESR e FSE+, PN Just Transition Fund
 - INTERREG FESR, INTERREG IPA, INTERREG NEXT
 
-## SQL migration prerequisito
-
-Prima del primo run, applicare:
+### Step 2 — scraping bandi
 
 ```bash
-psql "$DATABASE_URL_BANDI" -f ../backend/sql/fonte_alter_v5_drop_legacy.sql
+cd scraper_bandi
+.venv/bin/python -m app scrape-bandi
 ```
 
-Droppa 8 colonne legacy (`titolo`, `note_aggiuntive`, retry_*, last_error_*) e crea l'UNIQUE index su `link`.
+Esegue:
+1. SELECT `fonte` WHERE `stato_processing='ready' AND attivo=TRUE` (~108).
+2. Per ogni fonte: lookup in `app/scraper_config.py` -> strategia + parametri.
+3. Istanzia uno scraper (8 strategie disponibili):
+   - `httpx_bs4` (~38) — indici SSR semplici (httpx + BeautifulSoup)
+   - `firecrawl_scrape` (~18) — JS dinamico / anti-bot (Cloudflare, Radware)
+   - `firecrawl_extract` (1) — estrazione AI strutturata
+   - `hybrid_httpx_firecrawl` (~16) — discovery HTML + parse PDF/CSV allegati
+   - `csv_parser` (~8) — CSV/XLSX direct download
+   - `pdf_extract_tables_pdfplumber` (~5) — tabelle PDF
+   - `pdf_extract_text` (1) — testo PDF
+   - `skip_no_bandi` (~19) — pagine hub/404, no-op
+4. Per ogni bando trovato: compone record con `hash_bando = SHA256(fonte_id|link_bando)` (o `SHA256(fonte_id|titolo_normalizzato)` per bandi senza link).
+5. UPSERT in `bando` (on_conflict='hash_bando'), chunk da 500.
+
+Counters finali: `{fonti_totali, fonti_processate, fonti_skipped_*, fonti_errors, bandi_estratti, bandi_con_link, bandi_senza_link, bandi_upsert_processed}`.
+
+Stima durata: ~18-30 min totali (sequenziale + throttle 1s/host).
+
+## SQL migration prerequisito
+
+Prima del primo run, applicare in Supabase SQL editor:
+
+**Step 1** — `backend/sql/fonte_alter_v5_drop_legacy.sql`
+Droppa 8 colonne legacy (`titolo`, `note_aggiuntive`, retry_*, last_error_*), crea UNIQUE constraint su `fonte.link` + CHECK su `stato_processing`.
+
+**Step 2** — `backend/sql/bando_alter_v5_for_new_scraper.sql`
+Rinomina `titolo`→`titolo_raw`, `descrizione`→`descrizione_raw`. Aggiunge `tipo_link` con CHECK. Droppa 12 colonne legacy (codice_bando, scraping_at, retry, ocr). UNIQUE constraint su `hash_bando` + INDEX su `fonte_id`.
+
+## Tabella `bando` (schema post-Step 2)
+
+| Colonna | Tipo | Origine |
+|---|---|---|
+| `id` | bigserial PK | DB |
+| `fonte_id` | int FK → `fonte` | Scraper |
+| `hash_bando` | text UNIQUE | Scraper (SHA256) |
+| `tipo_link` | text (`Opportunità` \| `Preavviso`) | Da fonte.tipo_link |
+| `link_bando` | text nullable | Scraper (URL dettaglio bando, null per bandi senza link) |
+| `titolo_raw` | text | Scraper (testo del link / titolo da CSV/PDF) |
+| `descrizione_raw` | text | Scraper |
+| `raw_data` | jsonb nullable | NULL se ha link; JSONB con info estratte se non ha link |
+| `created_at`, `updated_at` | timestamptz | DB |
+
+## Strategie di scraping
+
+Vedi `app/scraper_config.py` per il mapping completo delle 108 fonti. Distribuzione:
+
+| Strategia | N fonti |
+|---|---|
+| httpx_bs4 | 38 |
+| firecrawl_scrape | 18 |
+| firecrawl_extract | 1 |
+| hybrid_httpx_firecrawl | 16 |
+| csv_parser | 8 |
+| pdf_extract_tables_pdfplumber | 5 |
+| pdf_extract_text | 1 |
+| skip_no_bandi | 19 |

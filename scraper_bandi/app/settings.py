@@ -37,6 +37,9 @@ class Settings:
     reachability_timeout_s: float
     reachability_concurrency: int
     http_user_agent: str
+    # Step 2 (scraping bandi)
+    firecrawl_api_key: str        # vuota se non impostata: strategie firecrawl_* falliranno
+    host_throttle_delay_s: float  # delay min tra request stesso host
 
 
 def _int_env(name: str, default: int) -> int:
@@ -84,4 +87,6 @@ def get_settings() -> Settings:
         reachability_concurrency=max(1, _int_env("REACHABILITY_CONCURRENCY", 10)),
         http_user_agent=os.getenv("HTTP_USER_AGENT", _DEFAULT_USER_AGENT).strip()
             or _DEFAULT_USER_AGENT,
+        firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY", "").strip(),
+        host_throttle_delay_s=_float_env("HOST_THROTTLE_DELAY_S", 1.0),
     )

@@ -126,3 +126,83 @@ def select_known_links() -> set[str]:
     except Exception as e:
         logger.warning("[db] select_known_links fallito: {}", e)
         return set()
+
+
+# ---------------------------------------------------------------------------
+# Step 2: bandi
+# ---------------------------------------------------------------------------
+
+def select_fonti_ready() -> list[dict[str, Any]]:
+    """SELECT * FROM fonte WHERE stato_processing='ready' AND attivo=TRUE.
+
+    Restituisce solo le fonti pronte per lo scraping bandi. Saltiamo
+    'connection error' e 'deprecated' come da decisione utente.
+    """
+    sb = get_supabase()
+    try:
+        res = (
+            sb.table("fonte")
+            .select("id, link, tipo_link, formato_link, categoria_programma_id, tipologia_programma_id")
+            .eq("stato_processing", "ready")
+            .eq("attivo", True)
+            .order("id")
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("[db] select_fonti_ready fallito: {}", e)
+        raise
+    rows = res.data or []
+    logger.info("[db] select_fonti_ready: {} fonti pronte", len(rows))
+    return rows
+
+
+def upsert_bandi(records: list[dict[str, Any]]) -> dict[str, int]:
+    """UPSERT idempotente in `bando` con on_conflict='hash_bando'.
+
+    Difesa anti-duplicati intra-batch sul hash_bando (PostgreSQL ON CONFLICT
+    non puo' aggiornare la stessa riga due volte nello stesso comando).
+
+    Inserisce in chunk da 500 per non superare il limite request size di
+    Supabase REST.
+    """
+    if not records:
+        return {"processed": 0, "dedup_collisions": 0}
+
+    # Dedup intra-batch su hash_bando preservando il primo
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    collisions = 0
+    for r in records:
+        h = r.get("hash_bando")
+        if not h:
+            logger.warning("[db] record bando senza hash_bando: skip {}", r)
+            continue
+        if h in seen:
+            collisions += 1
+            continue
+        seen.add(h)
+        deduped.append(r)
+
+    if collisions:
+        logger.info("[db] dedup intra-batch bandi: {} collisioni", collisions)
+
+    sb = get_supabase()
+    CHUNK = 500
+    total_processed = 0
+    for i in range(0, len(deduped), CHUNK):
+        chunk = deduped[i : i + CHUNK]
+        try:
+            sb.table("bando").upsert(chunk, on_conflict="hash_bando").execute()
+            total_processed += len(chunk)
+            logger.debug("[db] upsert bando chunk {}-{}", i, i + len(chunk))
+        except Exception as e:
+            logger.exception(
+                "[db] upsert bando chunk {}-{} fallito: {}", i, i + len(chunk), e,
+            )
+            raise
+
+    logger.info(
+        "[db] upsert {} record in `bando` (input={}, dedup_collisions={})",
+        total_processed, len(records), collisions,
+    )
+    return {"processed": total_processed, "dedup_collisions": collisions}
