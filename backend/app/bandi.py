@@ -19,13 +19,21 @@ I bandi non vengono cancellati ne' duplicati: la skill arricchisce il record
 esistente. In caso di errore transient (`attempts < BANDI_SKILL_MAX_ATTEMPTS`)
 il record resta in `state='error'` e viene riprovato dal batch successivo.
 
+Parallelismo (v4):
+  - Scraper subprocess gira in `asyncio.to_thread` PARALLELO alla skill batch
+    (la state machine `state` e' interamente di proprieta' della skill, lo
+    scraper UPDATE tocca solo i campi raw — nessuna race in DB).
+  - Skill enrichment processa fino a `BANDI_SKILL_CONCURRENCY` bandi
+    in parallelo via `asyncio.Semaphore` (default 3).
+
 ENV vars:
-  - BANDI_SCRAPER_DIR        path al sotto-progetto scraper (obbligatoria)
-  - BANDI_SCRAPER_PYTHON     interprete python del scraper (default: 'python')
-  - BANDI_SCRAPER_TIMEOUT_S  timeout subprocess scraper in s (default: 1800 = 30 min)
-  - BANDI_SCRAPER_RUN_LIMIT  limite fonti per ciclo scraper (opzionale)
-  - BANDI_SKILL_BATCH_SIZE   bandi per ciclo skill (default: 10)
-  - BANDI_SKILL_MAX_ATTEMPTS retry skill (default: 3)
+  - BANDI_SCRAPER_DIR         path al sotto-progetto scraper (obbligatoria)
+  - BANDI_SCRAPER_PYTHON      interprete python del scraper (default: 'python')
+  - BANDI_SCRAPER_TIMEOUT_S   timeout subprocess scraper in s (default: 1800 = 30 min)
+  - BANDI_SCRAPER_RUN_LIMIT   limite fonti per ciclo scraper (opzionale)
+  - BANDI_SKILL_BATCH_SIZE    bandi per ciclo skill (default: 10)
+  - BANDI_SKILL_MAX_ATTEMPTS  retry skill (default: 3)
+  - BANDI_SKILL_CONCURRENCY   skill paralleli max (default: 3)
 """
 from __future__ import annotations
 
@@ -953,6 +961,19 @@ async def _enrich_one(sb, bando: dict[str, Any]) -> bool:
     return True
 
 
+def _skill_concurrency() -> int:
+    """Concurrency level per skill enrichment (asyncio.Semaphore).
+
+    Default 3: throughput ~9 bandi/min (vs ~3 sequenziale). Anthropic Opus
+    e Firecrawl accettano tranquillamente 3-5 concorrenti senza 429.
+    Alzabile a 5-8 via env `BANDI_SKILL_CONCURRENCY` se rate-limit OK.
+    """
+    try:
+        return max(1, int(os.getenv("BANDI_SKILL_CONCURRENCY", "3")))
+    except ValueError:
+        return 3
+
+
 async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
     """Arricchisce fino a `batch_size` bandi in stato `discovered`.
 
@@ -961,16 +982,18 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
       - `attempts < BANDI_SKILL_MAX_ATTEMPTS`
     Ordinati per `ultimo_scraping_at ASC` (FIFO, priorita' ai bandi piu' vecchi non processati).
 
-    Esegue serialmente (1 skill alla volta) per controllare il consumo token Claude.
+    Esegue in **parallelo** fino a `BANDI_SKILL_CONCURRENCY` skill alla volta
+    via `asyncio.Semaphore`. I counter sono safe in asyncio cooperative.
     Restituisce un dict con i contatori `{processed, confirmed, rejected, refuted, error}`.
     """
     sb = get_bandi_supabase()
     max_att = _max_attempts()
+    concurrency = _skill_concurrency()
     batch_started = time.monotonic()
 
     logger.info(
-        "[bandi/skill] BATCH START size={} max_attempts={} ordering=ultimo_scraping_at:asc",
-        batch_size, max_att,
+        "[bandi/skill] BATCH START size={} max_attempts={} concurrency={} ordering=ultimo_scraping_at:asc",
+        batch_size, max_att, concurrency,
     )
     try:
         res = (
@@ -997,50 +1020,59 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
     for r in rows:
         s = r.get("state") or "?"
         state_breakdown[s] = state_breakdown.get(s, 0) + 1
+    total = len(rows)
     logger.info(
-        "[bandi/skill] BATCH selezione: {} bandi ({}), processero' uno alla volta",
-        len(rows),
+        "[bandi/skill] BATCH selezione: {} bandi ({}) | processero' fino a {} in parallelo",
+        total,
         " + ".join(f"{n} {s}" for s, n in sorted(state_breakdown.items())),
+        concurrency,
     )
 
-    total = len(rows)
-    for idx, bando in enumerate(rows, start=1):
-        counters["processed"] += 1
+    sem = asyncio.Semaphore(concurrency)
+    progress = {"completed": 0}
+
+    async def _process_bando(idx: int, bando: dict[str, Any]) -> None:
         bando_id = bando.get("id")
-        logger.info(
-            "[bandi/skill] >>> processing {}/{} bando_id={} state={} attempts={}/{}",
-            idx, total, bando_id, bando.get("state"),
-            int(bando.get("attempts") or 0), max_att,
-        )
-        await _enrich_one(sb, bando)
-        # Ri-leggi lo state finale per i contatori (confirmed/rejected/refuted/error)
-        try:
-            cur = sb.table("bando").select("state, slug").eq("id", bando_id).single().execute()
-            data = cur.data or {}
-            new_state = data.get("state")
-            new_slug = data.get("slug")
-        except Exception:
-            logger.exception("[bandi/skill] re-read state fallito bando_id={}", bando_id)
-            new_state = BandoState.ERROR
-            new_slug = None
-        if new_state == BandoState.CONFIRMED:
-            counters["confirmed"] += 1
-        elif new_state == BandoState.REJECTED:
-            counters["rejected"] += 1
-        elif new_state == BandoState.REFUTED:
-            counters["refuted"] += 1
-        else:
-            counters["error"] += 1
-        logger.info(
-            "[bandi/skill] <<< done {}/{} bando_id={} -> state={} slug={} | counters={}",
-            idx, total, bando_id, new_state, new_slug, counters,
-        )
+        async with sem:
+            counters["processed"] += 1
+            logger.info(
+                "[bandi/skill] >>> START {}/{} bando_id={} state={} attempts={}/{} (in-flight={}/{})",
+                idx, total, bando_id, bando.get("state"),
+                int(bando.get("attempts") or 0), max_att,
+                concurrency - sem._value, concurrency,
+            )
+            await _enrich_one(sb, bando)
+            try:
+                cur = sb.table("bando").select("state, slug").eq("id", bando_id).single().execute()
+                data = cur.data or {}
+                new_state = data.get("state")
+                new_slug = data.get("slug")
+            except Exception:
+                logger.exception("[bandi/skill] re-read state fallito bando_id={}", bando_id)
+                new_state = BandoState.ERROR
+                new_slug = None
+            if new_state == BandoState.CONFIRMED:
+                counters["confirmed"] += 1
+            elif new_state == BandoState.REJECTED:
+                counters["rejected"] += 1
+            elif new_state == BandoState.REFUTED:
+                counters["refuted"] += 1
+            else:
+                counters["error"] += 1
+            progress["completed"] += 1
+            logger.info(
+                "[bandi/skill] <<< END {}/{} ({}/{} completati) bando_id={} -> state={} slug={} | counters={}",
+                idx, total, progress["completed"], total, bando_id, new_state, new_slug, counters,
+            )
+
+    # asyncio.gather su tutti i bandi, Semaphore limita la concorrenza effettiva.
+    await asyncio.gather(*[_process_bando(i, b) for i, b in enumerate(rows, start=1)])
 
     batch_elapsed = time.monotonic() - batch_started
     rate_per_min = (counters["processed"] / batch_elapsed * 60) if batch_elapsed > 0 else 0
     logger.info(
-        "[bandi/skill] BATCH DONE in {:.1f}s ({:.1f} bandi/min) | counters={}",
-        batch_elapsed, rate_per_min, counters,
+        "[bandi/skill] BATCH DONE in {:.1f}s ({:.1f} bandi/min, concurrency={}) | counters={}",
+        batch_elapsed, rate_per_min, concurrency, counters,
     )
     return counters
 
@@ -1049,24 +1081,60 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
 # Pipeline composite (usate dal sender)
 # ---------------------------------------------------------------------------
 
+async def _run_parallel_scraper_skill(
+    scraper_fn: "callable", scraper_label: str
+) -> None:
+    """Esegue scraper subprocess (via `asyncio.to_thread`) IN PARALLELO alla
+    skill enrichment batch.
+
+    La state machine `state` e' di proprieta' della skill: lo scraper UPDATE
+    tocca solo titolo/descrizione/raw_data/ultimo_scraping_at — nessuna race
+    su `state`/`state_detail`/`attempts`/`slug`/editorial fields.
+
+    Se uno dei due task solleva, l'altro continua (return_exceptions=True):
+    cosi' un eventuale errore scraper non blocca il drain skill (e viceversa).
+    """
+    logger.info("[bandi/pipeline] {} + skill batch IN PARALLELO", scraper_label)
+    scraper_task = asyncio.create_task(asyncio.to_thread(scraper_fn))
+    skill_task = asyncio.create_task(run_skill_enrichment_batch(_batch_size()))
+
+    results = await asyncio.gather(scraper_task, skill_task, return_exceptions=True)
+    scraper_result, skill_result = results
+
+    if isinstance(scraper_result, Exception):
+        logger.exception(
+            "[bandi/pipeline] {} FALLITO: {}", scraper_label, scraper_result,
+        )
+    else:
+        logger.info("[bandi/pipeline] {} -> rc={}", scraper_label, scraper_result)
+
+    if isinstance(skill_result, Exception):
+        logger.exception(
+            "[bandi/pipeline] skill batch FALLITO: {}", skill_result,
+        )
+    else:
+        logger.info("[bandi/pipeline] skill batch -> counters={}", skill_result)
+
+
 def run_full_pipeline() -> None:
-    """Pipeline 4x/giorno: scraper full → skill enrichment batch.
+    """Pipeline 4x/giorno: scraper full ∥ skill enrichment batch (PARALLELI).
 
     v4: rimossa fase intermedia `run_ai_worker_drain()` (worker AI deprecato,
-    la skill e' ora autoritativa sulla classificazione).
+    la skill e' ora autoritativa sulla classificazione). Scraper + skill
+    girano in parallelo via `asyncio.gather` — la skill drena i bandi gia'
+    in coda (state='discovered'/'error') mentre lo scraper scopre quelli
+    nuovi che entreranno nel batch successivo.
     """
-    logger.info("[bandi] pipeline full: start")
-    run_scraper_full()
-    asyncio.run(run_skill_enrichment_batch(_batch_size()))
-    logger.info("[bandi] pipeline full: done")
+    logger.info("[bandi] pipeline FULL: start")
+    asyncio.run(_run_parallel_scraper_skill(run_scraper_full, "scraper-full"))
+    logger.info("[bandi] pipeline FULL: done")
 
 
 def run_pending_pipeline() -> None:
-    """Pipeline pending (1x/4h): retry scraper → skill enrichment batch."""
-    logger.info("[bandi] pipeline pending: start")
-    run_scraper_pending()
-    asyncio.run(run_skill_enrichment_batch(_batch_size()))
-    logger.info("[bandi] pipeline pending: done")
+    """Pipeline pending (1x/4h): retry scraper ∥ skill enrichment batch (PARALLELI)."""
+    logger.info("[bandi] pipeline PENDING: start")
+    asyncio.run(_run_parallel_scraper_skill(run_scraper_pending, "scraper-pending"))
+    logger.info("[bandi] pipeline PENDING: done")
 
 
 def run_skill_only_pipeline() -> None:
