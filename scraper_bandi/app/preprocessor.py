@@ -12,11 +12,75 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlsplit, unquote
 
 from .logger import logger
 from .settings import get_settings
+
+
+# URL slug pattern: identifica gli URL che sembrano indici di sezione
+# (no slug specifico dopo il segmento "navigazione"). Esempi positivi:
+#   /bandi, /bandi/, /opportunita-di-finanziamento, /avvisi/, /calendario/
+#   /bandi-aperti, /elenco-avvisi-pubblicati, /bandi?page=3
+_INDEX_LAST_SEGMENT_PATTERNS = (
+    r"^bandi$", r"^bandi-(aperti|chiusi|attivi|in-uscita|21-27|2021-2027|fesr|fse|fse-plus)$",
+    r"^avvisi$", r"^avvisi-(pubblicati|aperti|attivi)$",
+    r"^opportunita$", r"^opportunita-(di-finanziamento|e-bandi|aperte)$",
+    r"^calendario$", r"^calendario-(degli-)?inviti$", r"^calendario-(degli-)?avvisi$",
+    r"^elenco-(avvisi|bandi)(-pubblicati)?$", r"^archivio$",
+    r"^get-involved$", r"^apply-for-(the-)?call$", r"^calls(-for-proposals)?$",
+    r"^preavvisi$", r"^calendario-(di-)?preavviso$", r"^bandi-fesr$", r"^bandi-fse$",
+)
+_INDEX_LAST_SEGMENT_RE = re.compile("|".join(_INDEX_LAST_SEGMENT_PATTERNS), re.IGNORECASE)
+
+
+def _is_likely_index_url(url: str) -> bool:
+    """Heuristic: True se l'URL sembra una pagina indice/elenco bandi
+    (non un dettaglio singolo). Usato come segnale aggiuntivo per il LLM."""
+    if not url:
+        return False
+    parts = urlsplit(url)
+    path = parts.path.rstrip("/")
+    # Path completamente vuoto o solo root -> non indica nulla
+    if not path or path == "":
+        return False
+    # Ultimo segmento + (eventuale query) sono indicatori
+    last = path.rsplit("/", 1)[-1].lower()
+    if not last:
+        return False
+    if _INDEX_LAST_SEGMENT_RE.match(last):
+        return True
+    # Query parameters tipici di paginazione/filtri -> probabilmente indice
+    if parts.query and any(p in parts.query.lower() for p in ("page=", "filter_", "sort_", "size=", "stato=", "values=")):
+        return True
+    return False
+
+
+def _extract_slug_title(url: str) -> str:
+    """Deriva un 'titolo' leggibile dallo slug URL.
+
+    Esempi:
+      /opportunita/.../bandi-21-27/investimenti-produttivi -> "Investimenti produttivi"
+      /avvisi-pubblici/fesr/avviso-pubblico-mini-pia       -> "Avviso pubblico mini pia"
+      /bandi/                                              -> "" (indice, nessuno slug specifico)
+    """
+    if not url:
+        return ""
+    path = urlsplit(url).path.rstrip("/")
+    if not path:
+        return ""
+    last = path.rsplit("/", 1)[-1]
+    last = unquote(last)
+    # Tokenize kebab/snake case
+    tokens = re.split(r"[-_]+", last)
+    tokens = [t for t in tokens if t and not t.isdigit()]
+    if not tokens or len(tokens) < 2:
+        return ""
+    # Capitalize first only
+    return " ".join(tokens).strip().capitalize()
 
 
 # Tool schema: forza struttura JSON via tool use API.
@@ -72,36 +136,67 @@ SYSTEM_PROMPT = """Sei un esperto di bandi pubblici italiani per finanziamenti U
 (FESR, FSE+, JTF, INTERREG). Il tuo compito e' validare ogni record candidato a "bando" \
 estratto da portali istituzionali (regioni, ministeri, programmi CTE), eliminando i falsi positivi.
 
-Sei AGGRESSIVO nel rifiutare:
-- Pagine indice/archivio (titolo come "Bandi", "Avvisi", "Opportunita'", "Calendario", "Elenco")
-- Header di tabella (titolo come "Avviso", "Oggetto", "Titolo", "Avviso pubblico")
+== REGOLA AUREA: BANDO SINGOLO, NON ELENCO ==
+Il tuo OBIETTIVO PRINCIPALE e' distinguere:
+  A) Pagina di DETTAGLIO di UN SINGOLO bando -> VALIDO
+  B) Pagina di ELENCO / INDICE / CATEGORIA che lista PIU' bandi -> NON VALIDO
+
+Pattern URL tipici di INDICE / CATEGORIA / ELENCO (RIFIUTA SEMPRE):
+  /bandi, /bandi/, /bandi-aperti, /bandi-21-27, /bandi-fesr, /bandi-fse
+  /opportunita, /opportunita-di-finanziamento, /opportunita-e-bandi
+  /avvisi, /avvisi-pubblicati, /elenco-avvisi-pubblicati
+  /calendario, /calendario-degli-inviti, /calendario-avvisi, /calendario-preavviso
+  /preavvisi, /archivio, /elenco-bandi
+  /apply-for-the-call, /get-involved, /calls, /calls-for-proposals
+  query string con ?page=, ?filter_, ?sort_, ?stato=
+  URL che non ha uno slug specifico (es. "regione.it/bandi" senza nulla dopo)
+
+Pattern URL tipici di DETTAGLIO SINGOLO BANDO (ACCETTA se confermato dal titolo):
+  /opportunita-di-finanziamento/2026/{slug-bando-descrittivo}
+  /avvisi-pubblici/fesr/{slug-bando}
+  /publiccompetition/12345:bando-incentivi-assunzioni-donne.html
+  /bandi/avviso-pubblico-mini-pia-piani-di-sviluppo-industriale
+  /-/{slug-bando-specifico} (Liferay friendly URL)
+  Pattern con anno o ID numerico + slug descrittivo
+
+== ALTRI FALSI POSITIVI DA RIFIUTARE ==
+- Header di tabella (titolo come "Avviso", "Oggetto", "Titolo", "Avviso pubblico", "Attuazione")
 - Link di navigazione (titolo come "Home", "Indietro", "Tutte le opportunita'", "Tutti i bandi")
 - Documenti generici (manuali, guide, regolamenti SENZA call associata)
-- Slug generici di sezione (es. "/bandi", "/opportunita-di-finanziamento", "/avvisi")
-- Pagine di programma/asse SENZA call specifica
-- Titoli troppo corti/generici (meno di 3 parole significative)
+- Pagine di programma/asse SENZA call specifica (es. "Asse 1 — Innovazione")
+- Titoli troppo corti/generici (meno di 3 parole significative tipo "PR FESR")
+- Link a documenti accessori (manuali utente, FAQ, video)
+- Brochure/calendari riassuntivi (NON un singolo bando)
 
-Accetti come VALIDO solo se identifichi inequivocabilmente un BANDO/AVVISO/CALL specifico \
-con almeno UN segnale forte: nome del bando descrittivo, codice avviso, oggetto identificabile, \
-beneficiari specifici, importo, scadenza, riferimento normativo (DGR/DDR/Decreto).
+== ACCETTI COME VALIDO SOLO SE ==
+Identifichi inequivocabilmente UN BANDO/AVVISO/CALL SPECIFICO con almeno UN segnale forte:
+- Nome del bando descrittivo (es. "Voucher digitalizzazione PMI 2026")
+- Codice avviso (es. "Avviso pubblico n. 499/2025", "Bando 26AB")
+- Oggetto identificabile (es. "Incentivi assunzioni donne vittime di violenza")
+- Beneficiari specifici (es. "Microimprese del commercio in sede fissa")
+- Importo / dotazione finanziaria
+- Scadenza / data presentazione domanda
+- Riferimento normativo (DGR/DDR/Decreto specifico)
 
-Stato bando:
+== STATO BANDO ==
 - "aperto": il bando e' attivo, le candidature sono aperte
 - "chiuso": il bando e' scaduto / completato / archiviato
 - "in apertura prossimamente": preavviso / pre-informativa / call non ancora aperta
 - "unknown": impossibile determinare (penalizza la confidence!)
 
-INDIZI utili per stato:
-- Se tipo fonte = "Preavviso" e raw_data ha 'data_pubblicazione_prevista' futura -> "in apertura prossimamente"
-- Se tipo fonte = "Opportunita'" e link punta a /bandi-aperti/ -> probabilmente "aperto"
-- Se descrizione contiene "scaduto", "chiuso", "archivio" -> "chiuso"
-- Senza indizi precisi e con tipo "Opportunita'": tendenzialmente "aperto" (default ragionevole)
+INDIZI utili per lo stato:
+- Tipo fonte = "Preavviso" -> molto probabilmente "in apertura prossimamente"
+- Tipo fonte = "Opportunita'" + link in /bandi-aperti/ -> "aperto"
+- Descrizione contiene "scaduto", "chiuso", "archivio", date passate -> "chiuso"
+- raw_data ha 'data_pubblicazione_prevista' / 'data_apertura_prevista' futura -> "in apertura prossimamente"
+- raw_data ha 'data_scadenza' passata -> "chiuso"
+- Senza indizi precisi e tipo "Opportunita'": "aperto" (default ragionevole)
 
-Confidenza:
-- 0.9-1.0: certezza
+== CONFIDENZA ==
+- 0.9-1.0: certezza (titolo descrittivo + URL specifico + segnali coerenti)
 - 0.7-0.9: alta confidenza con piccoli dubbi
-- 0.5-0.7: media (segnali deboli)
-- <0.5: incerto (usa per casi dubbi)
+- 0.5-0.7: media (segnali deboli, possibili interpretazioni multiple)
+- <0.5: incerto (usa per casi dubbi: meglio rifiutare con questa confidence)
 """
 
 
@@ -131,7 +226,31 @@ def _build_user_prompt(bando: dict[str, Any], fonte_ctx: dict[str, Any]) -> str:
     categoria = fonte_ctx.get("categoria_nome") or ""
     tipologia = fonte_ctx.get("tipologia_nome") or ""
 
-    link_bando = bando.get("link_bando") or "(nessun link)"
+    link_bando_raw = bando.get("link_bando") or ""
+    link_bando_display = link_bando_raw or "(nessun link)"
+
+    # Segnali aggiuntivi derivati dal URL: titolo dallo slug + flag indice.
+    slug_title = _extract_slug_title(link_bando_raw) if link_bando_raw else ""
+    looks_index = _is_likely_index_url(link_bando_raw) if link_bando_raw else False
+
+    # Hint di analisi URL
+    url_hints: list[str] = []
+    if looks_index:
+        url_hints.append(
+            "⚠ ATTENZIONE: l'URL del link bando ha un pattern tipico di PAGINA INDICE/ELENCO "
+            "(es. termina con /bandi, /opportunita, /calendario, ?page=, ?filter_). "
+            "Questo e' un FORTISSIMO segnale per rifiutare come 'pagina indice'."
+        )
+    if slug_title and not titolo:
+        url_hints.append(
+            f"Titolo derivato dallo slug URL (perche' titolo_raw vuoto): {slug_title!r}. "
+            "Valuta se questo slug descrive un BANDO SPECIFICO (accetta) o una SEZIONE/INDICE (rifiuta)."
+        )
+    elif slug_title and len(titolo) < 10:
+        url_hints.append(
+            f"Titolo molto breve. Slug URL: {slug_title!r}. Usalo come segnale aggiuntivo."
+        )
+    hints_block = ("\nANALISI URL:\n- " + "\n- ".join(url_hints)) if url_hints else ""
 
     return f"""Analizza questo record candidato a bando:
 
@@ -144,8 +263,8 @@ CONTESTO FONTE
 RECORD ESTRATTO
 - Titolo: {titolo or "(vuoto)"}
 - Descrizione: {descrizione or "(vuoto)"}
-- Link bando: {link_bando}
-- raw_data: {raw_data_str or "(vuoto)"}
+- Link bando: {link_bando_display}
+- raw_data: {raw_data_str or "(vuoto)"}{hints_block}
 
 Chiama il tool `save_bando_analysis` con la tua valutazione."""
 
