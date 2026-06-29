@@ -24,15 +24,32 @@ from .scrapers import BandoItem, get_scraper
 
 
 def _build_record(item: BandoItem) -> dict[str, Any]:
-    """Compone il dict DB-ready per un BandoItem. Calcola hash_bando."""
+    """Compone il dict DB-ready per un BandoItem. Calcola hash_bando.
+
+    Strategia hash:
+      - Bando CON link  -> SHA256(fonte_id|link_bando)
+      - Bando SENZA link -> SHA256(fonte_id|source_url|row_index|titolo_norm)
+        I campi source_url e row_index sono presi da raw_data se presenti.
+        Servono per evitare collisioni intra-batch quando titoli ripetuti
+        (es. tutte le righe del PDF hanno titolo='Avviso pubblico').
+        Idempotente al re-run dello stesso file (source_url + row_index stabili).
+    """
     if item.link_bando and is_valid_http_url(item.link_bando):
         h = hash_bando(item.fonte_id, item.link_bando)
     else:
-        # Bando senza link: hash su titolo normalizzato
+        # Bando senza link: hash con discriminatori extra per evitare collisioni.
+        raw = item.raw_data or {}
+        source_url = str(raw.get("source_url") or "")
+        row_index = str(raw.get("row_index") if raw.get("row_index") is not None else "")
+        page = str(raw.get("page") if raw.get("page") is not None else "")
         t_norm = normalize_titolo(item.titolo_raw or "")
-        if not t_norm:
-            return {}  # skip: ne' link ne' titolo significativo
-        h = hash_bando(item.fonte_id, t_norm)
+
+        # Necessario almeno uno tra: titolo significativo, row_index, source_url.
+        if not t_norm and not row_index and not source_url:
+            return {}  # skip: nessun discriminatore utile
+
+        key = f"{source_url}|p={page}|r={row_index}|t={t_norm}"
+        h = hash_bando(item.fonte_id, key)
 
     return {
         "fonte_id": item.fonte_id,

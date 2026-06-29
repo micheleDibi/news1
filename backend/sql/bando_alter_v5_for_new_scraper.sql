@@ -79,4 +79,12 @@ ALTER TABLE public.bando
 -- 5. Index su fonte_id per query veloci (join, conteggi per fonte)
 CREATE INDEX IF NOT EXISTS bando_fonte_id_idx ON public.bando(fonte_id);
 
+-- 6. link_bando deve poter essere NULL (bandi estratti da PDF/CSV calendari
+--    non hanno URL individuale, solo titolo + metadata in raw_data).
+ALTER TABLE public.bando ALTER COLUMN link_bando DROP NOT NULL;
+
+-- 7. titolo_raw nullable: in alcuni casi la riga PDF/CSV potrebbe avere
+--    solo metadati e nessun titolo distinto (raro).
+ALTER TABLE public.bando ALTER COLUMN titolo_raw DROP NOT NULL;
+
 COMMIT;
