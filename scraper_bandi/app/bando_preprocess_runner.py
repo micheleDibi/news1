@@ -50,14 +50,14 @@ def _build_update(bando_id: int, analysis: dict[str, Any]) -> dict[str, Any]:
 
 
 async def run(
-    batch_size: int = 5000,
+    batch_size: int | None = None,
     dry_run: bool = False,
     limit: int | None = None,
 ) -> dict[str, Any]:
     """Esegue il pre-processing su tutti i bandi 'scraped'.
 
     Args:
-        batch_size: cap del SELECT iniziale (per protezione su DB enormi).
+        batch_size: cap del SELECT iniziale. None = nessun cap (TUTTI i scraped).
         dry_run: se True, NON scrive il DB, ritorna solo i counter.
         limit: alternativo a batch_size per smoke test (es. limit=10).
     """
@@ -68,6 +68,7 @@ async def run(
         settings.preprocess_model, settings.preprocess_concurrency, dry_run,
     )
 
+    # Se non viene passato ne' limit ne' batch_size, processa TUTTI i scraped.
     select_limit = limit if limit is not None else batch_size
     rows = select_bandi_scraped(limit=select_limit)
     if not rows:

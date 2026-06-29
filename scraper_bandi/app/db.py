@@ -157,24 +157,54 @@ def select_fonti_ready() -> list[dict[str, Any]]:
 
 
 def select_bandi_scraped(limit: int | None = None) -> list[dict[str, Any]]:
-    """SELECT bandi pronti per pre-processing (stato_processing='scraped')."""
+    """SELECT bandi pronti per pre-processing (stato_processing='scraped').
+
+    Supabase REST API ha un default `max_rows=1000` per response. Per
+    superarlo, paginariamo via `range(offset, offset+page_size-1)`
+    finche' la pagina non e' piena.
+
+    Se `limit` e' impostato, ci fermiamo quando lo raggiungiamo.
+    """
     sb = get_supabase()
-    q = (
-        sb.table("bando")
-        .select("id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link")
-        .eq("stato_processing", "scraped")
-        .order("id")
-    )
-    if limit:
-        q = q.limit(limit)
-    try:
-        res = q.execute()
-    except Exception as e:
-        logger.exception("[db] select_bandi_scraped fallito: {}", e)
-        raise
-    rows = res.data or []
-    logger.info("[db] select_bandi_scraped: {} bandi pronti", len(rows))
-    return rows
+    PAGE = 1000  # supabase default cap
+    all_rows: list[dict[str, Any]] = []
+    offset = 0
+
+    while True:
+        # quanti record vogliamo in QUESTA pagina
+        remaining = (limit - len(all_rows)) if limit else None
+        page_size = PAGE if not remaining else min(PAGE, remaining)
+        if page_size <= 0:
+            break
+
+        try:
+            res = (
+                sb.table("bando")
+                .select("id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link")
+                .eq("stato_processing", "scraped")
+                .order("id")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+        except Exception as e:
+            logger.exception("[db] select_bandi_scraped offset={} fallito: {}", offset, e)
+            raise
+
+        rows = res.data or []
+        if not rows:
+            break
+        all_rows.extend(rows)
+        logger.debug("[db] select_bandi_scraped: pagina offset={} -> {} righe (totale {})",
+                     offset, len(rows), len(all_rows))
+        # Se la pagina e' MENO piena del massimo, abbiamo finito.
+        if len(rows) < page_size:
+            break
+        offset += page_size
+        if limit and len(all_rows) >= limit:
+            break
+
+    logger.info("[db] select_bandi_scraped: {} bandi pronti", len(all_rows))
+    return all_rows
 
 
 def select_fonti_by_ids(fonte_ids: list[int]) -> dict[int, dict[str, Any]]:
