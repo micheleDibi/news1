@@ -73,11 +73,35 @@ ALTER TABLE public.bando
 -- 6. stato_processing: default 'scraped', nuovi 5 valori ammessi.
 ALTER TABLE public.bando ALTER COLUMN stato_processing SET DEFAULT 'scraped';
 
--- 7. Migra record esistenti PRIMA di mettere il CHECK constraint (altrimenti
---    fallisce su righe gia' 'ready').
-UPDATE public.bando SET stato_processing = 'scraped' WHERE stato_processing = 'ready';
+-- 7. Drop di TUTTI i CHECK constraint vecchi su stato_processing (qualsiasi
+--    nome residuo dal v4/v5 — es. bando_stato_processing_check1, ecc.).
+--    Senza questo, un constraint legacy con nome diverso continua a bloccare
+--    l'UPDATE successivo verso 'scraped'.
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT con.conname
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+    WHERE rel.relname = 'bando'
+      AND nsp.nspname = 'public'
+      AND con.contype = 'c'
+      AND pg_get_constraintdef(con.oid) ILIKE '%stato_processing%'
+  LOOP
+    EXECUTE format('ALTER TABLE public.bando DROP CONSTRAINT %I', r.conname);
+  END LOOP;
+END $$;
 
-ALTER TABLE public.bando DROP CONSTRAINT IF EXISTS bando_stato_processing_check;
+-- 8. Normalizza tutti i valori esistenti: NULL o valori non-standard
+--    diventano 'scraped' (default ragionevole per record gia' nel DB).
+UPDATE public.bando
+SET stato_processing = 'scraped'
+WHERE stato_processing IS NULL
+   OR stato_processing NOT IN ('scraped', 'processed', 'rejected', 'enriched', 'completed');
+
+-- 9. Ora aggiunge il nuovo CHECK constraint (tutte le righe sono compatibili)
 ALTER TABLE public.bando
   ADD CONSTRAINT bando_stato_processing_check
   CHECK (stato_processing IN ('scraped', 'processed', 'rejected', 'enriched', 'completed'));
