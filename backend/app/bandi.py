@@ -34,6 +34,7 @@ import hashlib
 import os
 import re
 import subprocess
+import threading
 import time
 import unicodedata
 from datetime import date, datetime, timezone
@@ -102,25 +103,68 @@ def _scraper_timeout_s() -> int:
         return 1800
 
 
+def _stream_log_to_logger(log_path: str, label: str, stop_event: threading.Event) -> None:
+    """Thread reader: tail-follow del log file del subprocess.
+
+    Rilancia ogni riga al logger principale come `[bandi/<label>/stream] ...`
+    cosi' che `journalctl -u edunews-bandi-sender -f` veda il progress del
+    subprocess in tempo reale (non solo al termine).
+    """
+    try:
+        # Apertura ritardata: il subprocess sta scrivendo, il file potrebbe
+        # non esistere ancora per qualche istante. Aspetta fino a 5s.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not os.path.exists(log_path):
+            time.sleep(0.1)
+        if not os.path.exists(log_path):
+            logger.warning("[bandi/{}/stream] log file non disponibile dopo 5s: {}", label, log_path)
+            return
+
+        with open(log_path, "r", errors="replace") as f:
+            while not stop_event.is_set():
+                line = f.readline()
+                if not line:
+                    time.sleep(0.5)
+                    continue
+                logger.info("[bandi/{}/stream] {}", label, line.rstrip())
+            # Drain finale: leggi le righe scritte tra l'ultimo readline e stop_event.
+            for line in f.readlines():
+                if line.strip():
+                    logger.info("[bandi/{}/stream] {}", label, line.rstrip())
+    except Exception:
+        logger.exception("[bandi/{}/stream] reader thread crash", label)
+
+
 def _run_scraper_module(module: str, args: list[str], label: str) -> int:
     """Esegue `python -m <module> [args...]` con cwd e env dello scraper.
 
     Lo stdout/stderr e' rediretto a `/tmp/bandi_<label>_<timestamp>.log`
-    in line-buffered: e' possibile fare `tail -f` mentre il subprocess gira
-    (cosa impossibile con `capture_output=True` che assorbe fino a fine).
+    in line-buffered. Un thread reader (`_stream_log_to_logger`) tail-follow
+    il file e rilancia ogni riga al logger principale, cosi' che la console
+    journalctl veda il progress del subprocess in real-time.
 
-    Su timeout (`BANDI_SCRAPER_TIMEOUT_S`, default 30 min) il subprocess e' killato
-    e la funzione ritorna rc=-2.
+    Su timeout (`BANDI_SCRAPER_TIMEOUT_S`, default 30 min) il subprocess
+    e' killato e la funzione ritorna rc=-2.
     """
     cmd = [_scraper_python(), "-m", module, *args]
     timeout = _scraper_timeout_s()
     log_path = f"/tmp/bandi_{label}_{int(time.time())}.log"
     logger.info(
-        "[bandi/{}] start: cwd={} cmd={} log={} timeout={}s",
+        "[bandi/{}] START cwd={} cmd={} log={} timeout={}s",
         label, _scraper_dir(), " ".join(cmd), log_path, timeout,
     )
     started = time.monotonic()
     log_fp = open(log_path, "w", buffering=1)
+    stop_event = threading.Event()
+    reader = threading.Thread(
+        target=_stream_log_to_logger,
+        args=(log_path, label, stop_event),
+        daemon=True,
+        name=f"scraper-stream-{label}",
+    )
+    reader.start()
+    proc: subprocess.Popen[str] | None = None
+    rc = -1
     try:
         try:
             proc = subprocess.Popen(
@@ -135,36 +179,42 @@ def _run_scraper_module(module: str, args: list[str], label: str) -> int:
             logger.error("[bandi/{}] python non trovato: {}", label, e)
             return -1
 
+        logger.info("[bandi/{}] subprocess pid={} attendo (timeout={}s)", label, proc.pid, timeout)
         try:
             rc = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            logger.error(
+                "[bandi/{}] TIMEOUT raggiunto ({}s) -> killing pid={}",
+                label, timeout, proc.pid,
+            )
             proc.kill()
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                pass
+                logger.error("[bandi/{}] kill non risponde entro 10s, lascio zombie", label)
             elapsed = time.monotonic() - started
             logger.error(
-                "[bandi/{}] timeout after {:.0f}s rc=-2 (log={})",
+                "[bandi/{}] TIMEOUT after {:.0f}s rc=-2 (log={})",
                 label, elapsed, log_path,
             )
             return -2
     finally:
+        # Da' qualche istante extra al reader per drenare le ultime righe
+        # scritte tra la fine del subprocess e lo stop_event.
+        time.sleep(0.5)
+        stop_event.set()
         try:
             log_fp.close()
         except Exception:
             pass
+        reader.join(timeout=5)
+        if reader.is_alive():
+            logger.warning("[bandi/{}/stream] reader thread non si e' chiuso entro 5s", label)
 
     elapsed = time.monotonic() - started
-    tail_lines: list[str] = []
-    try:
-        with open(log_path, "r", errors="replace") as f:
-            tail_lines = f.readlines()[-50:]
-    except OSError:
-        pass
     logger.info(
-        "[bandi/{}] done in {:.1f}s rc={} log={}\nTAIL(50 lines)=\n{}",
-        label, elapsed, rc, log_path, "".join(tail_lines),
+        "[bandi/{}] DONE in {:.1f}s rc={} log={}",
+        label, elapsed, rc, log_path,
     )
     return rc
 
@@ -351,6 +401,20 @@ def build_hint_from_bando(sb, bando: dict[str, Any]) -> dict[str, Any]:
         # Limita lunghezza per non far esplodere il prompt
         hint["descrizione_grezza"] = bando["descrizione"][:800]
 
+    # Riepilogo conteggi (debug) per visibilita' "cosa abbiamo passato alla skill"
+    sizes = {}
+    for k, v in hint.items():
+        if isinstance(v, list):
+            sizes[k] = len(v)
+        elif isinstance(v, str):
+            sizes[k] = len(v)
+        else:
+            sizes[k] = 1
+    logger.debug(
+        "[bandi/hint/{}] keys_collected={} sizes={}",
+        bando_id, sorted(hint.keys()), sizes,
+    )
+
     return hint
 
 
@@ -416,25 +480,46 @@ def _insert_discovered_sublinks(
             parent_depth = 0
     child_depth = parent_depth + 1
     if child_depth > _DISCOVERY_MAX_DEPTH:
-        logger.info(
-            "[bandi/discovery] depth max raggiunta parent_bando_id={} parent_depth={}: skip {} sublinks",
-            parent_bando_id, parent_depth, len(raw_sublinks),
+        logger.warning(
+            "[bandi/discovery/{}] anti-loop: parent_depth={} >= MAX {}, skip {} sublinks",
+            parent_bando_id, parent_depth, _DISCOVERY_MAX_DEPTH, len(raw_sublinks),
         )
         return 0
 
     # Limita il numero per parent (defense contro skill rumorosa).
+    received = len(raw_sublinks)
     sublinks = list(raw_sublinks)[:_DISCOVERY_SUBLINKS_PER_PARENT_MAX]
+    capped = received - len(sublinks)
+    if capped > 0:
+        logger.warning(
+            "[bandi/discovery/{}] cap raggiunto ({}): scarto {} sublinks oltre i primi {}",
+            parent_bando_id, _DISCOVERY_SUBLINKS_PER_PARENT_MAX, capped,
+            _DISCOVERY_SUBLINKS_PER_PARENT_MAX,
+        )
+
+    logger.info(
+        "[bandi/discovery/{}] processing {} sublinks (depth {}/{}) parent_url={}",
+        parent_bando_id, len(sublinks), child_depth, _DISCOVERY_MAX_DEPTH, parent_source_url,
+    )
+
     inserted = 0
     skipped_duplicate = 0
     skipped_error = 0
+    skipped_invalid = 0
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    for entry in sublinks:
+    for idx, entry in enumerate(sublinks, start=1):
         if not isinstance(entry, dict):
+            skipped_invalid += 1
             continue
         url = (entry.get("url") or "").strip()
         label = (entry.get("label") or "").strip()
         if not url.startswith(("http://", "https://")):
+            logger.debug(
+                "[bandi/discovery/{}] skip sublink {} (url non http/https: {!r})",
+                parent_bando_id, idx, url[:80],
+            )
+            skipped_invalid += 1
             continue
         hash_val = _hash_bando_for_discovery(parent_fonte_id, url)
         record = {
@@ -460,19 +545,30 @@ def _insert_discovered_sublinks(
                 record, on_conflict="hash_bando", ignore_duplicates=True
             ).execute()
             inserted += 1
+            logger.info(
+                "[bandi/discovery/{}] queued #{}: {} (label={!r})",
+                parent_bando_id, idx, url, (label[:60] if label else None),
+            )
         except Exception as e:
             msg = str(e).lower()
             if "duplicate" in msg or "unique" in msg or "23505" in msg:
                 skipped_duplicate += 1
+                logger.debug(
+                    "[bandi/discovery/{}] sublink #{} duplicato (hash gia' presente): {}",
+                    parent_bando_id, idx, url,
+                )
             else:
                 skipped_error += 1
-                logger.warning("[bandi/discovery] insert sublink failed url={}: {}", url, e)
+                logger.warning(
+                    "[bandi/discovery/{}] insert sublink #{} fallito url={}: {}",
+                    parent_bando_id, idx, url, e,
+                )
 
     logger.info(
-        "[bandi/discovery] parent_bando_id={} depth={}/{} → {} candidati nuovi "
-        "(dup={}, err={}, ricevuti={})",
+        "[bandi/discovery/{}] DONE depth={}/{} -> {} nuovi candidati "
+        "(dup={}, invalid={}, err={}, ricevuti={}, capped={})",
         parent_bando_id, child_depth, _DISCOVERY_MAX_DEPTH,
-        inserted, skipped_duplicate, skipped_error, len(sublinks),
+        inserted, skipped_duplicate, skipped_invalid, skipped_error, received, capped,
     )
     return inserted
 
@@ -522,7 +618,22 @@ def _derive_state(payload: dict[str, Any], verifier: dict[str, Any] | None) -> t
         "last_error_at": None,
     }
 
+    logger.debug(
+        "[bandi/derive_state] inputs: is_valid={} rejection={} verifier_verdict={} refuted_fields={} "
+        "data_pub={} data_scad={}",
+        validation_obj.get("is_valid_bando"),
+        validation_obj.get("rejection_category"),
+        verifier.get("verdict"),
+        verifier.get("refuted_fields"),
+        _pick(bando_obj, "data_pubblicazione"),
+        _pick(bando_obj, "scadenza"),
+    )
+
     if (verifier.get("verdict") or "").lower() == "refuted":
+        logger.info(
+            "[bandi/derive_state] -> REFUTED (verifier ha smentito skill, refuted_fields={})",
+            verifier.get("refuted_fields"),
+        )
         return BandoState.REFUTED, detail
 
     scadenza_iso = _pick(bando_obj, "scadenza")
@@ -533,6 +644,10 @@ def _derive_state(payload: dict[str, Any], verifier: dict[str, Any] | None) -> t
                 detail["rejection_category"] = detail.get("rejection_category") or "not_a_funding_call"
                 prior = detail.get("validation_reason") or ""
                 detail["validation_reason"] = f"{prior} [orchestrator: inconsistent dates]".strip()
+                logger.info(
+                    "[bandi/derive_state] -> REJECTED (date incoerenti: pub={} > scad={})",
+                    pubblicazione_iso, scadenza_iso,
+                )
                 return BandoState.REJECTED, detail
         except ValueError:
             pass  # formato non-ISO: lascia al CHECK constraint DB
@@ -541,8 +656,16 @@ def _derive_state(payload: dict[str, Any], verifier: dict[str, Any] | None) -> t
     if is_valid_bando is False or validation_obj.get("rejection_category"):
         if not detail.get("rejection_category"):
             detail["rejection_category"] = "not_a_funding_call"
+        logger.info(
+            "[bandi/derive_state] -> REJECTED (is_valid_bando={} rejection_category={})",
+            is_valid_bando, detail.get("rejection_category"),
+        )
         return BandoState.REJECTED, detail
 
+    logger.info(
+        "[bandi/derive_state] -> CONFIRMED (verifier_verdict={})",
+        verifier.get("verdict") or "skipped/null",
+    )
     return BandoState.CONFIRMED, detail
 
 
@@ -657,6 +780,10 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
         if not record_clean.get("slug"):
             record_clean.pop("slug", None)
 
+    logger.info(
+        "[bandi/persist/{}] UPDATE state={} slug={} fields_set={}",
+        bando_id, new_state, record_clean.get("slug"), sorted(record_clean.keys()),
+    )
     try:
         sb.table("bando").update(record_clean).eq("id", bando_id).execute()
     except Exception as e:
@@ -665,12 +792,16 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
             original_slug = record_clean.get("slug") or _slugify(payload.get("titolo") or "")
             record_clean["slug"] = f"{original_slug}-{bando_id}"
             logger.warning(
-                "[bandi] slug collision bando_id={} → retry con slug={}",
+                "[bandi/persist/{}] slug collision -> retry con slug={}",
                 bando_id, record_clean["slug"],
             )
             sb.table("bando").update(record_clean).eq("id", bando_id).execute()
+            logger.info("[bandi/persist/{}] UPDATE OK (slug collision risolta)", bando_id)
         else:
+            logger.exception("[bandi/persist/{}] UPDATE fallito (non-slug): {}", bando_id, e)
             raise
+    else:
+        logger.info("[bandi/persist/{}] UPDATE OK", bando_id)
 
     # v4 — discovery-by-skill: se la skill ha bocciato come index_page / category_page
     # e ha emesso `validation.discovered_sublinks`, accodali come nuovi BandoCandidate.
@@ -743,9 +874,13 @@ async def _enrich_one(sb, bando: dict[str, Any]) -> bool:
     bando_id = bando["id"]
     link = bando.get("link_bando")
     current_attempts = int(bando.get("attempts") or 0)
+    enrich_started = time.monotonic()
 
     if not link:
-        logger.warning("[bandi/skill] bando_id={} salto: link_bando assente", bando_id)
+        logger.warning(
+            "[bandi/skill/{}] SKIP: link_bando assente -> state='stale'",
+            bando_id,
+        )
         sb.table("bando").update({
             "state": BandoState.STALE,
             "state_detail": {"last_error": "link_bando assente", "last_error_at": datetime.now(timezone.utc).isoformat()},
@@ -754,35 +889,67 @@ async def _enrich_one(sb, bando: dict[str, Any]) -> bool:
         return False
 
     # 1) Lock soft (ottimistico, no transaction): state='enriching', attempts++
+    new_attempt = current_attempts + 1
+    logger.info(
+        "[bandi/skill/{}] step 1/4 LOCK -> state='enriching' attempt={}/{} link={}",
+        bando_id, new_attempt, _max_attempts(), link,
+    )
     sb.table("bando").update({
         "state": BandoState.ENRICHING,
         "state_updated_at": datetime.now(timezone.utc).isoformat(),
-        "attempts": current_attempts + 1,
+        "attempts": new_attempt,
     }).eq("id", bando_id).execute()
 
     # 2) Hint dai dati relazionali (catalogo legacy + junction)
+    logger.info("[bandi/skill/{}] step 2/4 build_hint", bando_id)
     hint = build_hint_from_bando(sb, bando)
+    logger.debug(
+        "[bandi/skill/{}] hint pronto: keys={} sizes={}",
+        bando_id,
+        sorted(hint.keys()),
+        {k: (len(v) if isinstance(v, (list, dict)) else 1) for k, v in hint.items()},
+    )
 
-    # 3) Invoca skill
+    # 3) Invoca skill (Claude Agent SDK in-process)
+    logger.info("[bandi/skill/{}] step 3/4 invoking skill", bando_id)
+    skill_started = time.monotonic()
     try:
         payload = await run_bandi_skill(link_bando=link, hint=hint)
     except Exception as e:
-        logger.exception("[bandi/skill] bando_id={} skill fallita (attempt {}): {}", bando_id, current_attempts + 1, e)
+        skill_elapsed = time.monotonic() - skill_started
+        logger.exception(
+            "[bandi/skill/{}] skill FALLITA in {:.1f}s (attempt {}): {}",
+            bando_id, skill_elapsed, new_attempt, e,
+        )
         _set_error_state(sb, bando_id, current_attempts, str(e))
         return False
+    skill_elapsed = time.monotonic() - skill_started
+    logger.info(
+        "[bandi/skill/{}] skill OK in {:.1f}s livello={} is_valid={} rejection={}",
+        bando_id,
+        skill_elapsed,
+        payload.get("livello"),
+        (payload.get("validation") or {}).get("is_valid_bando"),
+        (payload.get("validation") or {}).get("rejection_category"),
+    )
 
     # 4) Persisti payload — derive_state interno decide stato finale (confirmed/rejected/refuted)
+    logger.info("[bandi/skill/{}] step 4/4 persisting payload + state derivation", bando_id)
     try:
         update_bando_from_payload(sb, bando_id, payload)
     except Exception as e:
-        logger.exception("[bandi/skill] bando_id={} update DB fallito: {}", bando_id, e)
+        logger.exception("[bandi/skill/{}] update DB FALLITO: {}", bando_id, e)
         _set_error_state(sb, bando_id, current_attempts, f"db update: {str(e)[:480]}")
         return False
 
     # v4: niente piu' _denormalize_bando_lookups — la skill emette gia'
     # `programma`, `modalita_erogazione`, `codici_ateco` normalizzati.
 
-    logger.info("[bandi/skill] bando_id={} processato (slug={})", bando_id, payload.get("slug"))
+    total_elapsed = time.monotonic() - enrich_started
+    logger.info(
+        "[bandi/skill/{}] DONE in {:.1f}s slug={}",
+        bando_id, total_elapsed, payload.get("slug"),
+    )
     return True
 
 
@@ -799,8 +966,12 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
     """
     sb = get_bandi_supabase()
     max_att = _max_attempts()
+    batch_started = time.monotonic()
 
-    logger.info("[bandi/skill] batch start: size={} max_attempts={}", batch_size, max_att)
+    logger.info(
+        "[bandi/skill] BATCH START size={} max_attempts={} ordering=ultimo_scraping_at:asc",
+        batch_size, max_att,
+    )
     try:
         res = (
             sb.table("bando")
@@ -818,18 +989,40 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
     rows = res.data or []
     counters = {"processed": 0, "confirmed": 0, "rejected": 0, "refuted": 0, "error": 0}
     if not rows:
-        logger.info("[bandi/skill] nessun bando pronto per enrichment")
+        logger.info("[bandi/skill] BATCH EMPTY: nessun bando in state IN (discovered,error) con attempts<{}", max_att)
         return counters
 
-    for bando in rows:
+    # Breakdown stati pre-batch
+    state_breakdown: dict[str, int] = {}
+    for r in rows:
+        s = r.get("state") or "?"
+        state_breakdown[s] = state_breakdown.get(s, 0) + 1
+    logger.info(
+        "[bandi/skill] BATCH selezione: {} bandi ({}), processero' uno alla volta",
+        len(rows),
+        " + ".join(f"{n} {s}" for s, n in sorted(state_breakdown.items())),
+    )
+
+    total = len(rows)
+    for idx, bando in enumerate(rows, start=1):
         counters["processed"] += 1
+        bando_id = bando.get("id")
+        logger.info(
+            "[bandi/skill] >>> processing {}/{} bando_id={} state={} attempts={}/{}",
+            idx, total, bando_id, bando.get("state"),
+            int(bando.get("attempts") or 0), max_att,
+        )
         await _enrich_one(sb, bando)
         # Ri-leggi lo state finale per i contatori (confirmed/rejected/refuted/error)
         try:
-            cur = sb.table("bando").select("state").eq("id", bando["id"]).single().execute()
-            new_state = (cur.data or {}).get("state")
+            cur = sb.table("bando").select("state, slug").eq("id", bando_id).single().execute()
+            data = cur.data or {}
+            new_state = data.get("state")
+            new_slug = data.get("slug")
         except Exception:
+            logger.exception("[bandi/skill] re-read state fallito bando_id={}", bando_id)
             new_state = BandoState.ERROR
+            new_slug = None
         if new_state == BandoState.CONFIRMED:
             counters["confirmed"] += 1
         elif new_state == BandoState.REJECTED:
@@ -838,8 +1031,17 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
             counters["refuted"] += 1
         else:
             counters["error"] += 1
+        logger.info(
+            "[bandi/skill] <<< done {}/{} bando_id={} -> state={} slug={} | counters={}",
+            idx, total, bando_id, new_state, new_slug, counters,
+        )
 
-    logger.info("[bandi/skill] batch done: {}", counters)
+    batch_elapsed = time.monotonic() - batch_started
+    rate_per_min = (counters["processed"] / batch_elapsed * 60) if batch_elapsed > 0 else 0
+    logger.info(
+        "[bandi/skill] BATCH DONE in {:.1f}s ({:.1f} bandi/min) | counters={}",
+        batch_elapsed, rate_per_min, counters,
+    )
     return counters
 
 

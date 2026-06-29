@@ -37,17 +37,27 @@ async def run_bandi_skill(link_bando: str, hint: dict | None = None) -> dict:
     """
     has_fc = bool(os.getenv("FIRECRAWL_API_KEY"))
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
+    hint_keys = sorted(hint.keys()) if hint else []
     logger.info(
-        "[bandi_skill_runner] invoco skill: link={} hint_keys={} "
-        "FIRECRAWL_API_KEY={} ANTHROPIC_API_KEY={}",
-        link_bando,
-        list(hint.keys()) if hint else [],
-        has_fc, has_anthropic,
+        "[skill_runner] INVOKE link={} hint_keys={} (n={}) env: FIRECRAWL={} ANTHROPIC={}",
+        link_bando, hint_keys, len(hint_keys),
+        "present" if has_fc else "absent",
+        "present" if has_anthropic else "absent",
     )
     if not has_fc:
         logger.warning(
-            "[bandi_skill_runner] FIRECRAWL_API_KEY non presente: la skill cadra' "
-            "su WebFetch/WebSearch invece di Firecrawl."
+            "[skill_runner] FIRECRAWL_API_KEY assente: la skill cadra' su "
+            "WebFetch/WebSearch invece di Firecrawl (qualita' estrazione ridotta)."
+        )
+    if not has_anthropic:
+        logger.warning(
+            "[skill_runner] ANTHROPIC_API_KEY/AUTH_TOKEN assenti: la skill "
+            "non potra' invocare Claude e fallira'."
+        )
+    if not hint:
+        logger.warning(
+            "[skill_runner] hint vuoto: la skill ricevera' meno contesto "
+            "(catalogo/junction lookup potrebbero essere mancati)."
         )
 
     start = time.monotonic()
@@ -55,14 +65,24 @@ async def run_bandi_skill(link_bando: str, hint: dict | None = None) -> dict:
         payload = await _run_skill_bandi(link_bando=link_bando, hint=hint)
     except Exception as e:
         logger.exception(
-            "[bandi_skill_runner] skill fallita dopo {:.1f}s: {}",
+            "[skill_runner] FAIL in {:.1f}s: {}",
             time.monotonic() - start, e,
         )
         raise
 
+    elapsed = time.monotonic() - start
+    validation = (payload or {}).get("validation") or {}
+    sublinks = validation.get("discovered_sublinks") or []
+    allegati = (payload.get("bando") or {}).get("allegati") if isinstance(payload.get("bando"), dict) else None
     logger.info(
-        "[bandi_skill_runner] skill completata in {:.1f}s, livello={}, slug={}",
-        time.monotonic() - start,
-        payload.get("livello"), payload.get("slug"),
+        "[skill_runner] DONE in {:.1f}s livello={} slug={} is_valid={} rejection={} "
+        "allegati={} sublinks={}",
+        elapsed,
+        payload.get("livello"),
+        payload.get("slug"),
+        validation.get("is_valid_bando"),
+        validation.get("rejection_category"),
+        len(allegati) if isinstance(allegati, list) else 0,
+        len(sublinks) if isinstance(sublinks, list) else 0,
     )
     return payload
