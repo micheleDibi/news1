@@ -1,25 +1,31 @@
-"""Orchestratore della pipeline bandi.
+"""Orchestratore della pipeline bandi (v4 — skill autoritativa totale).
 
 Due fasi compongono il flusso end-to-end:
 
 1. **Scraper** (sotto-progetto Python autonomo `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python`):
-   invocato come subprocess (`python -m app.scheduler run-now` / `run-pending-now`)
-   con `cwd=BANDI_SCRAPER_DIR`. Lo scraper popola/aggiorna la tabella `bando`
-   su Supabase B + esegue la classificazione AI (OpenAI gpt-4o-mini) sui campi
-   relazionali (tipologia, modalita_erogazione, programma, regioni, settori,
-   beneficiari, codici_ateco) usando dizionari chiusi.
+   invocato come subprocess (`python -m app.cli run`) con `cwd=BANDI_SCRAPER_DIR`.
+   Lo scraper fa discovery dei link e inserisce i candidati nella tabella `bando`
+   con `state='discovered'`. Niente piu' classificazione AI pre-skill (deprecata in v4).
 
 2. **Skill SEO enrichment** (`bandi-seo-enricher`): in-process via Claude Agent SDK
-   (vedi `bandi_skill_runner.py`). Per ogni bando che ha completato la fase AI ma
-   non ha ancora contenuto editoriale (`skill_processing_status IN ('queued','failed')`):
+   (vedi `bandi_skill_runner.py`). Per ogni bando in `state='discovered'`:
    - costruisce `hint_dominio` dai dati relazionali gia' presenti nel DB,
-   - invoca la skill che produce JSON validato (livello flash_bando o guida_bando),
-   - persiste l'output nelle colonne SEO del bando (vedi
-     `backend/sql/bando_alter_seo_fields.sql`).
+   - invoca la skill che produce JSON validato (livello flash_bando o guida_bando)
+     + verifier adversarial Haiku 4.5,
+   - persiste l'output via `update_bando_from_payload` che decide lo stato finale
+     (`confirmed`/`rejected`/`refuted`/`error`).
 
 I bandi non vengono cancellati ne' duplicati: la skill arricchisce il record
-esistente. In caso di errore terminale (`skill_attempts >= BANDI_SKILL_MAX_ATTEMPTS`)
-il bando resta in stato `failed` e va revisionato manualmente.
+esistente. In caso di errore transient (`attempts < BANDI_SKILL_MAX_ATTEMPTS`)
+il record resta in `state='error'` e viene riprovato dal batch successivo.
+
+ENV vars:
+  - BANDI_SCRAPER_DIR        path al sotto-progetto scraper (obbligatoria)
+  - BANDI_SCRAPER_PYTHON     interprete python del scraper (default: 'python')
+  - BANDI_SCRAPER_TIMEOUT_S  timeout subprocess scraper in s (default: 1800 = 30 min)
+  - BANDI_SCRAPER_RUN_LIMIT  limite fonti per ciclo scraper (opzionale)
+  - BANDI_SKILL_BATCH_SIZE   bandi per ciclo skill (default: 10)
+  - BANDI_SKILL_MAX_ATTEMPTS retry skill (default: 3)
 """
 from __future__ import annotations
 
@@ -85,40 +91,89 @@ def _scraper_subprocess_env() -> dict[str, str]:
     return env
 
 
-def _run_scraper_module(module: str, args: list[str], label: str) -> int:
-    """Esegue `python -m <module> [args...]` con cwd e env dello scraper."""
-    cmd = [_scraper_python(), "-m", module, *args]
-    logger.info("[bandi/{}] start: cwd={} cmd={}", label, _scraper_dir(), " ".join(cmd))
-    started = time.monotonic()
+def _scraper_timeout_s() -> int:
+    """Timeout del subprocess scraper in secondi. Default 30 min.
+
+    Override via `BANDI_SCRAPER_TIMEOUT_S` per scraper lunghi (50+ fonti × Firecrawl).
+    """
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=_scraper_dir(),
-            env=_scraper_subprocess_env(),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError as e:
-        logger.error("[bandi/{}] python non trovato: {}", label, e)
-        return -1
+        return int(os.getenv("BANDI_SCRAPER_TIMEOUT_S", "1800"))
+    except ValueError:
+        return 1800
+
+
+def _run_scraper_module(module: str, args: list[str], label: str) -> int:
+    """Esegue `python -m <module> [args...]` con cwd e env dello scraper.
+
+    Lo stdout/stderr e' rediretto a `/tmp/bandi_<label>_<timestamp>.log`
+    in line-buffered: e' possibile fare `tail -f` mentre il subprocess gira
+    (cosa impossibile con `capture_output=True` che assorbe fino a fine).
+
+    Su timeout (`BANDI_SCRAPER_TIMEOUT_S`, default 30 min) il subprocess e' killato
+    e la funzione ritorna rc=-2.
+    """
+    cmd = [_scraper_python(), "-m", module, *args]
+    timeout = _scraper_timeout_s()
+    log_path = f"/tmp/bandi_{label}_{int(time.time())}.log"
+    logger.info(
+        "[bandi/{}] start: cwd={} cmd={} log={} timeout={}s",
+        label, _scraper_dir(), " ".join(cmd), log_path, timeout,
+    )
+    started = time.monotonic()
+    log_fp = open(log_path, "w", buffering=1)
+    try:
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=_scraper_dir(),
+                env=_scraper_subprocess_env(),
+                stdout=log_fp,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except FileNotFoundError as e:
+            logger.error("[bandi/{}] python non trovato: {}", label, e)
+            return -1
+
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+            elapsed = time.monotonic() - started
+            logger.error(
+                "[bandi/{}] timeout after {:.0f}s rc=-2 (log={})",
+                label, elapsed, log_path,
+            )
+            return -2
+    finally:
+        try:
+            log_fp.close()
+        except Exception:
+            pass
 
     elapsed = time.monotonic() - started
-    # Tronca stdout/stderr per non saturare il log
-    stdout_tail = (result.stdout or "")[-2000:]
-    stderr_tail = (result.stderr or "")[-2000:]
+    tail_lines: list[str] = []
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            tail_lines = f.readlines()[-50:]
+    except OSError:
+        pass
     logger.info(
-        "[bandi/{}] done in {:.1f}s rc={}\nSTDOUT(tail)={}\nSTDERR(tail)={}",
-        label, elapsed, result.returncode, stdout_tail, stderr_tail,
+        "[bandi/{}] done in {:.1f}s rc={} log={}\nTAIL(50 lines)=\n{}",
+        label, elapsed, rc, log_path, "".join(tail_lines),
     )
-    return result.returncode
+    return rc
 
 
 def run_scraper_full() -> int:
     """Esegue una scan completa di tutte le fonti attive (cli `run`).
 
-    Lo scraping accoda i bandi nella `ai_job_queue` (campo `ai_processing_required=true`)
-    ma NON processa la coda — questo lo fa `run_ai_worker_drain()`.
+    v4: lo scraping inserisce direttamente i candidati con `state='discovered'`
+    (l'enqueue su `ai_job_queue` e' deprecato). La skill enrichment li drena.
     """
     args: list[str] = ["run"]
     limit = os.getenv("BANDI_SCRAPER_RUN_LIMIT")
@@ -132,18 +187,10 @@ def run_scraper_pending() -> int:
     return _run_scraper_module("app.cli", ["run-pending"], "scraper-pending")
 
 
-def run_ai_worker_drain() -> int:
-    """Processa la `ai_job_queue` fino a svuotarla (classifica bandi via OpenAI).
-
-    Necessario tra scraping e skill enrichment: lo scraper accoda i job AI ma il
-    worker dedicato e' separato. Solo dopo questo passaggio i bandi passano a
-    `ai_processing_status='completed'` e diventano selezionabili dalla skill.
-    """
-    return _run_scraper_module(
-        "app.ai.run_ai_worker",
-        ["--limit", "10", "--drain-all"],
-        "ai-worker-drain",
-    )
+# v4: il worker AI Opus pre-skill (`run_ai_worker_drain`) e' stato deprecato.
+# La skill `bandi-seo-enricher` e' ora autoritativa sull'estrazione + validazione,
+# quindi non c'e' piu' classificazione intermedia. Lo scraper passa direttamente
+# alla skill enrichment via state='discovered'.
 
 
 # ---------------------------------------------------------------------------
@@ -294,10 +341,8 @@ def build_hint_from_bando(sb, bando: dict[str, Any]) -> dict[str, Any]:
         # proporre la sua se ne trova una piu' autoritativa (es. dal PDF) col
         # campo `bando.data_pubblicazione_source` (vedi SKILL.md STEP 6b).
         hint["data_pubblicazione_grezza"] = str(bando["data_pubblicazione"])
-    if bando.get("importo"):
-        hint["importo_grezzo"] = bando["importo"]
-    if bando.get("importo_numerico") is not None:
-        hint["importo_numerico_grezzo"] = bando["importo_numerico"]
+    # (v4: `importo` e `importo_numerico` rimosse dallo schema — la skill estrae
+    # autoritativamente `importo_totale_eur` / `importo_max_per_progetto_eur`.)
 
     # 9) Hint di matching: se il parser ha gia' un titolo/descrizione, dallo al modello
     if bando.get("titolo"):
@@ -658,57 +703,11 @@ def update_bando_from_payload(sb, bando_id: int, payload: dict[str, Any]) -> Non
             )
 
 
-def _denormalize_bando_lookups(sb, bando_id: int, bando: dict[str, Any]) -> None:
-    """Popola le colonne denormalizzate del bando per i filtri del frontend.
-
-    - `programma_nome` da lookup `programmi` via `programma_id`
-    - `modalita_erogazione_nome` da lookup `modalita_erogazione` via `modalita_erogazione_id`
-    - `codici_ateco_norm` (TEXT[]) da join `bando_codici_ateco` → `codici_ateco`
-
-    Idempotente: i campi sono ricalcolati a ogni chiamata. Best-effort: errori sulle
-    singole query non bloccano l'enrichment (loggati come warning, campo lasciato `None`).
-    """
-    updates: dict[str, Any] = {}
-
-    programma_id = bando.get("programma_id")
-    if programma_id:
-        names = _safe_select_names(sb, "programmi", [programma_id])
-        if names:
-            updates["programma_nome"] = names[0]
-
-    modalita_id = bando.get("modalita_erogazione_id")
-    if modalita_id:
-        names = _safe_select_names(sb, "modalita_erogazione", [modalita_id])
-        if names:
-            updates["modalita_erogazione_nome"] = names[0]
-
-    ateco_ids = _try_junction_lookup(sb, "bando_codici_ateco", "codice_ateco_id", bando_id)
-    if ateco_ids:
-        try:
-            res = sb.table("codici_ateco").select("codice, descrizione").in_("id", ateco_ids).execute()
-            codici = []
-            seen: set[str] = set()
-            for r in res.data or []:
-                code = (r.get("codice") or "").strip()
-                desc = (r.get("descrizione") or "").strip()
-                if not code:
-                    continue
-                value = f"{code} — {desc}" if desc else code
-                if value in seen:
-                    continue
-                seen.add(value)
-                codici.append(value)
-            if codici:
-                updates["codici_ateco_norm"] = codici
-        except Exception as e:
-            logger.warning("[bandi/denorm] lookup codici_ateco failed bando_id={}: {}", bando_id, e)
-
-    if not updates:
-        return
-    try:
-        sb.table("bando").update(updates).eq("id", bando_id).execute()
-    except Exception as e:
-        logger.warning("[bandi/denorm] UPDATE failed bando_id={} updates={}: {}", bando_id, list(updates), e)
+# v4: `_denormalize_bando_lookups` rimossa. Scriveva su `programma_nome`,
+# `modalita_erogazione_nome`, `codici_ateco_norm` — tutte colonne droppate dalla
+# migrazione `bando_v4_collapse.sql`. La normalizzazione e' autoritativa
+# skill-side: la skill emette gia' `programma`, `modalita_erogazione`,
+# `codici_ateco` normalizzati.
 
 
 def _max_attempts() -> int:
@@ -740,7 +739,6 @@ async def _enrich_one(sb, bando: dict[str, Any]) -> bool:
       3. Invoca skill — su errore: state='error', attempts++ (riprovabile)
       4. update_bando_from_payload: la skill scrive payload + il derive_state decide
          lo stato finale (confirmed/rejected/refuted) in base a verifier + coerenza date
-      5. Denormalizza lookups legacy (best-effort)
     """
     bando_id = bando["id"]
     link = bando.get("link_bando")
@@ -781,9 +779,8 @@ async def _enrich_one(sb, bando: dict[str, Any]) -> bool:
         _set_error_state(sb, bando_id, current_attempts, f"db update: {str(e)[:480]}")
         return False
 
-    # 5) Denormalizza lookup (programma/modalita/ATECO) per i filtri del frontend.
-    # Best-effort: errori qui non invalidano l'enrichment.
-    _denormalize_bando_lookups(sb, bando_id, bando)
+    # v4: niente piu' _denormalize_bando_lookups — la skill emette gia'
+    # `programma`, `modalita_erogazione`, `codici_ateco` normalizzati.
 
     logger.info("[bandi/skill] bando_id={} processato (slug={})", bando_id, payload.get("slug"))
     return True
@@ -851,19 +848,21 @@ async def run_skill_enrichment_batch(batch_size: int = 10) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 def run_full_pipeline() -> None:
-    """Pipeline 4x/giorno: scraper full → worker AI (drain) → skill enrichment batch."""
+    """Pipeline 4x/giorno: scraper full → skill enrichment batch.
+
+    v4: rimossa fase intermedia `run_ai_worker_drain()` (worker AI deprecato,
+    la skill e' ora autoritativa sulla classificazione).
+    """
     logger.info("[bandi] pipeline full: start")
     run_scraper_full()
-    run_ai_worker_drain()
     asyncio.run(run_skill_enrichment_batch(_batch_size()))
     logger.info("[bandi] pipeline full: done")
 
 
 def run_pending_pipeline() -> None:
-    """Pipeline pending (1x/4h): retry scraper → worker AI (drain) → skill enrichment batch."""
+    """Pipeline pending (1x/4h): retry scraper → skill enrichment batch."""
     logger.info("[bandi] pipeline pending: start")
     run_scraper_pending()
-    run_ai_worker_drain()
     asyncio.run(run_skill_enrichment_batch(_batch_size()))
     logger.info("[bandi] pipeline pending: done")
 

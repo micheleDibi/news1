@@ -14,7 +14,6 @@ from app.config.settings import settings
 from app.config.session import get_session_id, new_session_id
 from app.db.connection import get_db_connection
 from app.repos.base import BandoRepo, FonteRepo, ScrapingErrorRepo, ScrapingLogRepo
-from app.services.ai_pipeline_service import AiPipelineService
 from app.services.classification_service import ControlledClassificationService
 from app.scrapers.fonte_level2 import FonteLevel2Error, FonteLevel2Scanner, candidates_to_upsert_payload
 
@@ -23,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 class BandoDiscoveryService:
+    """Servizio di discovery v4: scan fonti → upsert candidati con state='discovered'.
+
+    La classificazione AI pre-skill (worker Opus su `ai_job_queue`) e' stata
+    deprecata in v4. I candidati passano direttamente alla skill SEO enrichment
+    invocata dal sender backend.
+    """
+
     def __init__(self) -> None:
         self.fonte_repo = FonteRepo()
         self.bando_repo = BandoRepo()
@@ -30,10 +36,6 @@ class BandoDiscoveryService:
         self.log_repo = ScrapingLogRepo()
         self.scanner = FonteLevel2Scanner()
         self.classifier = ControlledClassificationService()
-        self.ai_pipeline = AiPipelineService(
-            bando_repo=self.bando_repo,
-            classifier=self.classifier,
-        )
 
     def run(self, limit: int | None = None) -> dict[str, Any]:
         started_at = datetime.now(timezone.utc)
@@ -273,11 +275,7 @@ class BandoDiscoveryService:
                     continue
 
             elapsed_ms = int((time.perf_counter() - t0) * 1000)
-            try:
-                ai_delta_sum = self.ai_pipeline.ai_repo.get_recent_quality_delta_sum(since_hours=24)
-                quality_totals["ai_quality_delta_sum"] = ai_delta_sum
-            except Exception:  # noqa: BLE001
-                quality_totals["ai_quality_delta_sum"] = 0
+            quality_totals["ai_quality_delta_sum"] = 0  # v4: AI pipeline deprecata
             self._finalize_success(
                 log_id,
                 elapsed_ms,

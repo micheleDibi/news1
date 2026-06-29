@@ -554,193 +554,11 @@ class BandoRepo:
             "recoverable": recoverable,
         }
 
-    def set_ai_processing_flags(
-        self,
-        bando_id: int,
-        *,
-        required: bool,
-        status: str,
-        attempted: bool = False,
-    ) -> None:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE public.bando
-                    SET ai_processing_required = %s,
-                        ai_processing_status = %s,
-                        ai_last_attempt_at = CASE WHEN %s THEN NOW() ELSE ai_last_attempt_at END
-                    WHERE id = %s
-                    """,
-                    (required, status, attempted, bando_id),
-                )
-
-    def get_candidates_for_ai_enqueue(self, limit: int | None = None) -> list[dict[str, Any]]:
-        query = """
-            SELECT id, fonte_id, titolo, descrizione, codice_bando, fondo, link_bando,
-                   raw_data, data_extra, tipologia_bando_id, modalita_erogazione_id, programma_id,
-                   is_bando_confermato,
-                   ai_processing_required, ai_processing_status
-            FROM public.bando
-            WHERE stato_processing = 'ready'
-                            AND stato_bando <> 'sospetto'
-              AND (
-                tipologia_bando_id IS NULL
-                OR modalita_erogazione_id IS NULL
-                OR programma_id IS NULL
-                OR is_bando_confermato IS NULL
-              )
-              AND (
-                ai_processing_status IN ('not_required', 'failed')
-                OR ai_processing_required = TRUE
-              )
-            ORDER BY ultimo_scraping_at DESC NULLS LAST, id DESC
-        """
-        params: tuple[Any, ...] = ()
-        if limit is not None and limit > 0:
-            query += " LIMIT %s"
-            params = (limit,)
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                rows = cur.fetchall()
-        return [dict(row) for row in rows]
-
-    def apply_ai_classification(
-        self,
-        bando_id: int,
-        validated_classification: dict[str, Any],
-        *,
-        ai_job_id: int | None = None,
-    ) -> dict[str, Any]:
-        if not validated_classification:
-            self.set_ai_processing_flags(
-                bando_id,
-                required=False,
-                status="completed",
-                attempted=True,
-            )
-            return {"applied": False, "changed_fields": []}
-
-        changed_fields: list[str] = []
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, tipologia_bando_id, modalita_erogazione_id, programma_id,
-                           is_bando_confermato
-                    FROM public.bando
-                    WHERE id = %s
-                    """,
-                    (bando_id,),
-                )
-                existing = cur.fetchone()
-                if existing is None:
-                    return {"applied": False, "changed_fields": []}
-
-                new_tipologia = validated_classification.get("tipologia_bando_id", existing.get("tipologia_bando_id"))
-                new_modalita = validated_classification.get(
-                    "modalita_erogazione_id",
-                    existing.get("modalita_erogazione_id"),
-                )
-                new_programma = validated_classification.get("programma_id", existing.get("programma_id"))
-                new_is_bando = validated_classification.get("is_bando_confermato", existing.get("is_bando_confermato"))
-
-                if existing.get("tipologia_bando_id") != new_tipologia:
-                    changed_fields.append("tipologia_bando_id")
-                if existing.get("modalita_erogazione_id") != new_modalita:
-                    changed_fields.append("modalita_erogazione_id")
-                if existing.get("programma_id") != new_programma:
-                    changed_fields.append("programma_id")
-                if existing.get("is_bando_confermato") != new_is_bando:
-                    changed_fields.append("is_bando_confermato")
-
-                bridge_specs = [
-                    ("codice_ateco_ids", "bando_codici_ateco", "codice_ateco_id"),
-                    ("regione_ids", "bando_regioni", "regione_id"),
-                    ("settore_ids", "bando_settori", "settore_id"),
-                    ("beneficiario_ids", "bando_beneficiari", "beneficiario_id"),
-                ]
-
-                old_bridge_values: dict[str, list[int]] = {}
-                new_bridge_values: dict[str, list[int]] = {}
-                for payload_key, table_name, related_column in bridge_specs:
-                    if payload_key not in validated_classification:
-                        continue
-
-                    old_ids = self._current_bridge_ids(cur, table_name, related_column, bando_id)
-                    new_ids = sorted(
-                        {
-                            int(value)
-                            for value in (validated_classification.get(payload_key) or [])
-                            if value is not None
-                        }
-                    )
-
-                    old_bridge_values[payload_key] = old_ids
-                    new_bridge_values[payload_key] = new_ids
-
-                    if old_ids != new_ids:
-                        changed_fields.append(payload_key)
-                    self._sync_bridge_table(cur, table_name, related_column, bando_id, new_ids)
-
-                cur.execute(
-                    """
-                    UPDATE public.bando
-                    SET tipologia_bando_id = %s,
-                        modalita_erogazione_id = %s,
-                        programma_id = %s,
-                        is_bando_confermato = COALESCE(%s, is_bando_confermato),
-                        ai_processing_required = FALSE,
-                        ai_processing_status = 'completed',
-                        ai_last_attempt_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (new_tipologia, new_modalita, new_programma, new_is_bando, bando_id),
-                )
-
-                if changed_fields:
-                    old_json: dict[str, Any] = {
-                        "tipologia_bando_id": existing.get("tipologia_bando_id"),
-                        "modalita_erogazione_id": existing.get("modalita_erogazione_id"),
-                        "programma_id": existing.get("programma_id"),
-                        "is_bando_confermato": existing.get("is_bando_confermato"),
-                    }
-                    new_json: dict[str, Any] = {
-                        "tipologia_bando_id": new_tipologia,
-                        "modalita_erogazione_id": new_modalita,
-                        "programma_id": new_programma,
-                        "is_bando_confermato": new_is_bando,
-                    }
-                    for payload_key in old_bridge_values:
-                        old_json[payload_key] = old_bridge_values[payload_key]
-                        new_json[payload_key] = new_bridge_values.get(payload_key, [])
-
-                    cur.execute(
-                        """
-                        INSERT INTO public.bando_storico (
-                            bando_id,
-                            dati_precedenti,
-                            dati_nuovi,
-                            campi_modificati,
-                            scraping_log_id
-                        ) VALUES (%s, %s::jsonb, %s::jsonb, %s, NULL)
-                        """,
-                        (
-                            bando_id,
-                            _safe_json_dumps(old_json),
-                            _safe_json_dumps(new_json),
-                            changed_fields,
-                        ),
-                    )
-
-        return {
-            "applied": len(changed_fields) > 0,
-            "changed_fields": changed_fields,
-            "ai_job_id": ai_job_id,
-        }
+    # v4: rimosse `set_ai_processing_flags`, `get_candidates_for_ai_enqueue`,
+    # `apply_ai_classification`. Erano usate dal worker AI Opus pre-skill,
+    # deprecato dalla migrazione `bando_v4_collapse.sql` (colonne
+    # `ai_processing_*`, `is_bando_confermato` droppate; classificazione e'
+    # ora autoritativa skill-side).
 
     def upsert_candidates(self, candidates: list[dict[str, Any]]) -> dict[str, int]:
         if not candidates:
@@ -1578,11 +1396,11 @@ class HealthRepo:
                             WHERE descrizione IS NULL OR LENGTH(descrizione) < 30
                         ) AS senza_descrizione,
                         COUNT(*) FILTER (WHERE data_scadenza IS NULL) AS senza_scadenza,
-                        COUNT(*) FILTER (WHERE importo_numerico IS NULL) AS senza_importo,
+                        COUNT(*) FILTER (WHERE importo_totale_eur IS NULL) AS senza_importo,
                         COUNT(*) FILTER (
                             WHERE tipologia_bando_id IS NULL AND programma_id IS NULL
                         ) AS senza_classificazione,
-                        COUNT(*) FILTER (WHERE stato_bando = 'programmato') AS stato_programmato,
+                        COUNT(*) FILTER (WHERE state = 'discovered') AS in_attesa_skill,
                         COUNT(*) FILTER (WHERE stato_processing = 'failed_final') AS failed_final,
                         COUNT(*) FILTER (WHERE {self._SUSPECT_BANDO_PREDICATE}) AS sospetti_rumore,
                         COUNT(*) - COUNT(DISTINCT hash_bando) AS duplicati
@@ -1665,7 +1483,11 @@ class HealthRepo:
         return totals
 
     def get_dataset_field_completeness(self) -> dict[str, Any]:
-        """Metriche operative per checklist Go-Live punto 3."""
+        """Metriche operative su schema v4 (state machine).
+
+        Sostituisce le metriche v3 (stato_bando IN/NOT IN, importo_numerico) con
+        contatori basati su `state` e `importo_totale_eur`.
+        """
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1676,15 +1498,16 @@ class HealthRepo:
                             WHERE COALESCE(TRIM(titolo), '') <> ''
                               AND COALESCE(TRIM(link_bando), '') <> ''
                               AND COALESCE(TRIM(hash_bando), '') <> ''
-                              AND stato_bando IN ('aperto', 'chiuso', 'programmato')
+                              AND state = 'confirmed'
                         ) AS required_complete,
                         COUNT(*) FILTER (WHERE COALESCE(TRIM(titolo), '') = '') AS missing_titolo,
                         COUNT(*) FILTER (WHERE COALESCE(TRIM(link_bando), '') = '') AS missing_link_bando,
                         COUNT(*) FILTER (WHERE COALESCE(TRIM(hash_bando), '') = '') AS missing_hash_bando,
-                        COUNT(*) FILTER (
-                            WHERE stato_bando IS NULL
-                               OR stato_bando NOT IN ('aperto', 'chiuso', 'programmato')
-                        ) AS invalid_stato_bando,
+                        COUNT(*) FILTER (WHERE state = 'discovered') AS pending_discovery,
+                        COUNT(*) FILTER (WHERE state = 'confirmed') AS confirmed,
+                        COUNT(*) FILTER (WHERE state = 'rejected') AS rejected,
+                        COUNT(*) FILTER (WHERE state = 'refuted')  AS refuted,
+                        COUNT(*) FILTER (WHERE state = 'error')    AS in_error,
                         COUNT(*) FILTER (
                             WHERE raw_data IS NOT NULL
                               AND TRIM(raw_data::text) NOT IN ('', '{}', 'null')
@@ -1694,7 +1517,7 @@ class HealthRepo:
                                OR data_apertura IS NOT NULL
                                OR data_scadenza IS NOT NULL
                         ) AS with_any_date,
-                        COUNT(*) FILTER (WHERE importo_numerico IS NOT NULL) AS with_importo_numerico
+                        COUNT(*) FILTER (WHERE importo_totale_eur IS NOT NULL) AS with_importo_totale_eur
                     FROM public.bando
                     """
                 )
@@ -1707,12 +1530,12 @@ class HealthRepo:
             result["pct_required_complete"] = round(100.0 * result["required_complete"] / totale, 1)
             result["pct_with_raw_data"] = round(100.0 * result["with_raw_data"] / totale, 1)
             result["pct_with_any_date"] = round(100.0 * result["with_any_date"] / totale, 1)
-            result["pct_with_importo_numerico"] = round(100.0 * result["with_importo_numerico"] / totale, 1)
+            result["pct_with_importo_totale_eur"] = round(100.0 * result["with_importo_totale_eur"] / totale, 1)
         else:
             result["pct_required_complete"] = 0.0
             result["pct_with_raw_data"] = 0.0
             result["pct_with_any_date"] = 0.0
-            result["pct_with_importo_numerico"] = 0.0
+            result["pct_with_importo_totale_eur"] = 0.0
         return result
 
     def list_suspect_bando_ids(self) -> list[int]:
@@ -1731,7 +1554,7 @@ class HealthRepo:
         return [int(r["id"]) for r in rows]
 
     def list_suspect_bandi(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Restituisce un campione di record sospetti per review manuale."""
+        """Restituisce un campione di record sospetti per review manuale (schema v4)."""
         safe_limit = max(1, min(int(limit), 500))
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -1742,7 +1565,8 @@ class HealthRepo:
                         fonte_id,
                         titolo,
                         link_bando,
-                        stato_bando,
+                        state,
+                        state_detail,
                         stato_processing,
                         TRIM(BOTH '|' FROM CONCAT_WS('|',
                             CASE WHEN {self._SUSPECT_DENY_HOST} THEN 'deny_host' END,

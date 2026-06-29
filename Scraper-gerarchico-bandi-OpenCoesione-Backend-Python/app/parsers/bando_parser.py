@@ -186,15 +186,14 @@ def _get_importo_plausibile_threshold() -> Decimal:
 
 @dataclass(frozen=True)
 class ParsedBandoFields:
+    """Campi estratti dal parsing v4 (no piu' stato_bando / importo*; la skill
+    autoritativa estrae importo_totale_eur e lo `state` e' derivato dal verifier)."""
     titolo: str
     codice_bando: str | None
     descrizione: str | None
-    stato_bando: str
     data_pubblicazione: date | None
     data_apertura: date | None
     data_scadenza: date | None
-    importo: str | None
-    importo_numerico: Decimal | None
     data_extra: dict[str, Any] | None
 
 
@@ -206,7 +205,6 @@ def parse_bando_fields(title: str, link_bando: str, raw_data_obj: dict[str, Any]
     importo_threshold = _get_importo_plausibile_threshold()
 
     codice = _extract_codice_bando(corpus)
-    stato = _extract_stato_bando(corpus)
 
     # Data: preferenza pagina dettaglio > ricerca etichettata > fallback prima data generica
     data_pubblicazione = None
@@ -346,26 +344,16 @@ def parse_bando_fields(title: str, link_bando: str, raw_data_obj: dict[str, Any]
     if page_fetch_error:
         extra["page_fetch_error"] = page_fetch_error
 
-    # Marker: se tutti i campi critici sono NULL (pagina di lista/indice, non dettaglio),
-    # marchia il record come "sospetto" per escluderlo dai KPI e segnalarlo come da verificare.
-    if (
-        data_pubblicazione is None
-        and data_apertura is None
-        and data_scadenza is None
-        and importo_num is None
-    ):
-        stato = "sospetto"
+    # v4: il "sospetto" si rileva ora via skill autoritativa (state='rejected'
+    # con rejection_category) — il parser non emette piu' un campo stato_bando.
 
     return ParsedBandoFields(
         titolo=final_titolo,
         codice_bando=codice,
         descrizione=descrizione,
-        stato_bando=stato,
         data_pubblicazione=data_pubblicazione,
         data_apertura=data_apertura,
         data_scadenza=data_scadenza,
-        importo=importo_raw,
-        importo_numerico=importo_num,
         data_extra=extra or None,
     )
 
@@ -399,17 +387,6 @@ def _extract_codice_bando(text: str) -> str | None:
         if m:
             return m.group(1)[:255]
     return None
-
-
-def _extract_stato_bando(text: str) -> str:
-    lowered = text.lower()
-    if any(k in lowered for k in ["chius", "scadut", "terminat", "closed"]):
-        return "chiuso"
-    if any(k in lowered for k in ["programm", "prossim", "in arrivo", "upcoming", "forthcoming"]):
-        return "programmato"
-    if any(k in lowered for k in ["apert", "attiv", "in corso"]) or re.search(r"\bis open\b", lowered):
-        return "aperto"
-    return "programmato"
 
 
 def _extract_labeled_date(text: str, labels: list[str]) -> date | None:

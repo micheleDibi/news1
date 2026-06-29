@@ -51,6 +51,12 @@ class CategoriaProgramma(BaseModel):
 
 
 class Bando(BaseModel):
+    """Mirror Pydantic della tabella `bando` post-migrazione v4.
+
+    Vedi `backend/sql/bando_v4_collapse.sql` per lo schema autoritativo.
+    Campi v3 (stato_bando, importo, importo_numerico, is_bando_confermato,
+    ai_processing_*, ai_last_attempt_at) rimossi.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -60,7 +66,6 @@ class Bando(BaseModel):
     descrizione: Optional[str] = None
     codice_bando: Optional[str] = None
     fondo: Optional[str] = None
-    stato_bando: Optional[str] = None
     data_pubblicazione: Optional[datetime] = None
     data_apertura: Optional[datetime] = None
     data_scadenza: Optional[datetime] = None
@@ -70,11 +75,9 @@ class Bando(BaseModel):
     modalita_erogazione_id: Optional[int] = None
     programma_id: Optional[int] = None
     data_extra: Optional[dict[str, Any]] = None
-    importo: Optional[str] = None
-    importo_numerico: Optional[float] = None
     primo_scraping_at: Optional[datetime] = None
     ultimo_scraping_at: Optional[datetime] = None
-    # Campi retry / processing
+    # Campi retry / processing fonte
     stato_processing: str = "ready"
     retry_count: int = 0
     max_retry: int = 3
@@ -82,13 +85,35 @@ class Bando(BaseModel):
     last_error_type: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_at: Optional[datetime] = None
-    # Classificazione bando
-    is_bando_confermato: Optional[bool] = None
-    # AI
-    ai_processing_required: bool = False
-    ai_processing_status: str = "not_required"
-    ai_last_attempt_at: Optional[datetime] = None
-    # OCR
+    # v4 — state machine
+    state: str = "discovered"
+    state_detail: dict[str, Any] = {}
+    state_updated_at: Optional[datetime] = None
+    attempts: int = 0
+    # v4 — editorial (skill-side)
+    slug: Optional[str] = None
+    source_url: Optional[str] = None
+    livello: Optional[str] = None
+    titolo_breve: Optional[str] = None
+    descrizione_breve: Optional[str] = None
+    contenuto: Optional[dict[str, Any]] = None
+    date_quotes: dict[str, Any] = {}
+    # v4 — classification normalizzata (skill autoritativa)
+    tipologia: Optional[str] = None
+    programma: Optional[str] = None
+    modalita_erogazione: Optional[str] = None
+    area_geografica: Optional[str] = None
+    tematica: Optional[list[str]] = None
+    beneficiari: Optional[list[str]] = None
+    codici_ateco: Optional[list[str]] = None
+    # v4 — importi/ente/link
+    importo_totale_eur: Optional[int] = None
+    importo_max_per_progetto_eur: Optional[int] = None
+    ente_erogatore: Optional[str] = None
+    link_candidatura: Optional[str] = None
+    link_candidatura_source: Optional[str] = None
+    allegati: Optional[list[dict[str, Any]]] = None
+    # OCR (non v4, ma ancora attivo)
     ocr_required: bool = False
     ocr_status: str = "not_required"
     ocr_last_attempt_at: Optional[datetime] = None
@@ -171,26 +196,8 @@ class ScrapingErroreDefinitivo(BaseModel):
     note_risoluzione: Optional[str] = None
 
 
-class AiJobQueue(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    job_uuid: UUID
-    bando_id: int
-    stato: str = "queued"
-    tipo_job: str = "classificazione"
-    priorita: int = 100
-    tentativi: int = 0
-    max_tentativi: int = 3
-    disponibile_da: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    errore_tipo: Optional[str] = None
-    errore_messaggio: Optional[str] = None
-    payload: dict[str, Any] = {}
-    risultato: Optional[dict[str, Any]] = None
-    creato_il: Optional[datetime] = None
-    aggiornato_il: Optional[datetime] = None
+# v4: AiJobQueue rimossa. Il worker AI Opus pre-skill e' stato deprecato.
+# La tabella `ai_job_queue` resta nel DB (vuota) per audit, drop in futura cleanup.
 
 
 class OcrJobQueue(BaseModel):

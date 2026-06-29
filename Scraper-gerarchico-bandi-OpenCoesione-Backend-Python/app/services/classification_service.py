@@ -6,7 +6,6 @@ import re
 from typing import Any, Iterable
 from unicodedata import normalize as unicode_normalize
 
-from app.ai.output_validator import AiClassificationOutputValidator, AllowedValue
 from app.repos.base import ReferenceDataRepo
 
 
@@ -139,31 +138,9 @@ class ControlledClassificationService:
             enriched.append(classified)
         return enriched
 
-    def prepare_ai_fallback_payload(self, unresolved_fields: Iterable[str]) -> dict[str, Any]:
-        fields = list(dict.fromkeys(field for field in unresolved_fields if field))
-        allowed_values: dict[str, list[dict[str, Any]]] = {}
-        for field in fields:
-            if field == "is_bando_confermato":
-                allowed_values[field] = [
-                    {"value": True, "label": "sì — la pagina descrive un bando, avviso o opportunità di finanziamento"},
-                    {"value": False, "label": "no — la pagina non è un bando (es. pagina generica, navigazione, documento non pertinente)"},
-                ]
-                continue
-            options = self._allowed_values().get(field, [])
-            allowed_values[field] = [{"id": item.id, "label": item.label} for item in options]
-        return {
-            "mode": "choose-existing-only",
-            "unresolved_fields": fields,
-            "allowed_values": allowed_values,
-        }
-
-    def build_ai_validator(self) -> AiClassificationOutputValidator:
-        return AiClassificationOutputValidator(
-            {
-                field: [AllowedValue(id=item.id, label=item.label) for item in options]
-                for field, options in self._allowed_values().items()
-            }
-        )
+    # v4: `prepare_ai_fallback_payload` e `build_ai_validator` rimossi (worker AI
+    # Opus pre-skill deprecato). _allowed_values resta come reference per i
+    # consumer interni del classifier (es. _match_single/_match_many).
 
     def _allowed_values(self) -> dict[str, tuple[ReferenceOption, ...]]:
         return {
