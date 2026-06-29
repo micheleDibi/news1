@@ -122,8 +122,14 @@ def parse_page(html: str, base_url: str | None = None) -> list[FonteCandidate]:
     body = soup.body or soup
 
     current_category: int | None = None
-    candidates: list[FonteCandidate] = []
-    seen: set[tuple[str, str]] = set()   # dedup per (link, tipo_link)
+    # Dedup per `link`: la tabella `fonte` ha UNIQUE su (link). Se lo stesso
+    # URL appare sia come Opportunita' che come Preavviso (succede), tengo
+    # solo la prima occorrenza ma applico priorita': Opportunita' batte
+    # Preavviso (semanticamente piu' rilevante).
+    # Mappa link -> FonteCandidate (l'ultima vince solo se promuove a Opportunita').
+    by_link: dict[str, FonteCandidate] = {}
+    # Conteggio collisioni per il log finale.
+    collisions = 0
 
     # Raccoglie i top-level descendant in ordine DOM.
     # Usa find_all per riprodurre l'ordine naturale.
@@ -174,11 +180,6 @@ def parse_page(html: str, base_url: str | None = None) -> list[FonteCandidate]:
         # Risolvi URL relativi
         link = urljoin(base_url, href)
 
-        dedup_key = (link, tipo)
-        if dedup_key in seen:
-            continue
-        seen.add(dedup_key)
-
         # Estrai nome programma dal `<li>` contenitore
         li = tag.find_parent("li")
         program_name = _extract_program_name(li, tag)
@@ -200,16 +201,39 @@ def parse_page(html: str, base_url: str | None = None) -> list[FonteCandidate]:
             tipologia_from_program_name(program_name) if program_name else None
         )
 
-        candidates.append(FonteCandidate(
+        new_cand = FonteCandidate(
             link=link,
             categoria_programma_id=categoria_id,
             tipologia_programma_id=tipologia_id,
             tipo_link=tipo,
             program_name=program_name,
             section_name=section_name,
-        ))
+        )
 
-    logger.info("[discover] estratti {} candidati distinti", len(candidates))
+        # Dedup per `link` con priorita' Opportunita' > Preavviso.
+        existing = by_link.get(link)
+        if existing is None:
+            by_link[link] = new_cand
+        else:
+            collisions += 1
+            # Sostituisci SE il nuovo e' Opportunita' e l'esistente e' Preavviso.
+            if existing.tipo_link == "Preavviso" and new_cand.tipo_link == "Opportunità":
+                logger.debug(
+                    "[discover] collision link={}: promosso Preavviso -> Opportunita'",
+                    link,
+                )
+                by_link[link] = new_cand
+            else:
+                logger.debug(
+                    "[discover] collision link={}: tengo esistente ({}) scarto nuovo ({})",
+                    link, existing.tipo_link, new_cand.tipo_link,
+                )
+
+    candidates = list(by_link.values())
+    logger.info(
+        "[discover] estratti {} candidati distinti (collisioni dedup link: {})",
+        len(candidates), collisions,
+    )
 
     # Breakdown diagnostico
     by_cat: dict[int | None, int] = {}

@@ -21,22 +21,42 @@ def get_supabase() -> Client:
 def upsert_fonti(records: list[dict[str, Any]]) -> dict[str, int]:
     """UPSERT idempotente in `fonte` con on_conflict='link'.
 
-    Restituisce contatori {inserted, updated} approssimativi. Supabase non
-    ritorna la distinzione INSERT/UPDATE direttamente da upsert(); per i
-    contatori esatti bisognerebbe fare SELECT pre-upsert. Per ora: ritorna
-    {processed: N} come totale processato.
+    Difesa anti-duplicati: PostgreSQL ON CONFLICT non puo' aggiornare la
+    stessa riga due volte nello stesso comando. Se nel batch ci sono
+    record con `link` duplicato, dedup preservando il PRIMO trovato.
+
+    Restituisce contatori {processed, dedup_collisions}.
     """
     if not records:
-        return {"processed": 0}
+        return {"processed": 0, "dedup_collisions": 0}
+
+    # Dedup per link preservando il primo (l'orchestrator gia' applica
+    # priorita' Opportunita'>Preavviso, qui difesa best-effort).
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    collisions = 0
+    for r in records:
+        link = r.get("link")
+        if not link:
+            continue
+        if link in seen:
+            collisions += 1
+            logger.warning("[db] dedup link duplicato pre-upsert: {}", link)
+            continue
+        seen.add(link)
+        deduped.append(r)
 
     sb = get_supabase()
-    logger.info("[db] upsert {} record in `fonte`", len(records))
+    logger.info(
+        "[db] upsert {} record in `fonte` (input={}, dedup_collisions={})",
+        len(deduped), len(records), collisions,
+    )
     try:
-        sb.table("fonte").upsert(records, on_conflict="link").execute()
+        sb.table("fonte").upsert(deduped, on_conflict="link").execute()
     except Exception as e:
         logger.exception("[db] upsert fallito: {}", e)
         raise
-    return {"processed": len(records)}
+    return {"processed": len(deduped), "dedup_collisions": collisions}
 
 
 def mark_deprecated(active_links: set[str]) -> int:
