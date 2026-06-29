@@ -1,210 +1,1017 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import BandoCard from '../components/bandi/BandoCard.astro';
-import BandoFilters from '../components/bandi/BandoFilters.astro';
-import BandiExpertCta from '../components/BandiExpertCta.astro';
+import { format, parseISO, isValid } from 'date-fns';
+import { it } from 'date-fns/locale';
 import {
-  supabaseBandi, loadCatalogo, BANDO_SELECT_LIST,
-  type Bando, type Catalogo,
+  supabaseBandi,
+  loadCatalogo,
+  lookupNome,
+  type Bando,
+  type Catalogo,
 } from '../lib/supabase-bandi';
+import BandiExpertCta from '../components/BandiExpertCta.astro';
+import ContactForm from '../components/ContactForm';
 
 export const prerender = false;
 
+const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_BANDI_URL;
+const supabaseKey = import.meta.env.PUBLIC_SUPABASE_BANDI_ANON_KEY;
 const PAGE_SIZE = 20;
-const url = new URL(Astro.request.url);
-const params = url.searchParams;
 
-function getMulti(name: string): string[] {
-  const v = params.getAll(name);
-  return v.filter(Boolean);
-}
-function getStr(name: string): string | undefined {
-  const v = params.get(name);
-  return v ? v.trim() : undefined;
-}
-function getNum(name: string): number | undefined {
-  const v = params.get(name);
-  if (!v) return undefined;
-  const n = parseInt(v, 10);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-const selected = {
-  q: getStr('q'),
-  regione: getMulti('regione'),
-  settore: getMulti('settore'),
-  beneficiario: getMulti('beneficiario'),
-  ateco: getMulti('ateco'),
-  tipologia: getMulti('tipologia'),
-  programma: getMulti('programma'),
-  modalita: getMulti('modalita'),
-  importo_min: getStr('importo_min'),
-  importo_max: getStr('importo_max'),
-  scadenza_da: getStr('scadenza_da'),
-  scadenza_a: getStr('scadenza_a'),
-  sort: getStr('sort') ?? 'data_scadenza_asc',
-};
-const page = Math.max(1, getNum('page') ?? 1);
-
-// Junction subquery helper: ritorna l'array di bando_id che match
-async function junctionBandoIds(table: string, fkColumn: string, ids: string[]): Promise<number[] | null> {
-  if (ids.length === 0) return null;
-  const numericIds = ids.map(i => parseInt(i, 10)).filter(Number.isFinite);
-  if (numericIds.length === 0) return null;
-  const { data, error } = await supabaseBandi
-    .from(table)
-    .select('bando_id')
-    .in(fkColumn, numericIds);
-  if (error || !data) return [];
-  return Array.from(new Set(data.map((r: any) => r.bando_id)));
-}
+// v9: schema collassato + FK separate. La RLS filtra
+// `stato_processing='completed' AND slug IS NOT NULL`. tipologia / programma /
+// modalita_erogazione sono ora FK risolte client-side via catalogo singleton.
+// beneficiari / codici_ateco / regioni / settori vivono in junction tables
+// (non servono in lista, solo nel dettaglio).
+const BANDO_SELECT_LIST =
+  'id, slug, titolo, titolo_breve, descrizione_breve, ente_erogatore, ' +
+  'area_geografica, tematica, ' +
+  'tipologia_bando_id, programma_id, modalita_erogazione_id, ' +
+  'data_pubblicazione, data_apertura, data_scadenza, ' +
+  'importo_totale_eur, importo_max_per_progetto_eur, ' +
+  'link_bando, stato_bando';
 
 const catalogo: Catalogo = await loadCatalogo();
 
-// Costruisci la query principale
-let query = supabaseBandi
-  .from('bando')
-  .select(BANDO_SELECT_LIST, { count: 'exact' });
+/**
+ * Arricchisce un bando con nomi risolti via catalogo. Mantiene compatibilita'
+ * col template legacy che leggeva `bando.tipologia` / `bando.programma` ecc.
+ * come stringhe.
+ */
+function enrichBando(b: any) {
+  return {
+    ...b,
+    tipologia: lookupNome(catalogo.tipologie, b.tipologia_bando_id),
+    programma: lookupNome(catalogo.programmi, b.programma_id),
+    modalita_erogazione: lookupNome(catalogo.modalita, b.modalita_erogazione_id),
+    // Junction NON popolati in lista (richiederebbero N+1 query). Vuoti.
+    beneficiari: [] as string[],
+    codici_ateco: [] as string[],
+  };
+}
 
-// Filtri junction-based (intersezione bando_ids da ogni junction filtrata)
-let intersectIds: number[] | null = null;
-const intersect = (ids: number[] | null) => {
-  if (ids == null) return;
-  if (intersectIds == null) {
-    intersectIds = ids;
-  } else {
-    const set = new Set(ids);
-    intersectIds = intersectIds.filter(i => set.has(i));
+async function loadBandiData(): Promise<{ items: Bando[]; total: number }> {
+  try {
+    if (!supabaseUrl || !supabaseKey) return { items: [], total: 0 };
+    const { count } = await supabaseBandi
+      .from('bando')
+      .select('id', { count: 'exact', head: true });
+    const { data, error } = await supabaseBandi
+      .from('bando')
+      .select(BANDO_SELECT_LIST)
+      .order('data_pubblicazione', { ascending: false, nullsFirst: false })
+      .range(0, PAGE_SIZE - 1);
+    if (error) return { items: [], total: 0 };
+    const items = (data || []).map(enrichBando) as unknown as Bando[];
+    return { items, total: count || 0 };
+  } catch {
+    return { items: [], total: 0 };
+  }
+}
+
+const { items: bandiData, total: totalCount } = await loadBandiData();
+const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+
+// Opzioni per i multi-select. value = ID (numerico), label = nome.
+// Il client costruisce poi query PostgREST sui FK / junction tables.
+const filterOpts = {
+  regione: catalogo.regioni.map(r => ({ value: String(r.id), label: r.nome })),
+  settore: catalogo.settori.map(s => ({ value: String(s.id), label: s.nome })),
+  beneficiario: catalogo.beneficiari.map(b => ({ value: String(b.id), label: b.nome })),
+  programma: catalogo.programmi.map(p => ({ value: String(p.id), label: p.nome })),
+  modalita: catalogo.modalita.map(m => ({ value: String(m.id), label: m.nome })),
+  ateco: catalogo.codici_ateco.map(a => ({
+    value: String(a.id),
+    label: a.descrizione ? `${a.codice} — ${a.descrizione}` : a.codice,
+  })),
+};
+
+// Tipologie: anche queste vengono filtrate per id (FK tipologia_bando_id).
+const tipologieOpts = catalogo.tipologie.map(t => ({ value: String(t.id), label: t.nome }));
+
+// Mappe id→nome serializzate al client per arricchire le card dopo refresh filtri.
+const catalogMaps = {
+  tipologie: Object.fromEntries(catalogo.tipologie.map(t => [t.id, t.nome])),
+  programmi: Object.fromEntries(catalogo.programmi.map(p => [p.id, p.nome])),
+  modalita: Object.fromEntries(catalogo.modalita.map(m => [m.id, m.nome])),
+};
+
+const formatDate = (s: string | null | undefined): string => {
+  if (!s) return '—';
+  try {
+    const d = parseISO(s);
+    if (!isValid(d)) return s;
+    return format(d, 'd MMMM yyyy', { locale: it });
+  } catch {
+    return s;
   }
 };
-intersect(await junctionBandoIds('bando_regioni', 'regione_id', selected.regione));
-intersect(await junctionBandoIds('bando_settori', 'settore_id', selected.settore));
-intersect(await junctionBandoIds('bando_beneficiari', 'beneficiario_id', selected.beneficiario));
-intersect(await junctionBandoIds('bando_codici_ateco', 'codice_ateco_id', selected.ateco));
 
-if (intersectIds != null) {
-  if (intersectIds.length === 0) {
-    // Filtri match zero bandi: forziamo nessun risultato
-    query = query.eq('id', -1);
-  } else {
-    query = query.in('id', intersectIds);
-  }
-}
-
-// Filtri FK
-if (selected.tipologia.length > 0) {
-  query = query.in('tipologia_bando_id', selected.tipologia.map(Number));
-}
-if (selected.programma.length > 0) {
-  query = query.in('programma_id', selected.programma.map(Number));
-}
-if (selected.modalita.length > 0) {
-  query = query.in('modalita_erogazione_id', selected.modalita.map(Number));
-}
-
-// Ricerca testuale: ilike su titolo/descrizione_breve/ente_erogatore
-if (selected.q) {
-  const safe = selected.q.replace(/[%,]/g, ' ');
-  query = query.or(
-    `titolo.ilike.%${safe}%,descrizione_breve.ilike.%${safe}%,ente_erogatore.ilike.%${safe}%`,
-  );
-}
-
-// Importi
-if (selected.importo_min) query = query.gte('importo_totale_eur', parseInt(selected.importo_min, 10));
-if (selected.importo_max) query = query.lte('importo_totale_eur', parseInt(selected.importo_max, 10));
-
-// Scadenza range
-if (selected.scadenza_da) query = query.gte('data_scadenza', selected.scadenza_da);
-if (selected.scadenza_a) query = query.lte('data_scadenza', selected.scadenza_a);
-
-// Sort
-const sortMap: Record<string, [string, boolean]> = {
-  data_scadenza_asc: ['data_scadenza', true],
-  data_pubblicazione_desc: ['data_pubblicazione', false],
-  importo_totale_eur_desc: ['importo_totale_eur', false],
+const formatImporto = (n: number | null): string => {
+  if (n == null) return '—';
+  return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n);
 };
-const [sortCol, sortAsc] = sortMap[selected.sort] ?? sortMap.data_scadenza_asc;
-query = query.order(sortCol, { ascending: sortAsc, nullsFirst: false });
 
-// Paginazione
-const offset = (page - 1) * PAGE_SIZE;
-query = query.range(offset, offset + PAGE_SIZE - 1);
+// Badge basati su `stato_bando` (colonna DB, valori: aperto / chiuso /
+// in apertura prossimamente). NB: il vecchio "in_scadenza" era calcolato
+// in JS dalla scadenza — ora usiamo la verita' del DB (data-driven dal
+// preprocess v2).
+const statoBandoBadgeClasses = (stato: string | null | undefined): string => {
+  if (stato === 'aperto') return 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200';
+  if (stato === 'chiuso') return 'bg-gray-100 text-gray-600 ring-1 ring-gray-200';
+  if (stato === 'in apertura prossimamente') return 'bg-amber-100 text-amber-700 ring-1 ring-amber-200';
+  return 'bg-gray-100 text-gray-500 ring-1 ring-gray-200';
+};
 
-const { data, count, error } = await query;
-const bandi = (data ?? []) as Bando[];
-const totalCount = count ?? 0;
-const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+const statoBandoBadgeLabel = (stato: string | null | undefined): string => {
+  if (stato === 'aperto') return 'Aperto';
+  if (stato === 'chiuso') return 'Chiuso';
+  if (stato === 'in apertura prossimamente') return 'In apertura';
+  return '—';
+};
 
-if (error) {
-  console.error('[bandi/list] supabase error:', error);
-}
+// Opzioni dei chip filtro per stato_bando (3 valori del CHECK constraint DB).
+const STATI_BANDO_OPTS = [
+  { value: 'aperto', label: 'Aperto' },
+  { value: 'in apertura prossimamente', label: 'In apertura' },
+  { value: 'chiuso', label: 'Chiuso' },
+];
 
-// Helper paginazione: costruisce URL preservando filtri
-function pageUrl(p: number): string {
-  const u = new URL(url.toString());
-  u.searchParams.set('page', String(p));
-  return u.pathname + '?' + u.searchParams.toString();
-}
+// Etichette dei 6 multi-select lookup. Definite a top-level perche' dentro la
+// callback `.map()` in JSX la sintassi `Record<typeof name, string>` confonde
+// l'analizzatore esbuild (vede `<typeof` come apertura JSX e fallisce il build).
+const FILTER_LABELS = {
+  regione: 'Regione',
+  settore: 'Settore',
+  beneficiario: 'Beneficiario',
+  programma: 'Programma',
+  modalita: 'Modalita erogazione',
+  ateco: 'Codice ATECO',
+} as const;
+const FILTER_NAMES = ['regione', 'settore', 'beneficiario', 'programma', 'modalita', 'ateco'] as const;
 
 const pageTitle = 'Bandi e finanziamenti pubblici - EduNews24';
 const pageDescription =
   'Trova bandi di finanziamento europei, nazionali e regionali. Filtra per regione, settore, beneficiari, tipologia, codici ATECO, programma, importo e scadenza.';
+const pageKeywords =
+  'bandi, finanziamenti, FESR, FSE, Interreg, OpenCoesione, fondi europei, regionali, nazionali, codici ATECO';
 ---
 
-<Layout title={pageTitle} description={pageDescription}>
-  <main class="bg-slate-50 min-h-screen">
-    <header class="bg-white border-b border-slate-200">
-      <div class="max-w-7xl mx-auto px-4 py-8">
-        <h1 class="text-3xl font-bold text-slate-900">Bandi e finanziamenti pubblici</h1>
-        <p class="mt-2 text-slate-600 max-w-3xl">
-          {pageDescription}
+<Layout title={pageTitle} description={pageDescription} keywords={pageKeywords}>
+  <main class="bg-gray-50 min-h-screen">
+    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
+      <div class="container mx-auto max-w-6xl">
+        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
+          <ol class="inline-flex items-center space-x-1">
+            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
+            <li class="flex items-center">
+              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <span class="text-white font-medium">Bandi</span>
+            </li>
+          </ol>
+        </nav>
+        <h1 class="text-3xl md:text-4xl font-bold mb-2">Bandi e finanziamenti pubblici</h1>
+        <p class="text-blue-100 text-lg max-w-2xl leading-relaxed">
+          Bandi europei (FESR, FSE, Interreg, JTF), nazionali e regionali aggiornati ogni giorno.
+          <span class="text-white font-semibold">Non sai quale fa per te?</span> Il nostro staff e i nostri strumenti AI ti accompagnano dalla scelta alla candidatura.
         </p>
-        <p class="mt-3 text-sm text-slate-500">
-          <strong class="text-slate-700">{totalCount}</strong> bandi disponibili
-        </p>
-      </div>
-    </header>
-
-    <div class="max-w-7xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-6">
-      <aside class="lg:sticky lg:top-4 lg:self-start">
-        <BandoFilters catalogo={catalogo} selected={selected} resultCount={totalCount} />
-      </aside>
-
-      <section>
-        {bandi.length === 0 && (
-          <div class="bg-white border border-slate-200 rounded-xl p-8 text-center">
-            <p class="text-slate-700 font-medium">Nessun bando corrisponde ai filtri selezionati.</p>
-            <a href="/bandi" class="inline-block mt-3 text-blue-700 underline">Reset filtri</a>
-          </div>
-        )}
-
-        {bandi.length > 0 && (
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {bandi.map((bando) => (
-              <BandoCard bando={bando} catalogo={catalogo} />
-            ))}
-          </div>
-        )}
-
-        {totalPages > 1 && (
-          <nav class="mt-8 flex items-center justify-center gap-2" aria-label="Paginazione">
-            {page > 1 && (
-              <a href={pageUrl(page - 1)} class="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm hover:bg-slate-50">‹ Precedente</a>
-            )}
-            <span class="px-3 py-2 text-sm text-slate-600">
-              Pagina <strong>{page}</strong> di {totalPages}
-            </span>
-            {page < totalPages && (
-              <a href={pageUrl(page + 1)} class="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm hover:bg-slate-50">Successiva ›</a>
-            )}
-          </nav>
-        )}
-
-        <div class="mt-10">
-          <BandiExpertCta variant="full" />
+        <div class="mt-5 flex flex-wrap items-center gap-3 text-sm">
+          <a
+            href="#contact-esperto"
+            aria-label="Parla con un esperto per candidarti a un bando"
+            class="group inline-flex items-center gap-2 px-5 py-2.5 bg-white text-blue-700 font-semibold rounded-full shadow-lg hover:shadow-xl hover:bg-blue-50 hover:scale-[1.03] active:scale-[0.98] transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-white/40"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
+            <span>Parla con un esperto</span>
+            <svg class="w-4 h-4 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6"></path></svg>
+          </a>
+          <span class="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full text-white/90 ring-1 ring-white/10">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <span id="hero-count">{totalCount}</span> bandi disponibili
+          </span>
         </div>
-      </section>
+      </div>
     </div>
+
+    <div class="container mx-auto px-4 max-w-6xl -mt-6">
+      {/* Banner CTA "Hai bisogno di un esperto?" */}
+      <div class="mb-6">
+        <BandiExpertCta variant="full-width" />
+      </div>
+
+      {/* Filter card with collapse/expand */}
+      <div class="mb-6 bg-white rounded-xl shadow-md border border-gray-100 overflow-visible">
+        {/* Header (clickable). NB: usiamo div role=button, NON un <button>, perche'
+            il Reset interno e' anch'esso un <button> e nesting di button non e' valido
+            HTML: il browser auto-chiuderebbe il toggle prima del Reset e il body
+            del pannello finirebbe FUORI dalla card. */}
+        <div
+          id="filters-toggle"
+          role="button"
+          tabindex="0"
+          class="w-full flex items-center justify-between gap-3 p-4 sm:p-5 text-left hover:bg-gray-50 transition-colors rounded-t-xl cursor-pointer select-none"
+          aria-expanded="true"
+          aria-controls="filters-body"
+        >
+          <div class="flex items-center gap-3 min-w-0">
+            <span class="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-lg bg-blue-50 text-blue-600">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
+            </span>
+            <div class="min-w-0">
+              <h2 class="font-semibold text-gray-900 leading-tight">Filtri</h2>
+              <p class="text-xs text-gray-500 mt-0.5 hidden sm:block">Affina la ricerca tra i bandi disponibili</p>
+            </div>
+            <span id="active-filters-badge" class="hidden ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">
+              <span id="active-count">0</span>&nbsp;attiv<span id="active-pluralize">i</span>
+            </span>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <button
+              type="button"
+              id="reset-filters"
+              class="hidden sm:inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-800 transition-colors rounded-md hover:bg-gray-100"
+              data-no-toggle="true"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+              Resetta
+            </button>
+            <svg id="filters-chevron" class="w-5 h-5 text-gray-400 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div id="filters-body" class="border-t border-gray-100 px-4 sm:px-5 pb-5 pt-4 space-y-5">
+          {/* Riga 1: Search full-width */}
+          <div>
+            <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Ricerca testuale</label>
+            <div class="relative">
+              <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+              <input type="text" id="search-filter" placeholder="Cerca per titolo, ente o descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
+            </div>
+          </div>
+
+          {/* Riga 2: 6 multi-select lookup */}
+          <div>
+            <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Categorie</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {/* Ogni multiselect ha la stessa struttura. Le opzioni sono iniettate via JS. */}
+              {FILTER_NAMES.map(name => (
+                <div class="multiselect relative" data-name={name}>
+                  <button type="button" class="ms-trigger w-full flex items-center justify-between gap-2 px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50 hover:bg-gray-100 hover:border-gray-300 transition-colors text-left">
+                    <span class="ms-display flex-1 truncate text-gray-500" data-empty={FILTER_LABELS[name]}>{FILTER_LABELS[name]}</span>
+                    <span class="ms-count hidden shrink-0 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 text-[10px] font-bold bg-blue-600 text-white rounded-full">0</span>
+                    <svg class="ms-chevron w-4 h-4 text-gray-400 transition-transform shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                  </button>
+                  <div class="ms-popover hidden absolute z-30 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                    <div class="p-2 border-b border-gray-100">
+                      <div class="relative">
+                        <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                        <input type="text" class="ms-search w-full pl-8 pr-2 py-1.5 text-sm bg-gray-50 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="Cerca...">
+                      </div>
+                    </div>
+                    <div class="ms-list max-h-64 overflow-y-auto py-1"></div>
+                    <div class="ms-footer p-2 border-t border-gray-100 flex items-center justify-between text-xs">
+                      <button type="button" class="ms-clear text-gray-500 hover:text-gray-800 font-medium">Pulisci</button>
+                      <span class="ms-status text-gray-400">0 selezionati</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Riga 3: chip multi (tipologia + stato scadenza) */}
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <div>
+              <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tipologia</h3>
+              <div id="tipologia-chips" class="flex flex-wrap gap-2">
+                {tipologieOpts.map(t => (
+                  <button type="button" data-value={t.value} class="chip-toggle px-3 py-1.5 rounded-full text-xs font-semibold border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors" data-active="false">
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Stato bando</h3>
+              <div id="scadenza-chips" class="flex flex-wrap gap-2">
+                {STATI_BANDO_OPTS.map(s => (
+                  <button type="button" data-value={s.value} class="chip-toggle px-3 py-1.5 rounded-full text-xs font-semibold border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors" data-active="false">
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Riga 4: range importo + scadenza */}
+          <div>
+            <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Importo e scadenza</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div>
+                <label for="importo-min" class="block text-xs text-gray-500 mb-1">Importo min (€)</label>
+                <input type="number" id="importo-min" min="0" step="1000" placeholder="0" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              </div>
+              <div>
+                <label for="importo-max" class="block text-xs text-gray-500 mb-1">Importo max (€)</label>
+                <input type="number" id="importo-max" min="0" step="1000" placeholder="∞" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              </div>
+              <div>
+                <label for="scadenza-da" class="block text-xs text-gray-500 mb-1">Scadenza da</label>
+                <input type="date" id="scadenza-da" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              </div>
+              <div>
+                <label for="scadenza-a" class="block text-xs text-gray-500 mb-1">Scadenza a</label>
+                <input type="date" id="scadenza-a" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+              </div>
+            </div>
+          </div>
+
+          {/* Reset mobile (sm:hidden) */}
+          <div class="sm:hidden pt-2 border-t border-gray-100">
+            <button type="button" id="reset-filters-mobile" class="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-1.5">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+              Resetta filtri
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mb-4 flex items-center justify-between">
+        <p id="results-count" class="text-sm text-gray-500">
+          <span id="visible-count" class="font-semibold text-gray-700">{totalCount}</span> bandi trovati
+        </p>
+        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-blue-600">
+          <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          Caricamento...
+        </div>
+      </div>
+
+      <div id="bandi-list" class="space-y-4">
+        {bandiData.length === 0 ? (
+          <div id="no-results-message" class="text-center py-16 bg-white rounded-xl shadow-sm">
+            <svg class="mx-auto w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <p class="text-gray-500 text-lg font-medium">Nessun bando trovato</p>
+            <p class="text-gray-400 text-sm mt-1">Prova a modificare i filtri di ricerca</p>
+          </div>
+        ) : (
+          <Fragment>
+            {bandiData.map((bando: Bando) => (
+              <article class="bando-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200">
+                <a href={`/bandi/${bando.slug}`} class="block">
+                  <div class="p-5 sm:p-6">
+                    <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
+                      <div class="flex-1 min-w-0">
+                        <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">
+                          {bando.titolo}
+                        </h2>
+                      </div>
+                      <span class={`shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${statoBandoBadgeClasses(bando.stato_bando)}`}>
+                        {statoBandoBadgeLabel(bando.stato_bando)}
+                      </span>
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
+                      {bando.ente_erogatore && (
+                        <span class="inline-flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                          <span class="line-clamp-1">{bando.ente_erogatore}</span>
+                        </span>
+                      )}
+                      {bando.area_geografica && (
+                        <span class="inline-flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                          <span>{bando.area_geografica}</span>
+                        </span>
+                      )}
+                      {bando.tipologia && (
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">
+                          {bando.tipologia}
+                        </span>
+                      )}
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
+                      {bando.data_pubblicazione && (
+                        <span class="inline-flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                          Pubblicato il <span class="font-medium">{formatDate(bando.data_pubblicazione)}</span>
+                        </span>
+                      )}
+                      {bando.data_scadenza && (
+                        <span class="inline-flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                          Scadenza: <span class="font-medium">{formatDate(bando.data_scadenza)}</span>
+                        </span>
+                      )}
+                      {bando.importo_totale_eur != null && (
+                        <span class="inline-flex items-center gap-1.5">
+                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                          Totale: <span class="font-medium">{formatImporto(bando.importo_totale_eur)}</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {bando.descrizione_breve && (
+                      <p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">
+                        {bando.descrizione_breve}
+                      </p>
+                    )}
+                  </div>
+                </a>
+              </article>
+            ))}
+            <p id="no-filtered-results-message" class="text-center text-gray-500 text-lg py-10 hidden">Nessun bando corrisponde ai filtri selezionati.</p>
+          </Fragment>
+        )}
+      </div>
+
+      {totalPages > 1 && (
+        <nav id="pagination" class="mt-8 mb-12 flex justify-center items-center gap-3" data-total-pages={totalPages} data-page-size={PAGE_SIZE}>
+          <button id="prev-page" class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm" disabled>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+            Precedente
+          </button>
+          <span class="px-4 py-2 text-sm text-gray-500 bg-white border border-gray-200 rounded-lg shadow-sm">
+            <span id="current-page-num" class="font-semibold text-gray-700">1</span> / <span id="total-pages-num">{totalPages}</span>
+          </span>
+          <button id="next-page" class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm">
+            Successiva
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+          </button>
+        </nav>
+      )}
+    </div>
+
+    {/* Sezione contatto esperto (target dello smooth scroll del banner) */}
+    <section id="contact-esperto" class="scroll-mt-20 bg-gradient-to-b from-gray-50 to-gray-100 py-14 sm:py-16">
+      <div class="container mx-auto px-4 max-w-4xl">
+        <div class="text-center mb-8">
+          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-blue-100 text-blue-700 mb-4">Supporto progettuale</span>
+          <h2 class="text-2xl md:text-3xl font-bold text-gray-900 mb-3">Parla con un esperto</h2>
+          <p class="text-gray-600 max-w-2xl mx-auto leading-relaxed">
+            Compila il form e ti contatteremo per supportarti nella partecipazione al bando giusto per te.
+            Il nostro staff valuta la tua candidatura insieme agli strumenti AI sviluppati dai migliori progettisti italiani.
+          </p>
+        </div>
+        <ContactForm client:load context={{ source: 'listing-bandi' }} />
+      </div>
+    </section>
   </main>
 </Layout>
+
+<script is:inline define:vars={{ supabaseUrl, supabaseKey, PAGE_SIZE, SELECT_LIST: BANDO_SELECT_LIST, filterOpts, catalogMaps }}>
+  // ============================================================
+  // Utility
+  // ============================================================
+  function debounce(fn, wait) {
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
+  }
+
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s); }
+
+  // ============================================================
+  // Multi-select component
+  // ============================================================
+  const MAX_VISIBLE_OPTIONS = 200;
+
+  function createMultiSelect(rootEl, options, onChange) {
+    const trigger = rootEl.querySelector('.ms-trigger');
+    const popover = rootEl.querySelector('.ms-popover');
+    const search = rootEl.querySelector('.ms-search');
+    const list = rootEl.querySelector('.ms-list');
+    const clearBtn = rootEl.querySelector('.ms-clear');
+    const display = rootEl.querySelector('.ms-display');
+    const countBadge = rootEl.querySelector('.ms-count');
+    const chevron = rootEl.querySelector('.ms-chevron');
+    const status = rootEl.querySelector('.ms-status');
+    const emptyLabel = display.dataset.empty || 'Tutti';
+
+    const selected = new Set();
+    let filtered = options.slice();
+
+    function renderList() {
+      const visible = filtered.slice(0, MAX_VISIBLE_OPTIONS);
+      list.innerHTML = visible.length === 0
+        ? '<p class="text-sm text-gray-400 px-3 py-4 text-center">Nessuna opzione</p>'
+        : visible.map(opt => `
+            <label class="flex items-center gap-2.5 px-3 py-1.5 hover:bg-blue-50 cursor-pointer text-sm transition-colors">
+              <input type="checkbox" class="ms-checkbox w-4 h-4 rounded text-blue-600 border-gray-300 focus:ring-blue-500 cursor-pointer" value="${escapeAttr(opt.value)}" ${selected.has(opt.value) ? 'checked' : ''}>
+              <span class="flex-1 truncate text-gray-700">${escapeHtml(opt.label)}</span>
+            </label>
+          `).join('');
+
+      if (filtered.length > MAX_VISIBLE_OPTIONS) {
+        list.insertAdjacentHTML('beforeend', `<p class="text-xs text-gray-400 px-3 py-2 text-center border-t border-gray-100">${filtered.length - MAX_VISIBLE_OPTIONS} altre opzioni — affina la ricerca</p>`);
+      }
+
+      list.querySelectorAll('.ms-checkbox').forEach(cb => {
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(cb.value);
+          else selected.delete(cb.value);
+          updateDisplay();
+          onChange();
+        });
+      });
+    }
+
+    function updateDisplay() {
+      const arr = Array.from(selected);
+      if (arr.length === 0) {
+        display.textContent = emptyLabel;
+        display.classList.add('text-gray-500');
+        display.classList.remove('text-gray-900', 'font-medium');
+        countBadge.classList.add('hidden');
+      } else {
+        const preview = arr.slice(0, 2).join(', ');
+        const extra = arr.length > 2 ? ` +${arr.length - 2}` : '';
+        display.textContent = preview + extra;
+        display.classList.remove('text-gray-500');
+        display.classList.add('text-gray-900', 'font-medium');
+        countBadge.textContent = String(arr.length);
+        countBadge.classList.remove('hidden');
+      }
+      status.textContent = arr.length === 0 ? 'Nessuna selezione' : `${arr.length} ${arr.length === 1 ? 'selezionato' : 'selezionati'}`;
+    }
+
+    function open() {
+      // Close any other popover
+      document.querySelectorAll('.ms-popover:not(.hidden)').forEach(p => {
+        if (p !== popover) p.classList.add('hidden');
+        if (p !== popover) {
+          const sib = p.parentElement?.querySelector('.ms-chevron');
+          if (sib) sib.classList.remove('rotate-180');
+        }
+      });
+      popover.classList.remove('hidden');
+      chevron.classList.add('rotate-180');
+      // Reset search to show all options
+      search.value = '';
+      filtered = options.slice();
+      renderList();
+      setTimeout(() => search.focus(), 50);
+    }
+    function close() {
+      popover.classList.add('hidden');
+      chevron.classList.remove('rotate-180');
+    }
+
+    trigger.addEventListener('click', e => {
+      e.stopPropagation();
+      if (popover.classList.contains('hidden')) open();
+      else close();
+    });
+
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      filtered = q
+        ? options.filter(opt => opt.label.toLowerCase().includes(q))
+        : options.slice();
+      renderList();
+    });
+    search.addEventListener('click', e => e.stopPropagation());
+
+    popover.addEventListener('click', e => e.stopPropagation());
+
+    clearBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      selected.clear();
+      list.querySelectorAll('.ms-checkbox').forEach(cb => { cb.checked = false; });
+      updateDisplay();
+      onChange();
+    });
+
+    renderList();
+    updateDisplay();
+
+    return {
+      getSelected: () => Array.from(selected),
+      clear: () => {
+        selected.clear();
+        updateDisplay();
+        // Force re-render of list to uncheck visible boxes
+        list.querySelectorAll('.ms-checkbox').forEach(cb => { cb.checked = false; });
+      },
+      close,
+    };
+  }
+
+  // ============================================================
+  // Wire up multi-selects
+  // ============================================================
+  const multiselects = {};
+  const debouncedReset = debounce(() => resetAndLoad(), 200);
+  document.querySelectorAll('.multiselect').forEach(rootEl => {
+    const name = rootEl.dataset.name;
+    const opts = filterOpts[name] || [];
+    multiselects[name] = createMultiSelect(rootEl, opts, debouncedReset);
+  });
+
+  // Close all popovers on outside click + Escape
+  document.addEventListener('click', () => {
+    Object.values(multiselects).forEach(ms => ms.close());
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      Object.values(multiselects).forEach(ms => ms.close());
+    }
+  });
+
+  // ============================================================
+  // Chip toggles (tipologia, stato scadenza)
+  // ============================================================
+  const tipologiaChips = document.getElementById('tipologia-chips');
+  const scadenzaChips = document.getElementById('scadenza-chips');
+
+  function getActiveChips(container) {
+    return Array.from(container.querySelectorAll('.chip-toggle[data-active="true"]')).map(b => b.dataset.value);
+  }
+
+  function setupChips(container) {
+    container.addEventListener('click', e => {
+      const btn = e.target.closest('.chip-toggle');
+      if (!btn) return;
+      const active = btn.dataset.active === 'true';
+      btn.dataset.active = active ? 'false' : 'true';
+      if (active) {
+        btn.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
+        btn.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
+      } else {
+        btn.classList.add('bg-blue-600', 'text-white', 'border-blue-600');
+        btn.classList.remove('bg-gray-50', 'text-gray-700', 'border-gray-200');
+      }
+      resetAndLoad();
+    });
+  }
+  setupChips(tipologiaChips);
+  setupChips(scadenzaChips);
+
+  // ============================================================
+  // Other inputs
+  // ============================================================
+  const searchInput = document.getElementById('search-filter');
+  const importoMin = document.getElementById('importo-min');
+  const importoMax = document.getElementById('importo-max');
+  const scadenzaDa = document.getElementById('scadenza-da');
+  const scadenzaA = document.getElementById('scadenza-a');
+
+  // ============================================================
+  // Collapse / expand
+  // ============================================================
+  const filtersToggle = document.getElementById('filters-toggle');
+  const filtersBody = document.getElementById('filters-body');
+  const filtersChevron = document.getElementById('filters-chevron');
+  const STORAGE_KEY = 'bandi:filters-collapsed';
+
+  function setCollapsed(collapsed) {
+    if (collapsed) {
+      filtersBody.classList.add('hidden');
+      filtersChevron.classList.add('-rotate-90');
+      filtersToggle.setAttribute('aria-expanded', 'false');
+    } else {
+      filtersBody.classList.remove('hidden');
+      filtersChevron.classList.remove('-rotate-90');
+      filtersToggle.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  // Read persisted state; default = expanded on desktop, collapsed on mobile
+  const persisted = localStorage.getItem(STORAGE_KEY);
+  const defaultCollapsed = persisted == null ? window.matchMedia('(max-width: 640px)').matches : persisted === '1';
+  setCollapsed(defaultCollapsed);
+
+  function toggleCollapsed() {
+    const nowCollapsed = !filtersBody.classList.contains('hidden');
+    setCollapsed(nowCollapsed);
+    localStorage.setItem(STORAGE_KEY, nowCollapsed ? '1' : '0');
+  }
+
+  filtersToggle.addEventListener('click', e => {
+    // Ignore clicks on the inline reset button
+    if (e.target.closest('[data-no-toggle="true"]')) return;
+    toggleCollapsed();
+  });
+  // Accessibilita': Enter/Space sul role=button per toggle da tastiera
+  filtersToggle.addEventListener('keydown', e => {
+    if (e.target.closest('[data-no-toggle="true"]')) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggleCollapsed();
+    }
+  });
+
+  // ============================================================
+  // Active filters count
+  // ============================================================
+  const activeBadge = document.getElementById('active-filters-badge');
+  const activeCount = document.getElementById('active-count');
+  const activePluralize = document.getElementById('active-pluralize');
+
+  function countActiveFilters() {
+    let n = 0;
+    if ((searchInput.value || '').trim()) n++;
+    Object.values(multiselects).forEach(ms => { if (ms.getSelected().length) n++; });
+    if (getActiveChips(tipologiaChips).length) n++;
+    if (getActiveChips(scadenzaChips).length) n++;
+    if (importoMin.value) n++;
+    if (importoMax.value) n++;
+    if (scadenzaDa.value) n++;
+    if (scadenzaA.value) n++;
+    return n;
+  }
+
+  function updateActiveBadge() {
+    const n = countActiveFilters();
+    if (n === 0) {
+      activeBadge.classList.add('hidden');
+    } else {
+      activeBadge.classList.remove('hidden');
+      activeCount.textContent = String(n);
+      activePluralize.textContent = n === 1 ? 'o' : 'i';
+    }
+  }
+
+  // ============================================================
+  // Supabase REST helpers
+  // ============================================================
+  async function supabaseFetch(table, params) {
+    const url = new URL(`${supabaseUrl}/rest/v1/${table}`);
+    Object.entries(params).forEach(([k, v]) => {
+      if (Array.isArray(v)) v.forEach(vv => url.searchParams.append(k, vv));
+      else url.searchParams.set(k, v);
+    });
+    const res = await fetch(url.toString(), {
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Prefer': 'count=exact',
+      },
+    });
+    const total = parseInt(res.headers.get('content-range')?.split('/')[1] || '0', 10);
+    const data = await res.json();
+    return { data, total };
+  }
+
+  // ============================================================
+  // Card rendering
+  // ============================================================
+  const bandiList = document.getElementById('bandi-list');
+  const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
+  const visibleCountSpan = document.getElementById('visible-count');
+  const heroCountSpan = document.getElementById('hero-count');
+  const loadingIndicator = document.getElementById('loading-indicator');
+  const prevBtn = document.getElementById('prev-page');
+  const nextBtn = document.getElementById('next-page');
+  const currentPageNum = document.getElementById('current-page-num');
+  const totalPagesNum = document.getElementById('total-pages-num');
+
+  function formatDateDisplay(s) {
+    if (!s) return '—';
+    try {
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return s;
+      return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+    } catch { return s; }
+  }
+  function formatEuro(n) {
+    if (n == null) return '—';
+    return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n);
+  }
+  // v9: badge basato sulla colonna `stato_bando` (verita' DB, data-driven dal
+  // preprocess v2). Valori: 'aperto' | 'chiuso' | 'in apertura prossimamente'.
+  function badgeClasses(stato) {
+    if (stato === 'aperto') return 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200';
+    if (stato === 'chiuso') return 'bg-gray-100 text-gray-600 ring-1 ring-gray-200';
+    if (stato === 'in apertura prossimamente') return 'bg-amber-100 text-amber-700 ring-1 ring-amber-200';
+    return 'bg-gray-100 text-gray-500 ring-1 ring-gray-200';
+  }
+  function badgeLabel(stato) {
+    if (stato === 'aperto') return 'Aperto';
+    if (stato === 'chiuso') return 'Chiuso';
+    if (stato === 'in apertura prossimamente') return 'In apertura';
+    return '—';
+  }
+
+  function renderItems(items) {
+    bandiList.querySelectorAll('.bando-item').forEach(el => el.remove());
+
+    if (!items || items.length === 0) {
+      if (noFilteredResultsMessage) noFilteredResultsMessage.classList.remove('hidden');
+      return;
+    }
+    if (noFilteredResultsMessage) noFilteredResultsMessage.classList.add('hidden');
+
+    const fragment = document.createDocumentFragment();
+    items.forEach(b => {
+      const article = document.createElement('article');
+      article.className = 'bando-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200';
+      const statoBando = b.stato_bando || null;
+      article.innerHTML = `
+        <a href="/bandi/${encodeURIComponent(b.slug)}" class="block">
+          <div class="p-5 sm:p-6">
+            <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
+              <div class="flex-1 min-w-0">
+                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">${escapeHtml(b.titolo || '')}</h2>
+              </div>
+              <span class="shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${badgeClasses(statoBando)}">${badgeLabel(statoBando)}</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
+              ${b.ente_erogatore ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg><span class="line-clamp-1">${escapeHtml(b.ente_erogatore)}</span></span>` : ''}
+              ${b.area_geografica ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg><span>${escapeHtml(b.area_geografica)}</span></span>` : ''}
+              ${b.tipologia ? `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 text-xs font-semibold">${escapeHtml(b.tipologia)}</span>` : ''}
+            </div>
+            <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
+              ${b.data_pubblicazione ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Pubblicato il <span class="font-medium">${formatDateDisplay(b.data_pubblicazione)}</span></span>` : ''}
+              ${b.data_scadenza ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Scadenza: <span class="font-medium">${formatDateDisplay(b.data_scadenza)}</span></span>` : ''}
+              ${b.importo_totale_eur != null ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Totale: <span class="font-medium">${formatEuro(b.importo_totale_eur)}</span></span>` : ''}
+            </div>
+            ${b.descrizione_breve ? `<p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">${escapeHtml(b.descrizione_breve)}</p>` : ''}
+          </div>
+        </a>`;
+      fragment.appendChild(article);
+    });
+
+    if (noFilteredResultsMessage) {
+      bandiList.insertBefore(fragment, noFilteredResultsMessage);
+    } else {
+      bandiList.appendChild(fragment);
+    }
+  }
+
+  function updatePagination(total) {
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (currentPageNum) currentPageNum.textContent = currentPage;
+    if (totalPagesNum) totalPagesNum.textContent = pages;
+    if (prevBtn) prevBtn.disabled = currentPage <= 1;
+    if (nextBtn) nextBtn.disabled = currentPage >= pages;
+    const paginationNav = document.getElementById('pagination');
+    if (paginationNav) paginationNav.style.display = pages <= 1 ? 'none' : 'flex';
+  }
+
+  // ============================================================
+  // Filter aggregation + page load
+  // ============================================================
+  let currentPage = 1;
+  let isLoading = false;
+
+  // PostgREST filter clause builders. Quote values that contain special chars.
+  function quoteVal(v) {
+    return `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  function safe(v) { return String(v).replace(/[(),]/g, ' '); }
+
+  async function loadPage() {
+    if (isLoading) return;
+    isLoading = true;
+    if (loadingIndicator) { loadingIndicator.classList.remove('hidden'); loadingIndicator.classList.add('flex'); }
+
+    const searchTerm = (searchInput.value || '').trim();
+    const sel = {
+      regione: multiselects.regione?.getSelected() || [],
+      settore: multiselects.settore?.getSelected() || [],
+      beneficiario: multiselects.beneficiario?.getSelected() || [],
+      programma: multiselects.programma?.getSelected() || [],
+      modalita: multiselects.modalita?.getSelected() || [],
+      ateco: multiselects.ateco?.getSelected() || [],
+    };
+    const tipologie = getActiveChips(tipologiaChips);
+    const stati = getActiveChips(scadenzaChips);
+    const impMin = importoMin.value ? parseInt(importoMin.value, 10) : null;
+    const impMax = importoMax.value ? parseInt(importoMax.value, 10) : null;
+    const scadDa = scadenzaDa.value || '';
+    const scadA = scadenzaA.value || '';
+
+    const from = (currentPage - 1) * PAGE_SIZE;
+    // v4: RLS filtra `state='confirmed' AND slug IS NOT NULL` lato DB,
+    // qui non duplichiamo. `scadenza_stato` non e' colonna DB → filtro post-fetch.
+    const params = {
+      'select': SELECT_LIST,
+      'order': 'data_pubblicazione.desc.nullslast',
+      'offset': String(from),
+      'limit': String(PAGE_SIZE),
+    };
+
+    const andParts = [];
+
+    if (searchTerm) {
+      const t = safe(searchTerm);
+      andParts.push(`or(titolo.ilike.*${t}*,descrizione_breve.ilike.*${t}*,ente_erogatore.ilike.*${t}*)`);
+    }
+
+    // v9: i filtri regione/settore/beneficiario/ateco passano per le junction
+    // tables. PostgREST embedded resource permette join + filtro inline.
+    if (sel.regione.length) {
+      params['bando_regioni'] = 'bando_id';
+      andParts.push(`bando_regioni.regione_id.in.(${sel.regione.join(',')})`);
+    }
+    if (sel.settore.length) {
+      params['bando_settori'] = 'bando_id';
+      andParts.push(`bando_settori.settore_id.in.(${sel.settore.join(',')})`);
+    }
+    if (sel.beneficiario.length) {
+      params['bando_beneficiari'] = 'bando_id';
+      andParts.push(`bando_beneficiari.beneficiario_id.in.(${sel.beneficiario.join(',')})`);
+    }
+    if (sel.ateco.length) {
+      params['bando_codici_ateco'] = 'bando_id';
+      andParts.push(`bando_codici_ateco.codice_ateco_id.in.(${sel.ateco.join(',')})`);
+    }
+    // Tipologia / Programma / Modalita: filtro diretto via FK id.
+    if (sel.programma.length) {
+      andParts.push(`programma_id.in.(${sel.programma.join(',')})`);
+    }
+    if (sel.modalita.length) {
+      andParts.push(`modalita_erogazione_id.in.(${sel.modalita.join(',')})`);
+    }
+    if (tipologie.length) {
+      andParts.push(`tipologia_bando_id.in.(${tipologie.join(',')})`);
+    }
+    // Stato bando (colonna DB diretta).
+    if (stati.length) {
+      andParts.push(`stato_bando.in.(${stati.map(quoteVal).join(',')})`);
+    }
+    if (impMin != null) andParts.push(`importo_totale_eur.gte.${impMin}`);
+    if (impMax != null) andParts.push(`importo_totale_eur.lte.${impMax}`);
+    if (scadDa) andParts.push(`data_scadenza.gte.${scadDa}`);
+    if (scadA) andParts.push(`data_scadenza.lte.${scadA}`);
+
+    if (andParts.length) {
+      params['and'] = `(${andParts.join(',')})`;
+    }
+
+    try {
+      const { data, total } = await supabaseFetch('bando', params);
+      // v9: enrich client-side con nomi catalogo (tipologia/programma/modalita)
+      const items = (data || []).map(b => ({
+        ...b,
+        tipologia: catalogMaps.tipologie[b.tipologia_bando_id] ?? null,
+        programma: catalogMaps.programmi[b.programma_id] ?? null,
+        modalita_erogazione: catalogMaps.modalita[b.modalita_erogazione_id] ?? null,
+        beneficiari: [],
+        codici_ateco: [],
+      }));
+      renderItems(items);
+      if (visibleCountSpan) visibleCountSpan.textContent = total;
+      if (heroCountSpan) heroCountSpan.textContent = total;
+      updatePagination(total);
+    } catch (e) {
+      console.error('Errore caricamento bandi:', e);
+    } finally {
+      isLoading = false;
+      if (loadingIndicator) { loadingIndicator.classList.add('hidden'); loadingIndicator.classList.remove('flex'); }
+      updateActiveBadge();
+    }
+  }
+
+  function resetAndLoad() { currentPage = 1; loadPage(); }
+  const debouncedLoad = debounce(resetAndLoad, 300);
+
+  searchInput.addEventListener('input', debouncedLoad);
+  importoMin.addEventListener('input', debouncedLoad);
+  importoMax.addEventListener('input', debouncedLoad);
+  scadenzaDa.addEventListener('change', resetAndLoad);
+  scadenzaA.addEventListener('change', resetAndLoad);
+
+  if (prevBtn) prevBtn.addEventListener('click', () => {
+    if (currentPage > 1) { currentPage--; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  });
+  if (nextBtn) nextBtn.addEventListener('click', () => {
+    currentPage++; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // ============================================================
+  // Reset
+  // ============================================================
+  function resetAllFilters() {
+    searchInput.value = '';
+    Object.values(multiselects).forEach(ms => ms.clear());
+    importoMin.value = '';
+    importoMax.value = '';
+    scadenzaDa.value = '';
+    scadenzaA.value = '';
+    tipologiaChips.querySelectorAll('.chip-toggle').forEach(b => {
+      b.dataset.active = 'false';
+      b.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
+      b.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
+    });
+    scadenzaChips.querySelectorAll('.chip-toggle').forEach(b => {
+      b.dataset.active = 'false';
+      b.classList.remove('bg-blue-600', 'text-white', 'border-blue-600');
+      b.classList.add('bg-gray-50', 'text-gray-700', 'border-gray-200');
+    });
+    resetAndLoad();
+  }
+  document.getElementById('reset-filters').addEventListener('click', e => {
+    e.stopPropagation();
+    resetAllFilters();
+  });
+  document.getElementById('reset-filters-mobile').addEventListener('click', resetAllFilters);
+
+  // Initial badge update
+  updateActiveBadge();
+</script>
