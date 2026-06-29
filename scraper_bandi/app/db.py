@@ -227,11 +227,32 @@ def enrich_fonti_with_names(fonti_by_id: dict[int, dict[str, Any]]) -> dict[int,
     return fonti_by_id
 
 
+_TRANSIENT_ERROR_MARKERS = (
+    "server disconnected",
+    "remoteprotocolerror",
+    "connection reset",
+    "connection aborted",
+    "connection closed",
+    "read timeout",
+    "connecttimeout",
+    "503",  # service unavailable
+    "504",  # gateway timeout
+    "h2: stream",
+)
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """True se l'eccezione e' transient (network/server temporaneo)."""
+    s = (str(exc) + " " + type(exc).__name__).lower()
+    return any(marker in s for marker in _TRANSIENT_ERROR_MARKERS)
+
+
 async def update_bandi_postanalysis(
     updates: list[dict[str, Any]],
-    concurrency: int = 20,
+    concurrency: int = 10,
+    max_retries: int = 3,
 ) -> dict[str, int]:
-    """UPDATE batch dei bandi post-analisi LLM.
+    """UPDATE batch dei bandi post-analisi LLM con retry su errori transient.
 
     Ogni update: {id, stato_processing, confidence_score, stato_bando|None,
     rejection_reason|None}.
@@ -241,13 +262,19 @@ async def update_bandi_postanalysis(
     l'INSERT con i soli campi passati, che fallisce sul NOT NULL di
     fonte_id (non passato perche' gia' presente nel DB).
 
-    Soluzione: UPDATE per id, in parallelo con asyncio.Semaphore +
-    asyncio.to_thread (il client supabase-py e' sync).
+    Soluzione: UPDATE per id, in parallelo con asyncio.Semaphore + retry
+    con backoff exponential su httpx.RemoteProtocolError ('Server
+    disconnected' dopo che HTTP/2 ha cumulato troppi stream sulla stessa
+    connessione idle).
+
+    Concorrenza ridotta da 20 a 10 di default per ridurre la pressione
+    sulla connessione HTTP/2 persistente di postgrest.
     """
     import asyncio
+    import random
 
     if not updates:
-        return {"updated": 0}
+        return {"updated": 0, "failed": 0}
 
     sb = get_supabase()
     sem = asyncio.Semaphore(max(1, concurrency))
@@ -258,22 +285,53 @@ async def update_bandi_postanalysis(
             logger.warning("[db] update_bandi_postanalysis: record senza id, skip")
             return False
         payload = {k: v for k, v in rec.items() if k != "id"}
-        async with sem:
-            try:
-                await asyncio.to_thread(
-                    lambda: sb.table("bando").update(payload).eq("id", rec_id).execute()
-                )
-                return True
-            except Exception as e:
-                logger.exception("[db] update bando id={} fallito: {}", rec_id, e)
-                return False
 
+        last_err: Exception | None = None
+        for attempt in range(max_retries):
+            async with sem:
+                try:
+                    await asyncio.to_thread(
+                        lambda: sb.table("bando").update(payload).eq("id", rec_id).execute()
+                    )
+                    return True
+                except Exception as e:
+                    last_err = e
+                    if not _is_transient_error(e) or attempt == max_retries - 1:
+                        break
+                    sleep_s = (2 ** attempt) + random.uniform(0, 0.3)
+                    logger.debug(
+                        "[db] update id={} retry {}/{} dopo {}: sleep {:.1f}s",
+                        rec_id, attempt + 1, max_retries, type(e).__name__, sleep_s,
+                    )
+                    await asyncio.sleep(sleep_s)
+        logger.error("[db] update bando id={} fallito definitivamente: {}", rec_id, last_err)
+        return False
+
+    # Pass 1: gather con concorrenza alta
     results = await asyncio.gather(*[_update_one(r) for r in updates])
     n_ok = sum(1 for r in results if r)
     n_failed = len(updates) - n_ok
+
+    # Pass 2: retry seriale dei falliti (potrebbe essere un picco transient)
+    if n_failed > 0 and n_failed < 100:
+        failed_indices = [i for i, ok in enumerate(results) if not ok]
+        logger.warning(
+            "[db] retry seriale di {} update falliti dopo gather...",
+            len(failed_indices),
+        )
+        recovered = 0
+        for i in failed_indices:
+            ok = await _update_one(updates[i])
+            if ok:
+                recovered += 1
+        if recovered:
+            n_ok += recovered
+            n_failed -= recovered
+            logger.info("[db] retry seriale ha recuperato {} update", recovered)
+
     if n_failed:
         logger.warning(
-            "[db] update_bandi_postanalysis: {} OK, {} FALLITI",
+            "[db] update_bandi_postanalysis: {} OK, {} FALLITI (irreversibili)",
             n_ok, n_failed,
         )
     else:
