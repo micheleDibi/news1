@@ -39,26 +39,64 @@ def _is_xlsx(url: str) -> bool:
     return path.endswith((".xlsx", ".xls"))
 
 
-def _read_csv_with_fallback(content: bytes, encoding: str | None, delimiter: str | None):
-    """Tenta read_csv con encoding/delimiter forniti, fallback a sniff."""
+def _looks_like_xlsx(content: bytes) -> bool:
+    """True se il content inizia con il magic byte ZIP (PK\\x03\\x04) tipico di
+    XLSX/ODS/DOCX. Molti endpoint download (es. WPDM WordPress) consegnano
+    XLSX anche se l'URL non ha estensione .xlsx."""
+    return content[:4] == b"PK\x03\x04"
+
+
+def _read_csv_with_fallback(
+    content: bytes,
+    encoding: str | None,
+    delimiter: str | None,
+    skiprows: int | None = None,
+):
+    """Tenta read_csv con varie combinazioni di encoding/delimiter/quoting.
+
+    Strategia di fallback multipla:
+      1. encoding utf-8/latin-1/cp1252 + sniff sep + quoting standard
+      2. on_bad_lines='skip' per saltare righe malformate
+      3. quoting=csv.QUOTE_NONE come ultima spiaggia (no quote escape)
+      4. skiprows configurabile per saltare righe narrative di header
+    """
+    import csv as _csv
+
     import pandas as pd
 
     encodings = [encoding] if encoding else ["utf-8", "latin-1", "cp1252"]
-    last_err: Exception | None = None
+
+    # Combinazioni in ordine di preferenza (encoding, sep, quoting, on_bad_lines)
+    attempts: list[dict[str, Any]] = []
     for enc in encodings:
+        # Standard sniff + skip bad lines
+        attempts.append({
+            "encoding": enc, "sep": delimiter,
+            "engine": "python" if not delimiter else "c",
+            "on_bad_lines": "skip",
+        })
+        # QUOTE_NONE: ignora le quote (utile per CSV con header narrativo malformato)
+        attempts.append({
+            "encoding": enc, "sep": delimiter,
+            "engine": "python" if not delimiter else "c",
+            "quoting": _csv.QUOTE_NONE,
+            "on_bad_lines": "skip",
+        })
+
+    last_err: Exception | None = None
+    for attempt in attempts:
         try:
             buf = io.BytesIO(content)
-            kwargs: dict[str, Any] = {"encoding": enc}
-            if delimiter:
-                kwargs["sep"] = delimiter
-            else:
-                kwargs["sep"] = None
-                kwargs["engine"] = "python"  # python engine per sniff sep
-            return pd.read_csv(buf, **kwargs)
+            if skiprows is not None:
+                attempt["skiprows"] = skiprows
+            df = pd.read_csv(buf, **attempt)
+            # Se ha 0 righe e abbiamo provato skiprows=None, lascia che successivi tentativi
+            # mantengano. Se invece ha 0 righe e abbiamo gia' skippato, lo accettiamo (vuoto).
+            return df
         except Exception as e:
             last_err = e
             continue
-    raise RuntimeError(f"read_csv fallito con tutti gli encoding: {last_err}")
+    raise RuntimeError(f"read_csv fallito con tutte le combinazioni: {last_err}")
 
 
 def _read_xlsx(content: bytes, sheet_name):
@@ -100,6 +138,7 @@ class CsvParserScraper(BandoScraper):
         encoding: str | None = None,
         delimiter: str | None = None,
         sheet_name: Any = 0,
+        skiprows: int | None = None,
         **_extra: Any,
     ) -> None:
         self.file_url_override = file_url_override
@@ -107,6 +146,7 @@ class CsvParserScraper(BandoScraper):
         self.encoding = encoding
         self.delimiter = delimiter
         self.sheet_name = sheet_name
+        self.skiprows = skiprows
 
     async def scrape(self, fonte: dict[str, Any]) -> list[BandoItem]:
         url = self.file_url_override or fonte["link"]
@@ -128,11 +168,21 @@ class CsvParserScraper(BandoScraper):
             )
             return []
 
+        # Auto-detect XLSX: magic byte ZIP/OOXML (anche se URL non finisce in .xlsx)
+        is_xlsx = _is_xlsx(url) or _looks_like_xlsx(content)
+        if is_xlsx and not _is_xlsx(url):
+            logger.info(
+                "[csv] fonte_id={} URL senza .xlsx ma magic byte ZIP/OOXML rilevato -> parse come XLSX",
+                fonte.get("id"),
+            )
+
         try:
-            if _is_xlsx(url):
+            if is_xlsx:
                 df = _read_xlsx(content, self.sheet_name)
             else:
-                df = _read_csv_with_fallback(content, self.encoding, self.delimiter)
+                df = _read_csv_with_fallback(
+                    content, self.encoding, self.delimiter, self.skiprows,
+                )
         except Exception as e:
             logger.exception("[csv] fonte_id={} parse fallito: {}", fonte.get("id"), e)
             return []

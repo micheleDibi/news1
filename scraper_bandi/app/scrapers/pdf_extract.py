@@ -48,6 +48,12 @@ def _looks_like_html(content: bytes) -> bool:
     )
 
 
+def _looks_like_zip_or_xlsx(content: bytes) -> bool:
+    """True se inizia con magic byte ZIP (PK\\x03\\x04). Tipico di XLSX,
+    DOCX, ODS, o ZIP veri e propri."""
+    return content[:4] == b"PK\x03\x04"
+
+
 def _pick_titolo_index_from_header(header_row: list[str]) -> int | None:
     """Trova l'indice della colonna 'titolo'/'oggetto' nell'header."""
     if not header_row:
@@ -100,6 +106,17 @@ class PdfTableScraper(BandoScraper):
                 fonte.get("id"), url,
             )
             return []
+        if _looks_like_zip_or_xlsx(content):
+            # WPDM/endpoint download che consegna XLSX invece di PDF.
+            # Delego al CsvParserScraper che gestisce XLSX via magic byte.
+            logger.warning(
+                "[pdf_tab] fonte_id={} content e' XLSX/ZIP (magic byte PK), non PDF. "
+                "Delego a csv_parser. url={}",
+                fonte.get("id"), url,
+            )
+            from .csv_parser import CsvParserScraper
+            sub = CsvParserScraper(file_url_override=url)
+            return await sub.scrape(fonte)
         if not _looks_like_pdf(content):
             logger.warning(
                 "[pdf_tab] fonte_id={} content non sembra un PDF (magic byte non %PDF-). url={}",
@@ -220,6 +237,14 @@ class PdfTextScraper(BandoScraper):
                 fonte.get("id"), url,
             )
             return []
+        if _looks_like_zip_or_xlsx(content):
+            logger.warning(
+                "[pdf_txt] fonte_id={} content e' XLSX/ZIP, non PDF. Delego a csv_parser. url={}",
+                fonte.get("id"), url,
+            )
+            from .csv_parser import CsvParserScraper
+            sub = CsvParserScraper(file_url_override=url)
+            return await sub.scrape(fonte)
 
         text_pages: list[str] = []
         try:
