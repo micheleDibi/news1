@@ -19,6 +19,7 @@ from typing import Any
 from .db import (
     build_bando_input_context,
     load_catalogo,
+    reconcile_canonical_key,
     select_bandi_to_complete,
     update_bando_completed,
 )
@@ -108,28 +109,40 @@ async def run(
                 payload = None
 
             db_ok = False
+            canonical_action = None
             if payload and not dry_run:
                 try:
                     db_ok = await update_bando_completed(bando_id, payload)
                 except Exception as e:
                     logger.exception("[seo] bando_id={} update_bando_completed fallito: {}", bando_id, e)
                     db_ok = False
+                # v10: dedup cross-source via canonical_key
+                if db_ok:
+                    try:
+                        result = await reconcile_canonical_key(bando_id, payload)
+                        canonical_action = result.get("action")
+                    except Exception as e:
+                        logger.warning("[seo] bando_id={} reconcile_canonical_key fallito: {}", bando_id, e)
             elif payload and dry_run:
                 db_ok = True  # consideriamo OK in dry-run
 
             progress["done"] += 1
             if progress["done"] % 25 == 0 or progress["done"] == total:
                 logger.info("[seo] progress {}/{}", progress["done"], total)
-            return (bando_id, payload, db_ok)
+            return (bando_id, payload, db_ok, canonical_action)
 
     results = await asyncio.gather(*[_do_one(b) for b in bandi])
 
     # 4. Counters
     selected = len(bandi)
-    payloads_ok = [p for _, p, _ in results if p is not None]
-    completed_db_ok = sum(1 for _, _, ok in results if ok)
-    payload_failed = sum(1 for _, p, _ in results if p is None)
-    payload_ok_db_failed = sum(1 for _, p, ok in results if p is not None and not ok)
+    payloads_ok = [p for _, p, _, _ in results if p is not None]
+    completed_db_ok = sum(1 for _, _, ok, _ in results if ok)
+    payload_failed = sum(1 for _, p, _, _ in results if p is None)
+    payload_ok_db_failed = sum(1 for _, p, ok, _ in results if p is not None and not ok)
+    # v10: dedup cross-source
+    canonical_created = sum(1 for _, _, _, ca in results if ca == "created")
+    canonical_merged_duplicates = sum(1 for _, _, _, ca in results if ca == "merged_into_master")
+    canonical_skipped = sum(1 for _, _, _, ca in results if ca == "skipped")
 
     livello_flash = sum(1 for p in payloads_ok if p.get("livello") == "flash_bando")
     livello_guida = sum(1 for p in payloads_ok if p.get("livello") == "guida_bando")
@@ -147,6 +160,9 @@ async def run(
         "payload_failed": payload_failed,
         "completed_db_ok": completed_db_ok,
         "payload_ok_db_failed": payload_ok_db_failed,
+        "canonical_created": canonical_created,
+        "canonical_merged_duplicates": canonical_merged_duplicates,
+        "canonical_skipped": canonical_skipped,
         "livello_flash": livello_flash,
         "livello_guida": livello_guida,
         "with_link_candidatura": with_link_candidatura,

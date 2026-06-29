@@ -838,6 +838,129 @@ _SEO_PAYLOAD_COLUMNS = (
 )
 
 
+async def reconcile_canonical_key(
+    bando_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Calcola canonical_key dal payload SEO completo + gestisce dedup cross-source.
+
+    Pipeline:
+      1. compute canonical_key = SHA256(norm_titolo|norm_ente|data_scadenza|importo)
+      2. Se canonical_key=None (titolo o ente mancanti): skip, no-op.
+      3. SELECT esistente con quella canonical_key (escludendo self).
+      4a. Se nessuno la possiede: UPDATE bando SET canonical_key=... (claim).
+      4b. Se gia' esiste un master con quella key:
+          - UPDATE bando master SET fonti_aggiuntive = array_append(..., self.fonte_id)
+            (se non gia' presente).
+          - UPDATE self SET stato_processing = 'completed_duplicate'.
+
+    Ritorna: {action: 'created'|'merged_into_master'|'skipped'|'failed',
+              master_id?: int, canonical_key?: str}
+    """
+    from .normalize import compute_canonical_key
+
+    titolo = payload.get("titolo") or payload.get("titolo_breve")
+    ente = payload.get("ente_erogatore")
+    data_scadenza = payload.get("data_scadenza")
+    importo = payload.get("importo_totale_eur")
+
+    ck = compute_canonical_key(titolo, ente, data_scadenza, importo)
+    if not ck:
+        return {"action": "skipped", "reason": "no_titolo_or_ente"}
+
+    sb = get_supabase()
+
+    # Recupera fonte_id del bando corrente (servira' se siamo duplicato).
+    try:
+        cur_res = await asyncio.to_thread(
+            lambda: sb.table("bando").select("id, fonte_id, canonical_key").eq("id", bando_id).single().execute()
+        )
+        cur_row = cur_res.data or {}
+    except Exception as e:
+        logger.warning("[db/reconcile] bando_id={} SELECT corrente fallito: {}", bando_id, e)
+        return {"action": "failed", "error": str(e)}
+
+    # Se gia' ha la stessa canonical_key, no-op (idempotente).
+    if cur_row.get("canonical_key") == ck:
+        return {"action": "noop", "canonical_key": ck}
+
+    fonte_id_cur = cur_row.get("fonte_id")
+
+    # Cerca un master esistente con quella canonical_key (escluso self).
+    try:
+        master_res = await asyncio.to_thread(
+            lambda: sb.table("bando")
+            .select("id, fonti_aggiuntive")
+            .eq("canonical_key", ck)
+            .neq("id", bando_id)
+            .limit(1)
+            .execute()
+        )
+        master_rows = master_res.data or []
+    except Exception as e:
+        logger.warning("[db/reconcile] bando_id={} SELECT master fallito: {}", bando_id, e)
+        return {"action": "failed", "error": str(e)}
+
+    if not master_rows:
+        # Nessun duplicato: claim canonical_key per noi.
+        try:
+            await asyncio.to_thread(
+                lambda: sb.table("bando").update({"canonical_key": ck}).eq("id", bando_id).execute()
+            )
+            return {"action": "created", "canonical_key": ck}
+        except Exception as e:
+            # Race condition possibile: qualcuno ha appena claimato la key.
+            # Re-try la SELECT del master.
+            logger.debug("[db/reconcile] bando_id={} claim fallito ({}), re-check master", bando_id, e)
+            try:
+                master_res2 = await asyncio.to_thread(
+                    lambda: sb.table("bando")
+                    .select("id, fonti_aggiuntive")
+                    .eq("canonical_key", ck)
+                    .neq("id", bando_id)
+                    .limit(1)
+                    .execute()
+                )
+                master_rows = master_res2.data or []
+            except Exception as e2:
+                return {"action": "failed", "error": str(e2)}
+
+    if master_rows:
+        master = master_rows[0]
+        master_id = master["id"]
+        master_fonti = master.get("fonti_aggiuntive") or []
+
+        # Append fonte_id corrente all'array del master se non gia' presente.
+        if fonte_id_cur is not None and fonte_id_cur not in master_fonti:
+            new_fonti = list(master_fonti) + [fonte_id_cur]
+            try:
+                await asyncio.to_thread(
+                    lambda: sb.table("bando").update({"fonti_aggiuntive": new_fonti}).eq("id", master_id).execute()
+                )
+            except Exception as e:
+                logger.warning("[db/reconcile] bando_id={} append fonti_aggiuntive fallito: {}",
+                               master_id, e)
+
+        # Marca questo bando come 'completed_duplicate'.
+        try:
+            await asyncio.to_thread(
+                lambda: sb.table("bando").update({
+                    "stato_processing": "completed_duplicate",
+                }).eq("id", bando_id).execute()
+            )
+        except Exception as e:
+            logger.warning("[db/reconcile] bando_id={} mark duplicate fallito: {}", bando_id, e)
+            return {"action": "failed", "error": str(e)}
+
+        logger.info(
+            "[db/reconcile] bando_id={} merged into master_id={} (canonical_key={})",
+            bando_id, master_id, ck[:12] + "...",
+        )
+        return {"action": "merged_into_master", "master_id": master_id, "canonical_key": ck}
+
+    return {"action": "failed", "reason": "unexpected_state"}
+
+
 async def update_bando_completed(
     bando_id: int,
     payload: dict[str, Any],

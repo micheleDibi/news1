@@ -134,6 +134,39 @@ Due fasi interne:
 **Durata**: ~10-15 min.
 **Idempotente**: re-run salta i già `enriched`.
 
+### Step v10 — fonti esterne + dedup cross-source
+
+Tre nuove strategie scraper generiche per portali con API REST/Solr e HTML offset-based:
+
+- **`json_api_paginated`** — REST/Algolia/Solr con paginazione configurabile (`page`/`solr_start`/`offset`/`cursor`). Usata per Incentivi Gov IT.
+- **`json_api_paginated_login`** — Variante con `auth_provider` registry-based (`scrapers/auth/`). Usata per Obiettivo Europa con login Django CSRF.
+- **`html_paginated_offset`** — HTML server-side con offset-based pagination + BS4 parsing. Usata per Italia Domani PNRR.
+
+Mapping JSON/HTML → `BandoItem` via adapter dedicato per fonte (`scrapers/adapters/{obiettivo_europa,incentivi_gov_it,italia_domani}.py`). I 20+ campi ricchi (sectors, beneficiaries, programs, regions, ateco, budget, dimensioni_impresa, focus_pnrr, ecc.) finiscono in `raw_data` JSONB e vengono mappati al catalogo via enricher LLM esistente.
+
+**Credenziali Obiettivo Europa** (richieste in `.env`):
+```
+OBIETTIVO_EUROPA_USERNAME="mic.monaco78@icloud.com"
+OBIETTIVO_EUROPA_PASSWORD="Bevante78!"
+```
+Senza login l'API ritorna max 5 bandi/pagina; con login si accede a ~1133 bandi totali.
+
+**Dedup cross-source via `canonical_key`**: lo stesso bando pubblicato su 2 portali diversi (es. Obiettivo Europa + Incentivi Gov IT) genera 2 record nel DB con hash diversi (perché il hash_bando attuale include `fonte_id`). La skill SEO al termine calcola `canonical_key = SHA256(norm_titolo|norm_ente|data_scadenza|importo)`. Se collide con un master esistente: il master raccoglie la fonte aggiuntiva in `fonti_aggiuntive INT[]`, il nuovo record passa a `stato_processing='completed_duplicate'` (nascosto dal frontend tramite RLS). Coverage attesa: ~70% (titolo+ente+data sono molto specifici).
+
+**Smoke test rapido**:
+```bash
+# 1. Login + 1 pagina API Obiettivo Europa (50 bandi/pagina con login)
+.venv/bin/python -c "
+import os, asyncio
+os.environ['OBIETTIVO_EUROPA_USERNAME']='mic.monaco78@icloud.com'
+os.environ['OBIETTIVO_EUROPA_PASSWORD']='Bevante78!'
+from app.scrapers.auth.obiettivo_europa import obtain_session
+s = obtain_session('mic.monaco78@icloud.com', 'Bevante78!')
+r = s.get('https://www.obiettivoeuropa.com/api/call/?page=1&ordering=-published', timeout=20)
+print(r.json().get('count'))
+"
+```
+
 ### Step v8 — skill SEO `enriched → completed`
 
 ```bash
@@ -307,6 +340,14 @@ Reset per rerun completo della pipeline con preprocess v2: porta tutti i bandi n
 
 **Step v9 (RLS)** — `backend/sql/bando_rls_v9.sql`
 Aggiorna RLS policy per il frontend pubblico: `stato_processing='completed' AND slug IS NOT NULL`. Abilita read pubblico su junction tables e tabelle catalogo. Sostituisce la policy legacy `state='confirmed'` (colonna droppata v6). Senza questa migration il frontend mostra 0 bandi.
+
+**Step v10 (dedup cross-source + fonti esterne)** — `backend/sql/bando_alter_v10_canonical_key.sql` + `fonte_insert_v10_external_sources.sql`
+- ADD COLUMN `canonical_key TEXT` (UNIQUE partial index) + `fonti_aggiuntive INTEGER[]` per dedup bandi pubblicati da più portali. Calcolata dalla skill SEO con `SHA256(norm_titolo|norm_ente|data_scadenza|importo)`. Quando un nuovo bando collide con un master esistente, il master raccoglie la `fonte_id` aggiuntiva e il duplicato passa a `stato_processing='completed_duplicate'` (nascosto dal frontend via RLS).
+- ALTER constraint `bando_stato_processing_check` per includere `'completed_duplicate'`.
+- INSERT 3 fonti nuove migrate dal repo esterno ScrapingBandi:
+  - Obiettivo Europa (API JSON con login Django CSRF, 1133+ bandi)
+  - Italia Domani PNRR (HTML offset-based, amministrazioni titolari)
+  - Incentivi Gov IT (Solr API Drupal, 20+ campi finanziari per bando)
 
 ## Tabella `bando` — schema corrente + ordine logico
 

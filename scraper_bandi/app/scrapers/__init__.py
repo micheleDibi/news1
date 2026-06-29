@@ -3,14 +3,17 @@
 Dispatcher per istanziare la strategia di scraping corretta da nome.
 
 Strategie disponibili:
-  - httpx_bs4               -> HttpxBs4Scraper
-  - firecrawl_scrape        -> FirecrawlScraper (scrape standard)
-  - firecrawl_extract       -> FirecrawlExtractScraper (AI extraction)
-  - hybrid_httpx_firecrawl  -> HybridScraper (HTML discovery + file parse)
-  - csv_parser              -> CsvParserScraper
+  - httpx_bs4                  -> HttpxBs4Scraper
+  - firecrawl_scrape           -> FirecrawlScraper (scrape standard)
+  - firecrawl_extract          -> FirecrawlExtractScraper (AI extraction)
+  - hybrid_httpx_firecrawl     -> HybridScraper (HTML discovery + file parse)
+  - csv_parser                 -> CsvParserScraper
   - pdf_extract_tables_pdfplumber -> PdfTableScraper
-  - pdf_extract_text        -> PdfTextScraper
-  - skip_no_bandi           -> SkipScraper
+  - pdf_extract_text           -> PdfTextScraper
+  - skip_no_bandi              -> SkipScraper
+  - json_api_paginated         -> JsonApiPaginatedScraper (v10: REST/Solr)
+  - json_api_paginated_login   -> JsonApiPaginatedLoginScraper (v10: + auth)
+  - html_paginated_offset      -> HtmlPaginatedOffsetScraper (v10: HTML offset)
 """
 from __future__ import annotations
 
@@ -46,6 +49,15 @@ def get_scraper(strategy: str, **kwargs: Any) -> BandoScraper:
     if strategy == "pdf_extract_text":
         from .pdf_extract import PdfTextScraper
         return PdfTextScraper(**kwargs)
+    if strategy == "json_api_paginated":
+        from .api_paginated import JsonApiPaginatedScraper
+        return JsonApiPaginatedScraper(**kwargs)
+    if strategy == "json_api_paginated_login":
+        from .api_paginated_login import JsonApiPaginatedLoginScraper
+        return JsonApiPaginatedLoginScraper(**kwargs)
+    if strategy == "html_paginated_offset":
+        from .html_paginated_offset import HtmlPaginatedOffsetScraper
+        return HtmlPaginatedOffsetScraper(**kwargs)
     raise ValueError(f"Strategy sconosciuta: {strategy!r}")
 
 

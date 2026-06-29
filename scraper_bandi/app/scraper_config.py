@@ -807,6 +807,55 @@ SCRAPER_CONFIG: dict[str, dict] = {
         "url_pattern": r"https://urbact\.eu/call-[a-z0-9-]+",
     },
 
+    # ============================================================
+    # v10: Fonti esterne migrate da repo ScrapingBandi
+    # ============================================================
+
+    # Obiettivo Europa — API REST paginated con login Django.
+    # Login necessario per accedere a tutti i bandi (senza login max 5 per pagina).
+    # API: ?page={N}&ordering=-published → {results: [...], next: "URL", count: N}.
+    'https://www.obiettivoeuropa.com/api/call/': {
+        "strategy": 'json_api_paginated_login',
+        "auth_provider": "obiettivo_europa",
+        "api_url_template": "https://www.obiettivoeuropa.com/api/call/?page=1&ordering=-published",
+        "pagination_type": "cursor",
+        "page_size": None,
+        "response_path": "results",
+        "next_field": "next",
+        "adapter": "obiettivo_europa",
+        "rate_limit_s": 0.5,
+        "max_pages": 100,
+        "duplicate_threshold": 5,
+    },
+
+    # Italia Domani — Portale PNRR amministrazioni titolari.
+    # HTML server-side, offset-based pagination, parsing accordion BS4.
+    'https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/bandi-amministrazioni-titolari/': {
+        "strategy": 'html_paginated_offset',
+        "index_url_template": "https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/bandi-amministrazioni-titolari/jcr:content/root/container/newnoticessearch.searchResults.html?orderby=%40jcr%3Acontent%2Fstatus&sort=asc&resultsOffset={offset}",
+        "batch_size": 20,
+        "item_selector_class": "item-wrapper",
+        "adapter": "italia_domani",
+        "rate_limit_s": 1.0,
+        "max_offset": 2000,
+        "duplicate_threshold": 5,
+    },
+
+    # Incentivi Gov IT — Solr API Drupal.
+    # start/rows pagination, response.docs + response.numFound.
+    'https://www.incentivi.gov.it/solr/coredrupal/select': {
+        "strategy": 'json_api_paginated',
+        "api_url_template": "https://www.incentivi.gov.it/solr/coredrupal/select?q=*:*&start={start}&rows=100&wt=json&fl=zs_title,zs_url,zs_body,zs_nid,zs_field_open_date,zs_field_close_date,zm_field_regions_value,zm_field_scopes_value,zm_field_activity_sector_value,zs_field_ateco,zs_field_budget_allocation,zs_field_cost_min,zs_field_cost_max,zs_field_support_grant_type_min,zs_field_support_grant_type_max,zm_field_dimensions_value,zm_field_subject_type_value,zm_field_granted_costs_value,zm_field_support_form_value,zs_field_subject_grant,zs_field_primary_ruleset,zs_field_implementation_ruleset,zs_field_link",
+        "pagination_type": "solr_start",
+        "page_size": 100,
+        "response_path": "response.docs",
+        "total_field": "response.numFound",
+        "adapter": "incentivi_gov_it",
+        "rate_limit_s": 0.3,
+        "max_pages": 50,
+        "duplicate_threshold": 20,
+    },
+
 }
 
-# Total entries: 106
+# Total entries: 109 (106 originali + 3 v10 esterne)

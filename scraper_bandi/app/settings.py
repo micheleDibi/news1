@@ -59,6 +59,9 @@ class Settings:
     preprocess_firecrawl_concurrency: int
     resolver_model: str
     resolver_max_tokens: int
+    # Step v10: credenziali fonti esterne autenticate
+    obiettivo_europa_username: str
+    obiettivo_europa_password: str
 
 
 def _int_env(name: str, default: int) -> int:
@@ -128,4 +131,6 @@ def get_settings() -> Settings:
         resolver_model=os.getenv("RESOLVER_MODEL", "claude-sonnet-4-6").strip()
             or "claude-sonnet-4-6",
         resolver_max_tokens=max(256, _int_env("RESOLVER_MAX_TOKENS", 1024)),
+        obiettivo_europa_username=os.getenv("OBIETTIVO_EUROPA_USERNAME", "").strip(),
+        obiettivo_europa_password=os.getenv("OBIETTIVO_EUROPA_PASSWORD", "").strip(),
     )
