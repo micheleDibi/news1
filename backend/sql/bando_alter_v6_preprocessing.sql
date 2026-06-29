@@ -16,12 +16,25 @@
 
 BEGIN;
 
--- 1. Drop colonne legacy v4 (state machine sostituita da stato_processing).
+-- 1. Drop dipendenze v4 che referenziano `state` (RLS policy + partial index).
+--    Lasciarle bloccherebbe il DROP COLUMN successivo.
+DROP POLICY IF EXISTS bando_public_read ON public.bando;
+DROP INDEX IF EXISTS public.idx_bando_state_confirmed_slug;
+DROP INDEX IF EXISTS public.idx_bando_data_scadenza_v4;
+DROP INDEX IF EXISTS public.idx_bando_discovered;
+
+-- 2. Drop colonne legacy v4 (state machine sostituita da stato_processing).
+--    CASCADE come safety net per qualunque altra dipendenza residua.
 ALTER TABLE public.bando
-  DROP COLUMN IF EXISTS data_extra,
-  DROP COLUMN IF EXISTS state,
-  DROP COLUMN IF EXISTS state_detail,
-  DROP COLUMN IF EXISTS state_updated_at;
+  DROP COLUMN IF EXISTS data_extra CASCADE,
+  DROP COLUMN IF EXISTS state CASCADE,
+  DROP COLUMN IF EXISTS state_detail CASCADE,
+  DROP COLUMN IF EXISTS state_updated_at CASCADE;
+
+-- NOTA: la policy bando_public_read viene LASCIATA assente. Sara' ricreata
+-- in una fase futura (post-enrichment) con la logica:
+--   USING (stato_processing = 'completed' AND slug IS NOT NULL)
+-- Per ora il frontend non legge ancora i bandi (siamo in fase di build).
 
 -- 2. Drop ENUM bando_state se non piu' usato (best-effort, no-op se fallisce
 --    perche' qualche altra colonna lo referenzia ancora).
