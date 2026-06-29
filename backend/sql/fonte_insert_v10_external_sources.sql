@@ -2,17 +2,39 @@
 -- v10: registra le 3 fonti esterne migrate dal repo ScrapingBandi.
 -- Idempotente via ON CONFLICT (link).
 --
--- categoria_programma_id E tipologia_programma_id sono entrambe NOT NULL.
--- Usiamo CTE con COALESCE per cercare la categoria/tipologia piu' appropriata
--- per nome, con fallback al primo ID disponibile (id minimo) se nessun match.
+-- Adattamenti schema esistente:
+--   - categoria_programma_id NOT NULL: CTE con COALESCE su fallback id minimo.
+--   - tipologia_programma_id NOT NULL: idem.
+--   - formato_link CHECK constraint (HTML|PDF|CSV legacy): esteso con 'JSON'
+--     per supportare le API REST/Solr che ritornano JSON.
 --
 -- Le strategie associate sono mappate in scraper_bandi/app/scraper_config.py.
 -- ---------------------------------------------------------------------------
 
 BEGIN;
 
+-- 0. Estendi formato_link CHECK per ammettere 'JSON'.
+--    Il constraint legacy ammette solo {HTML, PDF, CSV}; ora ci sono fonti
+--    che ritornano JSON nativo (Obiettivo Europa, Incentivi Gov IT).
+DO $$
+DECLARE
+  c_name text;
+BEGIN
+  FOR c_name IN
+    SELECT conname FROM pg_constraint
+    WHERE conrelid = 'public.fonte'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%formato_link%'
+  LOOP
+    EXECUTE format('ALTER TABLE public.fonte DROP CONSTRAINT IF EXISTS %I', c_name);
+  END LOOP;
+END $$;
+
+ALTER TABLE public.fonte ADD CONSTRAINT fonte_formato_link_check
+  CHECK (formato_link IN ('HTML', 'PDF', 'CSV', 'JSON'));
+
+-- 1. INSERT delle 3 fonti.
 WITH
-  -- Categorie con fallback al primo id disponibile
   cat_nazionale AS (
     SELECT COALESCE(
       (SELECT id FROM categoria_programma WHERE nome ILIKE '%nazionale%' ORDER BY id LIMIT 1),
@@ -28,7 +50,6 @@ WITH
       (SELECT id FROM categoria_programma ORDER BY id LIMIT 1)
     ) AS id
   ),
-  -- Tipologie con fallback al primo id disponibile
   tip_default AS (
     SELECT COALESCE(
       (SELECT id FROM tipologia_programma WHERE nome ILIKE '%altro%' ORDER BY id LIMIT 1),
@@ -57,7 +78,7 @@ SELECT
   v.tipologia_id
 FROM (
   VALUES
-    -- Obiettivo Europa: aggregatore europeo + nazionale
+    -- Obiettivo Europa: aggregatore europeo + nazionale (API JSON)
     (
       'https://www.obiettivoeuropa.com/api/call/',
       'Opportunità',
@@ -67,7 +88,7 @@ FROM (
       (SELECT id FROM cat_europeo),
       (SELECT id FROM tip_default)
     ),
-    -- Italia Domani: nazionale, PNRR
+    -- Italia Domani: nazionale, PNRR (HTML server-side)
     (
       'https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/bandi-amministrazioni-titolari/',
       'Opportunità',
@@ -77,7 +98,7 @@ FROM (
       (SELECT id FROM cat_nazionale),
       (SELECT id FROM tip_pnrr)
     ),
-    -- Incentivi Gov IT: portale governo nazionale
+    -- Incentivi Gov IT: portale governo nazionale (Solr JSON)
     (
       'https://www.incentivi.gov.it/solr/coredrupal/select',
       'Opportunità',
@@ -106,4 +127,4 @@ COMMIT;
 --     'https://www.italiadomani.gov.it/content/sogei-ng/it/it/opportunita/bandi-amministrazioni-titolari/',
 --     'https://www.incentivi.gov.it/solr/coredrupal/select'
 --   );
---   -- atteso: 3 righe con categoria e tipologia entrambe non-NULL
+--   -- atteso: 3 righe con categoria + tipologia non-NULL e formato_link in {HTML, JSON}
