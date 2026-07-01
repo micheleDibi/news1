@@ -1,7 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./src/**/*.{astro,html,js,jsx,md,mdx,svelte,ts,tsx,vue}'],
-  theme: { 
+  theme: {
     extend: {
       colors: {
         primary: '#004e9c',
@@ -14,49 +14,27 @@ export default {
           900: '#002957'
         },
         breaking: '#cc0000',
-        calcio: {
-          DEFAULT: '#4CAF50',
-          light: '#81C784',
-          dark: '#388E3C'
-        },
-        motori: {
-          DEFAULT: '#A55800',
-          light: '#C07000',
-          dark: '#8A4700'
-        },
-        tennis: {
-          DEFAULT: '#1A78C2',
-          light: '#4A9CF5',
-          dark: '#135EA0'
-        },
-        basket: {
-          DEFAULT: '#9C27B0',
-          light: '#BA68C8',
-          dark: '#7B1FA2'
-        },
-        editoriali: '#616161',
-        commenti: {
-          DEFAULT: '#E91E63',
-          light: '#F06292',
-          dark: '#C2185B'
-        },
-        cultura: '#8E44AD',
-        lavoro: '#3E4A61',
+        editoriali: '#1E293B',
+        cultura: '#B45309',
+        lavoro: '#0D9488',
         bandi: {
           DEFAULT: '#795548',
           light: '#A1887F',
           dark: '#5D4037'
         },
-        ricerca: '#137177',
-        universita:'#2F7D31',
-        scuola: '#F4B400',
-        tecnologia:'#3A01A2',
-        mondo: '#03A9F4',
-        formazione:'#FB8C00'
+        ricerca: '#0891B2',
+        universita: '#1B3A7B',
+        scuola: '#2D6A4F',
+        tecnologia: '#2563EB',
+        mondo: '#7C3AED',
+        formazione: '#EA580C',
+        interpelli: '#DC2626',
+        'selezione-personale': '#CA8A04'
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        funnel: ['"Funnel Sans"', 'sans-serif'],
+        sans: ['Poppins', 'system-ui', 'sans-serif'],
+        heading: ['"League Spartan"', 'Poppins', 'sans-serif'],
+        funnel: ['Poppins', 'sans-serif']
       },
       fontSize: {
         '4xl': ['2.5rem', { lineHeight: '1' }],
@@ -75,7 +53,7 @@ export default {
     'text-gray-800',
     'text-gray-900',
     // Category colors with variants
-    ...['calcio', 'motori', 'tennis', 'basket', 'sport', 'editoriali', 'commenti', 'cultura', 'lavoro', 'bandi','ricerca', 'universita', 'scuola', 'tecnologia', 'mondo','formazione'].flatMap(color => [
+    ...['sport', 'editoriali', 'cultura', 'lavoro', 'bandi', 'ricerca', 'universita', 'scuola', 'tecnologia', 'mondo', 'formazione', 'interpelli', 'selezione-personale'].flatMap(color => [
       `bg-${color}`,
       `bg-${color}-light`,
       `bg-${color}-dark`,
@@ -131,5 +109,3 @@ export default {
     'duration-300'
   ]
 }
-
-

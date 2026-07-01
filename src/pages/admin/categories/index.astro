@@ -283,37 +283,16 @@ const apiSecretKey = import.meta.env.API_SECRET_KEY;
   import { supabase } from '../../../lib/supabase';
   import type { Category, SecondaryCategory } from '../../../lib/supabase'; // Import SecondaryCategory type again for script scope
 
-  // --- Predefined Colors --- //
+  import { CATEGORY_COLORS } from '../../../lib/category-colors';
+
   const availableColors = [
     'ricerca', 'lavoro', 'universita', 'scuola', 'tecnologia',
     'mondo', 'cultura', 'formazione', 'editoriali',
-    'sport-500', 'calcio', 'motori', 'tennis', 'bandi',
-    'red-500', 'blue-500', 'green-500'
+    'bandi', 'interpelli', 'selezione-personale',
+    'sport-500', 'red-500', 'blue-500', 'green-500'
   ];
-  // --- End Predefined Colors --- //
 
-  // --- Map Color Names to Hex Values (from tailwind.config.mjs) --- //
-  const colorHexMap: { [key: string]: string } = {
-    'sport-500': '#00529F',
-    'calcio': '#4CAF50',
-    'motori': '#FF9800',
-    'tennis': '#2196F3',
-    'cultura': '#8E44AD',
-    'lavoro': '#3E4A61',
-    'bandi': '#795548',
-    'red-500': '#ef4444', 
-    'blue-500': '#3b82f6',
-    'green-500': '#22c55e',
-    'ricerca': '#137177',
-    'universita':'#2F7D31',
-    'scuola': '#F4B400',
-    'tecnologia':'#3A01A2',
-    'mondo': '#03A9F4',
-    'formazione':'#FB8C00',
-    'editoriali': '#616161'
-    // Add any other colors from availableColors here
-  };
-  // --- End Color Map --- //
+  const colorHexMap = CATEGORY_COLORS;
 
   const addCategoryButton = document.getElementById('add-category-button');
   const categoryModal = document.getElementById('category-modal');

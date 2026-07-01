@@ -82,6 +82,13 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
                     <div class="flex-1"><div class="text-[13px] font-medium text-gray-800">Video</div><div class="text-[11px] text-gray-400 leading-tight">Ultimi articoli con video</div></div>
                     <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                   </button>
+                  <button class="add-type-btn w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left hover:bg-gray-50 transition-colors" data-type="video_by_category">
+                    <div class="w-8 h-8 rounded-md bg-fuchsia-500 text-white flex items-center justify-center flex-shrink-0">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 15l3 2.5L18 20"/></svg>
+                    </div>
+                    <div class="flex-1"><div class="text-[13px] font-medium text-gray-800">Reels per categoria</div><div class="text-[11px] text-gray-400 leading-tight">Video di una categoria specifica</div></div>
+                    <svg class="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                  </button>
                   <button class="add-type-btn w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left hover:bg-gray-50 transition-colors" data-type="link">
                     <div class="w-8 h-8 rounded-md bg-emerald-500 text-white flex items-center justify-center flex-shrink-0">
                       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
@@ -138,12 +145,12 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
           </div>
           <div class="flex-1 overflow-y-auto flex justify-center py-4">
             <div class="w-[320px]">
-              <div class="bg-[#0a0f1a] rounded-[2rem] p-1 shadow-2xl">
+              <div class="bg-[#111827] rounded-[2rem] p-1 shadow-2xl">
                 <div class="rounded-[1.75rem] overflow-hidden">
-                  <div class="bg-[#0a0f1a] flex justify-center pt-2 pb-1">
+                  <div class="bg-[#111827] flex justify-center pt-2 pb-1">
                     <div class="w-20 h-5 bg-black rounded-full"></div>
                   </div>
-                  <div id="preview-content" class="bg-[#0a0f1a] px-5 pb-6 min-h-[500px]" style="font-family: 'Inter', sans-serif;"></div>
+                  <div id="preview-content" class="bg-[#faf7f2] px-4 pb-6 min-h-[500px]" style="font-family: 'Poppins', sans-serif;"></div>
                 </div>
               </div>
             </div>
@@ -197,6 +204,10 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
               <button type="button" class="type-card flex flex-col items-center gap-1 p-3 rounded-xl border-2 transition-all hover:shadow-sm" data-type="video">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 <span class="text-[10px] font-medium">Video</span>
+              </button>
+              <button type="button" class="type-card flex flex-col items-center gap-1 p-3 rounded-xl border-2 transition-all hover:shadow-sm" data-type="video_by_category">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6h16M4 12h16M4 18h7"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18 15l3 2.5L18 20"/></svg>
+                <span class="text-[10px] font-medium">Reels cat.</span>
               </button>
               <button type="button" class="type-card flex flex-col items-center gap-1 p-3 rounded-xl border-2 transition-all hover:shadow-sm" data-type="header">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6h16M4 12h16M4 18h7"/></svg>
@@ -308,14 +319,36 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
           <div id="section-video" class="hidden space-y-4">
             <div>
               <label for="item-video-title" class="block text-sm font-medium text-gray-700 mb-1.5">Titolo della sezione</label>
-              <input type="text" id="item-video-title" placeholder="Es: Video" value="Video"
+              <input type="text" id="item-video-title" placeholder="Es: Video &amp; Reels" value="Video &amp; Reels"
                 class="block w-full rounded-xl border border-gray-200 shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 px-4 py-2.5 text-sm bg-gray-50 focus:bg-white transition-colors">
             </div>
             <div>
-              <label for="item-video-count" class="block text-sm font-medium text-gray-700 mb-1.5">Numero di articoli da mostrare</label>
-              <input type="number" id="item-video-count" min="1" max="30" value="5" placeholder="5"
+              <label for="item-video-count" class="block text-sm font-medium text-gray-700 mb-1.5">Numero di reels da mostrare</label>
+              <input type="number" id="item-video-count" min="1" max="12" value="3" placeholder="3"
                 class="block w-full rounded-xl border border-gray-200 shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 px-4 py-2.5 text-sm bg-gray-50 focus:bg-white transition-colors">
-              <p class="mt-1.5 text-xs text-gray-400">Mostra gli ultimi N articoli pubblicati che hanno un video associato</p>
+              <p class="mt-1.5 text-xs text-gray-400">Mostra gli ultimi N articoli con video (formato reels 9:16)</p>
+            </div>
+          </div>
+
+          <!-- Video by category section -->
+          <div id="section-video-by-category" class="hidden space-y-4">
+            <div>
+              <label for="item-vbc-category" class="block text-sm font-medium text-gray-700 mb-1.5">Categoria</label>
+              <select id="item-vbc-category"
+                class="block w-full rounded-xl border border-gray-200 shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 px-4 py-2.5 text-sm bg-gray-50 focus:bg-white transition-colors">
+              </select>
+              <p class="mt-1.5 text-xs text-gray-400">La sezione mostrer&agrave; solo articoli con video di questa categoria</p>
+            </div>
+            <div>
+              <label for="item-vbc-title" class="block text-sm font-medium text-gray-700 mb-1.5">Titolo della sezione (opzionale)</label>
+              <input type="text" id="item-vbc-title" placeholder="Es: Reels Scuola"
+                class="block w-full rounded-xl border border-gray-200 shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 px-4 py-2.5 text-sm bg-gray-50 focus:bg-white transition-colors">
+              <p class="mt-1.5 text-xs text-gray-400">Se vuoto, usa &laquo;Reels &lt;Nome categoria&gt;&raquo;</p>
+            </div>
+            <div>
+              <label for="item-vbc-count" class="block text-sm font-medium text-gray-700 mb-1.5">Numero di reels da mostrare</label>
+              <input type="number" id="item-vbc-count" min="1" max="12" value="3" placeholder="3"
+                class="block w-full rounded-xl border border-gray-200 shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 px-4 py-2.5 text-sm bg-gray-50 focus:bg-white transition-colors">
             </div>
           </div>
 
@@ -333,9 +366,9 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
             <div class="mb-5" id="color-field">
               <label class="block text-sm font-medium text-gray-700 mb-2">Colore</label>
               <div class="flex items-center gap-3">
-                <input type="color" id="item-color" value="#064C99"
+                <input type="color" id="item-color" value="#004e9c"
                   class="h-10 w-12 rounded-lg border border-gray-200 cursor-pointer shadow-sm">
-                <span id="color-value" class="text-sm text-gray-500 font-mono">#064C99</span>
+                <span id="color-value" class="text-sm text-gray-500 font-mono">#004e9c</span>
               </div>
             </div>
             <div class="space-y-3">
@@ -392,14 +425,10 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
 
 <script>
   import { supabase } from '../../../lib/supabase';
+  import { CATEGORY_COLORS, BRAND_PRIMARY, getCategoryHex } from '../../../lib/category-colors';
 
-  const colorHexMap: Record<string, string> = {
-    'sport-500': '#00529F', 'calcio': '#4CAF50', 'motori': '#FF9800', 'tennis': '#2196F3',
-    'cultura': '#8E44AD', 'lavoro': '#3E4A61', 'bandi': '#795548', 'red-500': '#ef4444',
-    'blue-500': '#3b82f6', 'green-500': '#22c55e', 'ricerca': '#137177', 'universita': '#2F7D31',
-    'scuola': '#F4B400', 'tecnologia': '#3A01A2', 'mondo': '#03A9F4', 'formazione': '#FB8C00',
-    'editoriali': '#616161',
-  };
+  const BRAND = BRAND_PRIMARY;
+  const colorHexMap = CATEGORY_COLORS;
 
   const socialIconPaths: Record<string, string> = {
     facebook: 'M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z',
@@ -442,15 +471,16 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     const { data } = await supabase.from('categories').select('slug, name, color').order('name');
     if (data) {
       allCategories = data;
-      for (const c of data) categoryColorMap[c.slug] = colorHexMap[c.color] || c.color || '#064C99';
-      const select = $('item-category-select') as HTMLSelectElement;
-      select.innerHTML = data.map(c => '<option value="' + c.slug + '">' + c.name + '</option>').join('');
+      for (const c of data) categoryColorMap[c.slug] = colorHexMap[c.color] || c.color || BRAND;
+      const options = data.map(c => '<option value="' + c.slug + '">' + c.name + '</option>').join('');
+      ($('item-category-select') as HTMLSelectElement).innerHTML = options;
+      ($('item-vbc-category') as HTMLSelectElement).innerHTML = options;
     }
   }
 
   function getItemColor(item: any): string {
-    if (item.type === 'article' && item.articles) return categoryColorMap[item.articles.category_slug] || '#064C99';
-    return item.color || '#064C99';
+    if (item.type === 'article' && item.articles) return categoryColorMap[item.articles.category_slug] || BRAND;
+    return item.color || BRAND;
   }
 
   function initListeners() {
@@ -578,7 +608,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
   }
 
   function updateFieldVisibility() {
-    ['section-article', 'section-link', 'section-social', 'section-header', 'section-breaking', 'section-category', 'section-video'].forEach(s => $(s).classList.add('hidden'));
+    ['section-article', 'section-link', 'section-social', 'section-header', 'section-breaking', 'section-category', 'section-video', 'section-video-by-category'].forEach(s => $(s).classList.add('hidden'));
     if (currentType === 'article') $('section-article').classList.remove('hidden');
     if (currentType === 'link') $('section-link').classList.remove('hidden');
     if (currentType === 'social') $('section-social').classList.remove('hidden');
@@ -586,8 +616,9 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     if (currentType === 'breaking') $('section-breaking').classList.remove('hidden');
     if (currentType === 'category') $('section-category').classList.remove('hidden');
     if (currentType === 'video') $('section-video').classList.remove('hidden');
+    if (currentType === 'video_by_category') $('section-video-by-category').classList.remove('hidden');
     $('color-field').classList.toggle('hidden', currentType !== 'link' && currentType !== 'header');
-    $('show-author-field').classList.toggle('hidden', currentType !== 'article' && currentType !== 'breaking' && currentType !== 'category' && currentType !== 'video');
+    $('show-author-field').classList.toggle('hidden', currentType !== 'article' && currentType !== 'breaking' && currentType !== 'category' && currentType !== 'video' && currentType !== 'video_by_category');
     $('new-tab-field').classList.toggle('hidden', currentType !== 'link' && currentType !== 'social');
     $('section-common').classList.toggle('hidden', currentType === 'separator');
   }
@@ -607,16 +638,21 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       $i('item-icon').value = item.icon || 'facebook';
       $i('item-social-url').value = item.url || '';
       $i('item-header-title').value = item.title || '';
-      $i('item-color').value = item.color || '#064C99';
-      $('color-value').textContent = item.color || '#064C99';
+      $i('item-color').value = item.color || BRAND;
+      $('color-value').textContent = item.color || BRAND;
       $i('item-new-tab').checked = item.open_in_new_tab;
       $i('item-active').checked = item.is_active;
       $i('item-show-author').checked = item.show_author !== false;
       $i('item-breaking-count').value = String(item.article_count || 15);
       $i('item-category-count').value = String(item.article_count || 3);
-      $i('item-video-count').value = String(item.article_count || 5);
-      $i('item-video-title').value = item.title || 'Video';
-      if (item.category_slug) ($('item-category-select') as HTMLSelectElement).value = item.category_slug;
+      $i('item-video-count').value = String(item.article_count || 3);
+      $i('item-video-title').value = item.title || 'Video & Reels';
+      $i('item-vbc-count').value = String(item.article_count || 3);
+      $i('item-vbc-title').value = item.type === 'video_by_category' ? (item.title || '') : '';
+      if (item.category_slug) {
+        ($('item-category-select') as HTMLSelectElement).value = item.category_slug;
+        ($('item-vbc-category') as HTMLSelectElement).value = item.category_slug;
+      }
     } else {
       $('modal-title').textContent = 'Nuovo Elemento';
       $i('item-id').value = '';
@@ -625,13 +661,15 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       $i('item-title').value = ''; $i('item-url').value = '';
       $i('item-icon').value = 'facebook'; $i('item-social-url').value = '';
       $i('item-header-title').value = '';
-      $i('item-color').value = '#064C99'; $('color-value').textContent = '#064C99';
+      $i('item-color').value = BRAND; $('color-value').textContent = BRAND;
       $i('item-new-tab').checked = true; $i('item-active').checked = true;
       $i('item-show-author').checked = true;
       $i('item-breaking-count').value = '15';
       $i('item-category-count').value = '3';
-      $i('item-video-count').value = '5';
-      $i('item-video-title').value = 'Video';
+      $i('item-video-count').value = '3';
+      $i('item-video-title').value = 'Video & Reels';
+      $i('item-vbc-count').value = '3';
+      $i('item-vbc-title').value = '';
       if (type === 'article') loadArticlesList();
     }
 
@@ -668,7 +706,7 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
     results.innerHTML = articles.map(a => `
       <div class="article-option flex items-center gap-3 px-3 py-2.5 hover:bg-indigo-50 cursor-pointer border-b border-gray-50 last:border-0 transition-colors"
            data-id="${a.id}" data-title="${a.title.replace(/"/g, '&quot;')}" data-category="${a.category}">
-        <div class="w-1.5 h-8 rounded-full flex-shrink-0" style="background: ${categoryColorMap[a.category_slug] || '#064C99'}"></div>
+        <div class="w-1.5 h-8 rounded-full flex-shrink-0" style="background: ${categoryColorMap[a.category_slug] || BRAND}"></div>
         <div class="flex-1 min-w-0">
           <p class="text-sm font-medium text-gray-900 truncate">${a.title}</p>
           <p class="text-xs text-gray-400 mt-0.5">${a.category} &middot; ${a.creator || ''} &middot; ${new Date(a.published_at).toLocaleDateString('it-IT')}</p>
@@ -715,11 +753,18 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       if (!catSlug) { alert('Seleziona una categoria'); return; }
       const count = parseInt($i('item-category-count').value) || 3;
       const catName = allCategories.find(c => c.slug === catSlug)?.name || catSlug;
-      Object.assign(data, { article_id: null, title: catName, url: null, icon: null, color: categoryColorMap[catSlug] || '#064C99', open_in_new_tab: true, article_count: count, category_slug: catSlug });
+      Object.assign(data, { article_id: null, title: catName, url: null, icon: null, color: categoryColorMap[catSlug] || BRAND, open_in_new_tab: true, article_count: count, category_slug: catSlug });
     } else if (type === 'video') {
-      const count = parseInt($i('item-video-count').value) || 5;
-      const title = $i('item-video-title').value || 'Video';
+      const count = parseInt($i('item-video-count').value) || 3;
+      const title = $i('item-video-title').value || 'Video & Reels';
       Object.assign(data, { article_id: null, title, url: null, icon: null, color: '#9333ea', open_in_new_tab: true, article_count: count, category_slug: null });
+    } else if (type === 'video_by_category') {
+      const catSlug = ($('item-vbc-category') as HTMLSelectElement).value;
+      if (!catSlug) { alert('Seleziona una categoria'); return; }
+      const count = parseInt($i('item-vbc-count').value) || 3;
+      const catName = allCategories.find(c => c.slug === catSlug)?.name || catSlug;
+      const title = $i('item-vbc-title').value.trim() || `Reels ${catName}`;
+      Object.assign(data, { article_id: null, title, url: null, icon: null, color: categoryColorMap[catSlug] || BRAND, open_in_new_tab: true, article_count: count, category_slug: catSlug });
     } else if (type === 'separator') {
       Object.assign(data, { article_id: null, title: null, url: null, icon: null, color: null, open_in_new_tab: false, article_count: null, category_slug: null });
     }
@@ -770,12 +815,14 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       breaking: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>',
       category: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>',
       video: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+      video_by_category: '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 15l3 2.5L18 20"/></svg>',
     };
     const typeColors: Record<string, string> = {
       article: 'bg-blue-50 text-blue-600', link: 'bg-green-50 text-green-600',
       social: 'bg-purple-50 text-purple-600', header: 'bg-gray-100 text-gray-600', separator: 'bg-yellow-50 text-yellow-600',
       breaking: 'bg-red-50 text-red-600', category: 'bg-orange-50 text-orange-600',
       video: 'bg-purple-50 text-purple-600',
+      video_by_category: 'bg-fuchsia-50 text-fuchsia-600',
     };
 
     list.innerHTML = allItems.map((item, i) => {
@@ -788,7 +835,8 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
       else if (item.type === 'separator') { title = 'Separatore'; }
       else if (item.type === 'breaking') { title = 'Ultima Ora'; sub = (item.article_count || 15) + ' articoli'; }
       else if (item.type === 'category') { title = item.title || item.category_slug || ''; sub = (item.article_count || 3) + ' articoli'; }
-      else if (item.type === 'video') { title = item.title || 'Video'; sub = (item.article_count || 5) + ' articoli con video'; }
+      else if (item.type === 'video') { title = item.title || 'Video & Reels'; sub = (item.article_count || 3) + ' reels'; }
+      else if (item.type === 'video_by_category') { title = item.title || ('Reels ' + (item.category_slug || '')); sub = (item.article_count || 3) + ' reels · ' + (item.category_slug || ''); }
 
       const socialIcon = item.type === 'social' && item.icon ? `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="${socialIconPaths[item.icon] || socialIconPaths.globe}"/></svg>` : typeIcons[item.type] || '';
 
@@ -873,76 +921,148 @@ import AdminLayout from '../../../layouts/AdminLayout.astro';
   // Cache for dynamic articles (breaking/category)
   let previewDynArticles: Record<string, any[]> = {};
 
+  const PREVIEW_SELECT = 'id, title, slug, category, category_slug, image_url, thumbnail_url, video_url, video_duration, excerpt, summary, creator, published_at';
+
   async function fetchPreviewDynArticles() {
-    const dynamicItems = allItems.filter(i => i.is_active && (i.type === 'breaking' || i.type === 'category' || i.type === 'video'));
+    const dynamicItems = allItems.filter(i => i.is_active && (i.type === 'breaking' || i.type === 'category' || i.type === 'video' || i.type === 'video_by_category'));
     for (const item of dynamicItems) {
       if (previewDynArticles[item.id]) continue;
       if (item.type === 'breaking') {
-        const { data } = await supabase.from('articles').select('id, title, slug, category, category_slug, creator').eq('isdraft', false).order('published_at', { ascending: false }).limit(item.article_count || 15);
+        const { data } = await supabase.from('articles').select(PREVIEW_SELECT).eq('isdraft', false).order('published_at', { ascending: false }).limit(item.article_count || 15);
         previewDynArticles[item.id] = data || [];
       } else if (item.type === 'category' && item.category_slug) {
-        const { data } = await supabase.from('articles').select('id, title, slug, category, category_slug, creator').eq('category_slug', item.category_slug).eq('isdraft', false).order('published_at', { ascending: false }).limit(item.article_count || 3);
+        const { data } = await supabase.from('articles').select(PREVIEW_SELECT).eq('category_slug', item.category_slug).eq('isdraft', false).order('published_at', { ascending: false }).limit(item.article_count || 3);
         previewDynArticles[item.id] = data || [];
       } else if (item.type === 'video') {
-        const { data } = await supabase.from('articles').select('id, title, slug, category, category_slug, creator').eq('isdraft', false).neq('video_url', '').neq('video_url', ' ').order('published_at', { ascending: false }).limit(item.article_count || 5);
+        const { data } = await supabase.from('articles').select(PREVIEW_SELECT).eq('isdraft', false).neq('video_url', '').neq('video_url', ' ').not('video_url', 'is', null).order('published_at', { ascending: false }).limit(item.article_count || 3);
+        previewDynArticles[item.id] = data || [];
+      } else if (item.type === 'video_by_category' && item.category_slug) {
+        const { data } = await supabase.from('articles').select(PREVIEW_SELECT).eq('category_slug', item.category_slug).eq('isdraft', false).neq('video_url', '').neq('video_url', ' ').not('video_url', 'is', null).order('published_at', { ascending: false }).limit(item.article_count || 3);
         previewDynArticles[item.id] = data || [];
       }
     }
   }
 
+  function previewTimeAgo(iso: string | null | undefined): string {
+    if (!iso) return '';
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return '';
+    const diff = Math.max(0, Date.now() - then);
+    const min = Math.floor(diff / 60_000);
+    if (min < 1) return 'ORA';
+    if (min < 60) return `${min} MIN FA`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr === 1 ? '1 ORA FA' : `${hr} ORE FA`;
+    const days = Math.floor(hr / 24);
+    if (days < 7) return days === 1 ? '1 GIORNO FA' : `${days} GIORNI FA`;
+    const weeks = Math.floor(days / 7);
+    if (weeks < 5) return weeks === 1 ? '1 SETTIMANA FA' : `${weeks} SETTIMANE FA`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return months === 1 ? '1 MESE FA' : `${months} MESI FA`;
+    const years = Math.floor(days / 365);
+    return years === 1 ? '1 ANNO FA' : `${years} ANNI FA`;
+  }
+
+  function escHtml(s: string): string {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   async function renderPreview() {
     const preview = document.getElementById('preview-content');
     if (!preview) return;
-    // Fetch dynamic articles if needed
     previewDynArticles = {};
     await fetchPreviewDynArticles();
 
     const activeItems = allItems.filter(i => i.is_active);
-    let html = '<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding-top:16px;">'
-      + '<div style="color:rgba(255,255,255,0.5);font-size:10px;font-weight:500;letter-spacing:0.15em;text-transform:uppercase;">Notizie per il mondo della scuola</div>'
-      + '<a style="display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px;background:linear-gradient(135deg,#064C99,#0a6dd6);color:#fff;font-weight:700;font-size:12px;border-radius:10px;text-decoration:none;">Vai al sito <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg></a>';
+    const categoryNameMap: Record<string, string> = {};
+    for (const c of allCategories) categoryNameMap[c.slug] = c.name;
+
+    const brandSvg = '<svg width="130" height="26" viewBox="0 0 209 41" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="EduNews24"><g><rect width="85.7172" height="38.335" transform="matrix(1 0 -0.13191 0.991262 5.05679 3)" fill="#064C99"/><path d="M20.1533 23.9583L19.4479 27.7939H31.0279L30.1706 32.4558H12.9806L16.8438 11.448H33.7338L32.8928 16.0214H21.6128L20.978 19.4735H30.878L30.0533 23.9583H20.1533ZM37.088 11.448H46.088C49.408 11.448 51.7716 12.3529 53.1788 14.1625C54.586 15.9722 54.9785 18.5686 54.3564 21.9519C53.7451 25.2762 52.4394 27.8628 50.4394 29.7118C48.443 31.5411 45.8448 32.4558 42.6448 32.4558H33.2248L37.088 11.448ZM39.6866 27.8235H42.5366C45.9566 27.8235 48.0265 25.8663 48.7464 21.9519C49.1189 19.9259 48.9539 18.4309 48.2511 17.4671C47.572 16.4836 46.2924 15.9918 44.4124 15.9918H41.8624L39.6866 27.8235ZM64.3984 33.1344C61.4584 33.1344 59.3232 32.4558 57.9928 31.0985C56.6624 29.7413 56.2305 27.7939 56.6971 25.2565L59.2364 11.448H64.8464L62.3017 25.286C61.8929 27.5087 62.8786 28.6201 65.2586 28.6201C67.6186 28.6201 69.0029 27.5087 69.4117 25.286L71.9564 11.448H77.5664L75.0271 25.2565C74.5569 27.8136 73.407 29.7708 71.5774 31.128C69.7514 32.4656 67.3584 33.1344 64.3984 33.1344Z" fill="white"/></g><g><rect x="0.901028" y="0.99509" width="124.417" height="28.148" transform="matrix(1 0 -0.0989724 0.99509 82.0823 7.00489)" fill="white" stroke="#064C99" stroke-width="2"/><path d="M109.202 22.9167L110.226 14.7003H113.906L112.144 28.8308H108.404L104.484 20.6542L103.464 28.8308H99.7638L101.526 14.7003H105.226L109.202 22.9167ZM119.1 23.1151L118.778 25.6951H126.498L126.107 28.8308H114.647L116.409 14.7003H127.669L127.285 17.7765H119.765L119.476 20.0985H126.076L125.7 23.1151H119.1ZM142.25 20.9122L144.605 14.7003H148.345L142.443 28.8308H138.843L138.069 19.8008L135.123 28.8308H131.443L129.065 14.7003H132.845L133.65 20.9122L133.892 24.2662L134.89 20.9122L137.005 14.7003H140.445L141.05 20.9122L141.2 24.2067L142.25 20.9122ZM153.944 29.2873C152.037 29.2873 150.591 28.8573 149.605 27.9973C148.62 27.1241 148.188 25.887 148.308 24.286H152.008C151.933 25.6356 152.729 26.3104 154.395 26.3104C155.849 26.3104 156.634 25.8407 156.751 24.9013C156.797 24.5308 156.699 24.2464 156.457 24.0479C156.231 23.8362 155.82 23.651 155.227 23.4922L152.508 22.8373C150.126 22.2683 149.067 20.9254 149.331 18.8085C149.493 17.5119 150.099 16.4468 151.15 15.6133C152.2 14.7797 153.665 14.3629 155.545 14.3629C157.345 14.3629 158.703 14.7599 159.617 15.5537C160.533 16.3343 160.941 17.4457 160.841 18.8879H157.221C157.2 17.7765 156.516 17.2208 155.169 17.2208C154.582 17.2208 154.101 17.3399 153.724 17.578C153.363 17.803 153.158 18.1073 153.111 18.491C153.036 19.0863 153.438 19.4965 154.317 19.7214L157.153 20.3962C159.715 21.018 160.859 22.4337 160.583 24.6433C160.402 26.0987 159.72 27.2365 158.537 28.0568C157.355 28.8771 155.824 29.2873 153.944 29.2873ZM178.666 28.8308H167.386C167.542 27.5739 167.947 26.5221 168.599 25.6753C169.248 24.855 170.361 23.9487 171.938 22.9564L174.332 21.4083C174.939 21.0247 175.378 20.6608 175.648 20.3168C175.931 19.9728 176.099 19.5825 176.154 19.1459C176.225 18.577 176.107 18.1337 175.8 17.8162C175.494 17.4854 175.041 17.32 174.441 17.32C173.081 17.32 172.303 18.1073 172.107 19.6817L172.07 19.9794H168.69L168.744 19.5428C168.947 17.9154 169.586 16.6453 170.66 15.7323C171.733 14.8194 173.15 14.3629 174.91 14.3629C176.59 14.3629 177.873 14.7665 178.759 15.5736C179.657 16.3939 180.018 17.5119 179.841 18.9276C179.727 19.8405 179.385 20.6608 178.814 21.3885C178.257 22.1162 177.417 22.8108 176.294 23.4724L173.641 25.0204C173.136 25.3247 172.851 25.5827 172.784 25.7944H179.044L178.666 28.8308ZM192.971 14.6805L191.929 23.0357L194.014 22.996L193.665 25.7944L191.572 25.7348L191.183 28.8507H187.703L188.092 25.7348L181.505 25.7944L181.906 22.5793L189.331 14.6805H192.971ZM184.669 23.0357H188.429L188.988 18.5505H188.928L184.669 23.0357Z" fill="#064C99"/></g></svg>';
+
+    let html = '<div style="display:flex;flex-direction:column;gap:11px;padding-top:14px;">';
+    html += '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;">' + brandSvg
+      + '<div style="color:#6b7280;font-size:8px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;">Portale dell&apos;informazione scolastica</div></div>';
+    html += '<a href="#" style="display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px;background:' + BRAND + ';color:#fff;font-weight:700;font-size:11px;letter-spacing:0.01em;border-radius:10px;text-decoration:none;box-shadow:0 3px 10px -4px rgba(0,78,156,0.5);">'
+      + '<svg width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l9-9 9 9M5 10v10a1 1 0 001 1h3v-6a1 1 0 011-1h4a1 1 0 011 1v6h3a1 1 0 001-1V10"/></svg>'
+      + 'Torna al sito ufficiale</a>';
+
+    function pill(cat: string, hex: string) {
+      return '<span style="display:inline-flex;align-items:center;padding:2px 6px;border-radius:4px;font-size:7px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#fff;background:' + hex + ';white-space:nowrap;">' + escHtml(cat) + '</span>';
+    }
+    function timeagoBadge(publishedAt: string) {
+      const label = previewTimeAgo(publishedAt);
+      if (!label) return '';
+      return '<span style="display:inline-flex;align-items:center;gap:3px;color:#9ca3af;font-size:7px;font-weight:500;letter-spacing:0.02em;"><svg width="8" height="8" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' + label + '</span>';
+    }
+    function articleCard(art: any, showAuthor: boolean, fallbackColor: string) {
+      const cat = categoryNameMap[art.category_slug] || art.category || '';
+      const hex = categoryColorMap[art.category_slug] || fallbackColor;
+      const excerpt = art.excerpt || art.summary || '';
+      const excerptHtml = excerpt ? '<div style="color:#6b7280;font-size:9px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">' + escHtml(excerpt) + '</div>' : '';
+      const authHtml = showAuthor && art.creator ? '<div style="color:#6b7280;font-size:8px;font-style:italic;">di <span style="color:' + BRAND + ';font-weight:600;font-style:normal;">' + escHtml(art.creator) + '</span></div>' : '';
+      return '<a href="#" style="display:flex;flex-direction:column;gap:5px;padding:9px 10px;background:#fff;border:1px solid #eef1f5;border-radius:10px;text-decoration:none;color:inherit;box-shadow:0 1px 2px rgba(0,0,0,0.04);">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">' + pill(cat, hex) + timeagoBadge(art.published_at) + '</div>'
+        + '<div style="color:#111827;font-size:11px;font-weight:700;line-height:1.35;">' + escHtml(art.title) + '</div>'
+        + excerptHtml + authHtml + '</a>';
+    }
+    function sectionTitle(title: string, color: string) {
+      return '<div style="display:flex;align-items:center;gap:8px;padding-top:2px;color:' + color + ';font-size:8px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;">' + escHtml(title) + '<div style="flex:1;height:1px;background:#e5e7eb;"></div></div>';
+    }
+    function reelCard(art: any) {
+      const cover = art.thumbnail_url || art.image_url || '';
+      const imgHtml = cover ? '<img src="' + escHtml(cover) + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">' : '';
+      const dur = art.video_duration;
+      const durLabel = dur && dur > 0
+        ? (dur >= 60 ? Math.floor(dur / 60) + ':' + String(dur % 60).padStart(2, '0') : '0:' + String(dur).padStart(2, '0'))
+        : '';
+      const durBadge = durLabel ? '<span style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.65);color:#fff;font-size:7px;font-weight:600;padding:1px 4px;border-radius:3px;">' + durLabel + '</span>' : '';
+      return '<a href="#" style="position:relative;aspect-ratio:9/16;border-radius:9px;overflow:hidden;background:#111827;text-decoration:none;display:block;">' + imgHtml
+        + '<div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,0) 40%,rgba(0,0,0,0.75) 100%);display:flex;align-items:flex-end;padding:5px;"><span style="color:#fff;font-size:7px;font-weight:600;line-height:1.2;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">' + escHtml(art.title) + '</span></div>'
+        + '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,0.92);color:' + BRAND + ';display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.3);"><svg width="10" height="10" fill="currentColor" viewBox="0 0 24 24" style="margin-left:1px"><path d="M8 5v14l11-7z"/></svg></div>'
+        + durBadge + '</a>';
+    }
+
     let inSocialGroup = false;
-
-    function articleRow(title: string, color: string, authorName?: string, showAuthor?: boolean) {
-      const auth = showAuthor && authorName ? '<span style="color:rgba(255,255,255,0.35);font-size:9px;">' + authorName + '</span>' : '';
-      return '<a href="#" style="display:flex;align-items:center;width:100%;padding:8px 10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;text-decoration:none;gap:8px;">'
-        + '<div style="width:3px;height:24px;border-radius:2px;background:' + color + ';"></div>'
-        + '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;"><span style="color:rgba(255,255,255,0.9);font-size:11px;font-weight:500;line-height:1.3;">' + title + '</span>' + auth + '</div>'
-        + '<svg width="10" height="10" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg></a>';
-    }
-
-    function sectionHeader(title: string, color: string) {
-      return '<div style="width:100%;display:flex;align-items:center;gap:8px;margin-top:8px;"><div style="width:6px;height:6px;border-radius:50%;background:' + color + ';"></div><span style="font-size:9px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:' + color + ';">' + title + '</span><div style="flex:1;height:1px;background:' + color + ';opacity:0.25;"></div></div>';
-    }
-
     for (let i = 0; i < activeItems.length; i++) {
       const item = activeItems[i];
       const nextIsSocial = i + 1 < activeItems.length && activeItems[i + 1].type === 'social';
       if (item.type === 'social') {
         if (!inSocialGroup) { html += '<div style="display:flex;gap:8px;justify-content:center;margin-top:4px;">'; inSocialGroup = true; }
         const iconPath = socialIconPaths[item.icon || 'globe'] || socialIconPaths.globe;
-        html += '<a href="#" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:rgba(255,255,255,0.5);text-decoration:none;"><svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24"><path d="' + iconPath + '"/></svg></a>';
+        html += '<a href="#" style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:#ffffff;color:' + BRAND + ';border:1px solid #e5e7eb;text-decoration:none;box-shadow:0 2px 4px rgba(0,0,0,0.05);"><svg width="13" height="13" fill="currentColor" viewBox="0 0 24 24"><path d="' + iconPath + '"/></svg></a>';
         if (!nextIsSocial) { html += '</div>'; inSocialGroup = false; }
       } else if (item.type === 'header') {
-        html += sectionHeader(item.title || '', item.color || '#064C99');
+        html += sectionTitle(item.title || '', item.color || '#9ca3af');
       } else if (item.type === 'separator') {
         html += '<div style="height:8px;"></div>';
       } else if (item.type === 'article' && item.articles) {
-        html += articleRow(item.articles.title, getItemColor(item), item.articles.creator, item.show_author !== false);
+        html += articleCard(item.articles, item.show_author !== false, BRAND);
       } else if (item.type === 'link') {
-        html += articleRow(item.title || '', item.color || '#064C99');
-      } else if (item.type === 'breaking' || item.type === 'category' || item.type === 'video') {
-        const c = item.color || '#064C99';
-        html += sectionHeader(item.title || '', c);
+        const linkColor = item.color || BRAND;
+        html += '<a href="#" style="display:flex;align-items:center;gap:8px;padding:9px 10px;background:#fff;border:1px solid #eef1f5;border-radius:10px;text-decoration:none;color:#111827;box-shadow:0 1px 2px rgba(0,0,0,0.04);">'
+          + '<div style="width:3px;height:18px;border-radius:2px;background:' + linkColor + ';"></div>'
+          + '<span style="flex:1;font-size:10px;font-weight:600;">' + escHtml(item.title || '') + '</span>'
+          + '<svg width="10" height="10" fill="none" stroke="#9ca3af" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/></svg></a>';
+      } else if (item.type === 'breaking' || item.type === 'category') {
+        const c = item.color || BRAND;
         const dynArts = previewDynArticles[item.id] || [];
+        if (dynArts.length === 0) continue;
+        html += sectionTitle(item.title || '', c);
         const showAuth = item.show_author !== false;
-        for (const a of dynArts) {
-          const artColor = categoryColorMap[a.category_slug] || c;
-          html += articleRow(a.title, artColor, a.creator, showAuth);
-        }
+        html += '<div style="display:flex;flex-direction:column;gap:6px;">';
+        for (const a of dynArts) html += articleCard(a, showAuth, c);
+        html += '</div>';
+      } else if (item.type === 'video' || item.type === 'video_by_category') {
+        const c = item.color || BRAND;
+        const dynArts = previewDynArticles[item.id] || [];
+        if (dynArts.length === 0) continue;
+        html += sectionTitle(item.title || '', c);
+        html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;">';
+        for (const a of dynArts) html += reelCard(a);
+        html += '</div>';
       }
     }
-    html += '<div style="margin-top:8px;color:rgba(255,255,255,0.2);font-size:9px;text-align:center;">&copy; ' + new Date().getFullYear() + ' EduNews24</div></div>';
+    html += '<div style="margin-top:6px;color:#9ca3af;font-size:8px;text-align:center;letter-spacing:0.03em;">&copy; ' + new Date().getFullYear() + ' EDUNEWS24 &middot; Tutti i diritti riservati</div></div>';
     preview.innerHTML = html;
   }
 

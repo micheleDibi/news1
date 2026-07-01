@@ -3,6 +3,7 @@ import '@splidejs/splide/dist/css/splide.min.css';
 import { categories } from '../lib/categories';
 import SearchBar from './SearchBar.astro';
 import { supabase } from '../lib/supabase';
+import { getCategoryHex } from '../lib/category-colors';
 
 // Get current path
 const currentPath = Astro.url.pathname;
@@ -200,9 +201,10 @@ const featuredNews = featuredArticles?.map(article => ({
           </li>
         ))}
         <li>
-          <a 
+          <a
             href="/selezione-personale"
-            class="flex items-center px-4 py-3 text-gray-700 hover:text-sport-500 font-medium text-sm uppercase tracking-wide transition-colors"
+            style={`--cat-hover: ${getCategoryHex('selezione-personale')}`}
+            class="flex items-center px-4 py-3 text-gray-700 hover:text-[color:var(--cat-hover)] font-medium text-sm uppercase tracking-wide transition-colors"
           >
             Selezione Personale
           </a>
@@ -210,7 +212,8 @@ const featuredNews = featuredArticles?.map(article => ({
         <li>
           <a
             href="/interpelli"
-            class="flex items-center px-4 py-3 text-gray-700 hover:text-sport-500 font-medium text-sm uppercase tracking-wide transition-colors"
+            style={`--cat-hover: ${getCategoryHex('interpelli')}`}
+            class="flex items-center px-4 py-3 text-gray-700 hover:text-[color:var(--cat-hover)] font-medium text-sm uppercase tracking-wide transition-colors"
           >
             Interpelli
           </a>
@@ -218,7 +221,8 @@ const featuredNews = featuredArticles?.map(article => ({
         <li>
           <a
             href="/bandi"
-            class="flex items-center px-4 py-3 text-gray-700 hover:text-sport-500 font-medium text-sm uppercase tracking-wide transition-colors"
+            style={`--cat-hover: ${getCategoryHex('bandi')}`}
+            class="flex items-center px-4 py-3 text-gray-700 hover:text-[color:var(--cat-hover)] font-medium text-sm uppercase tracking-wide transition-colors"
           >
             Bandi
           </a>

@@ -107,7 +107,7 @@ export const GET: APIRoute = async ({ params }) => {
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Funnel+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=League+Spartan:wght@600;700;800&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
   <!-- Base AMP JS -->
   <script async src="https://cdn.ampproject.org/v0.js"></script>
@@ -291,41 +291,12 @@ function escapeHtml(unsafe: string): string {
          .replace(/'/g, "&#039;");
 }
 
-// --- Color Name to Hex Mapping ---
-// Based on src/pages/admin/categories/index.astro (with corrections)
-const tailwindColorMap: { [key: string]: string } = {
-  'sport-500': '#00529F',
-  'calcio': '#4CAF50',
-  'motori': '#FF9800',
-  'tennis': '#2196F3',
-  'cultura': '#3F51B5',
-  'lavoro': '#009688',
-  'bandi': '#795548',
-  'red-500': '#ef4444',
-  'blue-500': '#3b82f6',
-  'green-500': '#22c55e',
-  // Add any others if necessary
-  // Default blue used elsewhere as fallback:
-  'primary-blue': '#064C99' // Added for consistency if needed
-};
+import { getCategoryHex } from '../../../lib/category-colors';
 
-// Function to get hex color, falling back if name not found or already hex
+// Wrapper coerente col nome storico usato nel file.
 function getHexColor(colorName: string | undefined | null, fallbackColor: string): string {
-  if (colorName && tailwindColorMap[colorName]) {
-    return tailwindColorMap[colorName];
-  }
-  // If it's already a valid hex code, return it
-  if (colorName && /^#[0-9A-F]{6}$/i.test(colorName)) {
-     return colorName;
-  }
-  // If it's potentially a valid named CSS color (basic check)
-  // Note: This is less likely given the context but could be a fallback
-  // if (colorName && /^[a-zA-Z]+$/.test(colorName)) {
-  //    return colorName; 
-  // }
-  return fallbackColor; // Use provided fallback otherwise
+  return getCategoryHex(colorName, fallbackColor);
 }
-// --- End Color Mapping ---
 
 // Function to format markdown content to AMP HTML
 function formatContentForAmp(content: string): string {
@@ -454,7 +425,7 @@ function generateAmpCss(categoryData: Category | undefined): string {
   const footerBorder = '#4a5568';     // Tailwind gray-700 approx
 
   const baseCss = `
-    /* Reset / Base */ body { margin: 0; padding: 0; background-color: #f1f3f5; color: #343a40; line-height: 1.6; font-family: 'Funnel Sans', sans-serif; } * { box-sizing: border-box; } 
+    /* Reset / Base */ body { margin: 0; padding: 0; background-color: #f1f3f5; color: #343a40; line-height: 1.6; font-family: 'Poppins', sans-serif; } h1, h2, h3 { font-family: 'League Spartan', 'Poppins', sans-serif; } * { box-sizing: border-box; }
     /* Layout */ .container { max-width: 800px; margin: 0 auto; padding: 1rem; } 
     main.container { background-color: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-top: 1rem; margin-bottom: 1rem; padding: 1.5rem; } 
     /* Typography */ h1, h2, h3, h4, h5, h6 { margin: 0 0 0.75em 0; line-height: 1.3; font-weight: 600; color: #212529; } h1 { font-size: 2.2rem; } h2 { font-size: 1.8rem; } h3 { font-size: 1.5rem; } h4 { font-size: 1.2rem; } p { margin-bottom: 1rem; } a { color: ${categoryHexColor}; text-decoration: none; } a:hover { text-decoration: underline; } strong { font-weight: bold; } em { font-style: italic; } time { color: #6c757d; font-size: 0.9em; } 

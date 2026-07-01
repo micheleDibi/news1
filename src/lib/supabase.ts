@@ -79,7 +79,16 @@ export interface ForumMessage {
 
 export interface LinkinbioItem {
   id: string;
-  type: 'article' | 'link' | 'social' | 'header' | 'separator' | 'breaking' | 'category';
+  type:
+    | 'article'
+    | 'link'
+    | 'social'
+    | 'header'
+    | 'separator'
+    | 'breaking'
+    | 'category'
+    | 'video'
+    | 'video_by_category';
   article_id: number | null;
   title: string | null;
   url: string | null;
