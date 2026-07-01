@@ -189,14 +189,8 @@ const apiSecretKey = import.meta.env.API_SECRET_KEY;
             <textarea name="description" id="category-description" rows="3" class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md"></textarea>
             <p class="mt-1 text-xs text-gray-500">Breve descrizione della categoria (opzionale).</p>
           </div>
-          <div>
-            <label for="category-color-picker" class="block text-sm font-medium text-gray-700">Colore</label>
-            <input type="hidden" name="color" id="category-color-value" required>
-            <div id="category-color-picker" class="mt-2 grid grid-cols-5 gap-2">
-              <!-- Color swatches will be generated here by script -->
-            </div>
-            <p class="mt-1 text-xs text-gray-500">Seleziona un colore per la categoria.</p>
-          </div>
+          <!-- Il colore è determinato automaticamente dallo slug (source of truth: src/lib/category-colors.ts) -->
+          <input type="hidden" name="color" id="category-color-value">
           <div>
             <label for="category-order-id" class="block text-sm font-medium text-gray-700">Ordine</label>
             <input type="number" name="order_id" id="category-order-id" placeholder="Es. 10, 20, 999" class="mt-1 focus:ring-primary focus:border-primary block w-full shadow-sm sm:text-sm border-gray-300 rounded-md">
@@ -285,14 +279,14 @@ const apiSecretKey = import.meta.env.API_SECRET_KEY;
 
   import { CATEGORY_COLORS } from '../../../lib/category-colors';
 
-  const availableColors = [
-    'ricerca', 'lavoro', 'universita', 'scuola', 'tecnologia',
-    'mondo', 'cultura', 'formazione', 'editoriali',
-    'bandi', 'interpelli', 'selezione-personale',
-    'sport-500', 'red-500', 'blue-500', 'green-500'
-  ];
-
   const colorHexMap = CATEGORY_COLORS;
+
+  // Il colore di una categoria si deriva automaticamente dallo slug:
+  // se lo slug matcha una chiave in CATEGORY_COLORS lo usiamo come nome-classe,
+  // altrimenti fallback al brand primary.
+  function colorForSlug(slug: string): string {
+    return slug && CATEGORY_COLORS[slug] ? slug : 'sport-500';
+  }
 
   const addCategoryButton = document.getElementById('add-category-button');
   const categoryModal = document.getElementById('category-modal');
@@ -301,8 +295,7 @@ const apiSecretKey = import.meta.env.API_SECRET_KEY;
   const categoryIdInput = document.getElementById('category-id-input') as HTMLInputElement;
   const categoryNameInput = document.getElementById('category-name') as HTMLInputElement;
   const categorySlugInput = document.getElementById('category-slug') as HTMLInputElement;
-  const categoryColorValueInput = document.getElementById('category-color-value') as HTMLInputElement; // Hidden input for selected value
-  const categoryColorPicker = document.getElementById('category-color-picker'); // Container for swatches
+  const categoryColorValueInput = document.getElementById('category-color-value') as HTMLInputElement; // Hidden input, auto-populated
   const categoryOrderIdInput = document.getElementById('category-order-id') as HTMLInputElement; // Order ID input
   const categoryDescriptionInput = document.getElementById('category-description') as HTMLTextAreaElement; // Added
   const cancelButton = document.getElementById('cancel-button');
@@ -367,25 +360,23 @@ const apiSecretKey = import.meta.env.API_SECRET_KEY;
   function openModal(category: Category | null = null) {
     isEditMode = !!category;
     categoryForm.reset();
-    resetColorPickerSelection(); // Deselect all swatches
-    clearKeywords(); // Clear existing keywords - Added
+    clearKeywords();
     if (modalTitle) {
       if (isEditMode && category) {
         modalTitle.textContent = 'Modifica Categoria';
         categoryIdInput.value = category.id;
         categoryNameInput.value = category.name;
         categorySlugInput.value = category.slug;
-        categoryColorValueInput.value = category.color || '';
+        categoryColorValueInput.value = colorForSlug(category.slug);
         categoryOrderIdInput.value = category.order_id?.toString() || '';
-        categoryDescriptionInput.value = category.description ?? ''; // Added
-        selectColorSwatch(category.color);
-        populateKeywords(category.keywords); // Populate keywords - Added
+        categoryDescriptionInput.value = category.description ?? '';
+        populateKeywords(category.keywords);
       } else {
         modalTitle.textContent = 'Aggiungi Categoria';
-        categoryIdInput.value = ''; // Clear ID for adding
-        categoryColorValueInput.value = ''; // Clear color value
-        categoryOrderIdInput.value = ''; // Clear order ID
-        categoryDescriptionInput.value = ''; // Added
+        categoryIdInput.value = '';
+        categoryColorValueInput.value = '';
+        categoryOrderIdInput.value = '';
+        categoryDescriptionInput.value = '';
       }
     }
     categoryModal?.classList.remove('hidden');
@@ -427,50 +418,8 @@ const apiSecretKey = import.meta.env.API_SECRET_KEY;
     categorySlugInput.value = generateSlug(categorySlugInput.value);
   });
 
-  // --- Color Picker Logic --- //
-  function renderColorSwatches() {
-      if (!categoryColorPicker) return;
-      categoryColorPicker.innerHTML = ''; // Clear existing swatches
-      availableColors.forEach(colorName => {
-          const swatch = document.createElement('div');
-          // Base styling for the swatch box
-          swatch.classList.add(
-              'h-8', 'w-8', 'rounded', 'border', 'border-gray-300',
-              'cursor-pointer', 'transition-all', 'duration-150'
-          );
-          swatch.dataset.color = colorName;
-          swatch.setAttribute('title', colorName); // Tooltip for the color name
-          
-          // Apply the background color directly using inline style
-          const hexColor = colorHexMap[colorName] || '#eee'; // Get hex from map, fallback to gray
-          swatch.style.backgroundColor = hexColor;
-
-          swatch.addEventListener('click', () => {
-              selectColorSwatch(colorName);
-              categoryColorValueInput.value = colorName;
-          });
-          categoryColorPicker.appendChild(swatch);
-      });
-  }
-
-  function selectColorSwatch(colorName: string | null | undefined) {
-      if (!categoryColorPicker || !colorName) return;
-      resetColorPickerSelection();
-      const selectedSwatch = categoryColorPicker.querySelector(`div[data-color="${colorName}"]`) as HTMLElement;
-      if (selectedSwatch) {
-          selectedSwatch.classList.add('ring-2', 'ring-offset-2', 'ring-primary');
-          categoryColorValueInput.value = colorName; // Ensure hidden input is set
-      }
-  }
-
-  function resetColorPickerSelection() {
-      if (!categoryColorPicker) return;
-      categoryColorPicker.querySelectorAll('div').forEach(swatch => {
-          swatch.classList.remove('ring-2', 'ring-offset-2', 'ring-primary');
-      });
-       // categoryColorValueInput.value = ''; // Don't clear value here, only on openModal/reset
-  }
-  // --- End Color Picker Logic --- //
+  // Il color picker è stato rimosso: il colore viene calcolato al submit
+  // in base allo slug (vedi colorForSlug + form 'submit' handler).
 
   // --- Keywords Logic - Added --- //
   function renderKeyword(keyword: string) {
@@ -675,19 +624,22 @@ const apiSecretKey = import.meta.env.API_SECRET_KEY;
     const categoryId = formData.get('id') as string | null; // Keep id as is
     const categoryName = formData.get('name') as string || '';
     let categorySlug = formData.get('slug') as string || '';
-    const categoryColor = categoryColorValueInput.value; // Get color from the hidden input
     const orderIdString = formData.get('order_id') as string;
     const categoryOrderId = orderIdString && !isNaN(parseInt(orderIdString)) ? parseInt(orderIdString) : null;
-    const categoryDescription = formData.get('description') as string || ''; // Added
-    const currentKeywords = getKeywordsFromContainer(); // Get keywords
+    const categoryDescription = formData.get('description') as string || '';
+    const currentKeywords = getKeywordsFromContainer();
 
     // Ensure slug is valid and generated if empty
     categorySlug = generateSlug(categorySlug || categoryName);
-    
-    if (!categoryName || !categorySlug || !categoryColor) {
-        alert("Per favore compila tutti i campi (Nome, Slug, Colore).");
+
+    if (!categoryName || !categorySlug) {
+        alert("Per favore compila Nome e Slug.");
         return;
     }
+
+    // Il colore è auto-derivato dallo slug (source of truth: src/lib/category-colors.ts).
+    const categoryColor = colorForSlug(categorySlug);
+    categoryColorValueInput.value = categoryColor;
 
     // Define the payload with explicit types where possible
     const categoryPayload: { 
@@ -861,7 +813,7 @@ const apiSecretKey = import.meta.env.API_SECRET_KEY;
  }
 
  // Initialize color picker on load
- document.addEventListener('DOMContentLoaded', renderColorSwatches);
+ // color picker rimosso: il colore è auto-derivato dallo slug
 
  function slugify(text: string): string {
     return text.toString().toLowerCase()

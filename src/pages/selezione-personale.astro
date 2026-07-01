@@ -121,9 +121,9 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
 >
   <main class="bg-gray-50 min-h-screen">
     {/* Hero header */}
-    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
+    <div class="bg-gradient-to-r from-yellow-700 to-yellow-800 text-white py-10 px-4 sm:px-6 lg:px-8">
       <div class="container mx-auto max-w-6xl">
-        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
+        <nav class="flex text-sm text-yellow-200 mb-4" aria-label="Breadcrumb">
           <ol class="inline-flex items-center space-x-1">
             <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
             <li class="flex items-center">
@@ -133,7 +133,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
           </ol>
         </nav>
         <h1 class="text-3xl md:text-4xl font-bold mb-2">Selezione Personale</h1>
-        <p class="text-blue-100 text-lg max-w-2xl">Bandi, concorsi pubblici e opportunita di lavoro nella Pubblica Amministrazione italiana.</p>
+        <p class="text-yellow-100 text-lg max-w-2xl">Bandi, concorsi pubblici e opportunita di lavoro nella Pubblica Amministrazione italiana.</p>
         <div class="mt-4 flex items-center gap-4 text-sm">
           <span class="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
@@ -152,14 +152,14 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
             <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Cerca</label>
             <div class="relative">
               <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-              <input type="text" id="search-filter" placeholder="Titolo, Ente, Codice..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
+              <input type="text" id="search-filter" placeholder="Titolo, Ente, Codice..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 text-sm bg-gray-50 transition-colors">
             </div>
           </div>
 
           {/* Categoria */}
           <div>
             <label for="category-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Categoria</label>
-            <select id="category-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+            <select id="category-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
               {filterOptions.categorie.map(cat => <option value={cat}>{cat}</option>)}
             </select>
@@ -168,7 +168,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
           {/* Settore */}
           <div>
             <label for="settore-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Settore</label>
-            <select id="settore-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+            <select id="settore-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 text-sm bg-gray-50">
               <option value="">Tutti</option>
               {filterOptions.settori.map(s => <option value={s}>{s}</option>)}
             </select>
@@ -177,7 +177,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
           {/* Sede */}
           <div>
             <label for="sede-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Sede</label>
-            <select id="sede-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+            <select id="sede-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
               {filterOptions.sedi.map(s => <option value={s}>{s}</option>)}
             </select>
@@ -199,7 +199,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
         <p id="results-count" class="text-sm text-gray-500">
           <span id="visible-count" class="font-semibold text-gray-700">{totalCount}</span> bandi trovati
         </p>
-        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-blue-600">
+        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-yellow-700">
           <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
           Caricamento...
         </div>
@@ -220,7 +220,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
                     <div class="p-5 sm:p-6">
                       <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
                         <div class="flex-1 min-w-0">
-                          <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">
+                          <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-yellow-800 transition-colors line-clamp-2">
                             {bando.article_title || bando.titolo}
                           </h2>
                         </div>
@@ -228,7 +228,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
                           {bando.daysLeft !== null && !bando.isExpired && (
                             <span class:list={[
                               "text-xs font-medium px-2 py-1 rounded-md",
-                              bando.isExpiring ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-blue-50 text-blue-600 border border-blue-100"
+                              bando.isExpiring ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-yellow-50 text-yellow-700 border border-yellow-100"
                             ]}>
                               {bando.daysLeft === 0 ? "Scade oggi" : `${bando.daysLeft}g rimasti`}
                             </span>
@@ -308,7 +308,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
                             <span class="inline-block bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 rounded-md">{cat}</span>
                           ))}
                           {bando.settori?.map((sec: string) => (
-                            <span class="inline-block bg-blue-50 text-blue-600 text-xs font-medium px-2 py-0.5 rounded-md">{sec}</span>
+                            <span class="inline-block bg-yellow-50 text-yellow-700 text-xs font-medium px-2 py-0.5 rounded-md">{sec}</span>
                           ))}
                         </div>
                       )}
@@ -426,11 +426,11 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
       const enti = (item.enti_riferimento || []).join(', ');
       const sedi = (item.sedi || []).join(', ');
       const categorie = (item.categorie || []).map(c => `<span class="inline-block bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 rounded-md">${c}</span>`).join('');
-      const settori = (item.settori || []).map(s => `<span class="inline-block bg-blue-50 text-blue-600 text-xs font-medium px-2 py-0.5 rounded-md">${s}</span>`).join('');
+      const settori = (item.settori || []).map(s => `<span class="inline-block bg-yellow-50 text-yellow-700 text-xs font-medium px-2 py-0.5 rounded-md">${s}</span>`).join('');
 
       let daysLeftHtml = '';
       if (daysLeft !== null && !isExpired) {
-        const cls = isExpiring ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-blue-50 text-blue-600 border border-blue-100';
+        const cls = isExpiring ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-yellow-50 text-yellow-700 border border-yellow-100';
         const label = daysLeft === 0 ? 'Scade oggi' : `${daysLeft}g rimasti`;
         daysLeftHtml = `<span class="text-xs font-medium px-2 py-1 rounded-md ${cls}">${label}</span>`;
       }
@@ -442,7 +442,7 @@ const pageKeywords = "selezione personale, lavoro, ricerca lavoro, offerte lavor
           <div class="p-5 sm:p-6">
             <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
               <div class="flex-1 min-w-0">
-                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">${item.article_title || item.titolo || ''}</h2>
+                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-yellow-800 transition-colors line-clamp-2">${item.article_title || item.titolo || ''}</h2>
               </div>
               <div class="flex items-center gap-2 flex-shrink-0">
                 ${daysLeftHtml}

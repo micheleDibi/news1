@@ -92,9 +92,9 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
 <Layout title={pageTitle} description={pageDescription} keywords={pageKeywords}>
   <main class="bg-gray-50 min-h-screen">
     {/* Hero header */}
-    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
+    <div class="bg-gradient-to-r from-red-700 to-red-800 text-white py-10 px-4 sm:px-6 lg:px-8">
       <div class="container mx-auto max-w-6xl">
-        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
+        <nav class="flex text-sm text-red-200 mb-4" aria-label="Breadcrumb">
           <ol class="inline-flex items-center space-x-1">
             <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
             <li class="flex items-center">
@@ -104,7 +104,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
           </ol>
         </nav>
         <h1 class="text-3xl md:text-4xl font-bold mb-2">Interpelli Scuola</h1>
-        <p class="text-blue-100 text-lg max-w-2xl">Trova opportunità di lavoro nella scuola pubblica italiana, divise per regione, provincia e classe di concorso.</p>
+        <p class="text-red-100 text-lg max-w-2xl">Trova opportunità di lavoro nella scuola pubblica italiana, divise per regione, provincia e classe di concorso.</p>
         <div class="mt-4 flex items-center gap-4 text-sm">
           <span class="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
@@ -123,14 +123,14 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
             <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Cerca</label>
             <div class="relative">
               <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-              <input type="text" id="search-filter" placeholder="Nome interpello, descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
+              <input type="text" id="search-filter" placeholder="Nome interpello, descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50 transition-colors">
             </div>
           </div>
 
           {/* Regione */}
           <div>
             <label for="regione-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Regione</label>
-            <select id="regione-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+            <select id="regione-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
               {filterOptions.regioni.map(r => <option value={r}>{r}</option>)}
             </select>
@@ -139,7 +139,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
           {/* Provincia */}
           <div>
             <label for="provincia-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Provincia</label>
-            <select id="provincia-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50" disabled>
+            <select id="provincia-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50" disabled>
               <option value="">Tutte</option>
             </select>
           </div>
@@ -147,7 +147,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
           {/* Classe Concorso */}
           <div>
             <label for="classe-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Classe Concorso</label>
-            <select id="classe-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+            <select id="classe-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
               {filterOptions.classi.map(c => <option value={c}>{c}</option>)}
             </select>
@@ -169,7 +169,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
         <p id="results-count" class="text-sm text-gray-500">
           <span id="visible-count" class="font-semibold text-gray-700">{totalCount}</span> interpelli trovati
         </p>
-        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-blue-600">
+        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-red-600">
           <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
           Caricamento...
         </div>
@@ -190,7 +190,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
                   <div class="p-5 sm:p-6">
                     <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
                       <div class="flex-1 min-w-0">
-                        <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">
+                        <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-red-700 transition-colors line-clamp-2">
                           {interpello.article_title || interpello.interpello_name}
                         </h2>
                       </div>
@@ -361,7 +361,7 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
           <div class="p-5 sm:p-6">
             <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
               <div class="flex-1 min-w-0">
-                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors line-clamp-2">${item.article_title || item.interpello_name || ''}</h2>
+                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-red-700 transition-colors line-clamp-2">${item.article_title || item.interpello_name || ''}</h2>
               </div>
             </div>
             ${locationHtml}
