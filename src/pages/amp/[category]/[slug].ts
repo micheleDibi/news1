@@ -266,6 +266,9 @@ export const GET: APIRoute = async ({ params }) => {
     </div>
   </footer>
 
+  <!-- Meta Pixel (AMP) -->
+  <amp-pixel src="https://www.facebook.com/tr?id=1981909175673146&ev=PageView&noscript=1&rnd=RANDOM" layout="nodisplay"></amp-pixel>
+
 </body>
 </html>
   `;
