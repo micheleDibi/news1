@@ -6,6 +6,7 @@ import {
   supabaseBandi,
   loadCatalogo,
   lookupNome,
+  effectiveStatoBando,
   type Bando,
   type Catalogo,
 } from '../lib/supabase-bandi';
@@ -112,10 +113,10 @@ const formatImporto = (n: number | null): string => {
   return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n);
 };
 
-// Badge basati su `stato_bando` (colonna DB, valori: aperto / chiuso /
-// in apertura prossimamente). NB: il vecchio "in_scadenza" era calcolato
-// in JS dalla scadenza — ora usiamo la verita' del DB (data-driven dal
-// preprocess v2).
+// Badge sullo stato EFFETTIVO (valori: aperto / chiuso / in apertura
+// prossimamente): la colonna `stato_bando` corretta dalla scadenza via
+// effectiveStatoBando() — un bando scaduto e' sempre "Chiuso" perche' la
+// colonna non viene mai aggiornata dopo il preprocess.
 const statoBandoBadgeClasses = (stato: string | null | undefined): string => {
   if (stato === 'aperto') return 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200';
   if (stato === 'chiuso') return 'bg-gray-100 text-gray-600 ring-1 ring-gray-200';
@@ -366,8 +367,8 @@ const pageKeywords =
                           {bando.titolo}
                         </h2>
                       </div>
-                      <span class={`shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${statoBandoBadgeClasses(bando.stato_bando)}`}>
-                        {statoBandoBadgeLabel(bando.stato_bando)}
+                      <span class={`shrink-0 inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${statoBandoBadgeClasses(effectiveStatoBando(bando.stato_bando, bando.data_scadenza))}`}>
+                        {statoBandoBadgeLabel(effectiveStatoBando(bando.stato_bando, bando.data_scadenza))}
                       </span>
                     </div>
 
@@ -777,15 +778,27 @@ const pageKeywords =
     try {
       const d = new Date(s);
       if (isNaN(d.getTime())) return s;
-      return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' });
+      // timeZone UTC: le date-only 'YYYY-MM-DD' vengono parsate come mezzanotte
+      // UTC, senza pinning un browser a ovest di UTC le mostrerebbe al giorno prima.
+      return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
     } catch { return s; }
   }
   function formatEuro(n) {
     if (n == null) return '—';
     return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(n);
   }
-  // v9: badge basato sulla colonna `stato_bando` (verita' DB, data-driven dal
-  // preprocess v2). Valori: 'aperto' | 'chiuso' | 'in apertura prossimamente'.
+  // Stato EFFETTIVO del bando: `stato_bando` (scritto dal preprocess e mai
+  // aggiornato) corretto dalla scadenza — scadenza passata ⇒ 'chiuso', dal
+  // giorno successivo alla scadenza. Speculare a effectiveStatoBando() in
+  // src/lib/supabase-bandi.ts.
+  function todayRome() {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Rome' }).format(new Date());
+  }
+  function effectiveStato(stato, dataScadenza) {
+    if (dataScadenza && String(dataScadenza).slice(0, 10) < todayRome()) return 'chiuso';
+    return stato || null;
+  }
+  // Badge: valori 'aperto' | 'chiuso' | 'in apertura prossimamente'.
   function badgeClasses(stato) {
     if (stato === 'aperto') return 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200';
     if (stato === 'chiuso') return 'bg-gray-100 text-gray-600 ring-1 ring-gray-200';
@@ -812,7 +825,7 @@ const pageKeywords =
     items.forEach(b => {
       const article = document.createElement('article');
       article.className = 'bando-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200';
-      const statoBando = b.stato_bando || null;
+      const statoBando = effectiveStato(b.stato_bando, b.data_scadenza);
       article.innerHTML = `
         <a href="/bandi/${encodeURIComponent(b.slug)}" class="block">
           <div class="p-5 sm:p-6">
@@ -944,9 +957,23 @@ const pageKeywords =
     if (tipologie.length) {
       andParts.push(`tipologia_bando_id.in.(${tipologie.join(',')})`);
     }
-    // Stato bando (colonna DB diretta).
+    // Stato bando EFFETTIVO, coerente coi badge: la colonna stato_bando non
+    // viene mai aggiornata dopo il preprocess, quindi "chiuso" deve includere
+    // anche i bandi con scadenza passata, e gli altri stati devono escluderli.
     if (stati.length) {
-      andParts.push(`stato_bando.in.(${stati.map(quoteVal).join(',')})`);
+      const oggi = todayRome();
+      const nonScaduto = `or(data_scadenza.gte.${oggi},data_scadenza.is.null)`;
+      const altri = stati.filter(s => s !== 'chiuso');
+      if (stati.includes('chiuso')) {
+        const rami = [`stato_bando.eq.chiuso`, `data_scadenza.lt.${oggi}`];
+        if (altri.length) {
+          rami.push(`and(stato_bando.in.(${altri.map(quoteVal).join(',')}),${nonScaduto})`);
+        }
+        andParts.push(`or(${rami.join(',')})`);
+      } else {
+        andParts.push(`stato_bando.in.(${stati.map(quoteVal).join(',')})`);
+        andParts.push(nonScaduto);
+      }
     }
     if (impMin != null) andParts.push(`importo_totale_eur.gte.${impMin}`);
     if (impMax != null) andParts.push(`importo_totale_eur.lte.${impMax}`);

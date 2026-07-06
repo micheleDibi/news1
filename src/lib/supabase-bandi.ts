@@ -260,6 +260,30 @@ export function computeScadenzaStato(dataScadenza: string | null): StatoScadenza
 }
 
 /**
+ * Data odierna (YYYY-MM-DD) nel fuso Europe/Rome, indipendente dal timezone
+ * del server/browser. 'en-CA' formatta come ISO date.
+ */
+export function todayRomeISO(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Rome' }).format(new Date());
+}
+
+/**
+ * Stato EFFETTIVO del bando da mostrare all'utente. La colonna `stato_bando`
+ * viene scritta dal preprocess dello scraper e mai piu' aggiornata: un bando
+ * con scadenza passata resterebbe "aperto" per sempre. Regola: se la
+ * scadenza e' passata il bando e' 'chiuso' (dal giorno successivo alla
+ * scadenza — il giorno stesso e' ancora valido), qualunque sia lo stato
+ * salvato; la scadenza puo' solo chiudere, mai riaprire.
+ */
+export function effectiveStatoBando(
+  stato: StatoBando | null | undefined,
+  dataScadenza: string | null | undefined,
+): StatoBando | null {
+  if (dataScadenza && String(dataScadenza).slice(0, 10) < todayRomeISO()) return 'chiuso';
+  return stato ?? null;
+}
+
+/**
  * Formatta un importo EUR senza decimali in italiano (es. "12.500.000 €").
  */
 export function formatImportoEur(value: number | null): string | null {

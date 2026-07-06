@@ -1,9 +1,9 @@
 ---
 import Layout from '../../layouts/Layout.astro';
-import { format, parseISO, isValid, differenceInCalendarDays } from 'date-fns';
+import { format, parseISO, isValid } from 'date-fns';
 import { it } from 'date-fns/locale';
 import {
-  supabaseBandi, loadCatalogo, resolveBandoRelations,
+  supabaseBandi, loadCatalogo, resolveBandoRelations, effectiveStatoBando, todayRomeISO,
   type Bando, type BandoDetail, type BandoSection,
 } from '../../lib/supabase-bandi';
 import BandiExpertCta from '../../components/BandiExpertCta.astro';
@@ -69,20 +69,21 @@ const formatImporto = (n: number | null): string => {
 };
 
 const daysToDeadline = (() => {
+  // Giorni rispetto a oggi-Europe/Rome, stesso ancoraggio del badge qui sotto:
+  // col fuso del server (UTC in prod) badge e conteggio divergerebbero nella
+  // finestra tra la mezzanotte di Roma e quella UTC. Entrambe le date sono
+  // mezzanotte UTC via Date.parse, quindi la differenza e' in giorni interi.
   if (!bando.data_scadenza) return null;
-  try {
-    const d = parseISO(bando.data_scadenza);
-    if (!isValid(d)) return null;
-    return differenceInCalendarDays(d, new Date());
-  } catch {
-    return null;
-  }
+  const scad = String(bando.data_scadenza).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(scad)) return null;
+  return Math.round((Date.parse(scad) - Date.parse(todayRomeISO())) / 86400000);
 })();
 
 const scadenzaBadge = (() => {
-  // v9: usa la colonna `stato_bando` del DB (data-driven dal preprocess v2),
-  // non un calcolo client-side. Valori: aperto / chiuso / in apertura prossimamente.
-  const stato = bando.stato_bando;
+  // Stato effettivo: `stato_bando` (colonna DB dal preprocess v2) corretto
+  // dalla scadenza — un bando scaduto e' sempre "Chiuso", la colonna non
+  // viene mai aggiornata dopo il preprocess.
+  const stato = effectiveStatoBando(bando.stato_bando, bando.data_scadenza);
   if (stato === 'aperto') return { label: 'Aperto', cls: 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200' };
   if (stato === 'chiuso') return { label: 'Chiuso', cls: 'bg-gray-100 text-gray-600 ring-1 ring-gray-200' };
   if (stato === 'in apertura prossimamente') return { label: 'In apertura', cls: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200' };
