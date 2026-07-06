@@ -232,6 +232,8 @@ REGOLE EDITORIALI
 
 15. **Date**: NON estrarre. Usa SOLO quelle gia' fornite in input (data_pubblicazione, data_apertura, data_scadenza). Citarle nel contenuto in formato italiano (es. "30 settembre 2026", "20 marzo 2026"). Se null nel input, NON menzionarle.
 
+16. **Stato del bando — MAI in prosa**: il testo resta pubblicato per anni mentre lo stato (aperto/chiuso) cambia alla scadenza; il sito lo mostra gia' con un badge calcolato in tempo reale. NON affermare MAI lo stato corrente in contenuto, descrizione_breve o FAQ: vietate frasi come "attualmente aperto", "il bando e' aperto", "risulta aperto", "ancora aperto", "e' ancora possibile candidarsi", "restano X giorni". Esprimi apertura e chiusura SOLO con date assolute: "le domande possono essere presentate dal 1 marzo 2026 al 30 settembre 2026", "domande entro il 30 settembre 2026".
+
 OUTPUT: chiama il tool save_seo_bando UNA VOLTA con il payload. Niente testo libero prima/dopo."""
 
 
@@ -509,8 +511,9 @@ def _build_seo_prompt(input_ctx: dict[str, Any], markdown: str) -> str:
     apt = input_ctx.get("data_apertura") or "(non disponibile)"
     scad = input_ctx.get("data_scadenza") or "(non disponibile)"
 
-    # Stato + tipo
-    stato = input_ctx.get("stato_bando") or "(non determinato)"
+    # Tipo link. NB: stato_bando NON viene passato al modello: il testo
+    # generato e' congelato nel DB e lo stato cambia alla scadenza — vedi
+    # regola 16 del system prompt (mai affermare lo stato corrente in prosa).
     tipo_link = input_ctx.get("tipo_link") or "(non specificato)"
     link_bando = input_ctx.get("link_bando") or "(nessun link disponibile)"
 
@@ -523,7 +526,6 @@ Titolo grezzo (scraper): {titolo or "(vuoto)"}
 Descrizione grezza (scraper): {descrizione or "(vuota)"}
 Link bando: {link_bando}
 Tipo link: {tipo_link}
-Stato bando: {stato}
 
 DATE (gia' estratte e validate dall'enricher v7):
 - data_pubblicazione: {pub}
