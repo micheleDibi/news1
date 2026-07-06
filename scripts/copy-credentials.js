@@ -13,11 +13,14 @@ const rootDir = path.join(__dirname, '..');
 // Source path
 const sourcePath = path.join(rootDir, 'src', 'pages', 'api', 'tts', 'google-credentials.json');
 
-// Destination paths
+// Destination paths.
+// NON copiare mai in public/: Astro pubblica public/ come asset statico servito
+// alla root del sito, esponendo pubblicamente la chiave del service account
+// (Google la rileva e la disabilita in automatico). La route TTS legge il file
+// dalla root del progetto (process.cwd()) o dal bundle dist/server, mai da public/.
 const destPaths = [
   path.join(rootDir, 'google-credentials.json'),
-  path.join(rootDir, 'dist', 'google-credentials.json'),
-  path.join(rootDir, 'public', 'google-credentials.json')
+  path.join(rootDir, 'dist', 'google-credentials.json')
 ];
 
 try {
