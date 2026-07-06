@@ -890,37 +890,48 @@ const pageKeywords =
     // v4: RLS filtra `state='confirmed' AND slug IS NOT NULL` lato DB,
     // qui non duplichiamo. `scadenza_stato` non e' colonna DB → filtro post-fetch.
     const params = {
-      'select': SELECT_LIST,
       'order': 'data_pubblicazione.desc.nullslast',
       'offset': String(from),
       'limit': String(PAGE_SIZE),
     };
 
     const andParts = [];
+    // v9-fix: le junction many-to-many (regione/settore/beneficiario/ateco) NON
+    // possono essere filtrate dentro and(). PostgREST richiede l'embed !inner nel
+    // `select` piu' un filtro top-level `<tabella>.<col>=in.(...)`. Mettendole in
+    // and() come "bando_regioni.regione_id.in.(...)" si otteneva un
+    // 400 PGRST100 ("failed to parse logic tree") che rompeva TUTTA la lista
+    // ogni volta che si selezionava una di queste 4 faccette.
+    const embeds = [];
 
     if (searchTerm) {
       const t = safe(searchTerm);
       andParts.push(`or(titolo.ilike.*${t}*,descrizione_breve.ilike.*${t}*,ente_erogatore.ilike.*${t}*)`);
     }
 
-    // v9: i filtri regione/settore/beneficiario/ateco passano per le junction
-    // tables. PostgREST embedded resource permette join + filtro inline.
+    // Junction many-to-many → embed !inner nel select + filtro top-level.
+    // L'inner join fa passare solo i bandi con almeno un match (semantica OR
+    // dentro la faccetta, AND tra faccette). Il count resta sui bandi distinti.
     if (sel.regione.length) {
-      params['bando_regioni'] = 'bando_id';
-      andParts.push(`bando_regioni.regione_id.in.(${sel.regione.join(',')})`);
+      embeds.push('bando_regioni!inner(regione_id)');
+      params['bando_regioni.regione_id'] = `in.(${sel.regione.join(',')})`;
     }
     if (sel.settore.length) {
-      params['bando_settori'] = 'bando_id';
-      andParts.push(`bando_settori.settore_id.in.(${sel.settore.join(',')})`);
+      embeds.push('bando_settori!inner(settore_id)');
+      params['bando_settori.settore_id'] = `in.(${sel.settore.join(',')})`;
     }
     if (sel.beneficiario.length) {
-      params['bando_beneficiari'] = 'bando_id';
-      andParts.push(`bando_beneficiari.beneficiario_id.in.(${sel.beneficiario.join(',')})`);
+      embeds.push('bando_beneficiari!inner(beneficiario_id)');
+      params['bando_beneficiari.beneficiario_id'] = `in.(${sel.beneficiario.join(',')})`;
     }
     if (sel.ateco.length) {
-      params['bando_codici_ateco'] = 'bando_id';
-      andParts.push(`bando_codici_ateco.codice_ateco_id.in.(${sel.ateco.join(',')})`);
+      embeds.push('bando_codici_ateco!inner(codice_ateco_id)');
+      params['bando_codici_ateco.codice_ateco_id'] = `in.(${sel.ateco.join(',')})`;
     }
+
+    // Il select include gli embed inner richiesti dai filtri junction attivi.
+    params['select'] = embeds.length ? `${SELECT_LIST},${embeds.join(',')}` : SELECT_LIST;
+
     // Tipologia / Programma / Modalita: filtro diretto via FK id.
     if (sel.programma.length) {
       andParts.push(`programma_id.in.(${sel.programma.join(',')})`);
