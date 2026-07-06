@@ -494,6 +494,8 @@ const pageKeywords =
 
     const selected = new Set();
     let filtered = options.slice();
+    // Mappa value(id)→label: il display deve mostrare i NOMI, non gli id grezzi.
+    const labelByValue = new Map(options.map(o => [o.value, o.label]));
 
     function renderList() {
       const visible = filtered.slice(0, MAX_VISIBLE_OPTIONS);
@@ -528,7 +530,7 @@ const pageKeywords =
         display.classList.remove('text-gray-900', 'font-medium');
         countBadge.classList.add('hidden');
       } else {
-        const preview = arr.slice(0, 2).join(', ');
+        const preview = arr.slice(0, 2).map(v => labelByValue.get(v) ?? v).join(', ');
         const extra = arr.length > 2 ? ` +${arr.length - 2}` : '';
         display.textContent = preview + extra;
         display.classList.remove('text-gray-500');
