@@ -11,6 +11,7 @@ Sitemap: https://edunews24.it/sitemap-categorie.xml
 Sitemap: https://edunews24.it/sitemap-interpelli.xml
 Sitemap: https://edunews24.it/sitemap-pagine.xml
 Sitemap: https://edunews24.it/sitemap-selezione-personale.xml
+Sitemap: https://edunews24.it/sitemap-bandi.xml
 
 # Disallow admin and private areas
 Disallow: /admin/

@@ -11,6 +11,9 @@ export async function GET() {
   <url>
     <loc>https://edunews24.it/collaborazione</loc>
   </url>
+  <url>
+    <loc>https://edunews24.it/bandi</loc>
+  </url>
 </urlset>`;
 
     return new Response(xml, {

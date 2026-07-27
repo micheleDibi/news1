@@ -7,7 +7,7 @@ import {
   type Bando, type BandoDetail, type BandoSection,
 } from '../../lib/supabase-bandi';
 import BandiExpertCta from '../../components/BandiExpertCta.astro';
-import ContactForm from '../../components/ContactForm';
+import { generateBreadcrumbStructuredData } from '../../lib/seo';
 
 export const prerender = false;
 
@@ -135,30 +135,67 @@ function escapeAttr(s: string): string { return escapeText(s); }
 
 // v4: meta_title/meta_description NON sono piu' colonne. Li derivo da titolo/descrizione_breve.
 const titoloDisplay = bando.titolo || 'Bando';
-const descrizioneDisplay = bando.descrizione_breve || '';
-const metaTitle = titoloDisplay.length > 60 ? titoloDisplay.slice(0, 57) + '…' : titoloDisplay;
-const metaDescription = descrizioneDisplay.length > 155 ? descrizioneDisplay.slice(0, 152) + '…' : descrizioneDisplay;
 const canonicalUrl = `https://edunews24.it/bandi/${bando.slug}`;
 
-// Context per il form di richiesta esperto (passato a /api/contact tramite ContactForm).
-const expertContext = {
-  source: 'bando-detail',
-  bando_titolo: titoloDisplay,
-  bando_slug: bando.slug,
-  bando_url: canonicalUrl,
+// Troncamento a confine di PAROLA, non all'ultimo punto (truncateAtDot):
+// titoli e testi dei bandi sono pieni di abbreviazioni puntate (D.M., n.,
+// S.p.A.) e importi con punti delle migliaia, che un taglio "al punto"
+// mutilerebbe ("Decreto Ministeriale n.", "Dotazione 1.000.").
+const truncateAtWord = (text: string, maxLen: number): string => {
+  if (text.length <= maxLen) return text;
+  const sub = text.slice(0, maxLen - 1);
+  const lastSpace = sub.lastIndexOf(' ');
+  return (lastSpace > 0 ? sub.slice(0, lastSpace) : sub).replace(/[\s,;:.]+$/, '') + '…';
 };
-const expertPrefilledNotes =
-  `Sono interessato al bando: ${expertContext.bando_titolo}.\n` +
-  `Vorrei essere supportato nella candidatura.\n\n`;
 
-// JSON-LD GovernmentService / Article ibrido
+// Title col brand quando rientra nel budget (budget 70 come le pagine articolo).
+const titleSuffix = ' - EduNews24';
+const metaTitle = titoloDisplay.length + titleSuffix.length <= 70
+  ? titoloDisplay + titleSuffix
+  : truncateAtWord(titoloDisplay, 70);
+
+// Description mai vuota: descrizione_breve, altrimenti composta dai campi
+// presenti (aggiungendo ogni frase SOLO se ci sta intera, per non spezzare
+// date o importi), altrimenti default di sezione.
+const metaDescription = (() => {
+  if (bando.descrizione_breve) return truncateAtWord(bando.descrizione_breve, 155);
+  const parts: string[] = [];
+  if (bando.data_scadenza) parts.push(`Scadenza ${formatDate(bando.data_scadenza)}.`);
+  if (bando.importo_totale_eur != null) parts.push(`Dotazione ${formatImporto(bando.importo_totale_eur)}.`);
+  parts.push('Requisiti e candidatura su EduNews24.');
+  let desc = truncateAtWord(
+    bando.ente_erogatore ? `${titoloDisplay}: bando di ${bando.ente_erogatore}.` : `${titoloDisplay}.`,
+    155,
+  );
+  for (const part of parts) {
+    if (desc.length + 1 + part.length <= 155) desc += ` ${part}`;
+  }
+  return desc;
+})();
+
+// JSON-LD: Article + about:MonetaryGrant (il tipo schema.org per i
+// finanziamenti; l'erogatore non e' sempre una PA, quindi Organization).
+// Ogni proprieta' e' emessa SOLO se il dato esiste ed e' visibile in pagina:
+// JSON.stringify scarta gli undefined ma non i null, da qui gli spread
+// condizionali. Le date `date` restano YYYY-MM-DD senza inventare orari.
 const jsonLd: Record<string, unknown> = {
   '@context': 'https://schema.org',
   '@type': 'Article',
+  '@id': canonicalUrl,
+  mainEntityOfPage: canonicalUrl,
   headline: titoloDisplay,
-  description: descrizioneDisplay,
+  ...(bando.titolo_breve && { alternativeHeadline: bando.titolo_breve }),
+  ...(bando.descrizione_breve && { description: bando.descrizione_breve }),
   url: canonicalUrl,
-  datePublished: bando.data_pubblicazione,
+  ...(bando.data_pubblicazione && { datePublished: bando.data_pubblicazione }),
+  ...(bando.updated_at && { dateModified: new Date(bando.updated_at).toISOString() }),
+  ...(bando.area_geografica && {
+    spatialCoverage: { '@type': 'Place', name: bando.area_geografica },
+  }),
+  ...(bando.beneficiari_nomi && bando.beneficiari_nomi.length > 0 && {
+    audience: bando.beneficiari_nomi.map(nome => ({ '@type': 'Audience', audienceType: nome })),
+  }),
+  ...(bando.tematica && bando.tematica.length > 0 && { keywords: bando.tematica.join(', ') }),
   author: { '@type': 'Organization', name: 'EduNews24' },
   publisher: {
     '@type': 'Organization',
@@ -166,26 +203,36 @@ const jsonLd: Record<string, unknown> = {
     logo: { '@type': 'ImageObject', url: 'https://edunews24.it/logo.png' },
   },
   about: {
-    '@type': 'GovernmentService',
+    '@type': 'MonetaryGrant',
     name: titoloDisplay,
-    serviceType: bando.tipologia,
-    provider: bando.ente_erogatore ? { '@type': 'GovernmentOrganization', name: bando.ente_erogatore } : undefined,
-    areaServed: bando.area_geografica,
+    ...(bando.ente_erogatore && { funder: { '@type': 'Organization', name: bando.ente_erogatore } }),
+    ...(bando.importo_totale_eur != null && {
+      amount: { '@type': 'MonetaryAmount', currency: 'EUR', value: bando.importo_totale_eur },
+    }),
+    ...(bando.link_bando && { sameAs: bando.link_bando }),
   },
 };
+
+const breadcrumbStructuredData = generateBreadcrumbStructuredData({
+  category: 'Bandi',
+  category_slug: 'bandi',
+  slug: bando.slug,
+  title: titoloDisplay,
+});
 ---
 
 <Layout
   title={metaTitle}
   description={metaDescription}
   canonicalUrl={canonicalUrl}
+  image="https://edunews24.it/og-bandi.png"
+  ogType="article"
+  publishedTime={bando.data_pubblicazione || undefined}
+  modifiedTime={bando.updated_at ? new Date(bando.updated_at).toISOString() : undefined}
 >
   <Fragment slot="head">
-    <meta property="og:title" content={metaTitle} />
-    <meta property="og:description" content={metaDescription} />
-    <meta property="og:type" content="article" />
-    <meta property="og:url" content={canonicalUrl} />
     <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    <script type="application/ld+json" set:html={breadcrumbStructuredData} />
   </Fragment>
 
   <main class="bg-gray-50 min-h-screen">
@@ -311,7 +358,7 @@ const jsonLd: Record<string, unknown> = {
           })()}
 
           {/* Banner CTA "Hai bisogno di un esperto?" */}
-          <BandiExpertCta variant="sidebar" />
+          <BandiExpertCta variant="sidebar" utmContent="dettaglio-sidebar" />
 
           {/* Documenti e allegati */}
           {bando.allegati && bando.allegati.length > 0 && (
@@ -447,20 +494,5 @@ const jsonLd: Record<string, unknown> = {
         </aside>
       </div>
     </div>
-
-    {/* Sezione contatto esperto (target dello smooth scroll del banner) */}
-    <section id="contact-esperto" class="scroll-mt-20 bg-gradient-to-b from-gray-50 to-gray-100 py-14 sm:py-16 border-t border-gray-200">
-      <div class="container mx-auto px-4 max-w-4xl">
-        <div class="text-center mb-8">
-          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-blue-100 text-blue-700 mb-4">Supporto progettuale</span>
-          <h2 class="text-2xl md:text-3xl font-bold text-gray-900 mb-3">Parla con un esperto</h2>
-          <p class="text-gray-600 max-w-2xl mx-auto leading-relaxed">
-            Compila il form e ti contatteremo per supportarti nella candidatura a <span class="font-semibold text-gray-800">{expertContext.bando_titolo}</span>.
-            Il nostro staff valuta il tuo profilo insieme agli strumenti AI sviluppati dai migliori progettisti italiani.
-          </p>
-        </div>
-        <ContactForm client:load context={expertContext} prefilledNotes={expertPrefilledNotes} />
-      </div>
-    </section>
   </main>
 </Layout>

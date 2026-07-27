@@ -56,14 +56,17 @@ export async function GET() {
       <loc>https://edunews24.it/sitemap-video-index.xml</loc>
       <lastmod>${today}</lastmod>
    </sitemap>
+   <sitemap>
+      <loc>https://edunews24.it/sitemap-bandi.xml</loc>
+      <lastmod>${today}</lastmod>
+   </sitemap>
 </sitemapindex>`;
 
     return new Response(xml, {
       status: 200,
       headers: {
-        'Content-Type': 'application/xml'
-        // Add cache control headers if needed, e.g., shorter cache for recent news
-        // 'Cache-Control': 'public, max-age=600' // Cache for 10 minutes
+        'Content-Type': 'application/xml',
+        'Cache-Control': 'public, max-age=3600'
       }
     });
 

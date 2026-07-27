@@ -20,6 +20,7 @@ export async function GET() {
         .eq('stato_processing', 'completed')
         .not('slug', 'is', null)
         .order('data_pubblicazione', { ascending: false, nullsFirst: false })
+        .order('id', { ascending: true })
         .range(page * pageSize, (page + 1) * pageSize - 1);
 
       if (error) {
@@ -39,12 +40,18 @@ export async function GET() {
     let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`;
 
+    // Gli slug sono generati safe (alfanumerico + trattini), ma uno slug
+    // anomalo con `&`/`<` invaliderebbe l'XML: fuori pattern → percent-encoding
+    // (URL e XML safe), nessuna URL viene mai droppata.
+    const SLUG_SAFE = /^[A-Za-z0-9_-]+$/;
+
     all.forEach((bando) => {
       if (!bando.slug) return;
+      const safeSlug = SLUG_SAFE.test(bando.slug) ? bando.slug : encodeURIComponent(bando.slug);
       const lastmod = bando.updated_at ?? bando.data_pubblicazione;
       xml += `
   <url>
-    <loc>https://edunews24.it/bandi/${bando.slug}</loc>`;
+    <loc>https://edunews24.it/bandi/${safeSlug}</loc>`;
       if (lastmod) {
         try {
           xml += `

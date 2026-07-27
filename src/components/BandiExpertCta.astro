@@ -7,14 +7,17 @@
  *    Pensata per il listing /bandi (tra hero e pannello filtri).
  *  - `sidebar`: card compatta verticale per la sidebar del detail /bandi/[slug].
  *
- * Il bottone e' un anchor che fa smooth scroll a `targetAnchor` (default
- * `#contact-esperto`). La sezione target la posiziona la pagina chiamante.
+ * Il bottone e' un link esterno alla piattaforma BandoFit (nuova scheda),
+ * con UTM per posizione: il chiamante dichiara `utmContent`.
  */
+import { bandofitCtaUrl, type BandofitCtaPosition } from '../lib/bandofit';
+
 interface Props {
   variant?: 'sidebar' | 'full-width';
-  targetAnchor?: string;
+  utmContent: BandofitCtaPosition;
 }
-const { variant = 'full-width', targetAnchor = '#contact-esperto' } = Astro.props;
+const { variant = 'full-width', utmContent } = Astro.props;
+const ctaHref = bandofitCtaUrl(utmContent);
 ---
 
 {variant === 'full-width' ? (
@@ -44,8 +47,10 @@ const { variant = 'full-width', targetAnchor = '#contact-esperto' } = Astro.prop
       {/* CTA */}
       <div class="shrink-0 w-full sm:w-auto">
         <a
-          href={targetAnchor}
-          aria-label="Vai al form di contatto con un esperto"
+          href={ctaHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Contatta un esperto su BandoFit (si apre in una nuova scheda)"
           class="group inline-flex items-center justify-center gap-2 w-full sm:w-auto px-6 py-3.5 bg-white text-blue-700 font-semibold rounded-xl shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-white/40"
         >
           <span>Contattaci</span>
@@ -76,8 +81,10 @@ const { variant = 'full-width', targetAnchor = '#contact-esperto' } = Astro.prop
       </p>
 
       <a
-        href={targetAnchor}
-        aria-label="Vai al form di contatto con un esperto"
+        href={ctaHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Contatta un esperto su BandoFit (si apre in una nuova scheda)"
         class="group flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-white text-blue-700 font-semibold rounded-lg shadow-md hover:shadow-lg hover:bg-blue-50 active:scale-[0.98] transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-white/40 text-sm"
       >
         <span>Contattaci</span>

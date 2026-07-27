@@ -11,7 +11,8 @@ import {
   type Catalogo,
 } from '../lib/supabase-bandi';
 import BandiExpertCta from '../components/BandiExpertCta.astro';
-import ContactForm from '../components/ContactForm';
+import { bandofitCtaUrl } from '../lib/bandofit';
+import { generateBreadcrumbStructuredData, generateItemListStructuredData } from '../lib/seo';
 
 export const prerender = false;
 
@@ -156,9 +157,23 @@ const pageDescription =
   'Trova bandi di finanziamento europei, nazionali e regionali. Filtra per regione, settore, beneficiari, tipologia, codici ATECO, programma, importo e scadenza.';
 const pageKeywords =
   'bandi, finanziamenti, FESR, FSE, Interreg, OpenCoesione, fondi europei, regionali, nazionali, codici ATECO';
+
+// JSON-LD: breadcrumb (Home > Bandi) + ItemList dei bandi renderizzati SSR.
+const breadcrumbStructuredData = generateBreadcrumbStructuredData({
+  category: 'Bandi',
+  category_slug: 'bandi',
+});
+const itemListItems = bandiData
+  .filter(b => b.slug && b.titolo)
+  .map(b => ({ href: `/bandi/${b.slug}`, title: b.titolo }));
+const itemListStructuredData = itemListItems.length > 0
+  ? generateItemListStructuredData(itemListItems, 'Bandi e finanziamenti pubblici', 'https://edunews24.it/bandi')
+  : null;
 ---
 
-<Layout title={pageTitle} description={pageDescription} keywords={pageKeywords}>
+<Layout title={pageTitle} description={pageDescription} keywords={pageKeywords} image="https://edunews24.it/og-bandi.png">
+  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
+  {itemListStructuredData && <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />}
   <main class="bg-gray-50 min-h-screen">
     <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
       <div class="container mx-auto max-w-6xl">
@@ -178,8 +193,10 @@ const pageKeywords =
         </p>
         <div class="mt-5 flex flex-wrap items-center gap-3 text-sm">
           <a
-            href="#contact-esperto"
-            aria-label="Parla con un esperto per candidarti a un bando"
+            href={bandofitCtaUrl('lista-hero')}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Parla con un esperto su BandoFit (si apre in una nuova scheda)"
             class="group inline-flex items-center gap-2 px-5 py-2.5 bg-white text-blue-700 font-semibold rounded-full shadow-lg hover:shadow-xl hover:bg-blue-50 hover:scale-[1.03] active:scale-[0.98] transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-white/40"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
@@ -197,7 +214,7 @@ const pageKeywords =
     <div class="container mx-auto px-4 max-w-6xl -mt-6">
       {/* Banner CTA "Hai bisogno di un esperto?" */}
       <div class="mb-6">
-        <BandiExpertCta variant="full-width" />
+        <BandiExpertCta variant="full-width" utmContent="lista-banner" />
       </div>
 
       {/* Filter card with collapse/expand */}
@@ -443,21 +460,6 @@ const pageKeywords =
         </nav>
       )}
     </div>
-
-    {/* Sezione contatto esperto (target dello smooth scroll del banner) */}
-    <section id="contact-esperto" class="scroll-mt-20 bg-gradient-to-b from-gray-50 to-gray-100 py-14 sm:py-16">
-      <div class="container mx-auto px-4 max-w-4xl">
-        <div class="text-center mb-8">
-          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-blue-100 text-blue-700 mb-4">Supporto progettuale</span>
-          <h2 class="text-2xl md:text-3xl font-bold text-gray-900 mb-3">Parla con un esperto</h2>
-          <p class="text-gray-600 max-w-2xl mx-auto leading-relaxed">
-            Compila il form e ti contatteremo per supportarti nella partecipazione al bando giusto per te.
-            Il nostro staff valuta la tua candidatura insieme agli strumenti AI sviluppati dai migliori progettisti italiani.
-          </p>
-        </div>
-        <ContactForm client:load context={{ source: 'listing-bandi' }} />
-      </div>
-    </section>
   </main>
 </Layout>
 
