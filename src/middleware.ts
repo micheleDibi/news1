@@ -1,5 +1,6 @@
 import { defineMiddleware } from 'astro:middleware';
 import { API_CATALOG, API_CATALOG_CONTENT_TYPE, API_CATALOG_PATH } from './lib/api-catalog';
+import { wantsMarkdown, htmlToMarkdown, estimateTokens } from './lib/markdown-negotiation';
 
 export const onRequest = defineMiddleware(async ({ request, rewrite }, next) => {
   const host = request.headers.get('host')?.split(':')[0];
@@ -30,5 +31,25 @@ export const onRequest = defineMiddleware(async ({ request, rewrite }, next) => 
     return rewrite('/linkinbio');
   }
 
-  return next();
+  const res = await next();
+
+  // Markdown for Agents: solo se l'agente lo chiede e la risposta è una pagina
+  // HTML 200. Il filtro esclude di suo sitemap (XML), api (JSON), redirect e
+  // 404; per browser e crawler classici la risposta resta identica.
+  if (
+    request.method === 'GET' &&
+    wantsMarkdown(request) &&
+    res.status === 200 &&
+    (res.headers.get('content-type') ?? '').includes('text/html')
+  ) {
+    const markdown = htmlToMarkdown(await res.text());
+    const headers = new Headers(res.headers); // preserva Link ed altri header
+    headers.set('Content-Type', 'text/markdown; charset=utf-8');
+    headers.set('Vary', 'Accept');
+    headers.set('x-markdown-tokens', String(estimateTokens(markdown)));
+    headers.delete('Content-Length'); // il body è cambiato
+    return new Response(markdown, { status: 200, headers });
+  }
+
+  return res;
 });
