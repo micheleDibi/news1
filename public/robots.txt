@@ -14,6 +14,7 @@ Sitemap: https://edunews24.it/sitemap-selezione-personale.xml
 Sitemap: https://edunews24.it/sitemap-bandi.xml
 
 # Disallow admin and private areas
+Allow: /api/search
 Disallow: /admin/
 Disallow: /private/
 Disallow: /api/
