@@ -1,5 +1,6 @@
 import { defineMiddleware } from 'astro:middleware';
 import { API_CATALOG, API_CATALOG_CONTENT_TYPE, API_CATALOG_PATH } from './lib/api-catalog';
+import { WEB_BOT_AUTH_JWKS, WEB_BOT_AUTH_CONTENT_TYPE, WEB_BOT_AUTH_DIRECTORY_PATH } from './lib/web-bot-auth';
 import { wantsMarkdown, htmlToMarkdown, estimateTokens } from './lib/markdown-negotiation';
 
 export const onRequest = defineMiddleware(async ({ request, rewrite }, next) => {
@@ -23,6 +24,17 @@ export const onRequest = defineMiddleware(async ({ request, rewrite }, next) => 
         'Content-Type': API_CATALOG_CONTENT_TYPE,
         'Cache-Control': 'public, max-age=86400',
         'Link': `<${API_CATALOG_PATH}>; rel="api-catalog"`,
+      },
+    });
+  }
+
+  // Web Bot Auth: directory JWKS delle chiavi pubbliche (dotpath ignorato dal
+  // route scanner di Astro, quindi va servito qui come l'api-catalog).
+  if (url.pathname === WEB_BOT_AUTH_DIRECTORY_PATH) {
+    return new Response(JSON.stringify(WEB_BOT_AUTH_JWKS), {
+      headers: {
+        'Content-Type': WEB_BOT_AUTH_CONTENT_TYPE,
+        'Cache-Control': 'public, max-age=86400',
       },
     });
   }
