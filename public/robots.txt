@@ -2,6 +2,9 @@
 User-agent: *
 Allow: /
 
+# Content Signals (contentsignals.org): preferenze d'uso AI dei contenuti
+Content-Signal: search=yes, ai-train=no, ai-input=no
+
 # Sitemaps
 Sitemap: https://edunews24.it/sitemap-index.xml
 Sitemap: https://edunews24.it/sitemap-news.xml
