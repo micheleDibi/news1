@@ -1,0 +1,74 @@
+---
+/**
+ * WebMCP — espone azioni reali del sito come tool per gli agenti nel browser.
+ * Oggi un solo tool: `search_articles`, che usa l'endpoint pubblico /api/search.
+ *
+ * Feature-detected: l'API WebMCP e' sperimentale (Chrome EPP / origin trial) e
+ * ancora in movimento, quindi lo script supporta tutte le forme note
+ * (navigator.modelContext.registerTool / .provideContext, document.modelContext)
+ * e fa no-op senza errori dove l'API non esiste (la gran parte dei browser).
+ */
+---
+<script is:inline>
+  (() => {
+    const tool = {
+      name: 'search_articles',
+      title: 'Cerca articoli EduNews24',
+      description:
+        'Cerca articoli pubblicati su EduNews24 (notizie su scuola, universita, ' +
+        'istruzione e ricerca) per parola chiave. Restituisce titolo, estratto e URL.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Parole chiave da cercare' },
+          category: { type: 'string', description: 'Slug categoria opzionale (es. "scuola")' },
+        },
+        required: ['query'],
+      },
+      annotations: { readOnlyHint: true },
+      execute: async (input) => {
+        const args = input || {};
+        const query = typeof args.query === 'string' ? args.query : '';
+        const category = typeof args.category === 'string' ? args.category : undefined;
+        try {
+          const res = await fetch('/api/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, category }),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          const articles = Array.isArray(data && data.articles) ? data.articles : [];
+          if (articles.length === 0) {
+            return { content: [{ type: 'text', text: 'Nessun articolo trovato per "' + query + '".' }] };
+          }
+          const text = articles
+            .map((a) => {
+              const url = 'https://edunews24.it/' + a.category_slug + '/' + a.slug;
+              const excerpt = a.excerpt ? ' — ' + a.excerpt : '';
+              return '• ' + a.title + excerpt + '\n  ' + url;
+            })
+            .join('\n\n');
+          return {
+            content: [{ type: 'text', text: articles.length + ' risultati per "' + query + '":\n\n' + text }],
+          };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: 'Errore nella ricerca: ' + (err && err.message ? err.message : String(err)) }],
+            isError: true,
+          };
+        }
+      },
+    };
+
+    try {
+      const nav = typeof navigator !== 'undefined' ? navigator.modelContext : undefined;
+      if (nav && typeof nav.registerTool === 'function') { nav.registerTool(tool); return; }
+      if (nav && typeof nav.provideContext === 'function') { nav.provideContext({ tools: [tool] }); return; }
+      const doc = typeof document !== 'undefined' ? document.modelContext : undefined;
+      if (doc && typeof doc.registerTool === 'function') { doc.registerTool(tool); return; }
+    } catch (_) {
+      /* API assente o instabile: no-op */
+    }
+  })();
+</script>

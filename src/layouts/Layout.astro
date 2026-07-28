@@ -1,5 +1,6 @@
 ---
 import Header from '../components/Header.astro';
+import WebMcpProvider from '../components/WebMcpProvider.astro';
 import { supabase } from '../lib/supabase';
 
 interface Props {
@@ -343,5 +344,6 @@ const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
         });
       });
     </script>
+    <WebMcpProvider />
   </body>
 </html>
