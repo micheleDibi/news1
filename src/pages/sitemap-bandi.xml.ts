@@ -61,7 +61,7 @@ export async function GET() {
         }
       }
       xml += `
-    <changefreq>daily</changefreq>
+    <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>`;
     });
