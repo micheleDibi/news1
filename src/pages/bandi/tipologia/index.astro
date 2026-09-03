@@ -1,0 +1,9 @@
+---
+import HubDimensione from '../../../components/filtro/HubDimensione.astro';
+import { hubNonDisponibile } from '../../../lib/pagine-filtro';
+
+// Segmento statico: vince su [slug].astro e chiude il soft-404 che rispondeva 200.
+const errore = await hubNonDisponibile('bandi', 'tipologia');
+if (errore) return errore;
+---
+<HubDimensione sezione="bandi" dimensione="tipologia" />

@@ -5,6 +5,7 @@ import { it } from 'date-fns/locale';
 import { createClient } from '@supabase/supabase-js';
 import { marked } from 'marked';
 import type { SelezioneBando } from '../../types/bandi';
+import { hrefFiltroSePubblicata } from '../../lib/pagine-filtro';
 
 const { slug } = Astro.params;
 
@@ -41,6 +42,19 @@ async function loadBando(): Promise<SelezioneBando | null> {
 }
 
 const bando = await loadBando();
+
+// 404 reale invece del soft-404 a HTTP 200: uno slug inesistente restituiva una pagina
+// "Bando non Trovato" indicizzabile e autocanonicalizzata. Stesso pattern di
+// src/pages/bandi/[slug].astro:46-50.
+if (!bando) {
+  return new Response(
+    `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8">` +
+      `<title>404 - Bando non trovato</title></head>` +
+      `<body><h1>404 - Bando non trovato</h1>` +
+      `<p><a href="/selezione-personale">Torna alla lista dei bandi</a></p></body></html>`,
+    { status: 404, headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' } },
+  );
+}
 
 // Utility functions
 const stripHtmlTags = (html: string): string => {
@@ -372,9 +386,12 @@ if (bando) {
                   <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
                     <h3 class="text-xs text-gray-400 uppercase font-semibold tracking-wider mb-3">Aree Tematiche</h3>
                     <div class="flex flex-wrap gap-2">
-                      {bando.categorie?.map((cat: string) => (
-                        <span class="bg-gray-100 text-gray-700 text-xs font-medium px-2.5 py-1 rounded-lg">{cat}</span>
-                      ))}
+                      {bando.categorie?.map((cat: string) => {
+                        const href = hrefFiltroSePubblicata('selezione-personale', 'categoria', cat);
+                        return href
+                          ? <a href={href} class="bg-gray-100 text-gray-700 text-xs font-medium px-2.5 py-1 rounded-lg hover:bg-gray-200 transition-colors">{cat}</a>
+                          : <span class="bg-gray-100 text-gray-700 text-xs font-medium px-2.5 py-1 rounded-lg">{cat}</span>;
+                      })}
                       {bando.settori?.map((sec: string) => (
                         <span class="bg-blue-50 text-blue-700 text-xs font-medium px-2.5 py-1 rounded-lg">{sec}</span>
                       ))}

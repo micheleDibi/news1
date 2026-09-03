@@ -1,0 +1,38 @@
+---
+/**
+ * Testo introduttivo di una pagina elenco.
+ *
+ * Posizione: sotto la lista e sopra i blocchi di linking, non fra l'H1 e i filtri.
+ * Centotrenta parole fra l'intestazione e i controlli spingerebbero filtri e primi
+ * risultati sotto la piega su mobile; per un motore di ricerca la posizione nel
+ * documento non cambia nulla, per chi usa la pagina si'.
+ *
+ * Sulle pagine oltre la prima si mostra una riga sola: ripetere lo stesso testo su
+ * decine di URL paginati e' solo rumore.
+ */
+import type { IntroSezione } from '../../lib/liste/testi';
+
+interface Props {
+  intro: IntroSezione;
+  /** true solo su pagina 1 senza filtri attivi. */
+  completa: boolean;
+}
+
+const { intro, completa } = Astro.props;
+---
+{completa ? (
+  <section class="mt-8 mb-10 p-5 sm:p-6 bg-white rounded-xl shadow-sm border border-gray-100">
+    <h2 class="text-base font-bold text-gray-900 mb-3">{intro.titolo}</h2>
+    <div class="text-sm text-gray-600 leading-relaxed space-y-3">
+      {intro.paragrafi.map((paragrafo) => (
+        <p>
+          {paragrafo.map((seg) => seg.tipo === 'link'
+            ? <a href={seg.href} class="text-gray-800 underline decoration-gray-300 hover:decoration-gray-600 transition-colors">{seg.testo}</a>
+            : <Fragment>{seg.testo}</Fragment>)}
+        </p>
+      ))}
+    </div>
+  </section>
+) : (
+  <p class="mt-8 mb-6 text-sm text-gray-500">{intro.rigaBreve}</p>
+)}

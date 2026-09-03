@@ -11,10 +11,12 @@ Sitemap: https://edunews24.it/sitemap-news.xml
 Sitemap: https://edunews24.it/sitemap-articoli.xml
 Sitemap: https://edunews24.it/sitemap-video-index.xml
 Sitemap: https://edunews24.it/sitemap-categorie.xml
-Sitemap: https://edunews24.it/sitemap-interpelli.xml
 Sitemap: https://edunews24.it/sitemap-pagine.xml
-Sitemap: https://edunews24.it/sitemap-selezione-personale.xml
-Sitemap: https://edunews24.it/sitemap-bandi.xml
+Sitemap: https://edunews24.it/sitemap-pagine-filtro.xml
+# Interpelli, selezione personale e bandi sono spezzate in blocchi da 1000 URL
+# elencati direttamente in sitemap-index.xml (riga sopra). I vecchi URL
+# /sitemap-interpelli.xml, /sitemap-selezione-personale.xml e /sitemap-bandi.xml
+# rispondono con un 301 verso l'indice.
 
 # Disallow admin and private areas
 Allow: /api/search

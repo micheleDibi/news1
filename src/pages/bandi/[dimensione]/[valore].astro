@@ -1,0 +1,125 @@
+---
+/**
+ * Pagina filtro dei bandi: /bandi/regione/valle-d-aosta, /bandi/programma/fse-...,
+ * /bandi/settore/..., /bandi/tipologia/...
+ *
+ * Regione e settore sono relazioni molti-a-molti: PostgREST richiede l'embed !inner
+ * nella select piu' il filtro sulla colonna puntata, non dentro un and().
+ */
+export const prerender = false;
+
+import PaginaFiltro from '../../../components/filtro/PaginaFiltro.astro';
+import CardBando from '../../../components/liste/CardBando.astro';
+import { supabaseBandi, loadCatalogo, lookupNome, BANDO_SELECT_LIST, type Bando } from '../../../lib/supabase-bandi';
+import { risolvi, sorelle, incrociate, hrefFiltro, hrefHub } from '../../../lib/pagine-filtro';
+import { leggiPagina, numeroPagine, intervalloRange, rispostaNonTrovata } from '../../../lib/paginazione';
+import { metaFiltro, introFiltro, etichettaBreve } from '../../../lib/seo-filtro';
+import { configSezione } from '../../../config/pagine-filtro';
+
+const SEZIONE = 'bandi' as const;
+const cfg = configSezione(SEZIONE);
+const { dimensione: slugDimensione, valore: slugValore } = Astro.params;
+
+const nonTrovata = () => rispostaNonTrovata(
+  'Pagina non trovata',
+  'Non ci sono bandi per questo filtro.',
+  cfg.basePath,
+  'Torna ai bandi',
+);
+
+const esito = await risolvi(SEZIONE, slugDimensione!, slugValore!);
+if (esito.stato === 'alias') {
+  return Astro.redirect(hrefFiltro(SEZIONE, slugDimensione!, esito.slugCanonico), 301);
+}
+if (esito.stato === 'assente') return nonTrovata();
+
+const { voce, dim } = esito;
+const base = hrefFiltro(SEZIONE, dim.slug, voce.slug);
+
+const pag = leggiPagina(Astro.url, base);
+if (pag.tipo === 'redirect') return Astro.redirect(pag.href, 301);
+if (pag.tipo === 'nonTrovata') return nonTrovata();
+
+const pagine = numeroPagine(voce.totale, cfg.perPagina);
+if (pag.pagina > pagine) return nonTrovata();
+
+const giunzione = dim.slug === 'regione'
+  ? { tabella: 'bando_regioni', colonna: 'regione_id' }
+  : dim.slug === 'settore'
+    ? { tabella: 'bando_settori', colonna: 'settore_id' }
+    : null;
+
+const select = giunzione
+  ? `${BANDO_SELECT_LIST}, ${giunzione.tabella}!inner(${giunzione.colonna})`
+  : BANDO_SELECT_LIST;
+
+let query = supabaseBandi.from('bando').select(select);
+if (giunzione) {
+  // .filter() e' l'unico metodo che non riscrive il nome puntato della colonna embedded.
+  query = query.filter(`${giunzione.tabella}.${giunzione.colonna}`, 'in', `(${voce.idsDb.join(',')})`);
+} else if (dim.slug === 'programma') {
+  query = query.in('programma_id', voce.idsDb);
+} else {
+  query = query.in('tipologia_bando_id', voce.idsDb);
+}
+
+const { da, a } = intervalloRange(pag.pagina, cfg.perPagina);
+const [{ data }, catalogo] = await Promise.all([
+  query
+    .order('data_pubblicazione', { ascending: false, nullsFirst: false })
+    // Tiebreak indispensabile: data_pubblicazione e' NULL sul 92% dei bandi.
+    .order('id', { ascending: false })
+    .range(da, a),
+  loadCatalogo(),
+]);
+
+const righe = ((data ?? []) as any[]).map((b) => ({
+  ...b,
+  tipologia: lookupNome(catalogo.tipologie, b.tipologia_bando_id),
+  programma: lookupNome(catalogo.programmi, b.programma_id),
+  modalita_erogazione: lookupNome(catalogo.modalita, b.modalita_erogazione_id),
+})) as unknown as Bando[];
+
+if (righe.length === 0 && pag.pagina > 1) return nonTrovata();
+
+const meta = metaFiltro(SEZIONE, dim, voce, pag.pagina, pagine, base);
+
+const versoSettori = dim.slug === 'regione' ? await incrociate(SEZIONE, 'regione', voce.slug, 'settore') : [];
+const versoProgrammi = dim.slug === 'regione' ? await incrociate(SEZIONE, 'regione', voce.slug, 'programma') : [];
+const versoRegioni = dim.slug === 'settore' ? await incrociate(SEZIONE, 'settore', voce.slug, 'regione') : [];
+
+const intro = introFiltro(SEZIONE, dim, voce, [
+  ...(versoSettori.length ? [{ dimensione: 'settore', etichettaPlurale: 'Settori', voci: versoSettori }] : []),
+  ...(versoRegioni.length ? [{ dimensione: 'regione', etichettaPlurale: 'Regioni', voci: versoRegioni }] : []),
+  ...(versoProgrammi.length ? [{ dimensione: 'programma', etichettaPlurale: 'Programmi', voci: versoProgrammi }] : []),
+]);
+
+const altre = await sorelle(SEZIONE, dim.slug, voce.slug);
+const blocchi = [
+  ...(versoSettori.length ? [{ titolo: `Settori ${voce.etichetta}`, voci: versoSettori.map((v) => ({ etichetta: v.etichetta, href: v.href, totale: v.totale })), hrefTutti: hrefHub(SEZIONE, 'settore') }] : []),
+  ...(versoProgrammi.length ? [{ titolo: 'Programmi di finanziamento', voci: versoProgrammi.map((v) => ({ etichetta: v.etichetta, href: v.href, totale: v.totale })), hrefTutti: hrefHub(SEZIONE, 'programma') }] : []),
+  ...(versoRegioni.length ? [{ titolo: 'Regioni con bandi di questo settore', voci: versoRegioni.map((v) => ({ etichetta: v.etichetta, href: v.href, totale: v.totale })), hrefTutti: hrefHub(SEZIONE, 'regione') }] : []),
+  ...(altre.length ? [{ titolo: `Altre ${dim.etichettaPlurale.toLowerCase()}`, voci: altre.map((v) => ({ etichetta: v.etichetta, href: hrefFiltro(SEZIONE, dim.slug, v.slug), totale: v.totale })), hrefTutti: hrefHub(SEZIONE, dim.slug) }] : []),
+];
+
+const itemList = righe
+  .filter((b) => b.slug && b.titolo)
+  .map((b) => ({ href: `/bandi/${b.slug}`, title: b.titolo }));
+---
+<PaginaFiltro
+  sezione={SEZIONE}
+  meta={meta}
+  intro={intro}
+  base={base}
+  pagina={pag.pagina}
+  pagine={pagine}
+  totale={voce.totale}
+  etichettaSezione={cfg.etichetta}
+  basePathSezione={cfg.basePath}
+  etichettaCorrente={etichettaBreve(dim, voce)}
+  itemList={itemList}
+  blocchi={blocchi}
+  vuota={righe.length === 0}
+>
+  {righe.map((bando) => <CardBando bando={bando} />)}
+</PaginaFiltro>

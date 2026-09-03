@@ -1,0 +1,95 @@
+---
+/**
+ * Pagina filtro di selezione personale: /selezione-personale/regione/lombardia,
+ * /selezione-personale/categoria/concorso.
+ *
+ * Ordinamento: annunci ancora aperti in cima (scadenza piu' vicina per prima), poi gli
+ * scaduti dal piu' recente. Il 90% del corpus ha una scadenza passata mentre
+ * calculated_status dice 'Aperto' per tutti: senza questo ordinamento la prima pagina
+ * sarebbe fatta quasi solo di annunci chiusi.
+ */
+export const prerender = false;
+
+import PaginaFiltro from '../../../components/filtro/PaginaFiltro.astro';
+import CardSelezione from '../../../components/liste/CardSelezione.astro';
+import { caricaSelezione } from '../../../lib/liste/selezione-personale';
+import { risolvi, sorelle, incrociate, hrefFiltro, hrefHub } from '../../../lib/pagine-filtro';
+import { leggiPagina, numeroPagine, rispostaNonTrovata } from '../../../lib/paginazione';
+import { metaFiltro, introFiltro, etichettaBreve } from '../../../lib/seo-filtro';
+import { configSezione } from '../../../config/pagine-filtro';
+
+const SEZIONE = 'selezione-personale' as const;
+const cfg = configSezione(SEZIONE);
+const { dimensione: slugDimensione, valore: slugValore } = Astro.params;
+
+const nonTrovata = () => rispostaNonTrovata(
+  'Pagina non trovata',
+  'Non ci sono annunci per questo filtro.',
+  cfg.basePath,
+  'Torna ai bandi e concorsi',
+);
+
+const esito = await risolvi(SEZIONE, slugDimensione!, slugValore!);
+if (esito.stato === 'alias') {
+  return Astro.redirect(hrefFiltro(SEZIONE, slugDimensione!, esito.slugCanonico), 301);
+}
+if (esito.stato === 'assente') return nonTrovata();
+
+const { voce, dim } = esito;
+const base = hrefFiltro(SEZIONE, dim.slug, voce.slug);
+
+const pag = leggiPagina(Astro.url, base);
+if (pag.tipo === 'redirect') return Astro.redirect(pag.href, 301);
+if (pag.tipo === 'nonTrovata') return nonTrovata();
+
+const colonna = dim.slug === 'regione' ? 'sedi' : dim.slug === 'categoria' ? 'categorie' : 'settori';
+const { righe, totale, aperti } = await caricaSelezione(
+  { filtri: [{ colonna, valori: voce.valoriDb }] },
+  pag.pagina,
+  cfg.perPagina,
+);
+
+const pagine = numeroPagine(totale, cfg.perPagina);
+if (pag.pagina > pagine) return nonTrovata();
+if (righe.length === 0 && pag.pagina > 1) return nonTrovata();
+
+// I conteggi autorevoli sono quelli appena letti, non quelli in cache.
+const voceAggiornata = { ...voce, totale, aperti };
+const meta = metaFiltro(SEZIONE, dim, voceAggiornata, pag.pagina, pagine, base);
+
+const versoCategorie = dim.slug === 'regione' ? await incrociate(SEZIONE, 'regione', voce.slug, 'categoria') : [];
+const versoRegioni = dim.slug === 'categoria' ? await incrociate(SEZIONE, 'categoria', voce.slug, 'regione') : [];
+
+const intro = introFiltro(SEZIONE, dim, voceAggiornata, [
+  ...(versoCategorie.length ? [{ dimensione: 'categoria', etichettaPlurale: 'Categorie', voci: versoCategorie }] : []),
+  ...(versoRegioni.length ? [{ dimensione: 'regione', etichettaPlurale: 'Regioni', voci: versoRegioni }] : []),
+]);
+
+const altre = await sorelle(SEZIONE, dim.slug, voce.slug);
+const blocchi = [
+  ...(versoCategorie.length ? [{ titolo: `Categorie ${voce.etichetta}`, voci: versoCategorie.map((v) => ({ etichetta: v.etichetta, href: v.href, totale: v.totale })), hrefTutti: hrefHub(SEZIONE, 'categoria') }] : []),
+  ...(versoRegioni.length ? [{ titolo: 'Regioni con questi annunci', voci: versoRegioni.map((v) => ({ etichetta: v.etichetta, href: v.href, totale: v.totale })), hrefTutti: hrefHub(SEZIONE, 'regione') }] : []),
+  ...(altre.length ? [{ titolo: `Altre ${dim.etichettaPlurale.toLowerCase()}`, voci: altre.map((v) => ({ etichetta: v.etichetta, href: hrefFiltro(SEZIONE, dim.slug, v.slug), totale: v.totale })), hrefTutti: hrefHub(SEZIONE, dim.slug) }] : []),
+];
+
+const itemList = righe
+  .filter((b) => b.slug && (b.article_title || b.titolo))
+  .map((b) => ({ href: `/selezione-personale/${b.slug}`, title: b.article_title || b.titolo }));
+---
+<PaginaFiltro
+  sezione={SEZIONE}
+  meta={meta}
+  intro={intro}
+  base={base}
+  pagina={pag.pagina}
+  pagine={pagine}
+  totale={totale}
+  etichettaSezione={cfg.etichetta}
+  basePathSezione={cfg.basePath}
+  etichettaCorrente={etichettaBreve(dim, voce)}
+  itemList={itemList}
+  blocchi={blocchi}
+  vuota={righe.length === 0}
+>
+  {righe.map((bando) => <CardSelezione bando={bando} />)}
+</PaginaFiltro>

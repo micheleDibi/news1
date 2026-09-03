@@ -1,95 +1,110 @@
 ---
+/**
+ * Elenco degli interpelli.
+ *
+ * Lo stato della lista (filtri e pagina) vive nell'URL ed e' reso dal server: senza
+ * JavaScript la pagina funziona lo stesso, e un crawler puo' raggiungere tutti gli
+ * annunci seguendo i link di paginazione. Lo script client resta solo per evitare il
+ * ricaricamento, e chiede al server lo stesso frammento HTML.
+ */
+export const prerender = false;
+
 import Layout from '../layouts/Layout.astro';
-import { format, parseISO, isValid } from 'date-fns';
-import { it } from 'date-fns/locale';
-import { createClient } from '@supabase/supabase-js';
+import ListaInterpelli from '../components/liste/ListaInterpelli.astro';
+import PaginazioneLinks from '../components/filtro/PaginazioneLinks.astro';
+import Sorelle from '../components/filtro/Sorelle.astro';
+import { vociPubblicate, hrefFiltro, hrefHub, hubDisponibili } from '../lib/pagine-filtro';
+import { slugInterpello, DEF_INTERPELLI, caricaInterpelli, opzioniFiltroInterpelli, type Interpello } from '../lib/liste/interpelli';
+import {
+  leggiFiltri, filtriAttivi, normalizzazioneRichiesta, dimensioneUnica, seoLista, urlLista,
+} from '../lib/liste/parametri';
+import { leggiPagina, numeroPagine, rispostaNonTrovata } from '../lib/paginazione';
+import { generateBreadcrumbStructuredData, generateItemListStructuredData, generateFAQStructuredData } from '../lib/seo';
+import IntroSezione from '../components/liste/IntroSezione.astro';
+import FaqInterpelli from '../components/liste/FaqInterpelli.astro';
+import { INTRO_INTERPELLI, FAQ_INTERPELLI } from '../lib/liste/testi';
 
-interface Interpello {
-  id?: number;
-  interpello_name: string;
-  interpello_date: string;
-  interpello_description: string;
-  interpello_link: string;
-  interpello_regione?: string;
-  interpello_provincia?: string;
-  interpello_citta?: string;
-  classe_concorso?: string;
-  article_title?: string;
-  article_subtitle?: string;
-  created_at?: string;
+const DEF = DEF_INTERPELLI;
+const valori = leggiFiltri(Astro.url, DEF);
+const pag = leggiPagina(Astro.url, DEF.base);
+const pagina = pag.tipo === 'ok' ? pag.pagina : 1;
+
+// `?page=1` e i parametri vuoti prodotti dal form (select su "Tutte") collassano
+// sull'URL pulito con un 301. I parametri estranei (utm_*, fbclid) restano intatti.
+const normalizzato = normalizzazioneRichiesta(Astro.url, DEF, valori, pagina);
+if (normalizzato) return Astro.redirect(normalizzato, 301);
+if (pag.tipo === 'redirect') return Astro.redirect(pag.href, 301);
+
+// Una sola dimensione filtrata ha un equivalente indicizzabile: la pagina statica.
+// 302 e non 301 perche' le soglie di pubblicazione sono ancora in taratura e un 301
+// verso una pagina che scendesse sotto soglia resterebbe in cache.
+const unica = dimensioneUnica(DEF, valori, pagina);
+if (unica) {
+  const pubblicate = await vociPubblicate(DEF.sezione, unica.dimensione);
+  if (pubblicate.some((v) => v.slug === unica.slug)) {
+    return Astro.redirect(hrefFiltro(DEF.sezione, unica.dimensione, unica.slug), 302);
+  }
 }
 
-function generateInterpelloSlug(interpello: Interpello): string {
-  const parts = [
-    interpello.interpello_name,
-    interpello.interpello_provincia || interpello.interpello_citta,
-    interpello.interpello_regione,
-    interpello.id?.toString()
-  ].filter(Boolean);
+const { righe, totale } = await caricaInterpelli(valori, pagina);
+const pagine = numeroPagine(totale, DEF.perPagina);
 
-  return parts
-    .join('-')
-    .toLowerCase()
-    .replace(/[^a-z0-9\-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
+// Pagina oltre l'ultima: 404 reale, non un 200 con la lista vuota.
+if (pagina > pagine || (righe.length === 0 && pagina > 1)) {
+  return rispostaNonTrovata('Pagina non trovata', 'La pagina richiesta non esiste.', DEF.base, 'Torna agli interpelli');
 }
 
-const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
-const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
-const PAGE_SIZE = 20;
+const opzioni = await opzioniFiltroInterpelli();
+const conFiltri = filtriAttivi(valori) > 0;
+const { canonical, robots } = seoLista(DEF, valori, pagina);
 
-async function loadInterpelliData(): Promise<{ items: Interpello[], total: number }> {
-  try {
-    if (!supabaseUrl || !supabaseKey) return { items: [], total: 0 };
-    const supabase = createClient(supabaseUrl, supabaseKey);
-    const { count } = await supabase.from('interpelli').select('*', { count: 'exact', head: true }).eq('link_type', 'single');
-    const { data, error } = await supabase.from('interpelli').select('*').eq('link_type', 'single').order('interpello_date', { ascending: false }).range(0, PAGE_SIZE - 1);
-    if (error) return { items: [], total: 0 };
-    return { items: data || [], total: count || 0 };
-  } catch { return { items: [], total: 0 }; }
+// Title 62 caratteri, description 150: entrambi dentro cio' che Google mostra.
+const pageTitle = pagina > 1
+  ? `Interpelli scuola: pagina ${pagina} di ${pagine} - EduNews24`
+  : 'Interpelli scuola: docenti, ATA e DSGA per regione - EduNews24';
+const pageDescription = pagina > 1
+  ? `Interpelli pubblicati dalle scuole italiane, pagina ${pagina} di ${pagine}: filtra per regione, provincia e classe di concorso.`
+  : 'Consulta gli interpelli pubblicati dalle scuole italiane: filtra per regione, provincia e classe di concorso e apri il testo integrale di ogni avviso.';
+const pageKeywords = 'interpelli scuola, lavoro scuola, supplenze, interpelli insegnanti, opportunità scuola, lavoro pubblico scuola';
+
+// Blocchi "Esplora per ...": link alle pagine filtro pubblicate.
+const blocchiEsplora: Array<{ titolo: string; voci: Array<{ etichetta: string; href: string; totale: number }>; hrefTutti: string }> = [];
+for (const dimEsplora of hubDisponibili(DEF.sezione)) {
+  const vociEsplora = await vociPubblicate(DEF.sezione, dimEsplora.slug);
+  if (vociEsplora.length === 0) continue;
+  blocchiEsplora.push({
+    titolo: `Esplora per ${dimEsplora.etichetta.toLowerCase()}`,
+    voci: vociEsplora.slice(0, 24).map((v) => ({ etichetta: v.etichetta, href: hrefFiltro(DEF.sezione, dimEsplora.slug, v.slug), totale: v.totale })),
+    hrefTutti: hrefHub(DEF.sezione, dimEsplora.slug),
+  });
 }
 
-async function loadFilterOptions() {
-  try {
-    if (!supabaseUrl || !supabaseKey) return { regioni: [], provinceByRegione: {}, classi: [] };
-    const supabase = createClient(supabaseUrl, supabaseKey);
-    const { data } = await supabase.from('interpelli').select('interpello_regione, interpello_provincia, classe_concorso').eq('link_type', 'single');
-    const regioni = new Set<string>();
-    const provinceByRegione: Record<string, Set<string>> = {};
-    const classi = new Set<string>();
-    (data || []).forEach((row: any) => {
-      if (row.interpello_regione) {
-        regioni.add(row.interpello_regione);
-        if (!provinceByRegione[row.interpello_regione]) provinceByRegione[row.interpello_regione] = new Set();
-        if (row.interpello_provincia) provinceByRegione[row.interpello_regione].add(row.interpello_provincia);
-      }
-      if (row.classe_concorso) classi.add(row.classe_concorso);
-    });
-    const sortedRegioni = [...regioni].sort();
-    const sortedProvinceByRegione: Record<string, string[]> = {};
-    for (const r of sortedRegioni) { sortedProvinceByRegione[r] = [...(provinceByRegione[r] || [])].sort(); }
-    return { regioni: sortedRegioni, provinceByRegione: sortedProvinceByRegione, classi: [...classi].sort() };
-  } catch { return { regioni: [], provinceByRegione: {}, classi: [] }; }
-}
+const breadcrumbStructuredData = generateBreadcrumbStructuredData({
+  category: 'Interpelli Scuola',
+  category_slug: 'interpelli',
+});
+const itemListItems = righe
+  .filter((i: Interpello) => i.article_title || i.interpello_name)
+  .map((i: Interpello) => ({ href: `/interpelli/${slugInterpello(i)}`, title: i.article_title || i.interpello_name }));
+const itemListStructuredData = itemListItems.length > 0
+  ? generateItemListStructuredData(itemListItems, 'Interpelli Scuola', canonical, (pagina - 1) * DEF.perPagina + 1)
+  : null;
 
-const { items: interpelliData, total: totalCount } = await loadInterpelliData();
-const totalPages = Math.ceil(totalCount / PAGE_SIZE);
-const filterOptions = await loadFilterOptions();
+const mostraIntro = pagina === 1 && !conFiltri;
+const faqStructuredData = mostraIntro ? generateFAQStructuredData([...FAQ_INTERPELLI]) : null;
 
-const formatDate = (dateString: string): string => {
-  try {
-    const parsedDate = parseISO(dateString);
-    if (!isValid(parsedDate)) return "Data non valida";
-    return format(parsedDate, 'dd MMMM yyyy', { locale: it });
-  } catch { return "Data non valida"; }
-};
-
-const pageTitle = "Interpelli Scuola - EduNews24";
-const pageDescription = "Trova tutti gli interpelli per la scuola divisi per regione, provincia e classe di concorso. Cerca opportunità di lavoro nella scuola pubblica italiana.";
-const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli insegnanti, opportunità scuola, lavoro pubblico scuola";
+const hrefPrec = pagina > 2 ? urlLista(DEF, valori, pagina - 1) : pagina === 2 ? urlLista(DEF, valori, 1) : null;
+const hrefSucc = pagina < pagine ? urlLista(DEF, valori, pagina + 1) : null;
+const basePaginazione = urlLista(DEF, valori, 1);
+const provinceCorrenti = valori.regione[0] ? (opzioni.provincePerRegione[valori.regione[0]] ?? []) : [];
 ---
-<Layout title={pageTitle} description={pageDescription} keywords={pageKeywords}>
+<Layout title={pageTitle} description={pageDescription} keywords={pageKeywords} canonicalUrl={canonical} robots={robots}>
+  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
+  {itemListStructuredData && <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />}
+  {faqStructuredData && <script type="application/ld+json" set:html={faqStructuredData} slot="head" />}
+  {hrefPrec && <link rel="prev" href={`https://edunews24.it${hrefPrec}`} slot="head" />}
+  {hrefSucc && <link rel="next" href={`https://edunews24.it${hrefSucc}`} slot="head" />}
+
   <main class="bg-gray-50 min-h-screen">
     {/* Hero header */}
     <div class="bg-gradient-to-r from-red-700 to-red-800 text-white py-10 px-4 sm:px-6 lg:px-8">
@@ -105,361 +120,104 @@ const pageKeywords = "interpelli scuola, lavoro scuola, supplenze, interpelli in
         </nav>
         <h1 class="text-3xl md:text-4xl font-bold mb-2">Interpelli Scuola</h1>
         <p class="text-red-100 text-lg max-w-2xl">Trova opportunità di lavoro nella scuola pubblica italiana, divise per regione, provincia e classe di concorso.</p>
+        {pagina > 1 && <p class="text-red-100 text-sm mt-1">Pagina {pagina} di {pagine}</p>}
         <div class="mt-4 flex items-center gap-4 text-sm">
           <span class="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-            <span id="hero-count">{totalCount}</span> interpelli disponibili
+            <span id="hero-count">{totale}</span> interpelli disponibili
           </span>
         </div>
       </div>
     </div>
 
     <div class="container mx-auto px-4 max-w-6xl -mt-6">
-      {/* Filter Controls */}
-      <div class="mb-6 p-5 bg-white rounded-xl shadow-md border border-gray-100">
+      {/* Filtri: form GET, funzionante anche senza JavaScript */}
+      <form id="filtri" method="get" action="/interpelli" data-frammento="/api/lista/interpelli" data-lista="interpelli-list" class="mb-6 p-5 bg-white rounded-xl shadow-md border border-gray-100">
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
-          {/* Search */}
           <div class="lg:col-span-2">
             <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Cerca</label>
             <div class="relative">
               <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-              <input type="text" id="search-filter" placeholder="Nome interpello, descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50 transition-colors">
+              <input type="search" id="search-filter" name="q" value={valori.q[0] ?? ''} placeholder="Nome interpello, descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50 transition-colors">
             </div>
           </div>
 
-          {/* Regione */}
           <div>
             <label for="regione-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Regione</label>
-            <select id="regione-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50">
+            <select id="regione-filter" name="regione" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
-              {filterOptions.regioni.map(r => <option value={r}>{r}</option>)}
+              {opzioni.regioni.map((r) => <option value={r.slug} selected={valori.regione[0] === r.slug}>{r.etichetta}</option>)}
             </select>
           </div>
 
-          {/* Provincia */}
           <div>
             <label for="provincia-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Provincia</label>
-            <select id="provincia-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50" disabled>
+            {/* Renderizzata dal server in base alla regione scelta: funziona senza JS. */}
+            <select id="provincia-filter" name="provincia" disabled={provinceCorrenti.length === 0} class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
+              {provinceCorrenti.map((p) => <option value={p.slug} selected={valori.provincia[0] === p.slug}>{p.etichetta}</option>)}
             </select>
           </div>
 
-          {/* Classe Concorso */}
           <div>
             <label for="classe-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Classe Concorso</label>
-            <select id="classe-filter" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50">
+            <select id="classe-filter" name="classe" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm bg-gray-50">
               <option value="">Tutte</option>
-              {filterOptions.classi.map(c => <option value={c}>{c}</option>)}
+              {opzioni.classi.map((c) => <option value={c.slug} selected={valori.classe[0] === c.slug}>{c.etichetta}</option>)}
             </select>
           </div>
 
-          {/* Reset */}
-          <div>
-            <label class="block text-xs font-semibold text-transparent mb-1.5">Reset</label>
-            <button id="reset-filters" class="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-1.5">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-              Resetta
-            </button>
+          <div class="flex gap-2">
+            <div class="flex-1">
+              <label class="block text-xs font-semibold text-transparent mb-1.5">Filtra</label>
+              <button type="submit" class="w-full px-4 py-2.5 border border-red-700 rounded-lg text-sm font-medium text-white bg-red-700 hover:bg-red-800 transition-colors">Filtra</button>
+            </div>
+            <div class="flex-1">
+              <label class="block text-xs font-semibold text-transparent mb-1.5">Reset</label>
+              <a id="reset-filters" href="/interpelli" class="w-full px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-1.5">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                Resetta
+              </a>
+            </div>
           </div>
         </div>
-      </div>
+      </form>
 
-      {/* Results Count */}
+      {/* Mappa regione -> province per il select dipendente. Prende il posto del
+          define:vars, che serializzava anche URL e chiave anon di Supabase. */}
+      <script type="application/json" id="dati-province" set:html={JSON.stringify(opzioni.provincePerRegione)} is:inline></script>
+
       <div class="mb-4 flex items-center justify-between">
         <p id="results-count" class="text-sm text-gray-500">
-          <span id="visible-count" class="font-semibold text-gray-700">{totalCount}</span> interpelli trovati
+          <span id="visible-count" class="font-semibold text-gray-700">{totale}</span> interpelli trovati
         </p>
         <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-red-600">
           <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
           Caricamento...
         </div>
       </div>
+      <p id="stato-risultati" class="sr-only" aria-live="polite"></p>
 
-      <div id="interpelli-list" class="space-y-4">
-        {interpelliData.length === 0 ? (
-          <div id="no-results-message" class="text-center py-16 bg-white rounded-xl shadow-sm">
-            <svg class="mx-auto w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-            <p class="text-gray-500 text-lg font-medium">Nessun interpello trovato</p>
-            <p class="text-gray-400 text-sm mt-1">Prova a modificare i filtri di ricerca</p>
-          </div>
-        ) : (
-          <Fragment>
-            {interpelliData.map((interpello: Interpello) => (
-              <article class="interpello-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200">
-                <a href={`/interpelli/${generateInterpelloSlug(interpello)}`} class="block">
-                  <div class="p-5 sm:p-6">
-                    <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
-                      <div class="flex-1 min-w-0">
-                        <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-red-700 transition-colors line-clamp-2">
-                          {interpello.article_title || interpello.interpello_name}
-                        </h2>
-                      </div>
-                    </div>
+      <ListaInterpelli righe={righe} filtrata={conFiltri} />
 
-                    {(interpello.interpello_regione || interpello.interpello_provincia || interpello.interpello_citta) && (
-                      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
-                        {interpello.interpello_regione && (
-                          <span class="inline-flex items-center gap-1.5">
-                            <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                            <span>{interpello.interpello_regione}</span>
-                          </span>
-                        )}
-                        {interpello.interpello_provincia && (
-                          <span class="inline-flex items-center gap-1.5">
-                            <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
-                            <span>{interpello.interpello_provincia}</span>
-                          </span>
-                        )}
-                        {interpello.interpello_citta && (
-                          <span class="inline-flex items-center gap-1.5">
-                            <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
-                            <span>{interpello.interpello_citta}</span>
-                          </span>
-                        )}
-                      </div>
-                    )}
+      <PaginazioneLinks base={basePaginazione} pagina={pagina} pagine={pagine} accento="rosso" />
 
-                    <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
-                      {interpello.classe_concorso && (
-                        <span class="inline-flex items-center gap-1.5">
-                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
-                          <span class="font-medium">{interpello.classe_concorso}</span>
-                        </span>
-                      )}
-                      {interpello.interpello_date && (
-                        <span class="inline-flex items-center gap-1.5">
-                          <svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                          {formatDate(interpello.interpello_date)}
-                        </span>
-                      )}
-                    </div>
+      <IntroSezione intro={INTRO_INTERPELLI} completa={mostraIntro} />
 
-                    {(interpello.article_subtitle || interpello.interpello_description) && (
-                      <p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">
-                        {interpello.article_subtitle || interpello.interpello_description}
-                      </p>
-                    )}
-                  </div>
-                </a>
-              </article>
-            ))}
-            <p id="no-filtered-results-message" class="text-center text-gray-500 text-lg py-10 hidden">Nessun interpello corrisponde ai filtri selezionati.</p>
-          </Fragment>
-        )}
-      </div>
+      {mostraIntro && <FaqInterpelli />}
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <nav id="pagination" class="mt-8 mb-12 flex justify-center items-center gap-3" data-total-pages={totalPages} data-page-size={PAGE_SIZE}>
-          <button id="prev-page" class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm" disabled>
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
-            Precedente
-          </button>
-          <span class="px-4 py-2 text-sm text-gray-500 bg-white border border-gray-200 rounded-lg shadow-sm">
-            <span id="current-page-num" class="font-semibold text-gray-700">1</span> / <span id="total-pages-num">{totalPages}</span>
-          </span>
-          <button id="next-page" class="inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm">
-            Successiva
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
-          </button>
-        </nav>
-      )}
+      {/* Linking interno verso le pagine filtro. Sta DENTRO <main> (il middleware, per
+          la negoziazione Markdown, estrae solo quel nodo) e FUORI dal contenitore della
+          lista, che lo script client sostituisce a ogni filtro. */}
+      {blocchiEsplora.map((b) => (
+        <Sorelle titolo={b.titolo} voci={b.voci} hrefTutti={b.hrefTutti} />
+      ))}
     </div>
   </main>
 </Layout>
 
-<script is:inline define:vars={{ supabaseUrl, supabaseKey, PAGE_SIZE, provinceByRegione: filterOptions.provinceByRegione }}>
-  async function supabaseFetch(table, params) {
-    const url = new URL(`${supabaseUrl}/rest/v1/${table}`);
-    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-    const res = await fetch(url.toString(), {
-      headers: {
-        'apikey': supabaseKey,
-        'Authorization': `Bearer ${supabaseKey}`,
-        'Prefer': 'count=exact',
-      },
-    });
-    const total = parseInt(res.headers.get('content-range')?.split('/')[1] || '0', 10);
-    const data = await res.json();
-    return { data, total };
-  }
-
-  const searchInput = document.getElementById('search-filter');
-  const regioneSelect = document.getElementById('regione-filter');
-  const provinciaSelect = document.getElementById('provincia-filter');
-  const classeSelect = document.getElementById('classe-filter');
-  const interpelliList = document.getElementById('interpelli-list');
-  const noFilteredResultsMessage = document.getElementById('no-filtered-results-message');
-  const resetButton = document.getElementById('reset-filters');
-  const visibleCountSpan = document.getElementById('visible-count');
-  const heroCountSpan = document.getElementById('hero-count');
-  const loadingIndicator = document.getElementById('loading-indicator');
-  const prevBtn = document.getElementById('prev-page');
-  const nextBtn = document.getElementById('next-page');
-  const currentPageNum = document.getElementById('current-page-num');
-  const totalPagesNum = document.getElementById('total-pages-num');
-
-  let currentPage = 1;
-  let isLoading = false;
-
-  regioneSelect.addEventListener('change', () => {
-    const regione = regioneSelect.value;
-    provinciaSelect.innerHTML = '<option value="">Tutte</option>';
-    if (regione && provinceByRegione[regione]) {
-      provinceByRegione[regione].forEach(p => {
-        const opt = document.createElement('option');
-        opt.value = p;
-        opt.textContent = p;
-        provinciaSelect.appendChild(opt);
-      });
-      provinciaSelect.disabled = false;
-    } else {
-      provinciaSelect.disabled = true;
-    }
-    resetAndLoad();
-  });
-
-  function generateSlug(item) {
-    return [item.interpello_name, item.interpello_provincia || item.interpello_citta, item.interpello_regione, item.id?.toString()]
-      .filter(Boolean).join('-').toLowerCase().replace(/[^a-z0-9\-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-  }
-
-  function formatDateDisplay(dateString) {
-    try {
-      const d = new Date(dateString + 'T00:00:00');
-      if (isNaN(d.getTime())) return 'Data non valida';
-      return d.toLocaleDateString('it-IT', { day: '2-digit', month: 'long', year: 'numeric' });
-    } catch { return 'Data non valida'; }
-  }
-
-  function renderItems(items) {
-    const existingItems = interpelliList.querySelectorAll('.interpello-item');
-    existingItems.forEach(el => el.remove());
-
-    if (items.length === 0) {
-      if (noFilteredResultsMessage) noFilteredResultsMessage.classList.remove('hidden');
-      return;
-    }
-    if (noFilteredResultsMessage) noFilteredResultsMessage.classList.add('hidden');
-
-    const fragment = document.createDocumentFragment();
-    items.forEach(item => {
-      const article = document.createElement('article');
-      article.className = 'interpello-item group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md hover:border-gray-200 transition-all duration-200';
-
-      const dateFormatted = item.interpello_date ? formatDateDisplay(item.interpello_date) : '';
-
-      const locationHtml = (item.interpello_regione || item.interpello_provincia || item.interpello_citta) ? `
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
-          ${item.interpello_regione ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg><span>${item.interpello_regione}</span></span>` : ''}
-          ${item.interpello_provincia ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg><span>${item.interpello_provincia}</span></span>` : ''}
-          ${item.interpello_citta ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg><span>${item.interpello_citta}</span></span>` : ''}
-        </div>` : '';
-
-      article.innerHTML = `
-        <a href="/interpelli/${generateSlug(item)}" class="block">
-          <div class="p-5 sm:p-6">
-            <div class="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
-              <div class="flex-1 min-w-0">
-                <h2 class="text-base sm:text-lg font-bold text-gray-900 group-hover:text-red-700 transition-colors line-clamp-2">${item.article_title || item.interpello_name || ''}</h2>
-              </div>
-            </div>
-            ${locationHtml}
-            <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600 py-3 border-t border-gray-50">
-              ${item.classe_concorso ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg><span class="font-medium">${item.classe_concorso}</span></span>` : ''}
-              ${dateFormatted ? `<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>${dateFormatted}</span>` : ''}
-            </div>
-            ${(item.article_subtitle || item.interpello_description) ? `<p class="text-gray-500 text-sm leading-relaxed mt-3 line-clamp-2">${item.article_subtitle || item.interpello_description}</p>` : ''}
-          </div>
-        </a>`;
-      fragment.appendChild(article);
-    });
-
-    if (noFilteredResultsMessage) {
-      interpelliList.insertBefore(fragment, noFilteredResultsMessage);
-    } else {
-      interpelliList.appendChild(fragment);
-    }
-  }
-
-  function updatePagination(total) {
-    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-    if (currentPageNum) currentPageNum.textContent = currentPage;
-    if (totalPagesNum) totalPagesNum.textContent = pages;
-    if (prevBtn) prevBtn.disabled = currentPage <= 1;
-    if (nextBtn) nextBtn.disabled = currentPage >= pages;
-    const paginationNav = document.getElementById('pagination');
-    if (paginationNav) paginationNav.style.display = pages <= 1 ? 'none' : 'flex';
-  }
-
-  async function loadPage() {
-    if (isLoading) return;
-    isLoading = true;
-    if (loadingIndicator) { loadingIndicator.classList.remove('hidden'); loadingIndicator.classList.add('flex'); }
-
-    const searchTerm = searchInput?.value?.trim() || '';
-    const regione = regioneSelect?.value || '';
-    const provincia = provinciaSelect?.value || '';
-    const classe = classeSelect?.value || '';
-
-    const from = (currentPage - 1) * PAGE_SIZE;
-
-    const params = {
-      'select': '*',
-      'link_type': 'eq.single',
-      'order': 'interpello_date.desc',
-      'offset': from.toString(),
-      'limit': PAGE_SIZE.toString(),
-    };
-
-    if (searchTerm) {
-      params['or'] = `(article_title.ilike.*${searchTerm}*,article_subtitle.ilike.*${searchTerm}*,interpello_name.ilike.*${searchTerm}*,interpello_description.ilike.*${searchTerm}*)`;
-    }
-    if (regione) params['interpello_regione'] = `eq.${regione}`;
-    if (provincia) params['interpello_provincia'] = `eq.${provincia}`;
-    if (classe) params['classe_concorso'] = `eq.${classe}`;
-
-    try {
-      const { data, total } = await supabaseFetch('interpelli', params);
-      renderItems(data || []);
-      if (visibleCountSpan) visibleCountSpan.textContent = total;
-      if (heroCountSpan) heroCountSpan.textContent = total;
-      updatePagination(total);
-    } catch (e) {
-      console.error('Errore caricamento interpelli:', e);
-    } finally {
-      isLoading = false;
-      if (loadingIndicator) { loadingIndicator.classList.add('hidden'); loadingIndicator.classList.remove('flex'); }
-    }
-  }
-
-  function resetAndLoad() { currentPage = 1; loadPage(); }
-
-  function debounce(func, wait) {
-    let timeout;
-    return (...args) => { clearTimeout(timeout); timeout = setTimeout(() => func(...args), wait); };
-  }
-
-  const debouncedLoad = debounce(resetAndLoad, 300);
-
-  if (searchInput) searchInput.addEventListener('input', debouncedLoad);
-  if (provinciaSelect) provinciaSelect.addEventListener('change', resetAndLoad);
-  if (classeSelect) classeSelect.addEventListener('change', resetAndLoad);
-
-  if (prevBtn) prevBtn.addEventListener('click', () => {
-    if (currentPage > 1) { currentPage--; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
-  });
-  if (nextBtn) nextBtn.addEventListener('click', () => {
-    currentPage++; loadPage(); window.scrollTo({ top: 0, behavior: 'smooth' });
-  });
-
-  if (resetButton) {
-    resetButton.addEventListener('click', () => {
-      if (searchInput) searchInput.value = '';
-      if (regioneSelect) regioneSelect.value = '';
-      if (provinciaSelect) { provinciaSelect.value = ''; provinciaSelect.innerHTML = '<option value="">Tutte</option>'; provinciaSelect.disabled = true; }
-      if (classeSelect) classeSelect.value = '';
-      resetAndLoad();
-    });
-  }
+<script>
+  import { attivaLista, attivaProvinceDipendenti } from '../scripts/lista';
+  attivaProvinceDipendenti();
+  attivaLista({ idLista: 'interpelli-list' });
 </script>

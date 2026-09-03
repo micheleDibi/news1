@@ -1,0 +1,124 @@
+---
+/**
+ * Guscio di una pagina filtro: hero con breadcrumb e H1, introduzione generata dai
+ * numeri reali, elenco (slot), paginazione a link, blocchi di linking interno.
+ * Le tre sezioni condividono tutto tranne la card e la query.
+ */
+import Layout from '../../layouts/Layout.astro';
+import PaginazioneLinks from './PaginazioneLinks.astro';
+import Sorelle from './Sorelle.astro';
+import { generateBreadcrumbStructuredData, generateItemListStructuredData } from '../../lib/seo';
+import type { MetaFiltro, RigaIntro } from '../../lib/seo-filtro';
+import type { Sezione } from '../../config/pagine-filtro';
+
+interface VoceLink {
+  etichetta: string;
+  href: string;
+  totale?: number;
+}
+
+interface Props {
+  sezione: Sezione;
+  meta: MetaFiltro;
+  intro: RigaIntro[];
+  /** Percorso della pagina 1, senza query. */
+  base: string;
+  pagina: number;
+  pagine: number;
+  totale: number;
+  /** Breadcrumb: nome della sezione e suo percorso. */
+  etichettaSezione: string;
+  basePathSezione: string;
+  /** Nome della pagina corrente nel breadcrumb. */
+  etichettaCorrente: string;
+  /** Elementi resi in questa pagina, per l'ItemList. */
+  itemList: Array<{ href: string; title: string }>;
+  blocchi?: Array<{ titolo: string; voci: VoceLink[]; hrefTutti?: string }>;
+  vuota?: boolean;
+}
+
+const {
+  sezione, meta, intro, base, pagina, pagine, totale,
+  etichettaSezione, basePathSezione, etichettaCorrente, itemList, blocchi = [], vuota = false,
+} = Astro.props;
+
+const PALETTE = {
+  interpelli: { grad: 'from-red-700 to-red-800', testo: 'text-red-100', briciole: 'text-red-200', accento: 'rosso' as const },
+  'selezione-personale': { grad: 'from-yellow-700 to-yellow-800', testo: 'text-yellow-100', briciole: 'text-yellow-200', accento: 'giallo' as const },
+  bandi: { grad: 'from-blue-700 to-blue-800', testo: 'text-blue-100', briciole: 'text-blue-200', accento: 'blu' as const },
+}[sezione];
+
+const breadcrumb = generateBreadcrumbStructuredData(
+  { category: etichettaSezione, category_slug: basePathSezione.replace(/^\//, '') },
+  { nome: etichettaCorrente, url: `https://edunews24.it${base}` },
+);
+
+// Le posizioni dell'ItemList proseguono da una pagina all'altra invece di ripartire da 1.
+const posizioneIniziale = (pagina - 1) * 20 + 1;
+const itemListJson = itemList.length > 0
+  ? generateItemListStructuredData(itemList, meta.h1, meta.canonical, posizioneIniziale)
+  : null;
+
+// rel prev/next: Google non li usa piu' come segnale di paginazione, Bing si'.
+const hrefPrec = pagina > 2 ? `${base}?page=${pagina - 1}` : pagina === 2 ? base : null;
+const hrefSucc = pagina < pagine ? `${base}?page=${pagina + 1}` : null;
+---
+<Layout title={meta.title} description={meta.description} canonicalUrl={meta.canonical}>
+  <script type="application/ld+json" set:html={breadcrumb} slot="head" />
+  {itemListJson && <script type="application/ld+json" set:html={itemListJson} slot="head" />}
+  {hrefPrec && <link rel="prev" href={`https://edunews24.it${hrefPrec}`} slot="head" />}
+  {hrefSucc && <link rel="next" href={`https://edunews24.it${hrefSucc}`} slot="head" />}
+
+  <main class="bg-gray-50 min-h-screen">
+    <div class={`bg-gradient-to-r ${PALETTE.grad} text-white py-10 px-4 sm:px-6 lg:px-8`}>
+      <div class="container mx-auto max-w-6xl">
+        <nav class={`flex text-sm ${PALETTE.briciole} mb-4`} aria-label="Breadcrumb">
+          <ol class="inline-flex items-center flex-wrap gap-y-1">
+            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
+            <li class="flex items-center">
+              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <a href={basePathSezione} class="hover:text-white transition-colors">{etichettaSezione}</a>
+            </li>
+            <li class="flex items-center">
+              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <span class="text-white font-medium">{etichettaCorrente}</span>
+            </li>
+          </ol>
+        </nav>
+        <h1 class="text-3xl md:text-4xl font-bold mb-2">{meta.h1}</h1>
+        {pagina > 1 && <p class={`${PALETTE.testo} text-sm`}>Pagina {pagina} di {pagine}</p>}
+      </div>
+    </div>
+
+    <div class="container mx-auto px-4 max-w-6xl">
+      {/* Introduzione: solo righe con numeri reali, generate da src/lib/seo-filtro.ts */}
+      {pagina === 1 && intro.length > 0 && (
+        <section class="mt-6 p-5 bg-white rounded-xl shadow-sm border border-gray-100 text-gray-600 text-sm leading-relaxed space-y-2">
+          {intro.map((riga) => (
+            <p>
+              {riga.map((seg) => seg.tipo === 'link'
+                ? <a href={seg.href} class="text-gray-800 underline decoration-gray-300 hover:decoration-gray-600 transition-colors">{seg.testo}</a>
+                : <Fragment>{seg.testo}</Fragment>)}
+            </p>
+          ))}
+        </section>
+      )}
+
+      <div class="mt-6 mb-4 text-sm text-gray-500">
+        {totale} {totale === 1 ? 'risultato' : 'risultati'}
+      </div>
+
+      <div class="space-y-4">
+        {vuota
+          ? <p class="text-center text-gray-500 text-lg py-10">Nessun risultato disponibile al momento.</p>
+          : <slot />}
+      </div>
+
+      <PaginazioneLinks base={base} pagina={pagina} pagine={pagine} accento={PALETTE.accento} />
+
+      {blocchi.map((b) => (
+        <Sorelle titolo={b.titolo} voci={b.voci} hrefTutti={b.hrefTutti} />
+      ))}
+    </div>
+  </main>
+</Layout>

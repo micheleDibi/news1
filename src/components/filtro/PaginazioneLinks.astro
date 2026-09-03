@@ -1,0 +1,56 @@
+---
+/**
+ * Paginazione con link reali. Sostituisce i due <button> senza href delle pagine
+ * elenco, che rendevano irraggiungibile a Google tutto cio' che sta oltre i primi 20
+ * annunci. Markup e algoritmo dei numeri ripresi da src/pages/[category].astro:535-600.
+ */
+import { elementiPaginazione, hrefPagina, PUNTINI } from '../../lib/paginazione';
+
+interface Props {
+  /** URL della pagina 1, senza query string. */
+  base: string;
+  pagina: number;
+  pagine: number;
+  /** Colore di accento della sezione. */
+  accento?: 'rosso' | 'giallo' | 'blu';
+  etichetta?: string;
+}
+
+const { base, pagina, pagine, accento = 'blu', etichetta = 'Paginazione risultati' } = Astro.props;
+
+const ATTIVO = {
+  rosso: 'bg-red-700 text-white border-red-700',
+  giallo: 'bg-yellow-700 text-white border-yellow-700',
+  blu: 'bg-blue-700 text-white border-blue-700',
+}[accento];
+
+const elementi = pagine > 1 ? elementiPaginazione(pagina, pagine, 1) : [1];
+const baseLink = 'inline-flex items-center justify-center px-3.5 py-2 border border-gray-200 rounded-lg text-sm font-medium bg-white shadow-sm transition-colors';
+const inattivo = `${baseLink} text-gray-600 hover:bg-gray-50`;
+const frecce = 'inline-flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 transition-colors shadow-sm';
+---
+{pagine > 1 && (
+  <nav id="pagination" class="mt-8 mb-12 flex justify-center items-center gap-2 flex-wrap" aria-label={etichetta} data-pagina={pagina} data-pagine={pagine}>
+    {pagina > 1 && (
+      <a href={hrefPagina(base, pagina - 1)} rel="prev" class={frecce} aria-label="Pagina precedente">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+        Precedente
+      </a>
+    )}
+
+    {elementi.map((elemento) => (
+      elemento === PUNTINI
+        ? <span class="px-2 py-2 text-sm text-gray-400" aria-hidden="true">{PUNTINI}</span>
+        : elemento === pagina
+          ? <span class={`${baseLink} ${ATTIVO} pointer-events-none`} aria-current="page">{elemento}</span>
+          : <a href={hrefPagina(base, elemento as number)} class={inattivo} aria-label={`Pagina ${elemento}`}>{elemento}</a>
+    ))}
+
+    {pagina < pagine && (
+      <a href={hrefPagina(base, pagina + 1)} rel="next" class={frecce} aria-label="Pagina successiva">
+        Successiva
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+      </a>
+    )}
+  </nav>
+)}

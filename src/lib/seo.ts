@@ -139,7 +139,16 @@ export function generateArticleStructuredData(article: any): string {
  * @param article The article data
  * @returns JSON-LD structured data for breadcrumbs as a string
  */
-export function generateBreadcrumbStructuredData(article: any): string {
+/** Voce aggiuntiva di breadcrumb, per le pagine che non sono articoli (liste filtrate). */
+export interface VoceBreadcrumb {
+  nome: string;
+  url: string;
+}
+
+export function generateBreadcrumbStructuredData(article: any, voceExtra?: VoceBreadcrumb): string {
+  // NB: la proprieta' e' "@id", non "id". Con "id" (senza chiocciola) JSON-LD non
+  // riconosce l'identificatore e Google considera l'`item` privo di URL: fino a questa
+  // correzione TUTTI i breadcrumb del sito erano di fatto senza destinazione.
   const breadcrumbData = {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
@@ -148,8 +157,8 @@ export function generateBreadcrumbStructuredData(article: any): string {
         "@type": "ListItem",
         "position": 1,
         "item": {
-          "@type": "Thing",
-          "id": "https://edunews24.it/",
+          "@type": "WebPage",
+          "@id": "https://edunews24.it/",
           "name": "Home"
         }
       },
@@ -157,8 +166,8 @@ export function generateBreadcrumbStructuredData(article: any): string {
         "@type": "ListItem",
         "position": 2,
         "item": {
-          "@type": "Thing",
-          "id": `https://edunews24.it/${article.category_slug}`,
+          "@type": "WebPage",
+          "@id": `https://edunews24.it/${article.category_slug}`,
           "name": article.category
         }
       }
@@ -173,8 +182,21 @@ export function generateBreadcrumbStructuredData(article: any): string {
       "position": 3,
       "item": {
         "@type": "WebPage",
-        "id": articleUrl,
+        "@id": articleUrl,
         "name": article.title
+      }
+    });
+  } else if (voceExtra) {
+    // Terzo livello esplicito: usato dalle pagine filtro (Home > Sezione > Filtro).
+    // Si applica solo quando non c'e' un articolo, cosi' i 7 call site esistenti,
+    // che passano un solo argomento, non cambiano comportamento.
+    breadcrumbData.itemListElement.push({
+      "@type": "ListItem",
+      "position": 3,
+      "item": {
+        "@type": "WebPage",
+        "@id": voceExtra.url,
+        "name": voceExtra.nome
       }
     });
   }
@@ -189,10 +211,17 @@ export function generateBreadcrumbStructuredData(article: any): string {
  * @param listUrl Canonical URL of the list page
  * @returns JSON-LD structured data for ItemList as a string
  */
-export function generateItemListStructuredData(articles: any[], listName: string, listUrl: string): string {
+export function generateItemListStructuredData(
+  articles: any[],
+  listName: string,
+  listUrl: string,
+  posizioneIniziale: number = 1,
+): string {
+  // posizioneIniziale serve alle liste paginate: a pagina 3 le posizioni devono
+  // proseguire da 41, non ripartire da 1.
   const itemListElement = articles.map((article, index) => ({
     "@type": "ListItem",
-    "position": index + 1,
+    "position": posizioneIniziale + index,
     "url": `https://edunews24.it${article.href}`, // Assuming article.href is the relative path
     "name": article.title,
     // Optionally add image if available in the article object

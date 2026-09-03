@@ -2,8 +2,19 @@ import { defineMiddleware } from 'astro:middleware';
 import { API_CATALOG, API_CATALOG_CONTENT_TYPE, API_CATALOG_PATH } from './lib/api-catalog';
 import { WEB_BOT_AUTH_JWKS, WEB_BOT_AUTH_CONTENT_TYPE, WEB_BOT_AUTH_DIRECTORY_PATH } from './lib/web-bot-auth';
 import { wantsMarkdown, htmlToMarkdown, estimateTokens } from './lib/markdown-negotiation';
+import { riscaldaCorpus } from './lib/corpus';
+
+// Riscaldamento della cache delle faccette: parte al primo hit del processo e non
+// blocca la richiesta. Serve a evitare che la prima visita a una pagina filtro paghi
+// la costruzione del corpus (qualche secondo).
+let corpusRiscaldato = false;
 
 export const onRequest = defineMiddleware(async ({ request, rewrite }, next) => {
+  if (!corpusRiscaldato) {
+    corpusRiscaldato = true;
+    riscaldaCorpus();
+  }
+
   const host = request.headers.get('host')?.split(':')[0];
   const url = new URL(request.url);
 

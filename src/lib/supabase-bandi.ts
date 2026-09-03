@@ -137,7 +137,7 @@ export interface BandoDetail extends Bando {
 // Catalogo (read-only)
 // =========================================================================
 
-export interface CatalogoRow { id: number; nome: string }
+export interface CatalogoRow { id: number; nome: string; slug?: string | null }
 export interface CodiceAteco { id: number; codice: string; descrizione: string | null }
 
 export interface Catalogo {
@@ -171,7 +171,9 @@ export async function loadCatalogo(): Promise<Catalogo> {
       supabaseBandi.from('modalita_erogazione').select('id, nome').order('id'),
       supabaseBandi.from('beneficiari').select('id, nome').order('nome'),
       supabaseBandi.from('codici_ateco').select('id, codice, descrizione').order('codice'),
-      supabaseBandi.from('regioni').select('id, nome').order('nome'),
+      // La colonna slug e' popolata solo su `regioni` (20/20) ed e' gia' nella forma
+      // pulita: e' il primo criterio di match con il registro src/lib/regioni.ts.
+      supabaseBandi.from('regioni').select('id, nome, slug').order('nome'),
       supabaseBandi.from('settori').select('id, nome').order('nome'),
     ]);
     const cat: Catalogo = {

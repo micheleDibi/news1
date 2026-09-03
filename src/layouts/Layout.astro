@@ -31,6 +31,13 @@ const {
   robots
 } = Astro.props;
 
+// Direttive di indicizzazione. I meta specifici per bot erano hardcoded a
+// "index, follow": per Google una direttiva rivolta a googlebot prevale su quella
+// generica, quindi un robots="noindex, follow" passato come prop non aveva alcun
+// effetto. Ora derivano dalla stessa fonte. Senza la prop l'output resta identico.
+const direttiveRobots = robots || "index, follow";
+const direttiveBot = `${direttiveRobots}, max-snippet:-1, max-image-preview:large, max-video-preview:-1`;
+
 // Fetch latest articles for breaking news
 const { data: breakingNewsArticles } = await supabase
   .from('articles')
@@ -58,9 +65,9 @@ const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
     <meta name="facebook-domain-verification" content="q6kx042o2rngwqeemuxv2bod9xdsub" />
     
     <!-- Robots and Indexing -->
-    <meta name="robots" content={robots || "index, follow"} />
-    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
-    <meta name="bingbot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" />
+    <meta name="robots" content={direttiveRobots} />
+    <meta name="googlebot" content={direttiveBot} />
+    <meta name="bingbot" content={direttiveBot} />
     <meta name="yandex-verification" content="963c8f839c31d2f5" />
     
     <!-- Canonical URL -->
@@ -158,7 +165,7 @@ const fullUrl = canonicalUrl || `${siteUrl}${currentUrl}`;
       fbq('init', '1981909175673146');
       fbq('track', 'PageView');
     </script>
-    <noscript><img height="1" width="1" style="display:none"
+    <noscript><img height="1" width="1" style="display:none" alt=""
       src="https://www.facebook.com/tr?id=1981909175673146&ev=PageView&noscript=1"/></noscript>
     <!-- End Meta Pixel Code -->
   </head>

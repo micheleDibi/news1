@@ -1,0 +1,91 @@
+---
+/**
+ * Pagina indice di una dimensione: /interpelli/regione, /bandi/programma, ...
+ *
+ * Ha anche un effetto collaterale voluto: prima di esistere, /interpelli/regione
+ * cadeva su interpelli/[slug].astro e rispondeva 200 con "Interpello non Trovato",
+ * cioe' un soft-404 indicizzabile. Un segmento statico vince su uno dinamico, quindi
+ * questa pagina lo copre con contenuto vero.
+ */
+import Layout from '../../layouts/Layout.astro';
+import Sorelle from './Sorelle.astro';
+import { generateBreadcrumbStructuredData } from '../../lib/seo';
+import { configSezione, dimensione as trovaDimensione, type Sezione } from '../../config/pagine-filtro';
+import { vociPubblicate, hrefFiltro, hubDisponibili, hrefHub } from '../../lib/pagine-filtro';
+
+interface Props {
+  sezione: Sezione;
+  dimensione: string;
+}
+
+const { sezione, dimensione: slugDimensione } = Astro.props;
+const cfg = configSezione(sezione);
+// La pagina che monta questo componente ha gia' verificato che la dimensione
+// esista, sia abilitata e abbia almeno una voce pubblicata (hubNonDisponibile).
+const dim = trovaDimensione(sezione, slugDimensione)!;
+
+const PALETTE = {
+  interpelli: { grad: 'from-red-700 to-red-800', briciole: 'text-red-200' },
+  'selezione-personale': { grad: 'from-yellow-700 to-yellow-800', briciole: 'text-yellow-200' },
+  bandi: { grad: 'from-blue-700 to-blue-800', briciole: 'text-blue-200' },
+}[sezione];
+
+const voci = await vociPubblicate(sezione, slugDimensione);
+const base = hrefHub(sezione, slugDimensione);
+const canonical = `https://edunews24.it${base}`;
+
+const titolo = `${cfg.etichetta} per ${dim.etichetta.toLowerCase()}`;
+const descrizione = `Tutte le ${dim.etichettaPlurale.toLowerCase()} con annunci pubblicati su EduNews24: ` +
+  `${voci.length} pagine, aggiornate insieme all'elenco principale.`;
+
+const breadcrumb = generateBreadcrumbStructuredData(
+  { category: cfg.etichetta, category_slug: cfg.basePath.replace(/^\//, '') },
+  { nome: dim.etichettaPlurale, url: canonical },
+);
+
+const altreDimensioni = hubDisponibili(sezione)
+  .filter((d) => d.slug !== slugDimensione)
+  .map((d) => ({ etichetta: d.etichettaPlurale, href: hrefHub(sezione, d.slug) }));
+---
+<Layout title={`${titolo} - EduNews24`} description={descrizione} canonicalUrl={canonical}>
+  <script type="application/ld+json" set:html={breadcrumb} slot="head" />
+  <main class="bg-gray-50 min-h-screen">
+    <div class={`bg-gradient-to-r ${PALETTE.grad} text-white py-10 px-4 sm:px-6 lg:px-8`}>
+      <div class="container mx-auto max-w-6xl">
+        <nav class={`flex text-sm ${PALETTE.briciole} mb-4`} aria-label="Breadcrumb">
+          <ol class="inline-flex items-center flex-wrap gap-y-1">
+            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
+            <li class="flex items-center">
+              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <a href={cfg.basePath} class="hover:text-white transition-colors">{cfg.etichetta}</a>
+            </li>
+            <li class="flex items-center">
+              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <span class="text-white font-medium">{dim.etichettaPlurale}</span>
+            </li>
+          </ol>
+        </nav>
+        <h1 class="text-3xl md:text-4xl font-bold mb-2">{titolo}</h1>
+        <p class="text-white/80 text-sm">{voci.length} {voci.length === 1 ? 'pagina disponibile' : 'pagine disponibili'}</p>
+      </div>
+    </div>
+
+    <div class="container mx-auto px-4 max-w-6xl py-8">
+      <ul class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {voci.map((v) => (
+          <li>
+            <a href={hrefFiltro(sezione, slugDimensione, v.slug)}
+               class="flex items-baseline justify-between gap-3 px-4 py-3 bg-white rounded-xl border border-gray-100 shadow-sm hover:border-gray-300 hover:shadow-md transition-all">
+              <span class="font-medium text-gray-900">{v.etichetta}</span>
+              <span class="text-sm text-gray-400 shrink-0">{v.totale}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+
+      {altreDimensioni.length > 0 && (
+        <Sorelle titolo="Esplora anche" voci={altreDimensioni} />
+      )}
+    </div>
+  </main>
+</Layout>

@@ -1,0 +1,36 @@
+---
+/**
+ * Frammento HTML della lista interpelli: solo il contenitore dei risultati e la
+ * paginazione, renderizzati con GLI STESSI componenti della pagina.
+ *
+ * Serve allo script client per aggiornare la lista dopo un cambio di filtro senza
+ * ricaricare la pagina. Rispetto al fetch della pagina intera evita di rieseguire
+ * Header.astro (2 query Supabase) e il ticker del Layout (1 query) a ogni interazione,
+ * e soprattutto evita di avere un secondo template di card da tenere allineato.
+ *
+ * Non e' indicizzabile: robots.txt ha gia' Disallow: /api/ e qui si aggiunge
+ * X-Robots-Tag come seconda barriera.
+ */
+export const prerender = false;
+
+import ListaInterpelli from '../../../components/liste/ListaInterpelli.astro';
+import PaginazioneLinks from '../../../components/filtro/PaginazioneLinks.astro';
+import { DEF_INTERPELLI, caricaInterpelli } from '../../../lib/liste/interpelli';
+import { leggiFiltri, filtriAttivi, urlLista } from '../../../lib/liste/parametri';
+import { numeroPagine } from '../../../lib/paginazione';
+
+Astro.response.headers.set('X-Robots-Tag', 'noindex');
+Astro.response.headers.set('Cache-Control', 'no-store');
+
+const valori = leggiFiltri(Astro.url, DEF_INTERPELLI);
+const grezzo = Astro.url.searchParams.get('page');
+const pagina = /^[1-9]\d{0,5}$/.test(grezzo ?? '1') ? Number(grezzo ?? '1') : 1;
+
+const { righe, totale } = await caricaInterpelli(valori, pagina);
+const pagine = numeroPagine(totale, DEF_INTERPELLI.perPagina);
+const base = urlLista(DEF_INTERPELLI, valori, 1);
+---
+<div id="frammento" data-totale={totale} data-pagina={pagina} data-pagine={pagine}>
+  <ListaInterpelli righe={righe} filtrata={filtriAttivi(valori) > 0} />
+  <PaginazioneLinks base={base} pagina={pagina} pagine={pagine} accento="rosso" />
+</div>

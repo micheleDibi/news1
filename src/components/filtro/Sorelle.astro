@@ -1,0 +1,47 @@
+---
+/**
+ * Blocco di link "Esplora per ...". E' cio' che rende utili le pagine filtro: senza
+ * link interni resterebbero raggiungibili solo dalla sitemap.
+ *
+ * Va inserito DENTRO <main> (il middleware, per la negoziazione Markdown, estrae solo
+ * quel nodo) e FUORI dal contenitore della lista: gli script client rimuovono i nodi
+ * .interpello-item / .bando-item con una query limitata al contenitore, quindi questo
+ * blocco sopravvive intatto a ogni filtro.
+ */
+interface Voce {
+  etichetta: string;
+  href: string;
+  totale?: number;
+}
+
+interface Props {
+  titolo: string;
+  voci: Voce[];
+  /** Livello del titolo: h2 nelle pagine elenco, h3 nei blocchi secondari. */
+  livello?: 2 | 3;
+  hrefTutti?: string;
+  etichettaTutti?: string;
+}
+
+const { titolo, voci, livello = 2, hrefTutti, etichettaTutti = 'Vedi tutte' } = Astro.props;
+---
+{voci.length > 0 && (
+  <section class="mt-8 mb-10 p-5 bg-white rounded-xl shadow-sm border border-gray-100">
+    <div class="flex items-baseline justify-between gap-3 mb-3">
+      {livello === 2
+        ? <h2 class="text-base font-bold text-gray-900">{titolo}</h2>
+        : <h3 class="text-base font-bold text-gray-900">{titolo}</h3>}
+      {hrefTutti && <a href={hrefTutti} class="text-sm text-gray-500 hover:text-gray-800 transition-colors">{etichettaTutti}</a>}
+    </div>
+    <ul class="flex flex-wrap gap-2">
+      {voci.map((v) => (
+        <li>
+          <a href={v.href} class="sorella-item inline-flex items-baseline gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 bg-gray-50 text-sm text-gray-700 hover:bg-white hover:border-gray-300 transition-colors">
+            <span>{v.etichetta}</span>
+            {v.totale != null && <span class="text-xs text-gray-400">{v.totale}</span>}
+          </a>
+        </li>
+      ))}
+    </ul>
+  </section>
+)}

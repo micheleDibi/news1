@@ -1,0 +1,9 @@
+---
+import HubDimensione from '../../../components/filtro/HubDimensione.astro';
+import { hubNonDisponibile } from '../../../lib/pagine-filtro';
+
+// Segmento statico: vince su [slug].astro e chiude il soft-404 che rispondeva 200.
+const errore = await hubNonDisponibile('selezione-personale', 'categoria');
+if (errore) return errore;
+---
+<HubDimensione sezione="selezione-personale" dimensione="categoria" />

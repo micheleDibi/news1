@@ -1,0 +1,107 @@
+---
+/**
+ * Pagina filtro degli interpelli: /interpelli/regione/marche, /interpelli/classe/a028,
+ * /interpelli/provincia/roma.
+ *
+ * Tre segmenti: non c'e' collisione con /interpelli/[slug] (due segmenti), perche' in
+ * Astro un segmento dinamico compila a ([^/]+?) e non attraversa lo slash.
+ */
+export const prerender = false;
+
+import PaginaFiltro from '../../../components/filtro/PaginaFiltro.astro';
+import CardInterpello from '../../../components/liste/CardInterpello.astro';
+import { supabase } from '../../../lib/supabase';
+import { slugInterpello, COLONNE_CARD_INTERPELLO, type Interpello } from '../../../lib/liste/interpelli';
+import { risolvi, sorelle, incrociate, hrefFiltro, hrefHub } from '../../../lib/pagine-filtro';
+import { leggiPagina, numeroPagine, intervalloRange, rispostaNonTrovata } from '../../../lib/paginazione';
+import { metaFiltro, introFiltro, etichettaBreve } from '../../../lib/seo-filtro';
+import { configSezione } from '../../../config/pagine-filtro';
+
+const SEZIONE = 'interpelli' as const;
+const cfg = configSezione(SEZIONE);
+const { dimensione: slugDimensione, valore: slugValore } = Astro.params;
+
+const nonTrovata = () => rispostaNonTrovata(
+  'Pagina non trovata',
+  'Non ci sono interpelli per questo filtro.',
+  cfg.basePath,
+  'Torna agli interpelli',
+);
+
+const esito = await risolvi(SEZIONE, slugDimensione!, slugValore!);
+if (esito.stato === 'alias') {
+  return Astro.redirect(hrefFiltro(SEZIONE, slugDimensione!, esito.slugCanonico), 301);
+}
+if (esito.stato === 'assente') return nonTrovata();
+
+const { voce, dim } = esito;
+const base = hrefFiltro(SEZIONE, dim.slug, voce.slug);
+
+const pag = leggiPagina(Astro.url, base);
+if (pag.tipo === 'redirect') return Astro.redirect(pag.href, 301);
+if (pag.tipo === 'nonTrovata') return nonTrovata();
+
+const pagine = numeroPagine(voce.totale, cfg.perPagina);
+if (pag.pagina > pagine) return nonTrovata();
+
+const colonna = dim.slug === 'regione' ? 'interpello_regione'
+  : dim.slug === 'provincia' ? 'interpello_provincia'
+  : 'classe_concorso';
+
+const { da, a } = intervalloRange(pag.pagina, cfg.perPagina);
+const { data } = await supabase
+  .from('interpelli')
+  .select(COLONNE_CARD_INTERPELLO)
+  .eq('link_type', 'single')
+  .eq('status', 'completed')
+  // valoriDb contiene tutte le grafie dello stesso valore ("Emilia-Romagna" e "Emilia Romagna").
+  .in(colonna, voce.valoriDb)
+  .order('interpello_date', { ascending: false })
+  .order('id', { ascending: false })
+  .range(da, a);
+
+const righe = (data ?? []) as unknown as Interpello[];
+if (righe.length === 0 && pag.pagina > 1) return nonTrovata();
+
+const meta = metaFiltro(SEZIONE, dim, voce, pag.pagina, pagine, base);
+
+// Incroci: costano zero query, i conteggi vengono dalle tabelle del corpus.
+const versoProvince = dim.slug === 'regione' ? await incrociate(SEZIONE, 'regione', voce.slug, 'provincia') : [];
+const versoClassi = dim.slug !== 'classe' ? await incrociate(SEZIONE, dim.slug, voce.slug, 'classe') : [];
+const versoRegioni = dim.slug === 'classe' ? await incrociate(SEZIONE, 'classe', voce.slug, 'regione') : [];
+
+const intro = introFiltro(SEZIONE, dim, voce, [
+  ...(versoProvince.length ? [{ dimensione: 'provincia', etichettaPlurale: 'Province', voci: versoProvince }] : []),
+  ...(versoRegioni.length ? [{ dimensione: 'regione', etichettaPlurale: 'Regioni', voci: versoRegioni }] : []),
+  ...(versoClassi.length ? [{ dimensione: 'classe', etichettaPlurale: 'Classi di concorso', voci: versoClassi }] : []),
+]);
+
+const altre = await sorelle(SEZIONE, dim.slug, voce.slug);
+const blocchi = [
+  ...(versoProvince.length ? [{ titolo: `Province ${voce.etichetta}`, voci: versoProvince.map((v) => ({ etichetta: v.etichetta, href: v.href, totale: v.totale })), hrefTutti: hrefHub(SEZIONE, 'provincia') }] : []),
+  ...(versoClassi.length ? [{ titolo: "Classi di concorso più richieste", voci: versoClassi.map((v) => ({ etichetta: v.etichetta, href: v.href, totale: v.totale })), hrefTutti: hrefHub(SEZIONE, 'classe') }] : []),
+  ...(versoRegioni.length ? [{ titolo: 'Regioni con questa classe di concorso', voci: versoRegioni.map((v) => ({ etichetta: v.etichetta, href: v.href, totale: v.totale })), hrefTutti: hrefHub(SEZIONE, 'regione') }] : []),
+  ...(altre.length ? [{ titolo: `Altre ${dim.etichettaPlurale.toLowerCase()}`, voci: altre.map((v) => ({ etichetta: v.etichetta, href: hrefFiltro(SEZIONE, dim.slug, v.slug), totale: v.totale })), hrefTutti: hrefHub(SEZIONE, dim.slug) }] : []),
+];
+
+const itemList = righe
+  .filter((i) => i.article_title || i.interpello_name)
+  .map((i) => ({ href: `/interpelli/${slugInterpello(i)}`, title: i.article_title || i.interpello_name }));
+---
+<PaginaFiltro
+  sezione={SEZIONE}
+  meta={meta}
+  intro={intro}
+  base={base}
+  pagina={pag.pagina}
+  pagine={pagine}
+  totale={voce.totale}
+  etichettaSezione={cfg.etichetta}
+  basePathSezione={cfg.basePath}
+  etichettaCorrente={etichettaBreve(dim, voce)}
+  itemList={itemList}
+  blocchi={blocchi}
+  vuota={righe.length === 0}
+>
+  {righe.map((interpello) => <CardInterpello interpello={interpello} />)}
+</PaginaFiltro>

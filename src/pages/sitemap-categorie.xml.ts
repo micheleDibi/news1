@@ -19,6 +19,13 @@ export async function GET() {
     <changefreq>daily</changefreq>
     <priority>0.7</priority>
   </url>`;
+    // /bandi stava in sitemap-pagine.xml: le tre landing di sezione ora sono tutte qui.
+    xml += `
+  <url>
+    <loc>https://edunews24.it/bandi</loc>
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>`;
 
     // Add all categories from the categories.ts file
     categories.forEach(category => {

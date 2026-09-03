@@ -7,6 +7,7 @@ import {
   type Bando, type BandoDetail, type BandoSection,
 } from '../../lib/supabase-bandi';
 import BandiExpertCta from '../../components/BandiExpertCta.astro';
+import { hrefFiltroSePubblicata } from '../../lib/pagine-filtro';
 import { generateBreadcrumbStructuredData } from '../../lib/seo';
 
 export const prerender = false;
@@ -95,6 +96,10 @@ const scadenzaBadge = (() => {
 // nomi risolti via resolveBandoRelations().
 (bando as any).tipologia = bando.tipologia_nome;
 (bando as any).programma = bando.programma_nome;
+
+// Link verso le pagine filtro, solo dove esistono davvero (mai verso un 404).
+const hrefTipologia = hrefFiltroSePubblicata('bandi', 'tipologia', bando.tipologia_nome);
+const hrefProgramma = hrefFiltroSePubblicata('bandi', 'programma', bando.programma_nome);
 (bando as any).modalita_erogazione = bando.modalita_nome;
 (bando as any).beneficiari = bando.beneficiari_nomi;
 (bando as any).codici_ateco = bando.codici_ateco_resolved.map(c =>
@@ -257,7 +262,9 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData({
         <h1 class="text-2xl md:text-4xl font-bold mb-3 leading-tight">{titoloDisplay}</h1>
         <div class="flex flex-wrap items-center gap-3 text-sm">
           {bando.tipologia && (
-            <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold">{bando.tipologia}</span>
+            hrefTipologia
+              ? <a href={hrefTipologia} class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold hover:bg-white/30 transition-colors">{bando.tipologia}</a>
+              : <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold">{bando.tipologia}</span>
           )}
           {bando.ente_erogatore && (
             <span class="inline-flex items-center gap-1.5 text-blue-100">
@@ -480,7 +487,9 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData({
               {bando.programma && (
                 <div class="mb-3">
                   <p class="text-xs text-gray-500 mb-0.5">Programma</p>
-                  <p class="text-sm font-medium text-gray-800">{bando.programma}</p>
+                  {hrefProgramma
+                    ? <p class="text-sm font-medium"><a href={hrefProgramma} class="text-blue-700 hover:underline">{bando.programma}</a></p>
+                    : <p class="text-sm font-medium text-gray-800">{bando.programma}</p>}
                 </div>
               )}
               {bando.modalita_erogazione && (

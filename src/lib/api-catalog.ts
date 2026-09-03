@@ -21,7 +21,7 @@ export const API_CATALOG = {
         },
         {
           href: 'https://edunews24.it/sitemap-index.xml',
-          title: 'Sitemap index (articoli, categorie, bandi, video)',
+          title: 'Sitemap index (articoli, categorie, interpelli, selezione personale, bandi, video)',
           type: 'application/xml',
         },
       ],

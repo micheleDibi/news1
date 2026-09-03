@@ -4,75 +4,75 @@ import { format, parseISO, isValid } from 'date-fns';
 import { it } from 'date-fns/locale';
 import { createClient } from '@supabase/supabase-js';
 import { marked } from 'marked';
+import { slugInterpello, type Interpello } from '../../lib/liste/interpelli';
+import { hrefFiltroSePubblicata } from '../../lib/pagine-filtro';
 
 const { slug } = Astro.params;
-
-// Define the Interpello type
-interface Interpello {
-  id: number;
-  interpello_name: string;
-  interpello_date: string;
-  interpello_description: string;
-  interpello_link: string;
-  interpello_regione?: string;
-  interpello_provincia?: string;
-  interpello_citta?: string;
-  classe_concorso?: string;
-  article_content?: string;
-  article_title?: string;
-  article_subtitle?: string;
-  created_at?: string;
-}
-
-// Function to generate URL-friendly slug from interpello data
-function generateInterpelloSlug(interpello: Interpello): string {
-  const parts = [
-    interpello.interpello_name,
-    interpello.interpello_provincia || interpello.interpello_citta,
-    interpello.interpello_regione,
-    interpello.id?.toString()
-  ].filter(Boolean);
-
-  return parts
-    .join('-')
-    .toLowerCase()
-    .replace(/[^a-z0-9\-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
 
 // Initialize Supabase client
 const supabaseUrl = import.meta.env.PUBLIC_SUPABASE_URL;
 const supabaseKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY;
 
-async function loadInterpelliData(): Promise<Interpello[]> {
+// Lo slug termina sempre con l'id della riga (vedi slugInterpello), quindi
+// il record si recupera con una query mirata. La versione precedente caricava l'INTERA
+// tabella con select('*') e cercava lo slug in memoria: PostgREST tronca a 1000 righe,
+// perche' non c'era ne' .range() ne' paginazione, e le righe oltre quella soglia
+// diventavano irraggiungibili (152 URL gia' dichiarati in sitemap rispondevano 200
+// con "Interpello non Trovato"). Il numero cresceva a ogni nuovo interpello.
+async function loadInterpelloById(id: number): Promise<Interpello | null> {
   try {
     if (!supabaseUrl || !supabaseKey) {
       console.error('Missing Supabase environment variables');
-      return [];
+      return null;
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    
+
     const { data, error } = await supabase
       .from('interpelli')
       .select('*')
-      .order('interpello_date', { ascending: false });
+      .eq('id', id)
+      .maybeSingle();
 
     if (error) {
       console.error('Supabase error:', error);
-      return [];
+      return null;
     }
 
-    return data || [];
+    return (data as Interpello | null) ?? null;
   } catch (error) {
-    console.error('Error fetching interpelli data:', error);
-    return [];
+    console.error('Error fetching interpello:', error);
+    return null;
   }
 }
 
-const interpelliData: Interpello[] = await loadInterpelliData();
-const interpello = interpelliData.find(i => generateInterpelloSlug(i) === slug);
+/** 404 reale con noindex, stesso pattern di src/pages/bandi/[slug].astro:46-50. */
+function interpelloNonTrovato(): Response {
+  return new Response(
+    `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8">` +
+      `<title>404 - Interpello non trovato</title></head>` +
+      `<body><h1>404 - Interpello non trovato</h1>` +
+      `<p><a href="/interpelli">Torna alla lista degli interpelli</a></p></body></html>`,
+    { status: 404, headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' } },
+  );
+}
+
+const idNelloSlug = /-(\d+)$/.exec(slug ?? '');
+if (!idNelloSlug) return interpelloNonTrovato();
+
+const interpello = await loadInterpelloById(Number(idNelloSlug[1]));
+if (!interpello) return interpelloNonTrovato();
+
+// Se il record esiste ma lo slug canonico e' cambiato (es. e' cambiato interpello_name),
+// si reindirizza invece di servire due URL con lo stesso contenuto.
+// Link verso le pagine filtro, ma solo dove esistono davvero (mai verso un 404).
+// La citta' resta testo: non c'e' una dimensione "citta".
+const hrefRegione = hrefFiltroSePubblicata('interpelli', 'regione', interpello.interpello_regione);
+const hrefProvincia = hrefFiltroSePubblicata('interpelli', 'provincia', interpello.interpello_provincia);
+const hrefClasse = hrefFiltroSePubblicata('interpelli', 'classe', interpello.classe_concorso);
+
+const slugCanonico = slugInterpello(interpello);
+if (slugCanonico !== slug) return Astro.redirect(`/interpelli/${slugCanonico}`, 301);
 
 // Utility function to strip HTML tags and clean text for meta descriptions
 const stripHtmlTags = (html: string): string => {
@@ -187,14 +187,22 @@ const structuredData = interpello ? JSON.stringify(
             )}
             <div class="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500 mb-3">
               {interpello.interpello_regione && (
-                <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
-                  📍 {interpello.interpello_regione}
-                </span>
+                hrefRegione
+                  ? <a href={hrefRegione} class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium hover:bg-blue-200 transition-colors">
+                      📍 {interpello.interpello_regione}
+                    </a>
+                  : <span class="inline-flex items-center px-2 py-1 bg-blue-100 text-blue-800 rounded-md text-xs font-medium">
+                      📍 {interpello.interpello_regione}
+                    </span>
               )}
               {interpello.interpello_provincia && (
-                <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">
-                  🏛️ {interpello.interpello_provincia}
-                </span>
+                hrefProvincia
+                  ? <a href={hrefProvincia} class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium hover:bg-green-200 transition-colors">
+                      🏛️ {interpello.interpello_provincia}
+                    </a>
+                  : <span class="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md text-xs font-medium">
+                      🏛️ {interpello.interpello_provincia}
+                    </span>
               )}
               {interpello.interpello_citta && (
                 <span class="inline-flex items-center px-2 py-1 bg-teal-100 text-teal-800 rounded-md text-xs font-medium">
@@ -202,9 +210,13 @@ const structuredData = interpello ? JSON.stringify(
                 </span>
               )}
               {interpello.classe_concorso && (
-                <span class="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-medium">
-                  🎓 {interpello.classe_concorso}
-                </span>
+                hrefClasse
+                  ? <a href={hrefClasse} class="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-medium hover:bg-purple-200 transition-colors">
+                      🎓 {interpello.classe_concorso}
+                    </a>
+                  : <span class="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md text-xs font-medium">
+                      🎓 {interpello.classe_concorso}
+                    </span>
               )}
             </div>
             <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">

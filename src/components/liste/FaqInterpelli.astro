@@ -1,0 +1,22 @@
+---
+/**
+ * Domande frequenti sugli interpelli.
+ *
+ * Il testo visibile e il JSON-LD FAQPage leggono lo STESSO array
+ * (src/lib/liste/testi.ts): non possono divergere, che e' la condizione perche' il
+ * markup sia valido. Le risposte restano generiche e rimandano sempre all'avviso
+ * della singola scuola.
+ */
+import { FAQ_INTERPELLI } from '../../lib/liste/testi';
+---
+<section class="mt-8 mb-10 p-5 sm:p-6 bg-white rounded-xl shadow-sm border border-gray-100">
+  <h2 class="text-base font-bold text-gray-900 mb-4">Domande frequenti sugli interpelli</h2>
+  <div class="space-y-4">
+    {FAQ_INTERPELLI.map((voce) => (
+      <div>
+        <h3 class="text-sm font-semibold text-gray-800 mb-1">{voce.question}</h3>
+        <p class="text-sm text-gray-600 leading-relaxed">{voce.answer}</p>
+      </div>
+    ))}
+  </div>
+</section>
