@@ -6,13 +6,12 @@
  * unico: il markup visibile e il JSON-LD leggono lo stesso dato e non possono divergere.
  *
  * NIENTE claim fattuali non verificabili. Sulla frequenza di aggiornamento la formula
- * e' volutamente prudente ("piu' volte al giorno"): il codice schedula quattro
- * esecuzioni giornaliere per interpelli e selezione personale
- * (backend/app/interpelli_sender.py:17, backend/app/selezione_personale_sender.py:17),
- * ma non e' verificabile da qui quali sender girino davvero in produzione. Per i bandi
- * la frase e' OMESSA del tutto: README.md:618 dichiara edunews-bandi-sender.service
- * disabilitato in v5, mentre backend/app/bandi_sender.py:41 lo schedula. Va aggiunta
- * solo dopo conferma esplicita.
+ * e' volutamente prudente ("piu' volte al giorno"): tutte e tre le pipeline schedulano
+ * quattro esecuzioni giornaliere (backend/app/interpelli_sender.py:17,
+ * backend/app/selezione_personale_sender.py:17, backend/app/bandi_sender.py:41).
+ * NB: README.md:618 dichiara edunews-bandi-sender.service disabilitato in v5, ma il
+ * sender bandi e' confermato attivo in produzione (03/09/2026): e' il README a essere
+ * disallineato, non il codice.
  */
 
 export type SegmentoTesto =
@@ -89,7 +88,7 @@ export const INTRO_BANDI: IntroSezione = {
       a('programma', '/bandi/programma'),
       t(', modalità di erogazione, codice ATECO, '),
       a('tipologia', '/bandi/tipologia'),
-      t(', stato del bando, importo e finestra di scadenza. Ogni scheda riporta l’ente erogatore, l’area geografica, le date di pubblicazione e scadenza e, quando disponibile, la dotazione complessiva, oltre al collegamento alla fonte ufficiale. Lo stato mostrato accanto a ciascun bando tiene conto della data di scadenza indicata dalla fonte. Dotazioni, requisiti dei beneficiari, spese ammissibili e modalità di presentazione della domanda sono definiti dal testo ufficiale della misura, che va sempre consultato prima di procedere.'),
+      t(', stato del bando, importo e finestra di scadenza. Ogni scheda riporta l’ente erogatore, l’area geografica, le date di pubblicazione e scadenza e, quando disponibile, la dotazione complessiva, oltre al collegamento alla fonte ufficiale. Lo stato mostrato accanto a ciascun bando tiene conto della data di scadenza indicata dalla fonte. L’elenco viene aggiornato più volte al giorno. Dotazioni, requisiti dei beneficiari, spese ammissibili e modalità di presentazione della domanda sono definiti dal testo ufficiale della misura, che va sempre consultato prima di procedere.'),
     ],
   ],
   rigaBreve: 'Bandi e avvisi di finanziamento pubblico europei, nazionali, regionali e locali.',

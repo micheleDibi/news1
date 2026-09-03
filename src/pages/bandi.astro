@@ -59,8 +59,7 @@ const pageTitle = pagina > 1
 const pageDescription = pagina > 1
   ? `Bandi europei, nazionali e regionali, pagina ${pagina} di ${pagine}: filtra per regione, settore, beneficiario, tipologia, importo e scadenza.`
   // Description 153 caratteri, con i programmi al posto dell'elenco dei filtri.
-  // Nessun claim sulla frequenza di aggiornamento: vedi la nota in src/lib/liste/testi.ts.
-  : 'Bandi di finanziamento europei, nazionali e regionali: FESR, FSE+, PNRR e bandi regionali. Filtra per regione, settore, beneficiario, importo e scadenza.';
+  : 'Bandi di finanziamento europei, nazionali e regionali aggiornati ogni giorno: FESR, FSE+, PNRR e bandi regionali. Filtra per regione, settore e scadenza.';
 const pageKeywords = 'bandi, finanziamenti, FESR, FSE, Interreg, OpenCoesione, fondi europei, regionali, nazionali, codici ATECO';
 
 const blocchiEsplora: Array<{ titolo: string; voci: Array<{ etichetta: string; href: string; totale: number }>; hrefTutti: string }> = [];

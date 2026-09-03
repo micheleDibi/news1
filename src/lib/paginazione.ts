@@ -62,9 +62,16 @@ export function leggiPagina(url: URL, base: string): EsitoPagina {
   return { tipo: 'ok', pagina: Number(grezzo) };
 }
 
-/** URL di una pagina: la prima senza `?page=`, le altre con. */
+/**
+ * URL di una pagina: la prima senza `?page=`, le altre con.
+ *
+ * `base` puo' gia' contenere una query string, perche' nelle pagine elenco porta i
+ * filtri attivi (`/interpelli?regione=marche`): in quel caso il parametro va aggiunto
+ * con `&`, non con un secondo `?`.
+ */
 export function hrefPagina(base: string, pagina: number): string {
-  return pagina <= 1 ? base : `${base}?page=${pagina}`;
+  if (pagina <= 1) return base;
+  return `${base}${base.includes('?') ? '&' : '?'}page=${pagina}`;
 }
 
 /** 404 reale con noindex. Stesso pattern di src/pages/bandi/[slug].astro:46-50. */

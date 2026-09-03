@@ -41,6 +41,14 @@ Pagine nuove: **295 URL** (286 pagine filtro + 9 indici di dimensione), tutte in
 
 Sweep di regressione finale: **32 casi su 32** con lo status atteso.
 
+**Un bug trovato collaudando nel browser, e corretto.** Con un filtro attivo il link di paginazione
+produceva `?regione=marche?page=2` — due punti interrogativi — e la lista si svuotava: `hrefPagina`
+in `src/lib/paginazione.ts` appendeva sempre `?page=`, cosa corretta per le pagine filtro (dove il
+percorso non ha query) ma sbagliata per le pagine elenco, dove `base` porta già i filtri. I test con
+`curl` non l'avevano intercettato perché avevo provato `?page=N` solo senza filtri. Ora il parametro
+si aggiunge con `&` quando serve, ed è verificato su sette combinazioni: link, status, numero di
+schede e canonical corretti in tutte.
+
 ---
 
 ## 2. Tre bug che erano già in produzione
@@ -168,9 +176,10 @@ prevale su quella generica. `/scuola?secondary_filter=x` serviva `robots: noinde
   nella quarta FAQ. Il codice schedula quattro esecuzioni giornaliere
   (`backend/app/interpelli_sender.py:17`, `backend/app/selezione_personale_sender.py:17`), ma da qui
   non è verificabile quali sender girino davvero in produzione: la formula è volutamente vaga.
-- **Su `/bandi` la frase sulla frequenza è OMESSA**, anche se il mandato chiedeva "aggiornamento
-  quotidiano": `README.md:618` dichiara `edunews-bandi-sender.service` disabilitato in v5, mentre
-  `backend/app/bandi_sender.py:41` lo schedula. Confermami che gira e la aggiungo.
+- **Su `/bandi` la frase c'è** ("aggiornati ogni giorno" nella description, "aggiornato più volte al
+  giorno" nell'introduzione): il sender bandi è confermato attivo in produzione. Ne consegue che
+  `README.md:618` ("`edunews-bandi-sender.service` disabilitato in v5") e `README.md:285` sono
+  **disallineati dalla realtà** e andrebbero corretti.
 - **Le quattro FAQ di `/interpelli`** (`src/lib/liste/testi.ts`): rimandano sempre al testo
   dell'avviso e non affermano nulla di normativo, ma sono testo tuo e vanno riletti.
 - **Le tre introduzioni** (125, 115 e 135 parole): descrivono cosa contiene la pagina e rimandano
@@ -200,11 +209,12 @@ prevale su quella generica. `/scuola?secondary_filter=x` serviva `robots: noinde
 **Annunci scaduti e `JobPosting`.** Su selezione personale **11.222 righe su 12.441 (90,2%)** hanno
 `data_scadenza` passata, e `calculated_status` vale `OPEN` su tutte: la colonna è scorrelata dalla
 data e ho dovuto ricalcolare lo stato da `data_scadenza` ovunque. Hai scelto di indicizzarle tutte,
-con i non scaduti in cima. Resta aperto il punto che ti avevo segnalato: la scheda di dettaglio
-emette un `JobPosting` con `validThrough` nel passato per ~11.200 URL, ed è la causa tipica di
-un'azione manuale sul rich result Offerte di lavoro. Il rimedio, quando vorrai, sono tre righe in
-`selezione-personale/[slug].astro`: `X-Robots-Tag: noindex, follow` e omissione del blocco
-`JobPosting` quando la scadenza è passata. **Non l'ho fatto.**
+con i non scaduti in cima. Sul markup è stata scelta l'opzione intermedia e **è implementata**:
+`selezione-personale/[slug].astro` emette il `JobPosting` **solo finché l'annuncio è aperto**. Le
+schede scadute restano visibili e indicizzabili — non perdono traffico — ma non dichiarano più a
+Google un'offerta di lavoro attiva, che è ciò che espone a un'azione manuale sul rich result.
+Verificato su tre schede aperte (JobPosting presente) e tre scadute (assente), tutte 200 e
+`index, follow`.
 Nota collaterale: **36 righe hanno date implausibili** (massimo `5026-06-22`).
 
 **`JobPosting` degli interpelli senza `validThrough`** (`interpelli/[slug].astro`): dichiariamo 1046
@@ -235,6 +245,29 @@ entrambe.
 
 ---
 
+## 7-bis. Collaudo con JavaScript attivo
+
+Eseguito nel browser il 03/09/2026, senza mai un ricaricamento di pagina:
+
+| Passo | Esito |
+|---|---|
+| Cambio Regione su `/interpelli` | 1046 → 32 risultati, URL `?regione=marche`, select Provincia da disabilitato a 6 opzioni |
+| Click su "2" nella paginazione | 12 schede (32 = 20 + 12), `aria-current="page"` su 2 |
+| Tasto Indietro | torna a pagina 1 con 20 schede, il form resta su "Marche" |
+| Tasto Avanti | torna a pagina 2 |
+| Ricerca "dsga" con regione attiva | 7 risultati, pagina riportata a 1 |
+| `/bandi`: apertura tendina Settore | 90 opzioni, rese dal server |
+| Ricerca interna "turismo" | 1 opzione visibile |
+| Spunta "Turismo" | 1972 → **196**, etichetta "Turismo", contatore "1", badge "1 attivo" |
+| Aggiunta chip "Aperto" | 196 → **142**, badge "2 attivi", URL `?settore=87&stato=aperto` |
+
+I due conteggi finali sono stati incrociati con il database: 196 e 142 esatti.
+
+Il percorso senza JavaScript è quello verificato con `curl`, che è esattamente una GET del form
+senza esecuzione di script: filtri singoli e multipli, chip e tendine funzionano tutti.
+
+---
+
 ## 8. Cosa resta a te
 
 1. **Search Console.** Invia `sitemap-index.xml` (ora elenca 23 file). Le tre sitemap vecchie
@@ -249,11 +282,6 @@ entrambe.
 4. **IndexNow.** `src/lib/indexnow.ts` accetta liste di URL e non è mai stato usato per bandi,
    interpelli o pagine filtro. Le 295 pagine nuove si possono notificare in un colpo solo con
    `POST /api/indexnow-notify` (protetto da `API_SECRET_KEY`).
-5. **Prova con JavaScript attivo** filtri istantanei, tasto Indietro/Avanti, select provincia
-   dipendente dalla regione e popover delle tendine bandi: sono le uniche cose che non ho potuto
-   verificare da riga di comando.
-6. **Regola le soglie** in `src/config/pagine-filtro.ts` se vuoi più o meno pagine. Con soglia 3 su
+5. **Regola le soglie** in `src/config/pagine-filtro.ts` se vuoi più o meno pagine. Con soglia 3 su
    interpelli e 5 su bandi e selezione, oggi escono 286 pagine.
-7. Elimina `.env.bak-prima-fix-nome`: l'ho lasciato come backup dopo aver aggiunto
-   `PUBLIC_SUPABASE_BANDI_URL` (il valore c'era, ma sotto il nome `SUPABASE_URL_BANDI`, che il
-   frontend non legge).
+6. **Correggi il README** su `edunews-bandi-sender.service`: dice disabilitato, ma è attivo.

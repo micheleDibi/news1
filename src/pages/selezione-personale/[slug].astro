@@ -127,8 +127,15 @@ const pageDescription = bando?.article_subtitle
     ? createSafeDescription(bando.descrizione_breve, 160)
     : 'Dettagli del bando o concorso.';
 
-// Structured data
-const structuredData = bando ? JSON.stringify(
+// Structured data.
+//
+// Il JobPosting si emette SOLO finche' l'annuncio e' aperto. Le linee guida Google
+// Job Posting chiedono di rimuovere gli annunci scaduti, e qui il 90% del corpus ha
+// una scadenza passata: dichiararli tutti come offerte di lavoro attive e' la causa
+// tipica di un'azione manuale sul rich result Offerte di lavoro.
+// La pagina resta indicizzabile e visibile: sparisce solo il blocco di dati
+// strutturati, che su un annuncio non piu' candidabile non serve a nessuno.
+const structuredData = bando && !isExpired ? JSON.stringify(
   Object.fromEntries(
     Object.entries({
       "@context": "https://schema.org",
@@ -186,7 +193,7 @@ if (bando) {
 ---
 
 <Layout title={pageTitle} description={pageDescription} keywords={keywords}>
-  {bando && <script type="application/ld+json" set:html={structuredData} slot="head" />}
+  {structuredData && <script type="application/ld+json" set:html={structuredData} slot="head" />}
 
   <main class="bg-gray-50 min-h-screen">
     {bando ? (
