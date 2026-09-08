@@ -2658,7 +2658,17 @@ const cancelContactForm = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 py-4 sm:py-8">
-      <form ref={formRef} onSubmit={handleSubmit(onSubmit)} className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <form
+        ref={formRef}
+        onSubmit={(evento) => {
+          // Qui l'evento di submit e' gia' stato emesso e `submitter` e' gia'
+          // catturato: smontare adesso la voce di menu non fa danni. Farlo nel
+          // suo onClick invece annullava l'invio.
+          setMenuSalvaAperto(false);
+          handleSubmit(onSubmit)(evento);
+        }}
+        className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8"
+      >
         <div className="bg-white shadow-sm rounded-lg">
           {/* Header: due righe, sticky. Regola di lettura: a sinistra il
               documento, a destra i comandi. Il collasso e' a `md:`, come il page
@@ -2783,13 +2793,20 @@ const cancelContactForm = () => {
                         >
                           {/* Deve restare un submit con questo `name`: onSubmit
                               distingue le due azioni leggendo
-                              event.nativeEvent.submitter. */}
+                              event.nativeEvent.submitter.
+
+                              E NON deve avere un onClick che chiude il menu:
+                              React 18 esegue subito gli aggiornamenti di stato
+                              dei gesti discreti, quindi il bottone verrebbe
+                              smontato PRIMA che il browser esegua l'invio del
+                              form, e non partirebbe alcun submit. Il menu si
+                              chiude nell'onSubmit del form, quando l'evento
+                              e' gia' stato emesso. */}
                           <button
                             type="submit"
                             name="saveWithFacebook"
                             role="menuitem"
                             disabled={loading || fbPosting}
-                            onClick={() => setMenuSalvaAperto(false)}
                             className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             <svg className="w-4 h-4 shrink-0 text-[#1877F2]" fill="currentColor" viewBox="0 0 24 24">
