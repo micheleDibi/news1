@@ -7,7 +7,7 @@ Trigger (dal preprocess primary):
 
 Strategia:
   - Firecrawl markdown della FONTE (pagina indice di OpenCoesione/Regione che
-    elenca il bando insieme ad altre opportunita').
+    elenca il bando insieme ad altre opportunità).
   - LLM Sonnet 4.6 con extended reasoning per dedurre stato + date dal contesto
     indiretto.
   - Stesso tool schema del preprocess primary.
@@ -41,13 +41,13 @@ from .settings import get_settings
 
 
 RESOLVER_SYSTEM_PROMPT = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027 \
-(FESR, FSE+, JTF, INTERREG). Stai analizzando un bando per il quale NON e' disponibile la \
+(FESR, FSE+, JTF, INTERREG). Stai analizzando un bando per il quale NON è disponibile la \
 pagina di dettaglio (link_bando assente o non raggiungibile via Firecrawl).
 
 Ricevi invece il MARKDOWN DELLA PAGINA FONTE (la pagina indice/elenco della regione/ministero/\
 programma che lista questo bando insieme ad altri). Dovrai usare RAGIONAMENTO ESTESO per dedurre:
 
-1. Se e' un VERO BANDO o un falso positivo dell'estrazione.
+1. Se è un VERO BANDO o un falso positivo dell'estrazione.
 2. Lo STATO ATTUALE del bando (aperto/chiuso/in apertura prossimamente).
 3. Le 3 DATE chiave del bando.
 
@@ -62,11 +62,11 @@ programma che lista questo bando insieme ad altri). Dovrai usare RAGIONAMENTO ES
 
 == STRATEGIA DI RAGIONAMENTO ==
 
-1. **Validita'**: cerca nella pagina fonte un blocco/riga/sezione che corrisponda a questo bando.
+1. **Validità**: cerca nella pagina fonte un blocco/riga/sezione che corrisponda a questo bando.
    Se non lo trovi affatto, il titolo o gli altri metadati ti permettono comunque di capire?
    Se trovi solo un riferimento vago (es. "Bando aiuti PMI 2024"), il titolo e la descrizione
    sono comunque concreti? -> is_valid_bando=true.
-   Se invece il titolo e' generico tipo "Tutti i bandi", "Avvisi" -> false.
+   Se invece il titolo è generico tipo "Tutti i bandi", "Avvisi" -> false.
 
 2. **Stato (data attuale: giugno 2026)**:
    - Tipo fonte 'Preavviso' + nessuna data passata -> probabilmente 'in apertura prossimamente'
@@ -74,14 +74,14 @@ programma che lista questo bando insieme ad altri). Dovrai usare RAGIONAMENTO ES
    - "Bando 2026" / "anno 2026" o sezione "bandi aperti" -> probabilmente 'aperto'
    - raw_data ha data_scadenza nel passato -> 'chiuso'
    - raw_data ha data_apertura nel futuro -> 'in apertura prossimamente'
-   - Se la pagina fonte e' un "calendario degli inviti" / "preavvisi" -> 'in apertura prossimamente'
+   - Se la pagina fonte è un "calendario degli inviti" / "preavvisi" -> 'in apertura prossimamente'
 
 3. **Date** (CRITICO - applica le STESSE regole del preprocess primary):
    - Cerca nel MARKDOWN DELLA FONTE date associate a QUESTO bando specifico (titolo simile,
      sezione dedicata).
    - **MAI** date di altri bandi della stessa fonte; **MAI** date odierne.
    - **Quote OBBLIGATORIA**: substring letterale del markdown fonte (max 300 char).
-   - Source: 'official_page' se la data e' nel markdown fonte; 'inferred' se ricavata da
+   - Source: 'official_page' se la data è nel markdown fonte; 'inferred' se ricavata da
      contesto generale (es. anno 2024 -> "scadenza 31/12/2024"); 'missing' se non trovata.
    - BLACKLIST contesti normativi ("ai sensi del DPR del DD/MM/YYYY", "in attuazione di...").
    - Se le date NON sono identificabili nemmeno dalla fonte: date=null, source='missing', quote=null.
@@ -90,7 +90,7 @@ programma che lista questo bando insieme ad altri). Dovrai usare RAGIONAMENTO ES
 
 == OUTPUT ==
 
-Chiama save_bando_analysis con tutti i campi. Lo stato_bando sara' poi riconciliato
+Chiama save_bando_analysis con tutti i campi. Lo stato_bando sarà poi riconciliato
 automaticamente con le date estratte (data_scadenza < oggi -> forzato 'chiuso')."""
 
 

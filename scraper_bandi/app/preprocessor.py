@@ -5,7 +5,7 @@ Per ogni bando con stato_processing='scraped':
   2. Chiama Claude Haiku con tool use per garantire JSON strutturato.
   3. Ritorna analisi {is_valid_bando, confidence_score, rejection_reason, stato_bando}.
 
-L'aggiornamento DB e' fatto dall'orchestrator (bando_preprocess_runner).
+L'aggiornamento DB è fatto dall'orchestrator (bando_preprocess_runner).
 """
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ _DATE_OBJ_SCHEMA = {
             "type": ["string", "null"],
             "description": (
                 "Frammento LETTERALE del markdown (max 300 char) contenente la data. "
-                "OBBLIGATORIO se date non null. Sara' verificato come substring esatta."
+                "OBBLIGATORIO se date non null. Sarà verificato come substring esatta."
             ),
         },
     },
@@ -126,8 +126,8 @@ ANALYZE_TOOL = {
             "is_valid_bando": {
                 "type": "boolean",
                 "description": (
-                    "True se e' un vero bando/avviso/call per finanziamenti UE 2021-2027. "
-                    "False se e' pagina indice/archivio/contenuto generico/link sbagliato/header tabella/titolo troppo generico."
+                    "True se è un vero bando/avviso/call per finanziamenti UE 2021-2027. "
+                    "False se è pagina indice/archivio/contenuto generico/link sbagliato/header tabella/titolo troppo generico."
                 ),
             },
             "confidence_score": {
@@ -150,7 +150,7 @@ ANALYZE_TOOL = {
                 "enum": ["aperto", "chiuso", "in apertura prossimamente", "unknown"],
                 "description": (
                     "Stato ATTUALE del bando, basato sulle date estratte e sul contenuto. "
-                    "Sara' poi riconciliato automaticamente con le date: "
+                    "Sarà poi riconciliato automaticamente con le date: "
                     "data_scadenza < oggi -> forzato 'chiuso'; "
                     "data_apertura > oggi -> forzato 'in apertura prossimamente'."
                 ),
@@ -168,13 +168,13 @@ ANALYZE_TOOL = {
 
 
 SYSTEM_PROMPT = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027 \
-(FESR, FSE+, JTF, INTERREG). Il tuo compito e' validare ogni record candidato a "bando" \
+(FESR, FSE+, JTF, INTERREG). Il tuo compito è validare ogni record candidato a "bando" \
 estratto da portali istituzionali (regioni, ministeri, programmi CTE), eliminando i falsi positivi.
 
 == REGOLA AUREA: BANDO SINGOLO, NON ELENCO ==
-Il tuo OBIETTIVO PRINCIPALE e' distinguere:
+Il tuo OBIETTIVO PRINCIPALE è distinguere:
   A) Pagina di DETTAGLIO di UN SINGOLO bando -> VALIDO
-  B) Pagina di ELENCO / INDICE / CATEGORIA che lista PIU' bandi -> NON VALIDO
+  B) Pagina di ELENCO / INDICE / CATEGORIA che lista PIÙ bandi -> NON VALIDO
 
 Pattern URL tipici di INDICE / CATEGORIA / ELENCO (RIFIUTA SEMPRE):
   /bandi, /bandi/, /bandi-aperti, /bandi-21-27, /bandi-fesr, /bandi-fse
@@ -196,7 +196,7 @@ Pattern URL tipici di DETTAGLIO SINGOLO BANDO (ACCETTA se confermato dal titolo)
 
 == ALTRI FALSI POSITIVI DA RIFIUTARE ==
 - Header di tabella (titolo come "Avviso", "Oggetto", "Titolo", "Avviso pubblico", "Attuazione")
-- Link di navigazione (titolo come "Home", "Indietro", "Tutte le opportunita'", "Tutti i bandi")
+- Link di navigazione (titolo come "Home", "Indietro", "Tutte le opportunità", "Tutti i bandi")
 - Documenti generici (manuali, guide, regolamenti SENZA call associata)
 - Pagine di programma/asse SENZA call specifica (es. "Asse 1 — Innovazione")
 - Titoli troppo corti/generici (meno di 3 parole significative tipo "PR FESR")
@@ -214,18 +214,18 @@ Identifichi inequivocabilmente UN BANDO/AVVISO/CALL SPECIFICO con almeno UN segn
 - Riferimento normativo (DGR/DDR/Decreto specifico)
 
 == STATO BANDO ==
-- "aperto": il bando e' attivo, le candidature sono aperte
-- "chiuso": il bando e' scaduto / completato / archiviato
+- "aperto": il bando è attivo, le candidature sono aperte
+- "chiuso": il bando è scaduto / completato / archiviato
 - "in apertura prossimamente": preavviso / pre-informativa / call non ancora aperta
 - "unknown": impossibile determinare (penalizza la confidence!)
 
 INDIZI utili per lo stato:
 - Tipo fonte = "Preavviso" -> molto probabilmente "in apertura prossimamente"
-- Tipo fonte = "Opportunita'" + link in /bandi-aperti/ -> "aperto"
+- Tipo fonte = "Opportunità" + link in /bandi-aperti/ -> "aperto"
 - Descrizione contiene "scaduto", "chiuso", "archivio", date passate -> "chiuso"
 - raw_data ha 'data_pubblicazione_prevista' / 'data_apertura_prevista' futura -> "in apertura prossimamente"
 - raw_data ha 'data_scadenza' passata -> "chiuso"
-- Senza indizi precisi e tipo "Opportunita'": "aperto" (default ragionevole)
+- Senza indizi precisi e tipo "Opportunità": "aperto" (default ragionevole)
 
 == CONFIDENZA ==
 - 0.9-1.0: certezza (titolo descrittivo + URL specifico + segnali coerenti)
@@ -239,7 +239,7 @@ Data attuale: giugno 2026. Formato italiano DD/MM/YYYY. Output sempre ISO YYYY-M
 Devi estrarre 3 date dal CONTENUTO PAGINA (markdown Firecrawl) — non dal titolo o raw_data:
 - **data_pubblicazione**: data di PUBBLICAZIONE del bando sulla fonte ufficiale (BUR, GU, sito ente).
   Frasi tipiche: "pubblicato il", "data di pubblicazione", "avviso pubblicato in data".
-  NON e' la data odierna, NON e' la data di scraping.
+  NON è la data odierna, NON è la data di scraping.
 - **data_apertura**: data da cui le candidature sono ACCETTABILI.
   Frasi tipiche: "presentazione domande dal", "apertura sportello a partire da", "dalle ore X del DD/MM".
 - **data_scadenza**: TERMINE ULTIMO per presentare.
@@ -252,11 +252,11 @@ BLACKLIST contesti NORMATIVI (queste sono date della legge citata, NON del bando
 - "richiamato il [provvedimento] del DD/MM/YYYY"
 
 REGOLE:
-1. Se una data non e' chiaramente nel markdown: imposta date=null, source='missing', quote=null.
+1. Se una data non è chiaramente nel markdown: imposta date=null, source='missing', quote=null.
 2. La quote DEVE essere una sottostringa LETTERALE e CONTIGUA del markdown (max 300 char) contenente la data.
-   Sara' verificata. NON parafrasare, NON ricostruire.
+   Sarà verificata. NON parafrasare, NON ricostruire.
 3. Source:
-   - 'official_pdf' se la data e' in un link/riferimento a PDF ufficiale del bando
+   - 'official_pdf' se la data è in un link/riferimento a PDF ufficiale del bando
    - 'official_page' se nel contenuto HTML della pagina ufficiale
    - 'inferred' (sconsigliato) se ricavata da contesto non esplicito
    - 'missing' se non trovata o se non sei sicuro (date=null, quote=null)
@@ -264,12 +264,12 @@ REGOLE:
 5. Se nel markdown NON ci sono date chiare, USA missing per tutte e tre (non indovinare).
 
 == STATO_BANDO DATA-DRIVEN ==
-Lo stato_bando emesso dal LLM sara' RICONCILIATO automaticamente con le date:
+Lo stato_bando emesso dal LLM sarà RICONCILIATO automaticamente con le date:
 - Se data_scadenza < giugno 2026 (oggi) -> stato forzato a 'chiuso' (ignoro tua scelta)
 - Se data_apertura > giugno 2026 (oggi) -> stato forzato a 'in apertura prossimamente'
 - Altrimenti rispetta la tua decisione (aperto/chiuso/in apertura)
 
-Quindi: emetti lo stato che pensi corretto, ma SAI che le date hanno priorita'.
+Quindi: emetti lo stato che pensi corretto, ma SAI che le date hanno priorità.
 """
 
 
@@ -320,11 +320,11 @@ def _build_user_prompt(
         url_hints.append(
             "⚠ ATTENZIONE: l'URL del link bando ha un pattern tipico di PAGINA INDICE/ELENCO "
             "(es. termina con /bandi, /opportunita, /calendario, ?page=, ?filter_). "
-            "Questo e' un FORTISSIMO segnale per rifiutare come 'pagina indice'."
+            "Questo è un FORTISSIMO segnale per rifiutare come 'pagina indice'."
         )
     if slug_title and not titolo:
         url_hints.append(
-            f"Titolo derivato dallo slug URL (perche' titolo_raw vuoto): {slug_title!r}. "
+            f"Titolo derivato dallo slug URL (perché titolo_raw vuoto): {slug_title!r}. "
             "Valuta se questo slug descrive un BANDO SPECIFICO (accetta) o una SEZIONE/INDICE (rifiuta)."
         )
     elif slug_title and len(titolo) < 10:
@@ -339,7 +339,7 @@ def _build_user_prompt(
 
 CONTESTO FONTE
 - URL fonte: {fonte_url}
-- Tipo fonte: {tipo_link}  ("Opportunita'" = pagina di bandi aperti; "Preavviso" = calendario futuri)
+- Tipo fonte: {tipo_link}  ("Opportunità" = pagina di bandi aperti; "Preavviso" = calendario futuri)
 - Programma: {tipologia}  (es. PR FESR Lombardia)
 - Categoria: {categoria}  (Regionale / Nazionale / CTE)
 
@@ -365,7 +365,7 @@ def _get_anthropic_client():
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise RuntimeError(
-            "ANTHROPIC_API_KEY mancante in .env. Il pre-processor non puo' funzionare."
+            "ANTHROPIC_API_KEY mancante in .env. Il pre-processor non può funzionare."
         )
     return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
@@ -531,7 +531,7 @@ async def analyze_bando(
     2. Firecrawl markdown del link_bando (cache LRU condivisa con enricher).
     3. Se markdown vuoto/troppo corto -> sentinel _needs_fallback=True per
        triggerare bando_resolver lato runner.
-    4. LLM Haiku 4.5 con tool use esteso (validita + stato + 3 date).
+    4. LLM Haiku 4.5 con tool use esteso (validità + stato + 3 date).
     5. Triple-gate validation date + reconciliation data-driven.
 
     Args:

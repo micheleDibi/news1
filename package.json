@@ -10,7 +10,9 @@
     "postbuild": "node scripts/copy-credentials-post-build.js",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/ortografia/ortografia.test.ts",
+    "test:py": "cd backend && python3 -m unittest discover -s tests -t ."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

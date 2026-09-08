@@ -100,6 +100,51 @@ async function findRelatedArticles(prompt: string): Promise<{ title: string; slu
   }
 }
 
+/**
+ * Entita HTML, nominate e numeriche.
+ *
+ * Prima qui c'era `.replace(/&[a-z]+;/gi, ' ')`, che CANCELLAVA ogni entita
+ * nominata sostituendola con uno spazio: una fonte italiana codificata con
+ * entita arrivava al modello come "perch " invece di "perche", e le entita
+ * numeriche (`&#232;`) non erano nemmeno coperte dal pattern. Cosi' il
+ * modello imparava a scrivere parole tronche.
+ */
+const ENTITA_HTML: Record<string, string> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+  agrave: '\u00e0', aacute: '\u00e1', egrave: '\u00e8', eacute: '\u00e9',
+  igrave: '\u00ec', iacute: '\u00ed', ograve: '\u00f2', oacute: '\u00f3',
+  ugrave: '\u00f9', uacute: '\u00fa', ccedil: '\u00e7', ntilde: '\u00f1',
+  Agrave: '\u00c0', Aacute: '\u00c1', Egrave: '\u00c8', Eacute: '\u00c9',
+  Igrave: '\u00cc', Iacute: '\u00cd', Ograve: '\u00d2', Oacute: '\u00d3',
+  Ugrave: '\u00d9', Uacute: '\u00da', Ccedil: '\u00c7',
+  euro: '\u20ac', pound: '\u00a3', deg: '\u00b0', middot: '\u00b7',
+  bull: '\u2022', hellip: '\u2026', mdash: '\u2014', ndash: '\u2013',
+  ldquo: '\u201c', rdquo: '\u201d', lsquo: '\u2018', rsquo: '\u2019',
+  laquo: '\u00ab', raquo: '\u00bb', copy: '\u00a9', reg: '\u00ae',
+  trade: '\u2122', times: '\u00d7',
+};
+
+function decodificaEntita(testo: string): string {
+  return testo.replace(
+    /&(#[xX]?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g,
+    (intero: string, corpo: string) => {
+      if (corpo.charAt(0) === '#') {
+        const esadecimale = corpo.charAt(1) === 'x' || corpo.charAt(1) === 'X';
+        const codice = parseInt(corpo.slice(esadecimale ? 2 : 1), esadecimale ? 16 : 10);
+        if (!Number.isFinite(codice) || codice <= 0 || codice > 0x10ffff) return intero;
+        try {
+          return String.fromCodePoint(codice);
+        } catch {
+          return intero;
+        }
+      }
+      return Object.prototype.hasOwnProperty.call(ENTITA_HTML, corpo)
+        ? ENTITA_HTML[corpo]
+        : intero;
+    },
+  );
+}
+
 async function fetchUrlContent(url: string): Promise<string> {
   try {
     const response = await fetch(url, {
@@ -116,27 +161,26 @@ async function fetchUrlContent(url: string): Promise<string> {
       .replace(/<footer[\s\S]*?<\/footer>/gi, '')
       .replace(/<header[\s\S]*?<\/header>/gi, '')
       .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&[a-z]+;/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+    const decodificato = decodificaEntita(cleaned);
     // Limit to ~8000 chars to avoid bloating the prompt
-    return cleaned.substring(0, 8000);
+    return decodificato.substring(0, 8000);
   } catch (e) {
     logger.error(`Failed to fetch source URL ${url}:`, e);
     return '';
   }
 }
 
-const SYSTEM_PROMPT = `Sei un generatore AI di articoli giornalistici di alta qualita. DEVI restituire SOLO un JSON valido, senza testo prima o dopo, con la struttura esatta:
+const SYSTEM_PROMPT = `Sei un generatore AI di articoli giornalistici di alta qualità. DEVI restituire SOLO un JSON valido, senza testo prima o dopo, con la struttura esatta:
 {"article": {"title": string, "excerpt": string, "content": string, "keywords": string[]}}
 
 ## Stile di scrittura
 
 Scrivi come un giornalista esperto di una testata autorevole italiana (Corriere della Sera, Repubblica). Lo stile deve essere:
 - **Autorevole ma accessibile**: linguaggio preciso senza essere accademico
-- **Variato**: alterna frasi brevi e incisive a periodi piu articolati. MAI sequenze monotone di frasi della stessa lunghezza
-- **Naturale**: evita assolutamente cliche da AI come "in un mondo sempre piu...", "e importante sottolineare che...", "non si puo non menzionare...", "in conclusione possiamo affermare che..."
+- **Variato**: alterna frasi brevi e incisive a periodi più articolati. MAI sequenze monotone di frasi della stessa lunghezza
+- **Naturale**: evita assolutamente cliché da AI come "in un mondo sempre più...", "è importante sottolineare che...", "non si può non menzionare...", "in conclusione possiamo affermare che..."
 - **Concreto**: preferisci dati, esempi e fatti a generalizzazioni vaghe
 
 ## Struttura dell'articolo (campo "content")
@@ -145,19 +189,19 @@ Scrivi come un giornalista esperto di una testata autorevole italiana (Corriere 
 2. **Introduzione**: paragrafo di apertura che cattura l'attenzione con il fatto principale
 3. **Sezioni principali**: usa ## (H2) per i titoli delle sezioni principali, ### (H3) solo per sotto-sezioni quando necessario
 4. **Sintesi finale**: paragrafo conclusivo che riassume i punti chiave
-5. **Interlink**: se vengono forniti articoli correlati, inseriscili NATURALMENTE nel testo nei punti dove il contesto lo rende pertinente. Formato: [Titolo Articolo](/category-slug/slug). Non forzare l'inserimento se non e contestualmente rilevante. Non creare una sezione separata per i link.
+5. **Interlink**: se vengono forniti articoli correlati, inseriscili NATURALMENTE nel testo nei punti dove il contesto lo rende pertinente. Formato: [Titolo Articolo](/category-slug/slug). Non forzare l'inserimento se non è contestualmente rilevante. Non creare una sezione separata per i link.
 
 ## Formattazione
 
 - **Grassetto** per concetti chiave e dati importanti
 - _Corsivo_ per termini tecnici, nomi di leggi/normative, citazioni
-- Elenchi puntati (-) e numerati (1.) dove migliorano la leggibilita
+- Elenchi puntati (-) e numerati (1.) dove migliorano la leggibilità
 - Paragrafi separati da una riga vuota
-- NON usare H1 (#) nel content - il titolo e nel campo "title"
+- NON usare H1 (#) nel content - il titolo è nel campo "title"
 
 ## Keywords
 
-Genera **10 parole chiave** ottimizzate per SEO. Possono essere anche composte da piu parole. Devono essere pertinenti, specifiche e strategicamente distribuite nel testo.
+Genera **10 parole chiave** ottimizzate per SEO. Possono essere anche composte da più parole. Devono essere pertinenti, specifiche e strategicamente distribuite nel testo.
 
 ## Regole fondamentali
 
@@ -168,7 +212,8 @@ Genera **10 parole chiave** ottimizzate per SEO. Possono essere anche composte d
 - Rispetta il tono e la persona richiesti
 - Il contenuto deve essere originale, accurato e pronto per la pubblicazione
 - Se viene fornito un Source URL, basati su quelle informazioni come fonte principale
-- NON usare MAI il trattino lungo "—" (em dash). Al suo posto usa una virgola`;
+- NON usare MAI il trattino lungo "—" (em dash). Al suo posto usa una virgola
+- Scrivi con gli ACCENTI ITALIANI corretti: "è", "à", "ù", "ò", "ì", "é". Mai la vocale nuda al loro posto ("universita", "puo", "gia", "piu", "perche") e mai l'apostrofo come accento ("e'", "citta'", "sara'"). Vale nel titolo, nell'excerpt, nel content e nelle keywords`;
 
 export const POST: APIRoute = async ({ request }) => {
   const authHeader = request.headers.get('Authorization');

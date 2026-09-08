@@ -1,0 +1,1406 @@
+{
+ "versione": 1,
+ "commento": "Tabella condivisa fra backend/tests/test_ortografia.py e tests/ortografia/ortografia.test.ts. ASCII puro di proposito: un fixture con accenti letterali sposterebbe il problema che questi test devono sorvegliare.",
+ "conteggio_minimo": 69,
+ "casi": [
+  {
+   "id": "congiunzione-e",
+   "input": "Roma e Milano",
+   "atteso": "Roma e Milano",
+   "sha256": "6f0273446a7b0d203ca2c64872df7a14dd53b46c8dcd9e2cf9361c13e5f6c3ec",
+   "nota": "e resta congiunzione: lista 3 e nessuna correzione, quindi nemmeno segnalazioni",
+   "correzioni": 0,
+   "segnalazioni": 0
+  },
+  {
+   "id": "meta-percorso",
+   "input": "Ha raggiunto la meta del percorso",
+   "atteso": "Ha raggiunto la meta del percorso",
+   "sha256": "b219c3002ea3166b7ba41ba52d82adba27532f9fbe59f8b2fc63f99639f6b3aa",
+   "nota": "meta non e' mai in lista 2: sostantivo valido",
+   "correzioni": 0
+  },
+  {
+   "id": "meta-crescita",
+   "input": "una meta di crescita per l'istituto",
+   "atteso": "una meta di crescita per l'istituto",
+   "sha256": "b89f9331a9cd8ce157102ce42e94c1495321aaeebfeeb199c6980fe2ec4fcb74",
+   "nota": "secondo omografo di meta, contesto diverso",
+   "correzioni": 0
+  },
+  {
+   "id": "path-universita",
+   "input": "Vai su /universita/iscrizioni",
+   "atteso": "Vai su /universita/iscrizioni",
+   "sha256": "e5681883f4ebc4e19e178fb3a84ae3b43eb23b7513218334854789273b7814d1",
+   "nota": "percorso relativo mascherato",
+   "correzioni": 0
+  },
+  {
+   "id": "cose-idempotente",
+   "input": "Cos'\u00e8 il PNRR",
+   "atteso": "Cos'\u00e8 il PNRR",
+   "sha256": "f5b326d97f3ce3d7ef6c6d91e7751c80f1c7783d8b146767af0a5a3d8796fd1e",
+   "nota": "gia' corretto: idempotenza",
+   "correzioni": 0
+  },
+  {
+   "id": "cose-apostrofo",
+   "input": "Cos'e' il PNRR",
+   "atteso": "Cos'\u00e8 il PNRR",
+   "sha256": "f5b326d97f3ce3d7ef6c6d91e7751c80f1c7783d8b146767af0a5a3d8796fd1e",
+   "nota": "la maschera menzione non deve intercettare 'e' qui: l'apostrofo segue una lettera"
+  },
+  {
+   "id": "citta-decomposta",
+   "input": "La citta\u0300 metropolitana cresce",
+   "atteso": "La citt\u00e0 metropolitana cresce",
+   "sha256": "42ee28d85c56d0052baef61d57a0c855c6d75a666363773d99c13f9452541b2c",
+   "nota": "NFC: su NFD i confini di parola si rompono in entrambi i motori",
+   "correzioni": 0
+  },
+  {
+   "id": "link-testo-e-bersaglio",
+   "input": "[Ecco perche conviene](/scuola/piu-fondi)",
+   "atteso": "[Ecco perch\u00e9 conviene](/scuola/piu-fondi)",
+   "sha256": "2ab695f4bd724ab88c4fcc3980e6593ea0845474f4ba24a87d5333882a326d0c",
+   "nota": "testo visibile corretto, bersaglio intatto",
+   "correzioni": 1
+  },
+  {
+   "id": "deny-po",
+   "input": "un po' di tempo",
+   "atteso": "un po' di tempo",
+   "sha256": "186173945b09301c1921460de4cc2744bdee23c844ad1d7d3210832c67fa50ed",
+   "nota": "apostrofo di troncamento legittimo",
+   "correzioni": 0
+  },
+  {
+   "id": "deny-ca-foscari",
+   "input": "Ca' Foscari apre le iscrizioni",
+   "atteso": "Ca' Foscari apre le iscrizioni",
+   "sha256": "12bf31d2cd05dca20d1188e8580ef0dc31f47091e564336e747dc8da414cc4ba",
+   "nota": "deny list e nome istituzionale",
+   "correzioni": 0
+  },
+  {
+   "id": "deny-di-e-allow",
+   "input": "di' la verita' a tutti",
+   "atteso": "di' la verit\u00e0 a tutti",
+   "sha256": "4ae8f3b8b685ab86cd7af727723944039b8fe46eedbac714cbdd3c4fa62c9478",
+   "nota": "deny e allow nella stessa stringa: la deny list non e' uno short-circuit"
+  },
+  {
+   "id": "deny-de-medici",
+   "input": "Lorenzo de' Medici e un po' piu' di storia",
+   "atteso": "Lorenzo de' Medici e un po' pi\u00f9 di storia",
+   "sha256": "fda1f00f5eb04ca1e82168f4390932300acb84de66114077dd8232f321ec8ea1",
+   "nota": "de' e po' non interferiscono"
+  },
+  {
+   "id": "nome-sara",
+   "input": "Sara Rossi ha vinto il concorso",
+   "atteso": "Sara Rossi ha vinto il concorso",
+   "sha256": "ec7c176d2e90b669e30b251aebe37b770046c9f735d6c2e8881ba9817b3f361b",
+   "nota": "2b capitalizzata: nessuna correzione ma una segnalazione",
+   "correzioni": 0,
+   "segnalazioni": 1
+  },
+  {
+   "id": "verbo-sara",
+   "input": "Il portale sara aperto dal 10",
+   "atteso": "Il portale sar\u00e0 aperto dal 10",
+   "sha256": "afc12be6b9a5c0d444792c423ef3c75a40144f3e6c05839394c44d3058ea5677",
+   "nota": "2b minuscola: correzione",
+   "correzioni": 1
+  },
+  {
+   "id": "sara-titlecase",
+   "input": "Cosa Sara Possibile Fare Dal 1 Settembre",
+   "atteso": "Cosa Sara Possibile Fare Dal 1 Settembre",
+   "sha256": "0b32140b212b0adc45835ac6fdac1f62b35faa6e1d505cfc2f4989e74bfb8282",
+   "nota": "title case: 2b non corregge ma non deve tacere",
+   "segnalazioni": 1
+  },
+  {
+   "id": "sara-maiuscolo",
+   "input": "SARA UTILE PER TUTTI",
+   "atteso": "SARA UTILE PER TUTTI",
+   "sha256": "a21446116346b8f5f62013d98a86b96944ab553d713fa4487d5efa09de19113e",
+   "nota": "2b tutto maiuscolo: segnalata comunque, la soglia delle sigle vale solo per le correzioni",
+   "correzioni": 0,
+   "segnalazioni": 1
+  },
+  {
+   "id": "menzione-e",
+   "input": "La congiunzione 'e' non vuole l'accento",
+   "atteso": "La congiunzione 'e' non vuole l'accento",
+   "sha256": "7d6265144f03274bbaaebc1af5c066daa6dc009c7a3f8cc2bcb9e6212154753b",
+   "nota": "menzione fra virgolette brevi: senza la maschera spariva la virgoletta di chiusura",
+   "correzioni": 0
+  },
+  {
+   "id": "menzione-tipografica",
+   "input": "il prefisso \u2018meta\u2019 indica oltre",
+   "atteso": "il prefisso \u2018meta\u2019 indica oltre",
+   "sha256": "f40c0756b1ae8f8fcaec198a983f846e8272551c1c6d48f8d30b1eccf8750014",
+   "nota": "idem con virgolette tipografiche",
+   "correzioni": 0
+  },
+  {
+   "id": "dante-se",
+   "input": "Tu se' lo mio maestro e 'l mio autore",
+   "atteso": "Tu se' lo mio maestro e 'l mio autore",
+   "sha256": "65081eaee75ab4007589ac3913ab2966eaed3db8a0e0122fd88e1fe5707b0160",
+   "nota": "troncamento dantesco: se' non preceduto da preposizione",
+   "correzioni": 0
+  },
+  {
+   "id": "citazione-riga",
+   "input": "> e' principi nuovi (Machiavelli)",
+   "atteso": "> e' principi nuovi (Machiavelli)",
+   "sha256": "adc73ae9b567bdbe3594adef737b8f78c3fa1b3ea52ada96e40ca7ad8cba94a7",
+   "nota": "riga di citazione mascherata",
+   "correzioni": 0
+  },
+  {
+   "id": "se-preposizione",
+   "input": "di per se' vale poco",
+   "atteso": "di per s\u00e9 vale poco",
+   "sha256": "f621fd2b7bd2df18f976b26a3ad921e2e451d7253834bf2ca09c2b9a4940b9ba",
+   "nota": "il gate a preposizione deve ABILITARE la correzione",
+   "correzioni": 1
+  },
+  {
+   "id": "giu-giugno",
+   "input": "Domande dal 20 mag al 10 giu 2026",
+   "atteso": "Domande dal 20 mag al 10 giu 2026",
+   "sha256": "7f16516d47ac46766ebdb970ccea69f833594bd1e4919e441ea25964a96d63ac",
+   "nota": "giu e' l'abbreviazione di giugno: fuori da lista 2",
+   "correzioni": 0
+  },
+  {
+   "id": "giu-scadenzario",
+   "input": "gen feb mar apr mag giu lug ago set ott nov dic",
+   "atteso": "gen feb mar apr mag giu lug ago set ott nov dic",
+   "sha256": "a8009c0a3bf8bbe10d2636b2f7ad7f76ccdaee731b6aad6b5a2da3a0b9dc3bf7",
+   "nota": "riga di scadenzario, prosa non mascherata",
+   "correzioni": 0
+  },
+  {
+   "id": "eta-lettera-greca",
+   "input": "alfa, beta, gamma, delta, epsilon, zeta, eta, theta",
+   "atteso": "alfa, beta, gamma, delta, epsilon, zeta, eta, theta",
+   "sha256": "c4fa1df73c0e688d3a19b7dce6f6d51ff67cfcfe47fc69197971d0f04a9e460a",
+   "nota": "eta e' una lettera greca: fuori da lista 2",
+   "correzioni": 0
+  },
+  {
+   "id": "eta-statistica",
+   "input": "misurato con eta quadro",
+   "atteso": "misurato con eta quadro",
+   "sha256": "1e3ed2d415dbfd49f1c081b2b632bca5424c33fb2373431107e6c207d3ecbd98",
+   "nota": "secondo uso legittimo di eta",
+   "correzioni": 0
+  },
+  {
+   "id": "nome-file",
+   "input": "Scaricare domanda-universita-2026.pdf",
+   "atteso": "Scaricare domanda-universita-2026.pdf",
+   "sha256": "f2766d7408681b37050fa9d460d7b86eb0e9de2f9a322e8bcd314886bb1d3942",
+   "nota": "nome di file mascherato",
+   "correzioni": 0
+  },
+  {
+   "id": "hashtag",
+   "input": "#universita #maturita",
+   "atteso": "#universita #maturita",
+   "sha256": "e0d43e69de9a8ea6dbee7f504a1afd03badada3269ca3a67be500bed56c5146e",
+   "nota": "hashtag mascherati",
+   "correzioni": 0
+  },
+  {
+   "id": "dominio-nudo",
+   "input": "Consulta miur.gov.it/attivita",
+   "atteso": "Consulta miur.gov.it/attivita",
+   "sha256": "4c07bdc29328a8453d29af022668a0d898abfced244ed877e44d87dd008b666c",
+   "nota": "dominio senza schema mascherato",
+   "correzioni": 0
+  },
+  {
+   "id": "fragment-nudo",
+   "input": "vedi la sezione #perche-iscriversi",
+   "atteso": "vedi la sezione #perche-iscriversi",
+   "sha256": "17806b5c96a89d3bf2de165b2806c1e7036463a28ce3f8a1339fb8a881e26f6a",
+   "nota": "ancora nuda mascherata",
+   "correzioni": 0
+  },
+  {
+   "id": "url-con-parentesi",
+   "input": "![alt](https://it.wikipedia.org/wiki/Universita_(disambigua)/piu-info)",
+   "atteso": "![alt](https://it.wikipedia.org/wiki/Universita_(disambigua)/piu-info)",
+   "sha256": "55ca6b94d2b5b02ea34472ff270304da7b15bdd761459a2d856d9091bcf8c267",
+   "nota": "parentesi bilanciate: [^)]* si spezzava sulla prima chiusa",
+   "correzioni": 0
+  },
+  {
+   "id": "immagine-alt-vuoto",
+   "input": "- ![](/img/gia-info.png)",
+   "atteso": "- ![](/img/gia-info.png)",
+   "sha256": "d0fd5b3611dbc5dfe5b7336baa77e1407de59a673e5a713cc95ef945db388132",
+   "nota": "alt vuoto e prefisso di lista",
+   "correzioni": 0
+  },
+  {
+   "id": "tag-con-maggiore",
+   "input": "<img alt=\"a > b\" src=\"/gia-info.png\">",
+   "atteso": "<img alt=\"a > b\" src=\"/gia-info.png\">",
+   "sha256": "6a5cc54d89ac1e69115b92eb2387aa123533daaf21243726a73434e1172f24d4",
+   "nota": "il > dentro un attributo spezzava la maschera dei tag",
+   "correzioni": 0
+  },
+  {
+   "id": "parola-entita",
+   "input": "Il modulo perche&#768; e' strano",
+   "atteso": "Il modulo perche&#768; \u00e8 strano",
+   "sha256": "c8a8d813de2cde0b4e63a8596ecd5f5af3a278439ba73be7d29cdce08dd5dd44",
+   "nota": "senza la maschera parola+entita si otteneva un doppio accento",
+   "correzioni": 1
+  },
+  {
+   "id": "annidamento-entita",
+   "input": "[Scuola](https://x.it/a?b=1&amp;c=piu)",
+   "atteso": "[Scuola](https://x.it/a?b=1&amp;c=piu)",
+   "sha256": "95374180a6aefcc004b4d8bdb204bf671230034617dd93fa991972bbd449f33e",
+   "nota": "sentinello dentro un bersaglio: con lo smascheramento crescente saltava tutto il documento",
+   "correzioni": 0,
+   "saltato": null
+  },
+  {
+   "id": "annidamento-codice",
+   "input": "`<b>gia</b>` e piu",
+   "atteso": "`<b>gia</b>` e pi\u00f9",
+   "sha256": "e3c211759c4835b445c66118df9794f80659a306211ad8c8b7460c35ea94a362",
+   "nota": "tag dentro codice inline: secondo caso di annidamento",
+   "correzioni": 1
+  },
+  {
+   "id": "crlf-fence",
+   "input": "```\r\ncitta'\r\n```\r\nperche' si",
+   "atteso": "```\ncitta'\n```\nperch\u00e9 si",
+   "sha256": "995946d7b2d57eb4f8f7836caf73a207efa8840f9f5deb0c50383ece2f8af016",
+   "nota": "CRLF normalizzato a LF, recinto intatto",
+   "correzioni": 1
+  },
+  {
+   "id": "fence-backreference",
+   "input": "```\nre.sub(r'(a)', r'\\1b')  # $& e $`\n```\nperche' si",
+   "atteso": "```\nre.sub(r'(a)', r'\\1b')  # $& e $`\n```\nperch\u00e9 si",
+   "sha256": "2804f646c2738efd382b83367ae0c5ec9e96da486e4353e3bdc87c936201a830",
+   "nota": "\\1 fa fallire Python e $& corrompe JS se lo smascheramento usa una stringa"
+  },
+  {
+   "id": "fence-spaiato",
+   "input": "```\ncitta'",
+   "atteso": "```\ncitt\u00e0",
+   "sha256": "077e8d1c8176845d658d5d6fe67a25e6b1fd78f7b7db06502902512679e2fe40",
+   "nota": "recinto non chiuso: non si maschera, il testo resta normalizzabile"
+  },
+  {
+   "id": "bom-vicino-url",
+   "input": "Vedi https://www.miur.gov.it/x\ufeff e perche' no",
+   "atteso": "Vedi https://www.miur.gov.it/x e perch\u00e9 no",
+   "sha256": "ff0218e37ecc381fed48aedb79e039a3ad1ffbfe138d6d99e0b7de96569b39de",
+   "nota": "U+FEFF rimosso al passo 0 senza rompere la maschera dell'URL"
+  },
+  {
+   "id": "poiche-turco",
+   "input": "PO\u0130CHE' e' gia' tardi",
+   "atteso": "PO\u0130CHE' \u00e8 gi\u00e0 tardi",
+   "sha256": "6ebae930291ba09018b0a133abb7577ddb9454bb388294ba8f38cafa59995260",
+   "nota": "IGNORECASE farebbe combaciare U+0130 con i in Python e non in JS: match case-sensitive"
+  },
+  {
+   "id": "cifra-araba",
+   "input": "\u0663. Le universita' aperte",
+   "atteso": "\u0663. Le universit\u00e0 aperte",
+   "sha256": "4a5e4d78bb54bc2d8a65c853a1cf85856a5f4bf8ddfacb3aeee121a3ae714921",
+   "nota": "\\d sono 680 codepoint in Python e 10 in JS: nessun pattern lo usa"
+  },
+  {
+   "id": "confine-asimmetrico",
+   "input": "L'universita' e' aperta",
+   "atteso": "L'universit\u00e0 \u00e8 aperta",
+   "sha256": "50423f4a952879c3e49c9d25939aa065506bb6b7d4acb4df3f441b2df3896796",
+   "nota": "apostrofo lecito a sinistra, vietato a destra per lista 2",
+   "correzioni": 2
+  },
+  {
+   "id": "confine-elisione",
+   "input": "L'universita e' aperta",
+   "atteso": "L'universit\u00e0 \u00e8 aperta",
+   "sha256": "50423f4a952879c3e49c9d25939aa065506bb6b7d4acb4df3f441b2df3896796",
+   "nota": "forma nuda dopo elisione: il confine sinistro deve cadere",
+   "correzioni": 2
+  },
+  {
+   "id": "lista1-derivata",
+   "input": "Un'opportunita' da cogliere",
+   "atteso": "Un'opportunit\u00e0 da cogliere",
+   "sha256": "94a947fc09b0f1164adc090dc85b7f43d57d1d03c8558d32a3af593cfd4293b7",
+   "nota": "chiusura di lista 1 su lista 2: senza derivazione automatica mancavano 45 voci"
+  },
+  {
+   "id": "verbo-necessita",
+   "input": "La domanda necessita di firma digitale",
+   "atteso": "La domanda necessita di firma digitale",
+   "sha256": "9aa6b24aea892ddf18f621adf1b2c033dafa7a7bd799cdf0382caa112faa2ea0",
+   "nota": "3a singolare di necessitare, frequentissima nel burocratese",
+   "correzioni": 0,
+   "segnalazioni": 1
+  },
+  {
+   "id": "necessita-apostrofo",
+   "input": "La domanda necessita' di firma",
+   "atteso": "La domanda necessit\u00e0 di firma",
+   "sha256": "57350c644aa38e20939bf7c65b4f75791a9bebe588a08f7fcb69ff55a11673a8",
+   "nota": "con l'apostrofo la forma e' inequivocabile: sta in lista 1",
+   "correzioni": 1
+  },
+  {
+   "id": "verbo-disabilita",
+   "input": "Se il browser disabilita i cookie",
+   "atteso": "Se il browser disabilita i cookie",
+   "sha256": "4b12bf6cfb8726bf1f9177ef2bcc72c7c6de4d5b8f7db19897c4853a82957cf1",
+   "nota": "3a singolare di disabilitare, guide SIDI e Istanze Online",
+   "correzioni": 0,
+   "segnalazioni": 1
+  },
+  {
+   "id": "famiglia-ita-verbi",
+   "input": "La norma abilita all'insegnamento; eredita il punteggio; la prestazione gratuita",
+   "atteso": "La norma abilita all'insegnamento; eredita il punteggio; la prestazione gratuita",
+   "sha256": "f6cf170c395e0c9adbb7aa14ce30a030ab68d683cc0663857e51d12c5b0a937b",
+   "nota": "famiglia -ita con omografo verbale al completo",
+   "correzioni": 0
+  },
+  {
+   "id": "nome-andra",
+   "input": "Andra e Tatiana Bucci hanno incontrato gli studenti",
+   "atteso": "Andra e Tatiana Bucci hanno incontrato gli studenti",
+   "sha256": "f8e58e91349393bfc641d97a9677d7a64973cbd8ba071a4eb55e0ce6738dfa32",
+   "nota": "Giorno della Memoria: andra spostata in 2b",
+   "correzioni": 0,
+   "segnalazioni": 1
+  },
+  {
+   "id": "verbo-vara",
+   "input": "Il ministero vara il nuovo regolamento",
+   "atteso": "Il ministero vara il nuovo regolamento",
+   "sha256": "06bb25a09f796c9dac27bb9abc04a948aa465c43f5ee97ba71de48d91cf16397",
+   "nota": "vara rimossa: vara non ha futuro vara accentato",
+   "correzioni": 0,
+   "segnalazioni": 0
+  },
+  {
+   "id": "futuro-varera",
+   "input": "Il ministero varera il decreto",
+   "atteso": "Il ministero varer\u00e0 il decreto",
+   "sha256": "966f0603cd9caa5a23f3d21c58f96f23140159009dbb44fd3b8148f2db8329cc",
+   "nota": "la voce giusta al posto di vara",
+   "correzioni": 1
+  },
+  {
+   "id": "faro-genova",
+   "input": "Il faro di Genova sara aperto",
+   "atteso": "Il faro di Genova sar\u00e0 aperto",
+   "sha256": "66229bdaa6cc529801bfb40c8744c933c16d82b94118429716b3dfe9afb04826",
+   "nota": "faro e' faro: la coppia giusta e' faro/faro accentato in prima persona",
+   "segnalazioni": 1
+  },
+  {
+   "id": "giacche-plurale",
+   "input": "Le giacche invernali",
+   "atteso": "Le giacche invernali",
+   "sha256": "994e8839de7b21cc9067160cda197b7a6d2ba25e8659210df54c764896132b2f",
+   "nota": "controesempio del criterio: giacche e' il plurale di giacca",
+   "correzioni": 0
+  },
+  {
+   "id": "accento-sbagliato",
+   "input": "Non so perch\u00e8, n\u00e8 quando; ci vuole un p\u00f2 di pazienza. S\u00e8 stessi.",
+   "atteso": "Non so perch\u00e9, n\u00e9 quando; ci vuole un po' di pazienza. S\u00e9 stessi.",
+   "sha256": "1f62d036b4f729b82fb9fcb6dac08b9532c901097103cb407a3b709f765c7abd",
+   "nota": "classe di errore piu' frequente in assoluto",
+   "correzioni": 4
+  },
+  {
+   "id": "qual-e",
+   "input": "Qual'\u00e8 la scadenza?",
+   "atteso": "Qual \u00e8 la scadenza?",
+   "sha256": "6c978e3fdf8c66f484b6234f7a21ec66c63b6f61392a8d1d0decde9058984ba5",
+   "nota": "apostrofo interno: regola dedicata",
+   "correzioni": 1
+  },
+  {
+   "id": "acuto-editoriale",
+   "input": "Scrivere cos\u00ed \u00e8 una scelta editoriale",
+   "atteso": "Scrivere cos\u00ed \u00e8 una scelta editoriale",
+   "sha256": "4c58a930fc07f8f34e0a693b85fe1686198f89c9b30bfbb64a7207f948fe303e",
+   "nota": "variante storica con l'acuto su i: mai correggere",
+   "correzioni": 0,
+   "segnalazioni": 1
+  },
+  {
+   "id": "maiuscolo-lista1",
+   "input": "UNIVERSITA', ECCO COSA CAMBIA",
+   "atteso": "UNIVERSIT\u00c0, ECCO COSA CAMBIA",
+   "sha256": "2e9857d86fb7ec37385604f971ff8f39fc2c05a961de4192ad2d989c109c3461",
+   "nota": "in lista 1 l'apostrofo esclude la sigla, il ramo maiuscolo resta attivo",
+   "correzioni": 1
+  },
+  {
+   "id": "sigla-piu",
+   "input": "I fondi dei PIU non bastano",
+   "atteso": "I fondi dei PIU non bastano",
+   "sha256": "d8f01c11f81e27850021b490a04b4b5de5ab95e84043f278c96678d98ea7fef4",
+   "nota": "PIU sigla: il ramo TUTTO MAIUSCOLO e' spento sotto le 5 lettere",
+   "correzioni": 0
+  },
+  {
+   "id": "cognome-piu",
+   "input": "Il docente Piu ha superato il concorso",
+   "atteso": "Il docente Pi\u00f9 ha superato il concorso",
+   "sha256": "01ddc7f2a018d727e90bef312c1f8af211d162d1a3e049d7c13388906bc282b3",
+   "nota": "falso positivo accettato consapevolmente: 'Piu fondi' come titolo e' molto piu' probabile del cognome"
+  },
+  {
+   "id": "emoji-offset",
+   "input": "\ud83d\ude00 Il papa e' arrivato in citta'",
+   "atteso": "\ud83d\ude00 Il papa \u00e8 arrivato in citt\u00e0",
+   "sha256": "aa8cef74b5b63cd6d49f97871c5dc76e963a35b81a4d5e0ddca98d712ad68afe",
+   "nota": "fuori dal BMP: le segnalazioni non portano offset perche' divergono",
+   "segnalazioni": 1
+  },
+  {
+   "id": "skill-link",
+   "input": "Vedi [LINK:il bando|/universita/bando-2026] e piu",
+   "atteso": "Vedi [LINK:il bando|/universita/bando-2026] e pi\u00f9",
+   "sha256": "b7e690ae26b79f7403cb8c81850a43f011280124593bcdd776a30f373b49d64d",
+   "nota": "sintassi della skill: si maschera solo l'url",
+   "correzioni": 1
+  },
+  {
+   "id": "pua-in-ingresso",
+   "input": "\ue000 gia'",
+   "atteso": "\ue000 gia'",
+   "sha256": "495fc2eade0990e1211690df77cc644d028484b7849f1aa45b312ef4837b821b",
+   "nota": "sentinello gia' nel testo dell'autore: si restituisce l'input intatto",
+   "correzioni": 0,
+   "saltato": "pua_in_ingresso"
+  },
+  {
+   "id": "titolo-slug-stabile",
+   "input": "Perche' e' cambiato tutto per la citta'",
+   "atteso": "Perch\u00e9 \u00e8 cambiato tutto per la citt\u00e0",
+   "sha256": "5a80204984a3887b5e17ab353877b4a9982089e37a87b0d2d70a4bcc4b0eaf78",
+   "nota": "e' il caso che blocca il rilascio: lo slug deve restare identico prima e dopo"
+  },
+  {
+   "id": "giorni-settimana",
+   "input": "Le domande vanno presentate entro venerdi",
+   "atteso": "Le domande vanno presentate entro venerd\u00ec",
+   "sha256": "672d4c28e0ea2f779deca838a831a38ec47d191a81bfe2efb923687168b17999",
+   "nota": "giorni della settimana",
+   "correzioni": 1
+  },
+  {
+   "id": "futuro-prima-persona",
+   "input": "Non sapro mai se andro",
+   "atteso": "Non sapr\u00f2 mai se andr\u00f2",
+   "sha256": "e4020f3eea1392fb49f7e96d62135f349639b5b8ea8c3e88212c8acefc5c013f",
+   "nota": "futuri di prima persona senza omografo",
+   "correzioni": 2
+  },
+  {
+   "id": "verro-cinghiale",
+   "input": "Gli studenti gestiscono il verro",
+   "atteso": "Gli studenti gestiscono il verro",
+   "sha256": "79922a0b62af886722ed1b3863226b0f6d76aa6be2430ea7448684985b1ac1c7",
+   "nota": "verro e' un sostantivo: fuori da lista 2",
+   "correzioni": 0
+  },
+  {
+   "id": "email",
+   "input": "Scrivi a segreteria@universita.it per la citta'",
+   "atteso": "Scrivi a segreteria@universita.it per la citt\u00e0",
+   "sha256": "34c64f1693720260d2b58e4b774a835aaf7f57812969d4f1640d8ff34e13a8e0",
+   "nota": "email mascherata, prosa corretta",
+   "correzioni": 1
+  },
+  {
+   "id": "tetto-segnalazioni",
+   "input": "e e e e e e perche' e e e e e e e e e e e e e e e e",
+   "atteso": "e e e e e e perch\u00e9 e e e e e e e e e e e e e e e e",
+   "sha256": "5dd69e8dd1bfe69eb102e15aeed3b7d10ff93ae3c8f72546253d83c9a2673681",
+   "nota": "tetto di 3 segnalazioni per parola",
+   "segnalazioni": 3
+  },
+  {
+   "id": "vuoto",
+   "input": "",
+   "atteso": "",
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "nota": "stringa vuota",
+   "correzioni": 0
+  }
+ ],
+ "casi_slug": [
+  [
+   "Perche' no",
+   "perche-no"
+  ],
+  [
+   "Perche no",
+   "perche-no"
+  ],
+  [
+   "Perch\u00e9 no",
+   "perche-no"
+  ],
+  [
+   "Perche' e' cambiato tutto per la citta'",
+   "perche-e-cambiato-tutto-per-la-citta"
+  ],
+  [
+   "Perch\u00e9 \u00e8 cambiato tutto per la citt\u00e0",
+   "perche-e-cambiato-tutto-per-la-citta"
+  ],
+  [
+   "Universit\u00e0: l'esame di maturit\u00e0 cambia?",
+   "universita-l-esame-di-maturita-cambia"
+  ],
+  [
+   "Scuola: pi\u00f9 fondi per l'edilizia",
+   "scuola-piu-fondi-per-l-edilizia"
+  ],
+  [
+   "Valle d'Aosta",
+   "valle-d-aosta"
+  ],
+  [
+   "Cos\u2019\u00e8 il PNRR",
+   "cos-e-il-pnrr"
+  ],
+  [
+   "Scelta PA/sede",
+   "scelta-pa-sede"
+  ],
+  [
+   "  spazi   strani  ",
+   "spazi-strani"
+  ],
+  [
+   "---",
+   ""
+  ]
+ ],
+ "tabelle": {
+  "LISTA_2": [
+   [
+    "perche",
+    "perch\u00e9"
+   ],
+   [
+    "poiche",
+    "poich\u00e9"
+   ],
+   [
+    "affinche",
+    "affinch\u00e9"
+   ],
+   [
+    "benche",
+    "bench\u00e9"
+   ],
+   [
+    "nonche",
+    "nonch\u00e9"
+   ],
+   [
+    "sicche",
+    "sicch\u00e9"
+   ],
+   [
+    "finche",
+    "finch\u00e9"
+   ],
+   [
+    "purche",
+    "purch\u00e9"
+   ],
+   [
+    "anziche",
+    "anzich\u00e9"
+   ],
+   [
+    "dopodiche",
+    "dopodich\u00e9"
+   ],
+   [
+    "cosicche",
+    "cosicch\u00e9"
+   ],
+   [
+    "fuorche",
+    "fuorch\u00e9"
+   ],
+   [
+    "dacche",
+    "dacch\u00e9"
+   ],
+   [
+    "cioe",
+    "cio\u00e8"
+   ],
+   [
+    "percio",
+    "perci\u00f2"
+   ],
+   [
+    "puo",
+    "pu\u00f2"
+   ],
+   [
+    "cosi",
+    "cos\u00ec"
+   ],
+   [
+    "gia",
+    "gi\u00e0"
+   ],
+   [
+    "piu",
+    "pi\u00f9"
+   ],
+   [
+    "citta",
+    "citt\u00e0"
+   ],
+   [
+    "universita",
+    "universit\u00e0"
+   ],
+   [
+    "societa",
+    "societ\u00e0"
+   ],
+   [
+    "liberta",
+    "libert\u00e0"
+   ],
+   [
+    "qualita",
+    "qualit\u00e0"
+   ],
+   [
+    "accessibilita",
+    "accessibilit\u00e0"
+   ],
+   [
+    "attivita",
+    "attivit\u00e0"
+   ],
+   [
+    "novita",
+    "novit\u00e0"
+   ],
+   [
+    "possibilita",
+    "possibilit\u00e0"
+   ],
+   [
+    "identita",
+    "identit\u00e0"
+   ],
+   [
+    "comunita",
+    "comunit\u00e0"
+   ],
+   [
+    "autorita",
+    "autorit\u00e0"
+   ],
+   [
+    "realta",
+    "realt\u00e0"
+   ],
+   [
+    "modalita",
+    "modalit\u00e0"
+   ],
+   [
+    "priorita",
+    "priorit\u00e0"
+   ],
+   [
+    "validita",
+    "validit\u00e0"
+   ],
+   [
+    "verita",
+    "verit\u00e0"
+   ],
+   [
+    "responsabilita",
+    "responsabilit\u00e0"
+   ],
+   [
+    "difficolta",
+    "difficolt\u00e0"
+   ],
+   [
+    "facolta",
+    "facolt\u00e0"
+   ],
+   [
+    "specialita",
+    "specialit\u00e0"
+   ],
+   [
+    "particolarita",
+    "particolarit\u00e0"
+   ],
+   [
+    "opportunita",
+    "opportunit\u00e0"
+   ],
+   [
+    "maturita",
+    "maturit\u00e0"
+   ],
+   [
+    "idoneita",
+    "idoneit\u00e0"
+   ],
+   [
+    "anzianita",
+    "anzianit\u00e0"
+   ],
+   [
+    "continuita",
+    "continuit\u00e0"
+   ],
+   [
+    "titolarita",
+    "titolarit\u00e0"
+   ],
+   [
+    "disponibilita",
+    "disponibilit\u00e0"
+   ],
+   [
+    "parita",
+    "parit\u00e0"
+   ],
+   [
+    "professionalita",
+    "professionalit\u00e0"
+   ],
+   [
+    "invalidita",
+    "invalidit\u00e0"
+   ],
+   [
+    "annualita",
+    "annualit\u00e0"
+   ],
+   [
+    "mensilita",
+    "mensilit\u00e0"
+   ],
+   [
+    "obbligatorieta",
+    "obbligatoriet\u00e0"
+   ],
+   [
+    "legalita",
+    "legalit\u00e0"
+   ],
+   [
+    "scolarita",
+    "scolarit\u00e0"
+   ],
+   [
+    "sanita",
+    "sanit\u00e0"
+   ],
+   [
+    "pubblicita",
+    "pubblicit\u00e0"
+   ],
+   [
+    "potra",
+    "potr\u00e0"
+   ],
+   [
+    "dovra",
+    "dovr\u00e0"
+   ],
+   [
+    "sapra",
+    "sapr\u00e0"
+   ],
+   [
+    "vorra",
+    "vorr\u00e0"
+   ],
+   [
+    "stara",
+    "star\u00e0"
+   ],
+   [
+    "bastera",
+    "baster\u00e0"
+   ],
+   [
+    "restera",
+    "rester\u00e0"
+   ],
+   [
+    "tornera",
+    "torner\u00e0"
+   ],
+   [
+    "arrivera",
+    "arriver\u00e0"
+   ],
+   [
+    "iniziera",
+    "inizier\u00e0"
+   ],
+   [
+    "partira",
+    "partir\u00e0"
+   ],
+   [
+    "scadra",
+    "scadr\u00e0"
+   ],
+   [
+    "chiudera",
+    "chiuder\u00e0"
+   ],
+   [
+    "aprira",
+    "aprir\u00e0"
+   ],
+   [
+    "entrera",
+    "entrer\u00e0"
+   ],
+   [
+    "avra",
+    "avr\u00e0"
+   ],
+   [
+    "seguira",
+    "seguir\u00e0"
+   ],
+   [
+    "finira",
+    "finir\u00e0"
+   ],
+   [
+    "servira",
+    "servir\u00e0"
+   ],
+   [
+    "costera",
+    "coster\u00e0"
+   ],
+   [
+    "durera",
+    "durer\u00e0"
+   ],
+   [
+    "permettera",
+    "permetter\u00e0"
+   ],
+   [
+    "consentira",
+    "consentir\u00e0"
+   ],
+   [
+    "prevedera",
+    "preveder\u00e0"
+   ],
+   [
+    "stabilira",
+    "stabilir\u00e0"
+   ],
+   [
+    "decidera",
+    "decider\u00e0"
+   ],
+   [
+    "ricevera",
+    "ricever\u00e0"
+   ],
+   [
+    "otterra",
+    "otterr\u00e0"
+   ],
+   [
+    "rimarra",
+    "rimarr\u00e0"
+   ],
+   [
+    "avverra",
+    "avverr\u00e0"
+   ],
+   [
+    "riguardera",
+    "riguarder\u00e0"
+   ],
+   [
+    "cambiera",
+    "cambier\u00e0"
+   ],
+   [
+    "aumentera",
+    "aumenter\u00e0"
+   ],
+   [
+    "partecipera",
+    "parteciper\u00e0"
+   ],
+   [
+    "presentera",
+    "presenter\u00e0"
+   ],
+   [
+    "pubblichera",
+    "pubblicher\u00e0"
+   ],
+   [
+    "comunichera",
+    "comunicher\u00e0"
+   ],
+   [
+    "varera",
+    "varer\u00e0"
+   ],
+   [
+    "andro",
+    "andr\u00f2"
+   ],
+   [
+    "potro",
+    "potr\u00f2"
+   ],
+   [
+    "dovro",
+    "dovr\u00f2"
+   ],
+   [
+    "sapro",
+    "sapr\u00f2"
+   ],
+   [
+    "vorro",
+    "vorr\u00f2"
+   ],
+   [
+    "terro",
+    "terr\u00f2"
+   ],
+   [
+    "lunedi",
+    "luned\u00ec"
+   ],
+   [
+    "martedi",
+    "marted\u00ec"
+   ],
+   [
+    "mercoledi",
+    "mercoled\u00ec"
+   ],
+   [
+    "giovedi",
+    "gioved\u00ec"
+   ],
+   [
+    "venerdi",
+    "venerd\u00ec"
+   ],
+   [
+    "perch\u00e8",
+    "perch\u00e9"
+   ],
+   [
+    "poich\u00e8",
+    "poich\u00e9"
+   ],
+   [
+    "affinch\u00e8",
+    "affinch\u00e9"
+   ],
+   [
+    "bench\u00e8",
+    "bench\u00e9"
+   ],
+   [
+    "nonch\u00e8",
+    "nonch\u00e9"
+   ],
+   [
+    "sicch\u00e8",
+    "sicch\u00e9"
+   ],
+   [
+    "finch\u00e8",
+    "finch\u00e9"
+   ],
+   [
+    "purch\u00e8",
+    "purch\u00e9"
+   ],
+   [
+    "anzich\u00e8",
+    "anzich\u00e9"
+   ],
+   [
+    "dopodich\u00e8",
+    "dopodich\u00e9"
+   ],
+   [
+    "cosicch\u00e8",
+    "cosicch\u00e9"
+   ],
+   [
+    "fuorch\u00e8",
+    "fuorch\u00e9"
+   ],
+   [
+    "giacch\u00e8",
+    "giacch\u00e9"
+   ],
+   [
+    "dacch\u00e8",
+    "dacch\u00e9"
+   ],
+   [
+    "n\u00e8",
+    "n\u00e9"
+   ],
+   [
+    "s\u00e8",
+    "s\u00e9"
+   ],
+   [
+    "p\u00f2",
+    "po'"
+   ],
+   [
+    "cio\u00e9",
+    "cio\u00e8"
+   ],
+   [
+    "caff\u00e9",
+    "caff\u00e8"
+   ],
+   [
+    "qual'\u00e8",
+    "qual \u00e8"
+   ],
+   [
+    "qual'era",
+    "qual era"
+   ],
+   [
+    "qual'erano",
+    "qual erano"
+   ]
+  ],
+  "LISTA_2B": [
+   [
+    "sara",
+    "sar\u00e0"
+   ],
+   [
+    "dara",
+    "dar\u00e0"
+   ],
+   [
+    "fara",
+    "far\u00e0"
+   ],
+   [
+    "andra",
+    "andr\u00e0"
+   ],
+   [
+    "verra",
+    "verr\u00e0"
+   ],
+   [
+    "caffe",
+    "caff\u00e8"
+   ]
+  ],
+  "SOLO_APOSTROFO": [
+   [
+    "e'",
+    "\u00e8"
+   ],
+   [
+    "si'",
+    "s\u00ec"
+   ],
+   [
+    "la'",
+    "l\u00e0"
+   ],
+   [
+    "li'",
+    "l\u00ec"
+   ],
+   [
+    "giu'",
+    "gi\u00f9"
+   ],
+   [
+    "eta'",
+    "et\u00e0"
+   ],
+   [
+    "meta'",
+    "met\u00e0"
+   ],
+   [
+    "pero'",
+    "per\u00f2"
+   ],
+   [
+    "terra'",
+    "terr\u00e0"
+   ],
+   [
+    "papa'",
+    "pap\u00e0"
+   ],
+   [
+    "faro'",
+    "far\u00f2"
+   ],
+   [
+    "saro'",
+    "sar\u00f2"
+   ],
+   [
+    "daro'",
+    "dar\u00f2"
+   ],
+   [
+    "verro'",
+    "verr\u00f2"
+   ],
+   [
+    "staro'",
+    "star\u00f2"
+   ],
+   [
+    "unita'",
+    "unit\u00e0"
+   ],
+   [
+    "necessita'",
+    "necessit\u00e0"
+   ],
+   [
+    "disabilita'",
+    "disabilit\u00e0"
+   ],
+   [
+    "abilita'",
+    "abilit\u00e0"
+   ],
+   [
+    "capacita'",
+    "capacit\u00e0"
+   ],
+   [
+    "eredita'",
+    "eredit\u00e0"
+   ],
+   [
+    "gratuita'",
+    "gratuit\u00e0"
+   ]
+  ],
+  "DENY": [
+   "po'",
+   "mo'",
+   "fa'",
+   "da'",
+   "di'",
+   "va'",
+   "sta'",
+   "be'",
+   "to'",
+   "ca'",
+   "de'",
+   "fra'",
+   "pro'",
+   "ne'",
+   "a'",
+   "co'",
+   "vo'",
+   "so'",
+   "i'",
+   "tra'",
+   "me'",
+   "ve'",
+   "su'",
+   "no'"
+  ],
+  "LISTA_3A": [
+   [
+    "e",
+    "\u00e8"
+   ],
+   [
+    "da",
+    "d\u00e0"
+   ],
+   [
+    "si",
+    "s\u00ec"
+   ],
+   [
+    "la",
+    "l\u00e0"
+   ],
+   [
+    "ne",
+    "n\u00e9"
+   ],
+   [
+    "se",
+    "s\u00e9"
+   ],
+   [
+    "li",
+    "l\u00ec"
+   ],
+   [
+    "te",
+    "t\u00e8"
+   ],
+   [
+    "ancora",
+    "\u00e0ncora"
+   ],
+   [
+    "meta",
+    "met\u00e0"
+   ],
+   [
+    "terra",
+    "terr\u00e0"
+   ],
+   [
+    "unita",
+    "unit\u00e0"
+   ],
+   [
+    "papa",
+    "pap\u00e0"
+   ],
+   [
+    "pero",
+    "per\u00f2"
+   ],
+   [
+    "faro",
+    "far\u00f2"
+   ]
+  ],
+  "LISTA_3B": [
+   [
+    "necessita",
+    "necessit\u00e0"
+   ],
+   [
+    "disabilita",
+    "disabilit\u00e0"
+   ],
+   [
+    "abilita",
+    "abilit\u00e0"
+   ],
+   [
+    "eredita",
+    "eredit\u00e0"
+   ],
+   [
+    "gratuita",
+    "gratuit\u00e0"
+   ],
+   [
+    "capacita",
+    "capacit\u00e0"
+   ],
+   [
+    "eta",
+    "et\u00e0"
+   ],
+   [
+    "giu",
+    "gi\u00f9"
+   ],
+   [
+    "saro",
+    "sar\u00f2"
+   ],
+   [
+    "daro",
+    "dar\u00f2"
+   ],
+   [
+    "verro",
+    "verr\u00f2"
+   ],
+   [
+    "staro",
+    "star\u00f2"
+   ],
+   [
+    "pi\u00fa",
+    "pi\u00f9"
+   ],
+   [
+    "cos\u00ed",
+    "cos\u00ec"
+   ],
+   [
+    "gi\u00fa",
+    "gi\u00f9"
+   ]
+  ],
+  "PREPOSIZIONI_SE": [
+   "per",
+   "di",
+   "in",
+   "con",
+   "tra",
+   "fra",
+   "da",
+   "su",
+   "sopra",
+   "verso"
+  ]
+ }
+}

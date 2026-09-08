@@ -1,12 +1,12 @@
 """Skill SEO (step v8): enriched -> completed.
 
 Single LLM call Claude Opus 4.7 + tool use `save_seo_bando`. Genera
-contenuto editoriale + meta per ogni bando gia' arricchito da preprocess
+contenuto editoriale + meta per ogni bando già arricchito da preprocess
 + enricher v7. Output: 14 campi che vanno direttamente in tabella `bando`.
 
-NESSUN side effect su FK/junction/date (gia' coperte dall'enricher).
-NESSUNA decisione di validita' (gia' fatta dal preprocess).
-NESSUN verifier post-call (le date sono gia' validate; campi editoriali
+NESSUN side effect su FK/junction/date (già coperte dall'enricher).
+NESSUNA decisione di validità (già fatta dal preprocess).
+NESSUN verifier post-call (le date sono già validate; campi editoriali
 sono opinionali).
 """
 from __future__ import annotations
@@ -172,15 +172,15 @@ SAVE_SEO_BANDO_TOOL = {
 # System prompt
 # ---------------------------------------------------------------------------
 
-SEO_SYSTEM_PROMPT = """Sei un redattore SEO senior specializzato in bandi pubblici italiani per finanziamenti UE 2021-2027 (FESR, FSE+, Interreg, JTF, PNRR). Il tuo compito e' produrre la scheda editoriale completa di UN bando, basandoti SOLO sui dati forniti (record DB + markdown della pagina).
+SEO_SYSTEM_PROMPT = """Sei un redattore SEO senior specializzato in bandi pubblici italiani per finanziamenti UE 2021-2027 (FESR, FSE+, Interreg, JTF, PNRR). Il tuo compito è produrre la scheda editoriale completa di UN bando, basandoti SOLO sui dati forniti (record DB + markdown della pagina).
 
 CONTESTO PIPELINE
 I dati che ricevi sono il risultato di tre fasi precedenti:
 1. Scraper: titolo_raw, descrizione_raw, raw_data, link_bando.
-2. Preprocess: ha validato che e' un bando vero (assumi validita').
-3. Enricher: ha estratto FK + junction (tipologia, modalita, programma, beneficiari, regioni, settori, codici_ateco) + 3 date (data_pubblicazione, data_apertura, data_scadenza) con anti-hallucination quote-validated.
+2. Preprocess: ha validato che è un bando vero (assumi validità).
+3. Enricher: ha estratto FK + junction (tipologia, modalità, programma, beneficiari, regioni, settori, codici_ateco) + 3 date (data_pubblicazione, data_apertura, data_scadenza) con anti-hallucination quote-validated.
 
-Tu NON estrai date (gia' fatte). Tu NON decidi se e' un bando valido (gia' deciso). Tu generi: contenuto editoriale + meta + classificazione qualitativa (livello, tematica, importi, link_candidatura).
+Tu NON estrai date (già fatte). Tu NON decidi se è un bando valido (già deciso). Tu generi: contenuto editoriale + meta + classificazione qualitativa (livello, tematica, importi, link_candidatura).
 
 CHIAMA IL TOOL save_seo_bando UNA VOLTA con il payload completo.
 
@@ -195,7 +195,7 @@ REGOLE EDITORIALI
 
 3. **descrizione_breve (180-320 char)**: include ente, tipologia, scadenza in formato italiano (es. "30 settembre 2026"). Tono informativo, no marketing.
 
-4. **slug**: kebab-case lowercase, ≤80 char. Rimuovi stopword italiane (di, il, la, lo, le, gli, e, con, per, da, in, su, a, al, alla, dei, del, della, delle, degli). Esempio: "Bando ricerca PNRR 2026 per università del Sud" → "bando-ricerca-pnrr-2026-universita-sud".
+4. **slug**: kebab-case lowercase, ≤80 char. Rimuovi stopword italiane (di, il, la, lo, le, gli, e, con, per, da, in, su, a, al, alla, dei, del, della, delle, degli). Esempio: "Bando ricerca PNRR 2026 per università del Sud" → "bando-ricerca-pnrr-2026-università-sud".
 
 5. **Apertura del contenuto** (primi 30 parole): fatto concreto (ente + scadenza + importo o destinatari). Vietate aperture vaghe ("In un contesto di crescente attenzione...", "Nell'ambito delle politiche...").
 
@@ -204,7 +204,7 @@ REGOLE EDITORIALI
    - "Nell'ambito delle politiche..."
    - "Al fine di promuovere..."
    - "Si rende noto che..."
-   - "E' opportuno sottolineare..."
+   - "È opportuno sottolineare..."
    - "In tale prospettiva..."
    - "Con la presente..."
 
@@ -214,7 +214,7 @@ REGOLE EDITORIALI
    - **flash_bando** (default): 350-500 parole, 2 sezioni H2: "Chi può candidarsi" e "Come e quando".
    - **guida_bando**: 800-1200 parole, 7-8 sezioni H2 incluse "In breve", "A chi si rivolge", "Cosa finanzia", "Come presentare", "Scadenze", "Errori comuni", "FAQ", chiusura. Usa solo se: regolamento articolato, fasi multiple, FAQ ufficiali nel markdown, importo > 5M€.
 
-9. **contenuto.sections** struttura: ogni sezione e' un oggetto con `type` (h2, paragraph, bullet_list, numbered_list, faq):
+9. **contenuto.sections** struttura: ogni sezione è un oggetto con `type` (h2, paragraph, bullet_list, numbered_list, faq):
    - h2: `{type: "h2", text: "Titolo sezione"}`
    - paragraph: `{type: "paragraph", segments: [{kind: "text", text: "..."}, {kind: "bold", text: "..."}, {kind: "link", text: "...", url: "..."}]}`
    - bullet_list / numbered_list: `{type: "...", items: [{segments: [...]}, ...]}`
@@ -230,9 +230,11 @@ REGOLE EDITORIALI
 
 14. **allegati**: estrai dal markdown TUTTI i link a documenti (.pdf, .doc, .docx, .zip, .xlsx, .xls, .rtf, .odt, .ods) come oggetti {label, url, tipo}. label = testo del link o nome file. url = assoluto. tipo = estensione lowercase.
 
-15. **Date**: NON estrarre. Usa SOLO quelle gia' fornite in input (data_pubblicazione, data_apertura, data_scadenza). Citarle nel contenuto in formato italiano (es. "30 settembre 2026", "20 marzo 2026"). Se null nel input, NON menzionarle.
+15. **Date**: NON estrarre. Usa SOLO quelle già fornite in input (data_pubblicazione, data_apertura, data_scadenza). Citarle nel contenuto in formato italiano (es. "30 settembre 2026", "20 marzo 2026"). Se null nel input, NON menzionarle.
 
-16. **Stato del bando — MAI in prosa**: il testo resta pubblicato per anni mentre lo stato (aperto/chiuso) cambia alla scadenza; il sito lo mostra gia' con un badge calcolato in tempo reale. NON affermare MAI lo stato corrente in contenuto, descrizione_breve o FAQ: vietate frasi come "attualmente aperto", "il bando e' aperto", "risulta aperto", "ancora aperto", "e' ancora possibile candidarsi", "restano X giorni". Esprimi apertura e chiusura SOLO con date assolute: "le domande possono essere presentate dal 1 marzo 2026 al 30 settembre 2026", "domande entro il 30 settembre 2026".
+16. **Stato del bando — MAI in prosa**: il testo resta pubblicato per anni mentre lo stato (aperto/chiuso) cambia alla scadenza; il sito lo mostra già con un badge calcolato in tempo reale. NON affermare MAI lo stato corrente in contenuto, descrizione_breve o FAQ: vietate frasi come "attualmente aperto", "il bando è aperto", "risulta aperto", "ancora aperto", "è ancora possibile candidarsi", "restano X giorni". Esprimi apertura e chiusura SOLO con date assolute: "le domande possono essere presentate dal 1 marzo 2026 al 30 settembre 2026", "domande entro il 30 settembre 2026".
+
+17. **Accenti italiani**: scrivi "è", "à", "ù", "ò", "ì", "é" con l'accento vero. Mai la vocale nuda al loro posto ("universita", "puo", "gia", "piu", "perche", "modalita") e mai l'apostrofo come accento ("e'", "citta'", "sara'", "validita'"). Vale in ogni campo del payload: titolo, descrizione_breve, contenuto, meta e FAQ.
 
 OUTPUT: chiama il tool save_seo_bando UNA VOLTA con il payload. Niente testo libero prima/dopo."""
 
@@ -527,14 +529,14 @@ Descrizione grezza (scraper): {descrizione or "(vuota)"}
 Link bando: {link_bando}
 Tipo link: {tipo_link}
 
-DATE (gia' estratte e validate dall'enricher v7):
+DATE (già estratte e validate dall'enricher v7):
 - data_pubblicazione: {pub}
 - data_apertura: {apt}
 - data_scadenza: {scad}
 
-CLASSIFICAZIONE (gia' fatta dall'enricher v7):
+CLASSIFICAZIONE (già fatta dall'enricher v7):
 - Tipologia: {tipologia}
-- Modalita' erogazione: {modalita}
+- Modalità erogazione: {modalita}
 - Programma: {programma}
 - Beneficiari: {beneficiari}
 - Regioni coperte: {regioni}
@@ -552,7 +554,7 @@ RAW_DATA (metadata scraper, JSONB):
 
 1. Costruisci ente_erogatore, area_geografica, tematica, importi, link_candidatura, allegati ATTRAVERSO ANALISI dei dati sopra. NON inventare.
 2. Scrivi contenuto editoriale (`contenuto.sections`) seguendo il livello scelto: flash_bando (350-500 parole, 2 H2) o guida_bando (800-1200 parole, 7-8 H2 + FAQ).
-3. Cita le date in formato italiano (es. "30 settembre 2026") nel contenuto. Le date sono affidabili (gia' validate substring + source autoritativo).
+3. Cita le date in formato italiano (es. "30 settembre 2026") nel contenuto. Le date sono affidabili (già validate substring + source autoritativo).
 4. Slug kebab-case ≤80 char, no stopword italiane.
 5. Titolo ≤80 char, sentence case, fatto concreto in apertura.
 

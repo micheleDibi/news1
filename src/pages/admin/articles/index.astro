@@ -3,6 +3,11 @@ export const prerender = false;
 
 import AdminLayout from '../../../layouts/AdminLayout.astro';
 import { supabase } from '../../../lib/supabase';
+import { getArticlePublicUrl } from '../../../lib/utils';
+
+// NOTA: questa pagina non e' linkata dalla nav di AdminLayout (la voce
+// "Articoli" punta a /admin). Ci si arriva solo dalla redirect di
+// PendingArticleReview.tsx dopo "Scarta articolo". La lista viva e' /admin.
 
 // Set cache control headers
 Astro.response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -159,6 +164,18 @@ const { data: articles } = await articlesQuery;
                         <a href={`/admin/articles/${article.id}/edit`} class="text-primary hover:text-primary-dark">
                           Edit
                         </a>
+                        {getArticlePublicUrl(article) && (
+                          <button
+                            type="button"
+                            data-copy-url={getArticlePublicUrl(article)}
+                            title={article.isdraft
+                              ? 'Copia l\'indirizzo che avra\' una volta pubblicato'
+                              : 'Copia l\'URL pubblico'}
+                            class="copia-url text-gray-600 hover:text-gray-900"
+                          >
+                            Copia URL
+                          </button>
+                        )}
                         <button 
                           data-article-id={article.id}
                           class="text-red-600 hover:text-red-900 delete-article"
@@ -232,6 +249,23 @@ const { data: articles } = await articlesQuery;
 
   searchInput.addEventListener('input', filterArticles);
   statusSelect.addEventListener('change', filterArticles);
+
+  // Copia dell'URL pubblico. Delegation sul contenitore: qui il DOM non
+  // viene ricostruito, ma la stessa strategia vale in /admin dove invece si'.
+  document.addEventListener('click', async (evento) => {
+    const bersaglio = (evento.target as HTMLElement)?.closest?.('.copia-url');
+    if (!(bersaglio instanceof HTMLElement)) return;
+    const url = bersaglio.dataset.copyUrl ?? '';
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      const originale = bersaglio.textContent;
+      bersaglio.textContent = 'Copiato!';
+      setTimeout(() => { bersaglio.textContent = originale; }, 1500);
+    } catch (e) {
+      console.error('copia negli appunti fallita', e);
+    }
+  });
 
   // Delete functionality
   document.querySelectorAll('.delete-article').forEach((button) => {

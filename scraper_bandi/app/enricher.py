@@ -205,14 +205,14 @@ IN APERTURA PROSSIMAMENTE (preavviso, non ancora aperto):
 - "Calendario inviti", "Inviti programmati"
 
 Se senti dubbi: ragiona dal tipo di fonte (Preavviso vs Opportunità) e dal contenuto raw_data.
-La data attuale e' giugno 2026."""
+La data attuale è giugno 2026."""
 
 
 CLASSIFY_SYSTEM_TEMPLATE = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027. \
 Classifica il bando rispetto al catalogo {category}.
 
 VINCOLO ASSOLUTO: scegli SOLO id presenti nel catalogo fornito. \
-NON inventare id. Se nessuna opzione e' chiaramente applicabile, ritorna null/array vuoto.
+NON inventare id. Se nessuna opzione è chiaramente applicabile, ritorna null/array vuoto.
 
 Sii RIGOROSO: solo se trovi un match chiaro nei dati del bando (titolo, descrizione, \
 URL, raw_data, pagina). In caso di incertezza, preferisci NON selezionare."""
@@ -453,7 +453,7 @@ async def extract_tipologia(bando, fonte_ctx, html_text, tipologie) -> int | Non
 
 
 async def extract_modalita(bando, fonte_ctx, html_text, modalita) -> int | None:
-    return await _extract_single(bando, fonte_ctx, html_text, modalita, "modalita' di erogazione", "modalita")
+    return await _extract_single(bando, fonte_ctx, html_text, modalita, "modalità di erogazione", "modalita")
 
 
 async def extract_programma(bando, fonte_ctx, html_text, programmi) -> int | None:

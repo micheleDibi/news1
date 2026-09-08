@@ -5,6 +5,7 @@ import AdminLayout from '../layouts/AdminLayout.astro';
 import { supabase } from '../lib/supabase';
 import { categories } from '../lib/categories';
 import { CATEGORY_COLORS, getCategoryHex } from '../lib/category-colors';
+import { getArticlePublicUrl } from '../lib/utils';
 
 const categoryColorMap = CATEGORY_COLORS;
 
@@ -254,6 +255,18 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
                       </a>
+                      {getArticlePublicUrl(article) && (
+                        <button
+                          type="button"
+                          data-copy-url={getArticlePublicUrl(article)}
+                          class="copia-url p-2 text-gray-400 hover:text-sport-700 rounded-full hover:bg-gray-100 transition-colors"
+                          title={article.isdraft
+                            ? "Copia l'indirizzo che avra' una volta pubblicato"
+                            : "Copia l'URL pubblico"}
+                          aria-label="Copia URL"
+                          set:html={`<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>`}
+                        />
+                      )}
                       <button
                         data-article-id={article.id}
                         class="delete-button p-2 text-gray-400 hover:text-red-600 rounded-full hover:bg-red-50 transition-colors"
@@ -481,6 +494,11 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
       articlesList.innerHTML = (articles || [])
         .map(article => {
           const isDraft = article.isdraft;
+          // Stessa regola del ramo SSR: URL costruito dalle colonne del DB,
+          // mai da slugify(nome categoria).
+          const urlPubblico = article.category_slug && article.slug
+            ? `https://edunews24.it/${article.category_slug}/${article.slug}`
+            : '';
           const hasPublished = !!article.published_at;
           const catColor = catColors[article.category] || '#6B7280';
           const dateValue = (isDraft || !hasPublished) ? article.created_at : article.published_at;
@@ -537,6 +555,14 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                       </svg>
                     </a>
+                    ${urlPubblico ? `
+                    <button
+                      type="button"
+                      data-copy-url="${escapeAttr(urlPubblico)}"
+                      class="copia-url p-2 text-gray-400 hover:text-sport-700 rounded-full hover:bg-gray-100 transition-colors"
+                      title="${isDraft ? 'Copia l&#39;indirizzo che avra&#39; una volta pubblicato' : 'Copia l&#39;URL pubblico'}"
+                      aria-label="Copia URL"
+                    ><svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg></button>` : ''}
                     <button
                       data-article-id="${article.id}"
                       class="delete-button p-2 text-gray-400 hover:text-red-600 rounded-full hover:bg-red-50 transition-colors"
@@ -640,6 +666,36 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
   });
 
   // Add this function to handle delete button setup and click events
+  function escapeAttr(valore: string): string {
+    return String(valore)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  // Copia dell'URL pubblico. A differenza di setupDeleteButtons, che va
+  // richiamata dopo ogni innerHTML, questa e' una delegation sul documento:
+  // sopravvive alla ricostruzione delle card senza doppi binding.
+  document.addEventListener('click', async (evento) => {
+    const bersaglio = (evento.target as HTMLElement)?.closest?.('.copia-url');
+    if (!(bersaglio instanceof HTMLElement)) return;
+    const url = bersaglio.dataset.copyUrl ?? '';
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      const originale = bersaglio.title;
+      bersaglio.title = 'Copiato!';
+      bersaglio.classList.add('text-emerald-600');
+      setTimeout(() => {
+        bersaglio.title = originale;
+        bersaglio.classList.remove('text-emerald-600');
+      }, 1500);
+    } catch (e) {
+      console.error('copia negli appunti fallita', e);
+    }
+  });
+
   function setupDeleteButtons() {
     const deleteButtons = document.querySelectorAll('.delete-button');
     

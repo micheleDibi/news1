@@ -87,6 +87,18 @@ condizione della RLS pubblica (`completed AND slug IS NOT NULL`).
 - **Tailwind**, niente CSS custom se evitabile. Declassare un heading richiede `font-heading`,
   altrimenti cambia il font (`Layout.astro` applica League Spartan a `h1,h2,h3`).
 - **TypeScript** in `strict`, senza `any` nuovi dove evitabile.
+- **Slug degli articoli: si genera una volta e poi è congelato.** Per i nuovi si usa
+  `slugifica()` (`src/lib/slug.ts`, gemello di `backend/app/slug.py`), mai `slugify()` di
+  `utils.ts`. Un update non può cambiare uno slug esistente senza l'header `X-Slug-Intent`, che
+  deve contenere lo slug desiderato. L'intento **non** va in un campo del body: create/update
+  passano il JSON grezzo a Supabase, e un campo estraneo fa fallire l'intero salvataggio.
+- **URL pubblico di un articolo**: `getArticlePublicUrl()` di `src/lib/utils.ts`, che legge
+  `category_slug` e `slug` dalle colonne. `getArticleUrl()` resta per i chiamanti storici ma
+  slugifica il *nome* della categoria: non usarla per link nuovi.
+- **Correzione ortografica**: `src/lib/ortografia.ts` e `backend/app/ortografia.py` sono gemelli e
+  devono restare allineati. Si agganciano ai chokepoint con una **allowlist di campi**, mai con una
+  ricorsione cieca sul payload (gli URL non vanno toccati). I test condivisi sono la difesa contro
+  la divergenza: `npm test` e `npm run test:py`, entrambi su `tests/ortografia/casi.json`.
 - **Niente git automatico**: modificare i file e basta, commit e branch li fa l'utente.
 - **Niente nuove dipendenze npm** senza chiedere.
 - **Mai stampare i valori di `.env`.**
@@ -94,8 +106,21 @@ condizione della RLS pubblica (`completed AND slug IS NOT NULL`).
 ## Trappole note
 
 - Lo **slug degli interpelli non è a DB**: si ricalcola da `interpello_name + provincia|città +
-  regione + id` con `generateInterpelloSlug`, duplicata in 4 file (3 nel frontend, 1 in
-  `backend/app/interpelli.py`). Qualsiasi modifica va sincronizzata su tutti.
+  regione + id`. Le copie sono **due**, una per linguaggio (`slugInterpello` in
+  `src/lib/liste/interpelli.ts`, `_generate_interpello_slug` in `backend/app/interpelli.py`):
+  devono restare identiche byte per byte. Per questo la correzione ortografica **non** tocca
+  `interpello_name` né i campi geografici.
+- **`scripts/migrate-slugs.ts` non va eseguito alla leggera**: riempie solo gli slug mancanti e
+  pretende `MIGRAZIONE_SLUG=si` più `SCRIVI=si`. Nella versione precedente riscriveva lo slug di
+  *tutte* le righe ed era l'unico punto capace di mandare in 410 l'intero archivio in un colpo solo.
+- **Non esiste nessuna service-role key nel repo**: `backend/app/database.py` usa
+  `PUBLIC_SUPABASE_ANON_KEY` malgrado il commento dica il contrario. Tutte le scritture su
+  `articles` passano dalla anon key.
+- `backend/app/sender.py` gira **ogni ora dalle 03:00 alle 19:00**, non quattro volte al giorno, e
+  la sua pipeline **si ferma alla sintesi**: la generazione dell'articolo (skill base) parte solo a
+  mano dall'admin, via `POST /api/news/reconstruct/{id}`.
+- Su questa macchina esiste un **altro package Python chiamato `app`** sul `sys.path`: i test
+  importano i moduli per percorso, non con `from app import ...`, altrimenti vince l'altro.
 - `src/lib/utils.ts` → `slugify()` **non è accent-safe** (`città`→`citt`, `Valle d'Aosta`→`valle daosta`):
   non usarla per slug geografici.
 - Le regioni hanno **grafie diverse nelle tre fonti**: `Emilia-Romagna` / `Emilia Romagna`,
@@ -109,7 +134,31 @@ condizione della RLS pubblica (`completed AND slug IS NOT NULL`).
 - Il `README.md` è disallineato su `scraper_bandi/` (descritto "in costruzione", in realtà completo),
   sui nomi delle junction (al plurale nel DB), sulla RLS e su alcuni comandi che non esistono più.
 
+## Test
+
+Non c'è un test runner installato e non se ne aggiungono: si usano quelli della piattaforma.
+
+```bash
+npm test        # node --test, gemello TypeScript
+npm run test:py # unittest della stdlib, gemello Python
+```
+
+Entrambi leggono `tests/ortografia/casi.json`, che contiene i casi di `correggi()` e quelli di
+`slugifica()` con lo `sha256` atteso e un conteggio minimo: nessuno può cancellare casi in
+silenzio. `npx astro check` **non** è disponibile (richiederebbe `@astrojs/check`): per il
+controllo dei tipi si usa `npx tsc --noEmit -p tsconfig.json`, che ha errori preesistenti.
+
 ## Cosa NON toccare
 
 `backend/`, `scraper_bandi/`, `backend/sql/`, `scripts/`, l'area admin. Niente migrazioni, niente
 scritture su Supabase dal frontend, niente operazioni git.
+
+> **Deroga registrata (intervento "URL copiabile, slug congelato, accenti").** Su richiesta esplicita
+> dell'utente sono stati modificati: `backend/app/` (nuovi `ortografia.py`, `slug.py`, `llm_json.py`;
+> modificati `main.py`, `interpelli.py`, `selezione_personale.py`, `variables_edunews.py`),
+> `backend/skill/` e `backend/news-angle-rewriter-persona/scripts/firecrawl_scrape.py`,
+> `scraper_bandi/app/{seo_skill,bando_resolver,preprocessor,enricher}.py` (solo ortografia dei
+> prompt), `scripts/migrate-slugs.ts` (guardia), l'area admin
+> (`src/components/ArticleForm.tsx`, `src/pages/admin.astro`, `src/pages/admin/articles/index.astro`,
+> `src/pages/api/articles/**`). La deroga vale per quell'intervento: fuori da lì la regola sopra
+> resta in vigore.

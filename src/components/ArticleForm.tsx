@@ -3,7 +3,8 @@ import { useForm, FieldError, Merge, FieldErrorsImpl } from 'react-hook-form';
 import { supabase } from '../lib/supabase';
 import { categories } from '../lib/categories';
 import { v4 as uuidv4 } from 'uuid';
-import { slugify, getArticleUrl } from '../lib/utils';
+import { slugify, getArticlePublicUrl } from '../lib/utils';
+import { slugifica, slugValido } from '../lib/slug';
 import { useEditor, EditorContent, Editor, BubbleMenu } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
@@ -929,6 +930,11 @@ export default function ArticleForm({ article }: ArticleFormProps) {
   const [audioPlaying, setAudioPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [allowedCategories, setAllowedCategories] = useState<any[]>([]);
+  // Slug: buffer della modifica esplicita (null = campo in sola lettura) e
+  // ambiguita' ortografiche segnalate dal server dopo il salvataggio.
+  const [slugInModifica, setSlugInModifica] = useState<string | null>(null);
+  const [segnalazioniOrtografia, setSegnalazioniOrtografia] = useState<any[]>([]);
+  const [urlCopiato, setUrlCopiato] = useState(false);
   const [showAiModal, setShowAiModal] = useState(false);
   const [aiParams, setAiParams] = useState({
     prompt: '',
@@ -1667,18 +1673,32 @@ const cancelContactForm = () => {
       
       console.log('Submit triggered by:', submitterName, ' | Should send to Facebook:', shouldSendToFacebook);
 
-      // --- Category Permission Check --- 
+      // --- Category Permission Check ---
+      // Lo slug della categoria si legge da categories.slug, MAI da
+      // slugify(nome): erano due fonti di verita' diverse e il gate dei
+      // permessi poteva confrontare un valore diverso da quello salvato.
       const selectedCategoryName = data.category;
-      const selectedCategorySlug = slugify(selectedCategoryName);
+      const categoriaSelezionata = allowedCategories.find(
+        (c: any) => c.name === selectedCategoryName
+      );
+      const selectedCategorySlug: string = categoriaSelezionata?.slug ?? '';
       const allowedCategorySlugs: string[] = userPermissions.category_permissions || [];
+      const categoriaCambiata = !article || article.category !== selectedCategoryName;
 
-      console.log('Checking category permission for save:', {
-        selectedCategorySlug,
-        allowedCategorySlugs,
-        isAllowed: allowedCategorySlugs.includes(selectedCategorySlug)
-      });
+      if (!slugValido(selectedCategorySlug)) {
+        alert(
+          `Errore: la categoria '${selectedCategoryName}' non e' stata riconosciuta ` +
+          `(elenco categorie non ancora caricato, oppure slug non conforme). ` +
+          `Ricarica la pagina e riprova: salvare adesso scriverebbe un URL sbagliato.`
+        );
+        setLoading(false);
+        return;
+      }
 
-      if (!selectedCategorySlug || !allowedCategorySlugs.includes(selectedCategorySlug)) {
+      // Il permesso serve solo quando la categoria CAMBIA davvero: altrimenti
+      // un articolo che sta in una categoria non piu' concessa non sarebbe
+      // piu' salvabile nemmeno per correggere un refuso.
+      if (categoriaCambiata && !allowedCategorySlugs.includes(selectedCategorySlug)) {
         alert(`Errore: Non hai il permesso di scrivere nella categoria '${selectedCategoryName}'. Seleziona una categoria consentita.`);
         setLoading(false);
         return; // Stop submission
@@ -1791,10 +1811,34 @@ const cancelContactForm = () => {
       const baseCreator = userProfile?.full_name || currentUser || article?.creator;
       const finalCreator = canModifyCreator ? (selectedCreator || baseCreator) : baseCreator;
 
+      // --- Congelamento dello slug ---------------------------------------
+      // Prima qui c'era `slug: slugify(data.title)`: lo slug veniva
+      // ricalcolato a ogni salvataggio, quindi ritoccare il titolo spostava
+      // l'URL di un articolo gia' indicizzato. La rotta pubblica non ha
+      // redirect di storico: il vecchio indirizzo risponde 410, non 301.
+      const slugADb: string = typeof article?.slug === 'string' ? article.slug : '';
+      const eBozzaADb = article ? article.isdraft !== false : true;
+      const slugRichiesto =
+        slugInModifica !== null && slugifica(slugInModifica) !== slugADb
+          ? slugifica(slugInModifica)
+          : '';
+      let slugDaSalvare: string;
+      if (slugValido(slugRichiesto)) {
+        slugDaSalvare = slugRichiesto;               // modifica esplicita
+      } else if (slugValido(slugADb)) {
+        slugDaSalvare = slugADb;                     // congelato
+      } else if (eBozzaADb) {
+        slugDaSalvare = slugifica(data.title || ''); // bozza senza slug: si genera
+      } else {
+        // Pubblicato con uno slug non conforme (vecchia slugify): non si
+        // tocca, e' comunque l'URL indicizzato. Si cambia solo a mano.
+        slugDaSalvare = slugADb;
+      }
+
       const articleData = {
         ...data,
         content: markdownContent, // Use the converted markdown content
-        slug: slugify(data.title),
+        slug: slugDaSalvare,
         category_slug: selectedCategorySlug, // Use the verified slug
         creator: finalCreator,
         tags: data.tags || [], // Ensure tags are included
@@ -1855,12 +1899,21 @@ const cancelContactForm = () => {
       console.log('📝 Method:', isEditing ? 'PUT' : 'POST');
       console.log('📝 Sending article data with video_url:', articleData.video_url);
       
+      const intestazioni: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
+      };
+      // L'intento di cambiare slug viaggia in un HEADER, non nel body: il
+      // body viene passato grezzo a Supabase, quindi un campo estraneo
+      // farebbe fallire l'intero salvataggio (PGRST204). E un campo del form
+      // sarebbe attivabile per sbaglio dallo spread di `data`.
+      if (isEditing && slugValido(slugRichiesto)) {
+        intestazioni['X-Slug-Intent'] = slugRichiesto;
+      }
+
       const response = await fetch(endpoint, {
         method: isEditing ? 'PUT' : 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.PUBLIC_API_SECRET_KEY}`
-        },
+        headers: intestazioni,
         body: JSON.stringify(articleData)
       });
       
@@ -1875,23 +1928,27 @@ const cancelContactForm = () => {
 
       const result = await response.json();
       console.log('📝 === API SUCCESS ===');
-      console.log('📝 API Response result:', result);
-      console.log('📝 Saved article video_url:', result.video_url);
-      console.log(`${isEditing ? 'Updated' : 'Created'} article:`, result);
-      
-      // Store the saved article data
-      setSavedArticle(result);
+      console.log(`${isEditing ? 'Updated' : 'Created'} article:`, result.article);
+
+      // Le API rispondono { success, article }: prima qui si salvava il
+      // wrapper, quindi savedArticle.id era sempre undefined.
+      setSavedArticle(result.article ?? null);
+      setSlugInModifica(null);
+      setSegnalazioniOrtografia(Array.isArray(result.ortografia) ? result.ortografia : []);
+      if (result.slug_congelato) {
+        console.warn('Lo slug non e stato modificato: era congelato lato server.');
+      }
       
       // If article is published (not a draft) and user has permission to publish, post to Facebook ONLY if the correct button was pressed
       if (!data.isdraft && canPublishArticles && shouldSendToFacebook) { // Use the derived boolean AND check the flag
         setFbPosting(true); // Indicate FB posting is starting
         try {
           // Create the article URL using the utility function with the production domain
-          const fullArticleUrl = "https://edunews24.it" + getArticleUrl({
-            category: selectedCategoryName, // Use the selected name
-            title: data.title,
-            slug: articleData.slug
-          });
+          // Dalle colonne del DB, non da getArticleUrl(), che slugifica il
+          // NOME della categoria invece di leggere category_slug.
+          const fullArticleUrl = getArticlePublicUrl(
+            result.article ?? { category_slug: selectedCategorySlug, slug: slugDaSalvare }
+          ) ?? '';
           
           // Pass tags and image to the Facebook post function
           const fbResponse = await sendFacebookPost(fullArticleUrl, data.excerpt, articleData.tags, data.image_url);
@@ -2119,6 +2176,23 @@ const cancelContactForm = () => {
   const content = watch('content');
   const title = watch('title');
   const isDraft = watch('isdraft');
+
+  // --- URL pubblico e slug ------------------------------------------------
+  // Si leggono SOLO dalla riga persistita, mai da watch(): il toggle
+  // bozza/pubblicato nell'header non salva nulla, e mostrare un link "vivo"
+  // su qualcosa che a database e' ancora una bozza sarebbe una trappola
+  // (la rotta pubblica risponde 410 finche' isdraft resta true).
+  const rigaPersistita: any = savedArticle ?? article ?? null;
+  const titoloCorrente: string = watch('title') || '';
+  const categoriaCorrente: string = watch('category') || '';
+  const slugCorrente: string =
+    rigaPersistita?.slug || (titoloCorrente ? slugifica(titoloCorrente) : '');
+  const categoriaSlugCorrente: string =
+    rigaPersistita?.category_slug ||
+    (allowedCategories.find((c: any) => c.name === categoriaCorrente)?.slug ?? '');
+  const eBozza: boolean = rigaPersistita ? rigaPersistita.isdraft !== false : true;
+  const urlPubblico: string =
+    getArticlePublicUrl({ category_slug: categoriaSlugCorrente, slug: slugCorrente }) ?? '';
   const currentTags = watch('tags'); // Watch the tags field
 
   // Destructure register for the title field to combine refs
@@ -2826,6 +2900,130 @@ const cancelContactForm = () => {
                   </div>
 
                   <div className="p-4 lg:p-5 space-y-4">
+                    {/* URL pubblico e slug */}
+                    <div>
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">
+                        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                        </svg>
+                        {rigaPersistita ? 'URL pubblico' : 'URL provvisorio'}
+                      </label>
+
+                      {urlPubblico ? (
+                        <div className="flex items-start gap-2">
+                          {eBozza ? (
+                            <span className="flex-1 break-all text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-2">
+                              {urlPubblico}
+                            </span>
+                          ) : (
+                            <a
+                              href={urlPubblico}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-1 break-all text-xs text-primary hover:underline bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-2"
+                            >
+                              {urlPubblico}
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(urlPubblico);
+                                setUrlCopiato(true);
+                                setTimeout(() => setUrlCopiato(false), 1500);
+                              } catch (e) {
+                                console.error('copia negli appunti fallita', e);
+                              }
+                            }}
+                            className={`shrink-0 px-2.5 py-2 rounded-lg border text-xs font-medium transition-colors ${urlCopiato ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+                            title="Copia negli appunti"
+                          >
+                            {urlCopiato ? 'Copiato!' : 'Copia'}
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-500">
+                          Scrivi il titolo e scegli la categoria: l&apos;indirizzo compare qui.
+                        </p>
+                      )}
+
+                      {urlPubblico && eBozza && (
+                        <p className="mt-1.5 text-xs text-amber-700">
+                          Indirizzo che avr&agrave; una volta pubblicato. Finch&eacute; resta
+                          una bozza risponde 410.
+                        </p>
+                      )}
+
+                      {/* Slug: congelato, si cambia solo di proposito */}
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Slug</span>
+                          {slugInModifica === null ? (
+                            <button
+                              type="button"
+                              onClick={() => setSlugInModifica(slugCorrente)}
+                              disabled={!rigaPersistita || (!eBozza && !userPermissions['publish_articles'])}
+                              className="text-xs font-medium text-primary hover:underline disabled:text-gray-300 disabled:no-underline"
+                              title={!rigaPersistita
+                                ? "Salva prima l'articolo"
+                                : 'Cambia lo slug: il vecchio indirizzo smettera di funzionare'}
+                            >
+                              modifica
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setSlugInModifica(null)}
+                              className="text-xs font-medium text-gray-500 hover:underline"
+                            >
+                              annulla
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          type="text"
+                          value={slugInModifica ?? slugCorrente}
+                          readOnly={slugInModifica === null}
+                          onChange={(e) => setSlugInModifica(e.target.value)}
+                          placeholder="generato dal titolo al primo salvataggio"
+                          className={`block w-full rounded-lg border-gray-300 shadow-sm text-sm py-2 ${slugInModifica === null ? 'bg-gray-50 text-gray-600' : 'focus:border-primary focus:ring-2 focus:ring-primary/20'}`}
+                        />
+                        {slugInModifica !== null && (
+                          <p className="mt-1.5 text-xs text-red-600">
+                            Salvando, l&apos;indirizzo diventer&agrave;{' '}
+                            <code className="break-all">{slugifica(slugInModifica) || '(vuoto)'}</code>.
+                            {!eBozza && ' Il vecchio indirizzo rispondera 410: non viene creato nessun redirect.'}
+                          </p>
+                        )}
+                        {slugInModifica === null && slugCorrente && !slugValido(slugCorrente) && (
+                          <p className="mt-1.5 text-xs text-red-600">
+                            Slug non conforme (probabilmente generato dalla vecchia
+                            regola). Resta com&apos;&egrave;: &egrave; l&apos;indirizzo gi&agrave;
+                            indicizzato. Si cambia solo di proposito.
+                          </p>
+                        )}
+                      </div>
+
+                      {segnalazioniOrtografia.length > 0 && (
+                        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2">
+                          <p className="text-xs font-medium text-amber-800">
+                            {segnalazioniOrtografia.length} possibili accenti da controllare
+                            (non corretti in automatico perch&eacute; ambigui):
+                          </p>
+                          <ul className="mt-1 text-xs text-amber-700 space-y-0.5">
+                            {segnalazioniOrtografia.slice(0, 8).map((segnalazione: any, indice: number) => (
+                              <li key={indice}>
+                                <code>{segnalazione.parola}</code>
+                                {segnalazione.suggerimento ? <> &rarr; <code>{segnalazione.suggerimento}</code></> : null}
+                                {segnalazione.campo ? <span className="text-amber-600"> ({segnalazione.campo})</span> : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+
                     {/* Categoria */}
                     <div>
                       <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 uppercase tracking-wider mb-1.5">

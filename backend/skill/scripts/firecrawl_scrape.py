@@ -59,6 +59,13 @@ def main() -> int:
     if args.max_chars and len(content) > args.max_chars:
         content = content[: args.max_chars] + "\n\n[...troncato...]"
 
+    # Lo stdout eredita il locale del processo che invoca lo script (il
+    # Bash tool dell'agente). Con un locale non UTF-8 il markdown italiano
+    # di Firecrawl solleverebbe UnicodeEncodeError o perderebbe gli accenti.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     sys.stdout.write(content)
     return 0
 

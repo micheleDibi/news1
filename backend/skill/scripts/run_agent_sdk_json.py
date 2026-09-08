@@ -86,7 +86,7 @@ Esempio CORRETTO:
 Esempio VIETATO (causa restart del backend in dev e sporca il codebase):
     Write file_path="scripts/_gen_xyz.py"
     Write file_path="/root/news1/backend/skill/scripts/_gen_xyz.py"
-L'unica eccezione e' l'OUTPUT_PATH del JSON finale (gia' in /tmp/).
+L'unica eccezione è l'OUTPUT_PATH del JSON finale (già in /tmp/).
 
 Usa SEMPRE `scripts/generate_json_output.py::create_seo_article_json`
 come unico formato di output. Non generare DOCX, Markdown o testo libero.
@@ -113,8 +113,18 @@ Per la maggior parte dei casi preferisci la chiamata inline via Bash + python -c
     )
     "
 
-Se il payload e' troppo grande per python -c, scrivi lo script helper SOLO in
+Se il payload è troppo grande per python -c, scrivi lo script helper SOLO in
 /tmp/ (vedi REGOLA CRITICA - FILESYSTEM sopra), poi eseguilo con `python /tmp/...`.
+
+ACCENTI ITALIANI OBBLIGATORI: ogni stringa passata allo script
+(`title`, `meta_title`, `meta_description`, h2/h3, paragrafi, items
+delle liste, FAQ, `angolo`, `keyword`) DEVE conservare gli accenti
+italiani: `è à ù ò ì é í ó ú` e l'apostrofo delle elisioni.
+Mai sostituirli con la vocale base (es. `università` non `universita`,
+`può` non `puo`, `Cos'è` non `Cos'e`, `più` non `piu`, `già` non `gia`)
+e mai usare l'apostrofo come accento (`e'`, `città'`, `sarà'`).
+Lo script serializza con `ensure_ascii=False`: gli accenti finiscono
+nel JSON solo se li scrivi accentati nei content_sections.
 
 SCRAPING OBBLIGATORIO VIA FIRECRAWL: il comando shell `firecrawl scrape`
 NON esiste nel sistema. Per leggere l'URL della notizia (Step 1 di SKILL.md)

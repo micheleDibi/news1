@@ -13,7 +13,6 @@ Eseguibile con: python -m app.interpelli
 """
 
 import re
-import json
 import requests
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
@@ -21,7 +20,6 @@ from typing import List, Dict, Optional, Any
 
 from bs4 import BeautifulSoup
 from firecrawl import Firecrawl
-import anthropic
 from dotenv import load_dotenv
 import os
 
@@ -31,6 +29,7 @@ from .database import get_supabase_client
 from .indexnow import submit_to_indexnow
 from .google_indexing import notify_google_indexing
 from .logger import logger
+from .llm_json import richiesta_json
 
 # ---------------------------------------------------------------------------
 # Configurazione
@@ -63,55 +62,29 @@ def _llm_json_request(
     system_prompt: str,
     user_content: str,
     max_tokens: int = 4096,
+    campi_prosa=(),
+    etichetta: str = "interpelli",
 ) -> dict:
-    """Chiama Claude per ottenere una risposta JSON."""
-    claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    """Chiama Claude per ottenere una risposta JSON.
 
-    # Forza output JSON nel system prompt
-    json_system = system_prompt + "\n\nIMPORTANTE: Rispondi SOLO con JSON valido. Esegui l'escape di tutte le virgolette nei valori stringa con backslash (\\\")"
+    Delega a `app/llm_json.py`: questa funzione era duplicata identica qui e
+    in selezione_personale.py (differivano due righe di commento).
 
-    response = claude.messages.create(
-        model=CLAUDE_MODEL,
+    `campi_prosa` e' l'allowlist dei campi da normalizzare. I campi che
+    alimentano lo slug dell'interpello (interpello_name, provincia, citta,
+    regione) restano volutamente FUORI: lo slug si ricalcola al volo da
+    quei valori sia qui sia in src/lib/liste/interpelli.ts, e non ha una
+    colonna a database, quindi toccarli sposterebbe URL gia' pubblicati.
+    """
+    return richiesta_json(
+        system_prompt=system_prompt,
+        user_content=user_content,
+        modello=CLAUDE_MODEL,
+        api_key=ANTHROPIC_API_KEY,
         max_tokens=max_tokens,
-        system=json_system,
-        messages=[
-            {"role": "user", "content": user_content},
-        ],
+        campi_prosa=campi_prosa,
+        etichetta=etichetta,
     )
-    raw = response.content[0].text.strip()
-    # Gestisci eventuale blocco markdown ```json ... ```
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
-    # Primo tentativo di parsing
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
-
-    # Fallback: chiedi a Claude di fixare il JSON malformato
-    try:
-        fix_response = claude.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=max_tokens,
-            system="Correggi il seguente JSON malformato. Rispondi SOLO con il JSON corretto, senza markdown, senza spiegazioni. Assicurati che tutte le virgolette dentro i valori stringa siano escapate con backslash.",
-            messages=[
-                {"role": "user", "content": raw},
-            ],
-        )
-        fixed = fix_response.content[0].text.strip()
-        if "```" in fixed:
-            fixed = fixed.split("```")[1]
-            if fixed.startswith("json"):
-                fixed = fixed[4:]
-            fixed = fixed.strip()
-        return json.loads(fixed)
-    except Exception as fix_err:
-        logger.error("Impossibile fixare JSON: {}", fix_err)
-        raise
 
 MESI_ITALIANI = {
     "gennaio": "01", "febbraio": "02", "marzo": "03", "aprile": "04",
@@ -426,7 +399,7 @@ def save_interpelli_to_supabase(entries: List[InterpelloEntry], source_url: str)
 
 CLASSIFICATION_PROMPT = """Analizza il contenuto della pagina. Determina se contiene:
 - UN SINGOLO interpello ("single"): dettagli specifici di una supplenza, un bando, un avviso per una specifica posizione
-- UNA LISTA di interpelli ("list"): elenco con piu avvisi/link a posizioni diverse
+- UNA LISTA di interpelli ("list"): elenco con più avvisi/link a posizioni diverse
 
 Se "list", estrai i link individuali come sub_links (URL completi).
 
@@ -469,7 +442,7 @@ Rispondi ESCLUSIVAMENTE con un JSON valido:
   "interpello_name": "nome/titolo dell'interpello",
   "interpello_description": "breve descrizione della posizione",
   "classe_concorso": "codice classe di concorso (es. A022, ADEE) oppure null",
-  "interpello_citta": "citta oppure stringa vuota",
+  "interpello_citta": "città oppure stringa vuota",
   "interpello_provincia": "provincia oppure stringa vuota",
   "interpello_regione": "regione oppure stringa vuota"
 }"""
@@ -605,16 +578,16 @@ def classify_and_expand_all() -> int:
 # STEP 5 – Enrichment metadati con OpenAI
 # ===========================================================================
 
-ENRICHMENT_PROMPT = """Sei un esperto del sistema scolastico italiano. Ti viene fornito il nome/descrizione di un interpello scolastico e le informazioni parziali gia estratte.
+ENRICHMENT_PROMPT = """Sei un esperto del sistema scolastico italiano. Ti viene fornito il nome/descrizione di un interpello scolastico e le informazioni parziali già estratte.
 
-Il tuo compito e completare/correggere i seguenti campi:
+Il tuo compito è completare/correggere i seguenti campi:
 - interpello_regione: la regione italiana (es. "Lombardia", "Sicilia")
 - interpello_provincia: la provincia (es. "Milano", "L'Aquila")
-- interpello_citta: la citta specifica se identificabile, altrimenti stringa vuota
+- interpello_citta: la città specifica se identificabile, altrimenti stringa vuota
 - classe_concorso: il codice della classe di concorso (es. "A022", "ADEE", "ADMM"). Se non identificabile, null.
 
 Usa le informazioni nel nome dell'interpello, nella descrizione e nel link per dedurre i dati mancanti.
-Ad esempio, se il link contiene "csalaquila" la provincia e "L'Aquila" e la regione "Abruzzo".
+Ad esempio, se il link contiene "csalaquila" la provincia è "L'Aquila" e la regione è "Abruzzo".
 
 Rispondi ESCLUSIVAMENTE con un JSON valido:
 {
@@ -634,7 +607,7 @@ def enrich_interpello_metadata(item: dict) -> dict:
             f"Link: {item.get('interpello_link', '')}\n"
             f"Regione attuale: {item.get('interpello_regione', '')}\n"
             f"Provincia attuale: {item.get('interpello_provincia', '')}\n"
-            f"Citta attuale: {item.get('interpello_citta', '')}\n"
+            f"Città attuale: {item.get('interpello_citta', '')}\n"
             f"Classe concorso attuale: {item.get('classe_concorso', '')}\n"
         )
 
@@ -710,6 +683,7 @@ Genera un articolo professionale su un interpello scolastico partendo dalle info
 - Usa espressioni giornalistiche italiane naturali
 - Privilegia fatti e dati concreti
 - Contestualizza con riferimenti normativi quando possibile
+- Scrivi con gli ACCENTI ITALIANI corretti: "è", "à", "ù", "ò", "ì", "é". Mai la vocale nuda al loro posto ("universita", "puo", "gia", "piu", "perche") e mai l'apostrofo come accento ("e'", "citta'", "sara'"). Vale in ogni campo: titolo, sottotitolo, corpo, meta e keyword
 
 ## Struttura obbligatoria
 
@@ -751,7 +725,7 @@ def generate_interpello_article(
             f"Provincia: {provincia}\n"
         )
         if citta:
-            user_content += f"Citta: {citta}\n"
+            user_content += f"Città: {citta}\n"
         if classe:
             user_content += f"Classe di concorso: {classe}\n"
         if date:
@@ -761,6 +735,8 @@ def generate_interpello_article(
             system_prompt=ARTICLE_PROMPT,
             user_content=user_content,
             max_tokens=8000,
+            campi_prosa=("article_title", "article_subtitle", "article_content"),
+            etichetta="interpelli/articolo",
         )
         return InterpelloArticle(
             article_title=data.get("article_title", name),

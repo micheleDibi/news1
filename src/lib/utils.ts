@@ -45,3 +45,27 @@ export function filenameToIsoDate (filename: string): string | null {
   const [_,y,m,d,hh,mm,ss]=match;
   return `${y}-${m}-${d}T${hh}:${mm}:${ss}Z`;
 }
+/**
+ * Host pubblico della testata. Il valore e' ripetuto in una sessantina di
+ * file del repo: questa costante e' il punto da cui far passare i nuovi usi.
+ */
+export const SITO_URL = 'https://edunews24.it';
+
+/**
+ * URL pubblico assoluto di un articolo, costruito dalle COLONNE del database.
+ *
+ * Da preferire sempre a getArticleUrl(), che slugifica il NOME della
+ * categoria (`slugify(article.category)`) invece di leggere `category_slug`:
+ * se le due grafie divergono, quel link porta a un 410.
+ *
+ * Restituisce null se mancano slug o category_slug, cosi' il chiamante deve
+ * decidere cosa mostrare invece di produrre `/undefined/undefined`.
+ */
+export function getArticlePublicUrl(
+  article: { category_slug?: string | null; slug?: string | null } | null | undefined
+): string | null {
+  const categoria = (article?.category_slug ?? '').trim();
+  const slug = (article?.slug ?? '').trim();
+  if (!categoria || !slug) return null;
+  return `${SITO_URL}/${categoria}/${slug}`;
+}

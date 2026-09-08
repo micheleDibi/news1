@@ -2,9 +2,10 @@ export const prerender = false;
 
 import type { APIRoute } from 'astro';
 import { supabase } from '../../../lib/supabase';
-import { slugify } from '../../../lib/utils';
 import { submitToIndexNow } from '../../../lib/indexnow';
 import { logger } from '../../../lib/logger';
+import { normalizzaArticolo } from '../../../lib/normalizza-articolo';
+import { slugDaTitolo, trovaSlugLibero } from '../../../lib/slug-articolo';
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -33,6 +34,18 @@ export const POST: APIRoute = async ({ request }) => {
       article.isdraft = true;
     }
 
+    // Normalizzazione ortografica dei campi di prosa (allowlist esplicita).
+    // Deve girare PRIMA della generazione dello slug: se il titolo cambia
+    // dopo, titolo e slug divergono. `slugifica()` traslittera gli accenti,
+    // quindi la correzione non puo' comunque spostare l'URL.
+    const ortografia = normalizzaArticolo(article);
+    if (ortografia.campiCorretti.length > 0) {
+      logger.info(`Ortografia corretta su: ${ortografia.campiCorretti.join(', ')}`);
+    }
+    for (const saltato of ortografia.campiSaltati) {
+      logger.warn(`Ortografia saltata su ${saltato.campo}: ${saltato.motivo}`);
+    }
+
     // Validate required fields:
     // - Bozza e Pubblicato: stessi campi obbligatori, senza richiedere published_at (gestito lato server)
     const draftRequiredFields = ['title', 'content', 'category', 'excerpt'];
@@ -52,6 +65,23 @@ export const POST: APIRoute = async ({ request }) => {
         }
       });
     }
+
+    // Slug: si genera server-side quando manca o non e' conforme. Senza
+    // questo controllo un POST senza slug inseriva NULL e IndexNow riceveva
+    // "https://edunews24.it/undefined/undefined".
+    const slugBase = slugDaTitolo(article.slug, article.title);
+    if (!slugBase) {
+      return new Response(JSON.stringify({
+        error: 'Slug mancante e titolo non slugificabile'
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const slugLibero = await trovaSlugLibero(slugBase);
+    if (!slugLibero) {
+      return new Response(JSON.stringify({
+        error: 'Slug gia in uso', slug_richiesto: slugBase
+      }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+    }
+    article.slug = slugLibero;
 
     // Set default image if not provided
     if (!article.image_url) {

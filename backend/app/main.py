@@ -23,10 +23,14 @@ from datetime import datetime, timedelta
 import pytz
 from .variables_edunews import *
 from .logger import logger
+from . import ortografia
+from .slug import slugifica
+from .sanifica import _norm_testo, _sanitize_payload
 from firecrawl import Firecrawl
 import boto3
 import math
 import re
+import unicodedata
 
 class ExtractSchema(BaseModel):
     title: str
@@ -335,43 +339,43 @@ async def _recover_orphaned_generations_on_startup() -> None:
         db.close()
 
 
-def _strip_em_dashes(value):
-    """Rimuove l'em-dash (U+2014 `—`) dai contenuti generati dalla skill.
+def _logga_ortografia(segnalazioni, etichetta):
+    """Separa le ambiguita' segnalate dai campi che la normalizzazione ha
+    saltato: sono due cose diverse e vanno lette in modo diverso."""
+    if not segnalazioni:
+        return
+    saltati = sorted({s["parola"] for s in segnalazioni if s.get("regola") == "saltato"})
+    ambigue = sorted({s["parola"] for s in segnalazioni if s.get("regola") != "saltato"})
+    if ambigue:
+        logger.info(
+            "[{}] ortografia: {} ambiguita' non corrette in automatico: {}",
+            etichetta, len(ambigue), ", ".join(ambigue),
+        )
+    if saltati:
+        logger.warning(
+            "[{}] ortografia SALTATA su alcuni campi ({}): testo lasciato intatto",
+            etichetta, ", ".join(saltati),
+        )
 
-    La redazione non vuole questo carattere nei testi. Sostituisce:
-    - " — " (con spazi attorno) -> ", "  (preserva la pausa grammaticale)
-    - "—"   (attaccato o solo)   -> "-"   (hyphen)
 
-    Applicato ricorsivamente su dict/list cosi' da coprire le sections
-    strutturate e i report annidati del payload skill.
+def _fissa_encoding(response):
+    """Corregge il charset prima di leggere `response.text`.
+
+    `requests` (e `cloudscraper`, che lo incapsula) ricade su ISO-8859-1
+    quando l'header Content-Type non dichiara il charset, come vuole la
+    RFC 2616. Moltissime pagine italiane sono UTF-8 e lo dichiarano solo nel
+    `<meta charset>`: senza questa correzione il testo che arriva al modello
+    e' mojibake, e nessun prompt puo' rimediare a un input gia' corrotto.
     """
-    if isinstance(value, str):
-        s = value.replace(" — ", ", ")
-        s = s.replace("—", "-")
-        return s
-    if isinstance(value, list):
-        return [_strip_em_dashes(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _strip_em_dashes(v) for k, v in value.items()}
-    return value
-
-
-def _strip_null_bytes(value):
-    """Rimuove i null byte (U+0000) dai contenuti generati dalla skill.
-
-    Postgres rifiuta sempre i null byte nei campi `text` con errore 22P05
-    ('unsupported Unicode escape sequence: \\u0000 cannot be converted to
-    text'). La skill puo' produrli inavvertitamente quando l'output viene
-    de-serializzato (es. \\u0000 dentro stringhe JSON). Applicato
-    ricorsivamente come _strip_em_dashes.
-    """
-    if isinstance(value, str):
-        return value.replace("\x00", "")
-    if isinstance(value, list):
-        return [_strip_null_bytes(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _strip_null_bytes(v) for k, v in value.items()}
-    return value
+    try:
+        dichiarato = (response.headers.get("Content-Type") or "").lower()
+        if "charset=" not in dichiarato:
+            rilevato = response.apparent_encoding
+            if rilevato:
+                response.encoding = rilevato
+    except Exception as e:  # pragma: no cover - difensivo
+        logger.debug("encoding non determinabile: {}", e)
+    return response
 
 
 def generate_seo_keywords(news_item: models.New) -> list[str]:
@@ -604,10 +608,10 @@ async def _run_skill_and_save_background(news_id: int) -> None:
             timeout=SKILL_TIMEOUT_SECONDS,
         )
         logger.info("[bg] news_id={} skill completata, processo payload", news_id)
-        # Safety net: rimuovi em-dash e null byte dall'intero payload prima
-        # del mapping su articles. Postgres rifiuta i null byte (22P05).
-        payload = _strip_em_dashes(payload)
-        payload = _strip_null_bytes(payload)
+        # Safety net unico: em-dash, null byte e ortografia italiana, su una
+        # allowlist di chiavi di prosa. Postgres rifiuta i null byte (22P05).
+        payload, segnalazioni_ortografia = _sanitize_payload(payload)
+        _logga_ortografia(segnalazioni_ortografia, "news_id=%s" % news_id)
 
         seo = payload.get("seo") or {}
         article_block = payload.get("article") or {}
@@ -618,7 +622,18 @@ async def _run_skill_and_save_background(news_id: int) -> None:
         content_markdown = sections_to_markdown(article_block.get("sections") or [])
 
         excerpt = seo.get("meta_description")
-        summary, title_summary = await generate_summary(content_markdown)
+        # generate_summary gira DOPO il sanitizer e produce testo nuovo: e'
+        # l'unico campo che sfuggiva del tutto alla correzione. Va
+        # normalizzato a parte. Il try serve perche' generate_summary
+        # ritorna None (scalare) quando OpenAI fallisce, e l'unpacking
+        # farebbe fallire l'intera generazione con un TypeError.
+        try:
+            summary, title_summary = await generate_summary(content_markdown)
+        except (TypeError, ValueError) as e:
+            logger.warning("[bg] news_id={} generate_summary fallita: {}", news_id, e)
+            summary, title_summary = None, None
+        summary = _norm_testo(summary)
+        title_summary = _norm_testo(title_summary)
 
         # Tag: 10 keyword SEO via Claude (come prima della skill) + keyword
         # della skill come primo elemento (dedup case-insensitive).
@@ -989,8 +1004,8 @@ async def _run_persona_skill_background(
             target=target,
             interlinks=interlink_urls,
         )
-        skill_payload = _strip_em_dashes(skill_payload)
-        skill_payload = _strip_null_bytes(skill_payload)
+        skill_payload, segnalazioni_ortografia = _sanitize_payload(skill_payload)
+        _logga_ortografia(segnalazioni_ortografia, "persona job=%s" % job_id)
 
         seo = skill_payload.get("seo") or {}
         article_block = skill_payload.get("article") or {}
@@ -1015,6 +1030,9 @@ async def _run_persona_skill_background(
         except Exception as e:
             logger.warning("generate_summary fallita, continuo senza: {}", e)
             summary, title_summary = None, None
+        # generate_summary gira dopo _sanitize_payload: normalizza a parte.
+        summary = _norm_testo(summary)
+        title_summary = _norm_testo(title_summary)
 
         seo_tags = _generate_seo_keywords_from_persona_payload(skill_payload)
         combined_tags: list[str] = []
@@ -1523,7 +1541,7 @@ def find_best_image(source_url: str, min_width: int = 1200) -> str:
         if response.status_code != 200:
             logger.error("[IMAGE FINDER] Errore HTTP {}", response.status_code)
             return None
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(_fissa_encoding(response).text, 'html.parser')
     except Exception as e:
         logger.error("[IMAGE FINDER] Errore fetch pagina: {}", e)
         return None
@@ -1855,54 +1873,20 @@ async def publish_to_cms(news_id: int, db: Session = Depends(get_db)):
 
 
 def generate_slugs(proposed_title: str, category: str):
-    logger.debug("Proposed title: {}", proposed_title)
-    logger.debug("Category: {}", category)
-    proposed_slug = proposed_title.lower() \
-        .replace('università', 'universita') \
-        .replace(' ', '-') \
-        .replace("'", '') \
-        .replace(':', '') \
-        .replace(',', '') \
-        .replace('.', '') \
-        .replace('?', '') \
-        .replace('!', '') \
-        .replace('(', '') \
-        .replace(')', '') \
-        .replace('[', '') \
-        .replace(']', '') \
-        .replace('{', '') \
-        .replace('}', '') \
-        .replace('@', '') \
-        .replace('#', '') \
-        .replace('$', '') \
-        .replace('%', '') \
-        .replace('^', '') \
-        .replace('&', '') \
-        .replace('*', '') \
-        .replace('+', '') \
-        .replace('=', '') \
-        .replace('|', '') \
-        .replace('\\', '') \
-        .replace('/', '') \
-        .replace('<', '') \
-        .replace('>', '') \
-        .replace('`', '') \
-        .replace('~', '') \
-        .replace(';', '') \
-        .replace('"', '') \
-        .strip('-')
-    
-    logger.debug("Proposed slug: {}", proposed_slug)
+    r"""Slug dell'articolo e della categoria, entrambi ASCII.
 
-    category_slug = category.lower() \
-        .replace('università', 'universita') \
-        .replace(r'[^\w\s-]', '') \
-        .replace(r'\s+', '-') \
-        .replace(r'--+', '-') \
-        .strip()
-    
-    logger.debug("Category slug: {}", category_slug)
+    La regola vive in `app/slug.py`, gemello di `src/lib/slug.ts`: prima
+    questa funzione ne applicava una terza, diversa da entrambe.
 
+    Il `category_slug` prodotto qui era anche rotto: le righe che avrebbero
+    dovuto ripulirlo usavano `str.replace` con stringhe di regex letterali
+    (`.replace(r'[^\w\s-]', '')`), quindi erano no-op e gli spazi restavano
+    dentro lo slug.
+    """
+    proposed_slug = slugifica(proposed_title)
+    category_slug = slugifica(category)
+    logger.debug("Proposed title: {} -> slug: {}", proposed_title, proposed_slug)
+    logger.debug("Category: {} -> slug: {}", category, category_slug)
     return proposed_slug, category_slug
 
 
@@ -1956,8 +1940,8 @@ def sections_to_markdown(sections) -> str:
 
 def get_content_and_root_url(url: str):
     try:
-        response = requests.get(url)
-        content = response.text
+        response = requests.get(url, timeout=30)
+        content = _fissa_encoding(response).text
         parsed_url = urlparse(url)
         root_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
         return content, root_url
@@ -2065,7 +2049,7 @@ def _scrape_via_cloudscraper(link: str) -> Optional[str]:
             logger.warning("Cloudscraper HTTP {} for {}", response.status_code, link)
             return None
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(_fissa_encoding(response).text, 'html.parser')
         for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'iframe']):
             tag.decompose()
         main = soup.find('article') or soup.find('main') or soup.body

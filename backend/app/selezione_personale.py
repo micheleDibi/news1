@@ -11,12 +11,11 @@ Eseguibile con: python -m app.selezione_personale (dalla cartella backend/)
 """
 
 import re
-import json
+import unicodedata
 import requests
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 
-import anthropic
 from dotenv import load_dotenv
 import os
 
@@ -26,6 +25,7 @@ from .database import get_supabase_client
 from .indexnow import submit_to_indexnow
 from .google_indexing import notify_google_indexing
 from .logger import logger
+from .llm_json import richiesta_json
 
 # ---------------------------------------------------------------------------
 # Configurazione
@@ -49,63 +49,45 @@ def _llm_json_request(
     system_prompt: str,
     user_content: str,
     max_tokens: int = 4096,
+    campi_prosa=(),
+    etichetta: str = "selezione-personale",
 ) -> dict:
-    """Chiama Claude per ottenere una risposta JSON."""
-    claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    """Chiama Claude per ottenere una risposta JSON.
 
-    json_system = system_prompt + "\n\nIMPORTANTE: Rispondi SOLO con JSON valido. Esegui l'escape di tutte le virgolette nei valori stringa con backslash (\\\")"
-
-    response = claude.messages.create(
-        model=CLAUDE_MODEL,
+    Delega a `app/llm_json.py`, dove la funzione e' condivisa con
+    interpelli.py. La normalizzazione avviene qui dentro, quindi PRIMA che
+    `generate_articles_for_pending` rigeneri lo slug da `article_title`:
+    se avvenisse dopo, titolo e slug divergerebbero.
+    """
+    return richiesta_json(
+        system_prompt=system_prompt,
+        user_content=user_content,
+        modello=CLAUDE_MODEL,
+        api_key=ANTHROPIC_API_KEY,
         max_tokens=max_tokens,
-        system=json_system,
-        messages=[
-            {"role": "user", "content": user_content},
-        ],
+        campi_prosa=campi_prosa,
+        etichetta=etichetta,
     )
-    raw = response.content[0].text.strip()
-    # Gestisci eventuale blocco markdown ```json ... ```
-    if "```" in raw:
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
-
-    # Fallback: chiedi a Claude di fixare il JSON malformato
-    try:
-        fix_response = claude.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=max_tokens,
-            system="Correggi il seguente JSON malformato. Rispondi SOLO con il JSON corretto, senza markdown, senza spiegazioni. Assicurati che tutte le virgolette dentro i valori stringa siano escapate con backslash.",
-            messages=[
-                {"role": "user", "content": raw},
-            ],
-        )
-        fixed = fix_response.content[0].text.strip()
-        if "```" in fixed:
-            fixed = fixed.split("```")[1]
-            if fixed.startswith("json"):
-                fixed = fixed[4:]
-            fixed = fixed.strip()
-        return json.loads(fixed)
-    except Exception as fix_err:
-        logger.error("Impossibile fixare JSON: {}", fix_err)
-        raise
 
 
 
 def _generate_slug(titolo: str, codice: str, enti: list = None) -> str:
-    """Genera uno slug URL-friendly dal titolo e codice del bando."""
+    """Genera uno slug URL-friendly dal titolo e codice del bando.
+
+    La decomposizione NFD serve perche' `[^a-z0-9-]` da solo manda ogni
+    accento in un trattino: senza, "universita" resterebbe "universita" ma
+    "universita" con l'accento diventerebbe "universit-". Da quando il
+    titolo passa dalla correzione ortografica gli accenti ci sono davvero,
+    quindi lo slug degraderebbe. Vale solo per le righe nuove: la
+    generazione gira su `status == "pending"`, mai su righe gia' completate.
+    """
     parts = [titolo or "", codice or ""]
     if enti:
         parts.append("-".join(enti[:2]))
 
     slug = "-".join(parts)
+    slug = unicodedata.normalize("NFD", slug)
+    slug = "".join(c for c in slug if not ("\u0300" <= c <= "\u036f"))
     slug = slug.lower()
     slug = re.sub(r"[^a-z0-9\-]", "-", slug)
     slug = re.sub(r"-+", "-", slug)
@@ -251,12 +233,13 @@ Genera un articolo professionale su un bando di concorso/selezione pubblica part
 ## Stile di scrittura
 
 - Tono autorevole ma accessibile, come un editoriale del Corriere della Sera o di Repubblica
-- Varia la lunghezza e la struttura delle frasi: alterna frasi brevi e incisive a periodi piu articolati
+- Varia la lunghezza e la struttura delle frasi: alterna frasi brevi e incisive a periodi più articolati
 - Usa espressioni giornalistiche italiane naturali (es. "stando a quanto emerge", "come sottolineato da", "la questione resta aperta")
 - Evita formule ripetitive e strutture prevedibili
-- Non usare mai espressioni come "in conclusione", "in questo articolo", "e importante sottolineare che" o altri cliche da testo generato
+- Non usare mai espressioni come "in conclusione", "in questo articolo", "è importante sottolineare che" o altri cliché da testo generato
 - Privilegia i fatti e i dati concreti rispetto alle considerazioni generiche
 - Quando possibile, contestualizza con riferimenti al quadro normativo o istituzionale italiano
+- Scrivi con gli ACCENTI ITALIANI corretti: "è", "à", "ù", "ò", "ì", "é". Mai la vocale nuda al loro posto ("universita", "puo", "gia", "piu", "perche") e mai l'apostrofo come accento ("e'", "citta'", "sara'"). Vale in ogni campo: titolo, sottotitolo, corpo, meta e keyword
 
 ## Struttura obbligatoria
 
@@ -267,7 +250,7 @@ Genera un articolo professionale su un bando di concorso/selezione pubblica part
 
 2. **Titoli e sottotitoli**:
    - Usa ## (H2) per i titoli delle sezioni principali
-   - Usa ### (H3) SOLO se il contenuto e un approfondimento diretto della sezione H2 padre
+   - Usa ### (H3) SOLO se il contenuto è un approfondimento diretto della sezione H2 padre
    - Se il tema cambia, apri un nuovo ## (H2)
    - Ogni H2 deve avere un id ancora corrispondente all'indice
 
@@ -289,7 +272,7 @@ Genera un articolo professionale su un bando di concorso/selezione pubblica part
 
 ## Lunghezza
 
-L'articolo deve essere esaustivo e completo: se servono 800 parole va bene, se ne servono 2000 va bene. La qualita e la completezza vengono prima della lunghezza.
+L'articolo deve essere esaustivo e completo: se servono 800 parole va bene, se ne servono 2000 va bene. La qualità e la completezza vengono prima della lunghezza.
 
 ## Output
 
@@ -335,6 +318,11 @@ def generate_article_for_bando(bando: dict) -> Optional[dict]:
             system_prompt=ARTICLE_PROMPT,
             user_content=user_content,
             max_tokens=8000,
+            campi_prosa=(
+                "article_title", "article_subtitle",
+                "article_content", "article_keywords",
+            ),
+            etichetta="selezione-personale/articolo",
         )
 
         return {

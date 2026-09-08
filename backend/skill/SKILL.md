@@ -35,6 +35,7 @@ Se il livello non è specificato, la skill lo determina automaticamente.
 5. **SEMPRE sentence case** nei titoli (solo prima lettera maiuscola)
 6. **SEMPRE fact-check** prima di generare l'articolo finale
 7. **SEMPRE output JSON** con metadati SEO, report angolo e fact-check
+8. **SEMPRE preservare gli accenti italiani** — `è à ù ò ì é í ó ú` vanno scritti come tali in **ogni** stringa passata allo script (titolo, h1, meta description, h2/h3, paragrafi, bullet, FAQ, angolo, fonti). Mai sostituirli con la vocale base (`è`→`e`, `università`→`universita`, `può`→`puo`, `già`→`gia`, `più`→`piu`, `qualità`→`qualita`, `accessibilità`→`accessibilita`) e mai usare l'apostrofo al loro posto (`e'`, `città'`, `sarà'`). Lo stesso vale per l'apostrofo delle elisioni (`Cos'è`, non `Cos'e`). Lo script salva il JSON con `ensure_ascii=False`: gli accenti restano nel file solo se li scrivi accentati nei content_sections.
 
 ## Workflow Completo
 
