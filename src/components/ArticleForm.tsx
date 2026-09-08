@@ -764,7 +764,11 @@ const RichTextEditor = ({
         </BubbleMenu>
       )}
       
-      <div className="sticky top-0 z-10 bg-white border-b border-gray-200 p-2 overflow-x-auto">
+      {/* Si incolla SOTTO l'header dell'editor, non a filo viewport: l'altezza
+          dell'header e' misurata a runtime in --altezza-header (vedi
+          ArticleForm), perche' cambia con il breakpoint e con la presenza
+          della riga dell'URL. z-index piu' basso dell'header. */}
+      <div className="sticky top-[var(--altezza-header,0px)] z-10 bg-white border-b border-gray-200 p-2 overflow-x-auto">
         <div className="flex items-center space-x-1 sm:space-x-2 min-w-max">
           <button
             type="button"
@@ -933,6 +937,11 @@ export default function ArticleForm({ article }: ArticleFormProps) {
   // Ambiguita' ortografiche segnalate dal server dopo il salvataggio.
   const [segnalazioniOrtografia, setSegnalazioniOrtografia] = useState<any[]>([]);
   const [urlCopiato, setUrlCopiato] = useState(false);
+  // Split button "Salva": il menu con la variante Facebook.
+  const [menuSalvaAperto, setMenuSalvaAperto] = useState(false);
+  const menuSalvaRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
   const [showAiModal, setShowAiModal] = useState(false);
   const [aiParams, setAiParams] = useState({
     prompt: '',
@@ -2178,6 +2187,42 @@ const cancelContactForm = () => {
   const eBozza: boolean = rigaPersistita ? rigaPersistita.isdraft !== false : true;
   const urlPubblico: string =
     getArticlePublicUrl({ category_slug: categoriaSlugCorrente, slug: slugCorrente }) ?? '';
+
+  // L'header e la toolbar dell'editor sono entrambi sticky. Per non
+  // sovrapporsi, la toolbar si appoggia sotto l'header: qui se ne misura
+  // l'altezza reale e la si pubblica come variabile CSS sul form, che e'
+  // antenato di entrambi. Cambia con il breakpoint e quando compare o sparisce
+  // la riga dell'URL, quindi serve un ResizeObserver, non un valore fisso.
+  useEffect(() => {
+    const header = headerRef.current;
+    const form = formRef.current;
+    if (!header || !form) return;
+    const aggiorna = () => {
+      form.style.setProperty('--altezza-header', `${header.offsetHeight}px`);
+    };
+    aggiorna();
+    const osservatore = new ResizeObserver(aggiorna);
+    osservatore.observe(header);
+    return () => osservatore.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!menuSalvaAperto) return;
+    const suClickFuori = (evento: MouseEvent) => {
+      if (menuSalvaRef.current && !menuSalvaRef.current.contains(evento.target as Node)) {
+        setMenuSalvaAperto(false);
+      }
+    };
+    const suTasto = (evento: KeyboardEvent) => {
+      if (evento.key === 'Escape') setMenuSalvaAperto(false);
+    };
+    document.addEventListener('mousedown', suClickFuori);
+    document.addEventListener('keydown', suTasto);
+    return () => {
+      document.removeEventListener('mousedown', suClickFuori);
+      document.removeEventListener('keydown', suTasto);
+    };
+  }, [menuSalvaAperto]);
   const currentTags = watch('tags'); // Watch the tags field
 
   // Destructure register for the title field to combine refs
@@ -2207,6 +2252,12 @@ const cancelContactForm = () => {
 
   // Permission flags
   const canPublish = !!userPermissions['publish_articles'];
+
+  // La variante "salva e condividi" ha senso solo su un articolo che sta per
+  // essere pubblicato da chi ne ha il permesso: altrove la freccetta sparisce
+  // e "Salva" resta un bottone semplice. Va dichiarata DOPO canPublish: prima
+  // era sopra, ed era una ReferenceError a runtime.
+  const mostraCondivisione: boolean = !isDraft && canPublish;
   const canFeatureArticles = !!userPermissions['feature_articles'];
   const canEditContactForm = !!userPermissions['contact_form_in_article'];
   const canModifyCreator = !!userPermissions['modify_creator'];
@@ -2607,222 +2658,223 @@ const cancelContactForm = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 py-4 sm:py-8">
-      <form onSubmit={handleSubmit(onSubmit)} className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <form ref={formRef} onSubmit={handleSubmit(onSubmit)} className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="bg-white shadow-sm rounded-lg">
-          {/* Header */}
-          <div className="px-4 sm:px-8 py-4 sm:py-6 border-b border-gray-200">
-            <div className="flex flex-col space-y-4 xl:flex-row xl:justify-between xl:items-start xl:space-y-0">
-              <div className="flex-1">
-                <h1 className="text-xl sm:text-2xl font-semibold text-gray-900 mb-2">
-                  {article ? 'Modifica Articolo' : 'Crea Nuovo Articolo'}
-                </h1>
-                
-                {/* Status and quick actions row */}
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
-                  {/* Draft/Published Status */}
-                  <div className="flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => setValue('isdraft', !isDraft)}
-                      className={`inline-flex items-center px-3 py-1.5 border rounded-full shadow-sm text-sm font-medium transition-colors
-                        ${isDraft 
-                          ? 'border-yellow-300 text-yellow-800 bg-yellow-50 hover:bg-yellow-100' 
-                          : 'border-green-300 text-green-800 bg-green-50 hover:bg-green-100'}`}
-                      disabled={!canPublish && !isDraft}
-                      title={!canPublish && !isDraft ? "You don't have permission to publish articles" : ""}
-                    >
-                      <div className={`w-2 h-2 rounded-full mr-2 ${isDraft ? 'bg-yellow-400' : 'bg-green-400'}`}></div>
-                      {isDraft ? 'Bozza' : 'Pubblicato'}
-                      {!canPublish && isDraft && (
-                        <span className="ml-1 text-xs opacity-75">(Solo bozze)</span>
-                      )}
-                    </button>
-                  </div>
+          {/* Header: due righe, sticky. Regola di lettura: a sinistra il
+              documento, a destra i comandi. Il collasso e' a `md:`, come il page
+              header canonico del resto dell'admin. */}
+          <div ref={headerRef} className="sticky top-0 z-20 bg-white border-b border-gray-200 rounded-t-lg">
 
-                  {/* Mode Toggle */}
-                  <div className="flex items-center bg-gray-100 rounded-lg p-1">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewMode(false)}
-                      className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
-                        !previewMode 
-                          ? 'bg-white text-gray-900 shadow-sm' 
-                          : 'text-gray-600 hover:text-gray-900'
-                      }`}
-                    >
-                      <div className="flex items-center">
-                        <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
-                        Modifica
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPreviewMode(true)}
-                      className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
-                        previewMode 
-                          ? 'bg-white text-gray-900 shadow-sm' 
-                          : 'text-gray-600 hover:text-gray-900'
-                      }`}
-                    >
-                      <div className="flex items-center">
-                        <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                        </svg>
-                        Anteprima
-                      </div>
-                    </button>
-                  </div>
+            {/* Riga 1 - identita' del documento e azioni */}
+            <div className="px-4 sm:px-8 py-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+
+              <div className="flex items-center gap-2 min-w-0">
+                {/* La nav dell'admin e' `hidden lg:block`: sotto i 1024px questa
+                    e' l'unica via d'uscita visibile. */}
+                <a
+                  href="/admin"
+                  aria-label="Torna all'elenco articoli"
+                  title="Torna all'elenco articoli"
+                  className="shrink-0 p-2 -ml-2 text-gray-400 hover:text-sport-700 rounded-full hover:bg-gray-100 transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                  </svg>
+                </a>
+
+                <h1 className="text-lg font-semibold text-gray-900 leading-tight truncate">
+                  {article ? 'Modifica articolo' : 'Nuovo articolo'}
+                </h1>
+
+                {/* Stato: un select, non un badge. E' un comando e deve
+                    sembrarlo: prima era un <button> vestito da etichetta di sola
+                    lettura, e si poteva depubblicare un articolo per sbaglio. */}
+                <div className="relative shrink-0">
+                  <span
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full ${isDraft ? 'bg-yellow-400' : 'bg-green-400'}`}
+                  />
+                  <select
+                    aria-label="Stato di pubblicazione"
+                    value={isDraft ? 'bozza' : 'pubblicato'}
+                    onChange={(e) => setValue('isdraft', e.target.value === 'bozza')}
+                    disabled={!canPublish}
+                    title={!canPublish
+                      ? 'Non hai il permesso di pubblicare articoli: puoi salvare solo bozze'
+                      : 'Cambia lo stato di pubblicazione'}
+                    className={`appearance-none cursor-pointer pl-6 pr-7 py-1.5 text-xs font-semibold rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-primary disabled:opacity-60 disabled:cursor-not-allowed ${
+                      isDraft
+                        ? 'bg-yellow-50 border-yellow-300 text-yellow-800 hover:bg-yellow-100'
+                        : 'bg-green-50 border-green-300 text-green-800 hover:bg-green-100'
+                    }`}
+                  >
+                    <option value="bozza">Bozza</option>
+                    {canPublish && <option value="pubblicato">Pubblicato</option>}
+                  </select>
+                  <svg aria-hidden="true" className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
                 </div>
 
-                {/* URL pubblico: si legge dalla riga persistita, mai da watch(),
-                    perche' il toggle Bozza/Pubblicato qui sopra non salva. */}
-                {urlPubblico && (
-                  <div className="mt-3">
-                    <div className="flex items-center gap-2">
-                      <svg className="h-4 w-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                      </svg>
-                      {eBozza ? (
-                        <span className="min-w-0 flex-1 truncate text-sm text-gray-500" title={urlPubblico}>
-                          {urlPubblico}
-                        </span>
-                      ) : (
-                        <a
-                          href={urlPubblico}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="min-w-0 flex-1 truncate text-sm text-primary hover:underline"
-                          title={urlPubblico}
-                        >
-                          {urlPubblico}
-                        </a>
-                      )}
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(urlPubblico);
-                            setUrlCopiato(true);
-                            setTimeout(() => setUrlCopiato(false), 1500);
-                          } catch (e) {
-                            console.error('copia negli appunti fallita', e);
-                          }
-                        }}
-                        className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors ${urlCopiato ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
-                        title="Copia negli appunti"
-                      >
-                        {urlCopiato ? (
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : (
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                        {urlCopiato ? 'Copiato!' : 'Copia'}
-                      </button>
-                    </div>
-                    {eBozza && (
-                      <p className="mt-1 text-xs text-amber-700">
-                        Indirizzo che avr&agrave; una volta pubblicato: finch&eacute; resta una
-                        bozza risponde 410.
-                      </p>
-                    )}
-                  </div>
+                {/* Lo stato si applica solo al salvataggio: se diverge dalla riga
+                    a database va detto, altrimenti l'header mente (l'articolo
+                    resta pubblicato mentre qui si legge "Bozza"). */}
+                {rigaPersistita && rigaPersistita.isdraft !== isDraft && (
+                  <span
+                    className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-amber-700"
+                    title="Il nuovo stato viene applicato solo quando salvi"
+                  >
+                    <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                    non salvato
+                  </span>
                 )}
               </div>
-              
-              {/* Action buttons */}
-              <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 xl:flex-shrink-0">
+
+              {/* Azioni */}
+              <div className="flex items-center gap-2 md:shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowAiModal(true)}
                   className="inline-flex items-center justify-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary transition-colors"
                 >
-                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-4 h-4 sm:mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
                   <span className="hidden sm:inline">Genera con AI</span>
-                  <span className="sm:hidden">AI</span>
+                  <span className="sr-only sm:hidden">Genera con AI</span>
                 </button>
-                
-                <button
-                  type="submit"
-                  name="saveWithoutFacebook"
-                  disabled={loading || fbPosting}
-                  className="inline-flex items-center justify-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3-3m0 0l-3 3m3-3v12" />
-                  </svg>
-                  {loading ? 'Salvataggio...' : 'Salva'}
-                </button>
-                
-                <button
-                  type="submit"
-                  name="saveWithFacebook"
-                  disabled={loading || fbPosting}
-                  className="inline-flex items-center justify-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {fbPosting ? (
+
+                {/* Split button: un solo primario. Prima il blu era "Salva e
+                    Pubblica" con l'icona Facebook, cioe' salva PIU' post su
+                    Facebook: l'azione piu' rara travestita da principale. */}
+                <div className="relative inline-flex" ref={menuSalvaRef}>
+                  <button
+                    type="submit"
+                    name="saveWithoutFacebook"
+                    disabled={loading || fbPosting}
+                    className={`inline-flex items-center justify-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed transition-colors ${mostraCondivisione ? 'rounded-l-lg' : 'rounded-lg'}`}
+                  >
+                    {(loading || fbPosting) && (
+                      <svg className="animate-spin -ml-0.5 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    )}
+                    {fbPosting ? 'Pubblicando...' : loading ? 'Salvataggio...' : 'Salva'}
+                  </button>
+
+                  {mostraCondivisione && (
                     <>
-                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Pubblicando...
-                    </>
-                  ) : loading ? (
-                    <>
-                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Salvataggio...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-                      </svg>
-                      <span className="hidden sm:inline">Salva e Pubblica</span>
-                      <span className="sm:hidden">Pubblica</span>
+                      <button
+                        type="button"
+                        aria-haspopup="menu"
+                        aria-expanded={menuSalvaAperto}
+                        aria-label="Altre opzioni di salvataggio"
+                        disabled={loading || fbPosting}
+                        onClick={() => setMenuSalvaAperto((aperto) => !aperto)}
+                        className="inline-flex items-center px-2 py-2 rounded-r-lg border border-transparent border-l border-l-white/30 shadow-sm text-white bg-primary hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+
+                      {menuSalvaAperto && (
+                        <div
+                          role="menu"
+                          className="absolute right-0 top-full mt-1 w-64 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 py-1"
+                        >
+                          {/* Deve restare un submit con questo `name`: onSubmit
+                              distingue le due azioni leggendo
+                              event.nativeEvent.submitter. */}
+                          <button
+                            type="submit"
+                            name="saveWithFacebook"
+                            role="menuitem"
+                            disabled={loading || fbPosting}
+                            onClick={() => setMenuSalvaAperto(false)}
+                            className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <svg className="w-4 h-4 shrink-0 text-[#1877F2]" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+                            </svg>
+                            Salva e condividi su Facebook
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
-                </button>
+                </div>
               </div>
             </div>
 
-            {/* Permission warnings */}
-            {!canPublish && (
-              <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <div className="flex">
-                  <svg className="h-5 w-5 text-yellow-400 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            {/* Riga 2 - striscia di servizio: l'indirizzo pubblico. Sparisce del
+                tutto quando non c'e' ancora un URL. */}
+            {urlPubblico && (
+              <div className="px-4 sm:px-8 py-2 border-t border-gray-100 flex items-center gap-2">
+                <svg aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+                {eBozza && (
+                  <span className="shrink-0 text-xs text-gray-400" title="Finche' resta una bozza l'indirizzo risponde 410">
+                    dopo la pubblicazione
+                  </span>
+                )}
+                {eBozza ? (
+                  <span className="min-w-0 flex-1 truncate text-sm text-gray-500" title={urlPubblico}>
+                    {urlPubblico}
+                  </span>
+                ) : (
+                  <a
+                    href={urlPubblico}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-w-0 flex-1 truncate text-sm text-primary hover:underline"
+                    title={urlPubblico}
+                  >
+                    {urlPubblico}
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(urlPubblico);
+                      setUrlCopiato(true);
+                      setTimeout(() => setUrlCopiato(false), 1500);
+                    } catch (e) {
+                      console.error('copia negli appunti fallita', e);
+                    }
+                  }}
+                  aria-label="Copia l'indirizzo negli appunti"
+                  title="Copia negli appunti"
+                  className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${urlCopiato ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-gray-300 text-gray-700 bg-white hover:bg-gray-50'}`}
+                >
+                  <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    {urlCopiato ? (
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    ) : (
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    )}
                   </svg>
-                  <div className="text-sm text-yellow-700">
-                    <span className="font-semibold">Nota:</span> Non hai il permesso di pubblicare articoli. L'articolo verrà salvato come bozza.
-                  </div>
-                </div>
-              </div>
-            )}
-            {allowedCategories.length === 0 && (
-              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <div className="flex">
-                  <svg className="h-5 w-5 text-red-400 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                  </svg>
-                  <div className="text-sm text-red-700">
-                    <span className="font-semibold">Attenzione:</span> Non hai permessi assegnati per nessuna categoria. Non potrai salvare l'articolo.
-                  </div>
-                </div>
+                  {urlCopiato ? 'Copiato!' : 'Copia'}
+                </button>
               </div>
             )}
           </div>
+
+          {/* Avviso bloccante, tenuto FUORI dallo sticky per non gonfiare la
+              barra. Quello sui permessi di pubblicazione e' sparito: lo dice gia'
+              il selettore di stato, disabilitato e col suo title. */}
+          {allowedCategories.length === 0 && (
+            <div className="mx-4 sm:mx-8 mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <div className="flex">
+                <svg className="h-5 w-5 text-red-400 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
+                <div className="text-sm text-red-700">
+                  <span className="font-semibold">Attenzione:</span> Non hai permessi assegnati per nessuna categoria. Non potrai salvare l'articolo.
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="px-4 sm:px-8 py-4 sm:py-6">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
@@ -2842,22 +2894,69 @@ const cancelContactForm = () => {
                 </div>
 
                 {/* Content Editor */}
-                <div className="relative border border-gray-200 rounded-md">
-                  {previewMode ? (
-                    <div className="article-preview-container bg-gray-100 p-3 sm:p-6 rounded-md min-h-[300px] sm:min-h-[400px]">
-                      {/* This div will contain the rendered HTML and have styles applied */}
-                      <div
-                        className="prose max-w-none article-content bg-white p-3 sm:p-6 rounded shadow-inner" // Add 'article-content' class and some basic styling
-                        dangerouslySetInnerHTML={{ __html: editorContent }} // Use editorContent (HTML) directly
-                      />
+                <div>
+                  {/* Modifica/Anteprima sta qui e non nell'header di pagina:
+                      previewMode governa questo solo riquadro, non la pagina. */}
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Contenuto
+                    </span>
+                    <div className="flex items-center bg-gray-100 rounded-lg p-1">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewMode(false)}
+                        aria-pressed={!previewMode}
+                        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
+                          !previewMode
+                            ? 'bg-white text-gray-900 shadow-sm'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        <div className="flex items-center">
+                          <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                          </svg>
+                          Modifica
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewMode(true)}
+                        aria-pressed={previewMode}
+                        className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
+                          previewMode
+                            ? 'bg-white text-gray-900 shadow-sm'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        <div className="flex items-center">
+                          <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                          Anteprima
+                        </div>
+                      </button>
                     </div>
-                  ) : (
-                    <RichTextEditor 
-                      content={editorContent} 
-                      onChange={handleEditorChange}
-                      articleTitle={title || ''}
-                    />
-                  )}
+                  </div>
+
+                  <div className="relative border border-gray-200 rounded-md">
+                    {previewMode ? (
+                      <div className="article-preview-container bg-gray-100 p-3 sm:p-6 rounded-md min-h-[300px] sm:min-h-[400px]">
+                        {/* This div will contain the rendered HTML and have styles applied */}
+                        <div
+                          className="prose max-w-none article-content bg-white p-3 sm:p-6 rounded shadow-inner" // Add 'article-content' class and some basic styling
+                          dangerouslySetInnerHTML={{ __html: editorContent }} // Use editorContent (HTML) directly
+                        />
+                      </div>
+                    ) : (
+                      <RichTextEditor 
+                        content={editorContent} 
+                        onChange={handleEditorChange}
+                        articleTitle={title || ''}
+                      />
+                    )}
+                  </div>
                 </div>
 
                 {/* FAQ Section - below editor */}

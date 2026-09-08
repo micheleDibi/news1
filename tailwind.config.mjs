@@ -5,6 +5,10 @@ export default {
     extend: {
       colors: {
         primary: '#004e9c',
+        // Stesso valore di sport-700. Mancava, e le 43 occorrenze di
+        // `hover:bg-primary-dark` / `hover:text-primary-dark` in src/ erano
+        // classi morte: il bottone primario non aveva alcun hover.
+        'primary-dark': '#003d7a',
         secondary: '#1a1a1a',
         offwhite: '#f5f5f5',
         sport: {
