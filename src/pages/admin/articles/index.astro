@@ -257,11 +257,20 @@ const { data: articles } = await articlesQuery;
     if (!(bersaglio instanceof HTMLElement)) return;
     const url = bersaglio.dataset.copyUrl ?? '';
     if (!url) return;
+    if (bersaglio.dataset.inCorso === '1') return;
     try {
       await navigator.clipboard.writeText(url);
       const originale = bersaglio.textContent;
+      bersaglio.dataset.inCorso = '1';
       bersaglio.textContent = 'Copiato!';
-      setTimeout(() => { bersaglio.textContent = originale; }, 1500);
+      bersaglio.classList.remove('text-gray-600', 'hover:text-gray-900');
+      bersaglio.classList.add('text-emerald-600');
+      setTimeout(() => {
+        bersaglio.textContent = originale;
+        bersaglio.classList.remove('text-emerald-600');
+        bersaglio.classList.add('text-gray-600', 'hover:text-gray-900');
+        delete bersaglio.dataset.inCorso;
+      }, 1500);
     } catch (e) {
       console.error('copia negli appunti fallita', e);
     }

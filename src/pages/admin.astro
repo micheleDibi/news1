@@ -677,19 +677,35 @@ const totalPages = Math.ceil((count ?? 0) / itemsPerPage);
   // Copia dell'URL pubblico. A differenza di setupDeleteButtons, che va
   // richiamata dopo ogni innerHTML, questa e' una delegation sul documento:
   // sopravvive alla ricostruzione delle card senza doppi binding.
+  //
+  // Il riscontro e' lo SCAMBIO DELL'ICONA con una spunta: il bottone e'
+  // solo-icona, quindi cambiare il `title` (che compare solo al passaggio
+  // del mouse, e con ritardo) lo faceva sembrare morto. Il colore e' un
+  // segnale secondario, e va tolta la classe grigia invece di sovrapporne
+  // una verde: fra due utility di colore vince l'ordine del CSS generato,
+  // non quello dell'attributo class.
+  const ICONA_SPUNTA = '<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+
   document.addEventListener('click', async (evento) => {
     const bersaglio = (evento.target as HTMLElement)?.closest?.('.copia-url');
     if (!(bersaglio instanceof HTMLElement)) return;
     const url = bersaglio.dataset.copyUrl ?? '';
-    if (!url) return;
+    if (!url || bersaglio.dataset.inCorso === '1') return;
     try {
       await navigator.clipboard.writeText(url);
-      const originale = bersaglio.title;
+      const iconaOriginale = bersaglio.innerHTML;
+      const titoloOriginale = bersaglio.title;
+      bersaglio.dataset.inCorso = '1';
+      bersaglio.innerHTML = ICONA_SPUNTA;
       bersaglio.title = 'Copiato!';
+      bersaglio.classList.remove('text-gray-400', 'hover:text-sport-700');
       bersaglio.classList.add('text-emerald-600');
       setTimeout(() => {
-        bersaglio.title = originale;
+        bersaglio.innerHTML = iconaOriginale;
+        bersaglio.title = titoloOriginale;
         bersaglio.classList.remove('text-emerald-600');
+        bersaglio.classList.add('text-gray-400', 'hover:text-sport-700');
+        delete bersaglio.dataset.inCorso;
       }, 1500);
     } catch (e) {
       console.error('copia negli appunti fallita', e);
