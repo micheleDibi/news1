@@ -28,7 +28,7 @@ test('moduli puri: niente dipendenze impure ne\' costrutti vietati', () => {
     const nome = url.pathname.split('/').slice(-2).join('/');
     for (const vietato of [
       /from ['"][^'"]*\/supabase['"]/, /from ['"][^'"]*\/supabase-bandi['"]/, /from ['"][^'"]*\/corpus['"]/,
-      /from ['"][^'"]*\/categories['"]/, /from ['"][^'"]*\/logger['"]/, /import\.meta\.env/, /from ['"]@\//,
+      /from ['"][^'"]*\/categories['"]/, /from ['"][^'"]*\/logger['"]/, /import\.meta\.env/, /\bprocess\.env\b/, /from ['"]@\//,
       /from ['"][^'"]+\.ts['"]/, /import\s*\{\s*type\s+\w+(\s*,\s*type\s+\w+)*\s*,?\s*\}\s*from/, /\bsetInterval\s*\(/,
       /^\s*(export\s+)?(declare\s+)?(const\s+)?enum\s+\w+/m, /^\s*(export\s+)?(declare\s+)?namespace\s+\w+/m, /\.getHours\(|\.getDate\(|\.getMonth\(|\.getFullYear\(|\.getDay\(/,
       /\.toLocale(Date|Time)?String\(/, /\bany\b(?=[\s,;>)\]])/,
