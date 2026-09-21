@@ -1,0 +1,74 @@
+---
+// Documentazione umana dell'API /api/v1. Nessuna logica qui: i contenuti sono dati
+// puri in src/lib/api-v1/documentazione.ts (i .astro non sono controllati dai tipi).
+// Le ancore (id delle sezioni) sono pubbliche: `#error-<code>` e `#termini` sono
+// citate dalle risposte dell'API.
+import Layout from '../../layouts/Layout.astro';
+import { sezioniDocumentazione } from '../../lib/api-v1/documentazione';
+
+export const prerender = false;
+
+const sezioni = sezioniDocumentazione();
+---
+
+<Layout
+  title="API pubblica EduNews24 – Documentazione"
+  description="Documentazione dell'API pubblica in sola lettura di EduNews24: articoli, categorie, interpelli, concorsi e bandi in JSON, JSON Feed e RSS, con paginazione, cache e limiti."
+>
+  <main class="container mx-auto px-4 py-8 max-w-5xl">
+    <div class="bg-white shadow-md rounded-lg overflow-hidden">
+      <div class="p-6 md:p-8 text-gray-800">
+        <h1 class="text-3xl md:text-4xl font-bold text-primary mb-6">API pubblica EduNews24</h1>
+
+        <nav aria-label="Indice della documentazione" class="mb-10 rounded-lg border border-gray-200 bg-gray-50 p-4 md:p-6">
+          <p class="font-heading text-lg font-bold text-gray-900 mb-3">Indice</p>
+          <ol class="list-decimal pl-6 space-y-1 md:columns-2 md:gap-8">
+            {sezioni.map((sezione) => (
+              <li class="break-inside-avoid">
+                <a href={`#${sezione.id}`} class="text-primary hover:text-primary-dark hover:underline">{sezione.titolo}</a>
+              </li>
+            ))}
+          </ol>
+        </nav>
+
+        {sezioni.map((sezione) => (
+          <section id={sezione.id} class="scroll-mt-24 mb-10">
+            <h2 class="font-heading text-2xl font-bold text-primary mb-4">{sezione.titolo}</h2>
+            {sezione.blocchi.map((blocco) =>
+              blocco.tipo === 'paragrafo' ? (
+                <p class="mb-4 leading-relaxed">{blocco.testo}</p>
+              ) : blocco.tipo === 'elenco' ? (
+                <ul class="list-disc pl-6 mb-4 space-y-2">
+                  {blocco.voci.map((voce) => <li>{voce}</li>)}
+                </ul>
+              ) : blocco.tipo === 'codice' ? (
+                <pre class="mb-4 overflow-x-auto rounded-lg bg-gray-900 p-4 text-sm leading-relaxed text-gray-100"><code data-linguaggio={blocco.linguaggio}>{blocco.testo}</code></pre>
+              ) : (
+                <div class="mb-6 overflow-x-auto">
+                  <table class="min-w-full border border-gray-200 text-sm">
+                    <thead class="bg-gray-50">
+                      <tr>
+                        {blocco.intestazioni.map((intestazione) => (
+                          <th scope="col" class="border-b border-gray-200 px-3 py-2 text-left font-semibold text-gray-900">{intestazione}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {blocco.righe.map((riga) => (
+                        <tr class="even:bg-gray-50">
+                          {riga.map((cella) => (
+                            <td class="border-b border-gray-100 px-3 py-2 align-top break-words">{cella}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            )}
+          </section>
+        ))}
+      </div>
+    </div>
+  </main>
+</Layout>

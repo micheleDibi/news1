@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import type { StatoBando } from './stato-bando';
 
 const url = import.meta.env.PUBLIC_SUPABASE_BANDI_URL;
 const key = import.meta.env.PUBLIC_SUPABASE_BANDI_ANON_KEY;
@@ -16,9 +17,10 @@ export const STATI_PROCESSING = [
 ] as const;
 export type StatoProcessing = typeof STATI_PROCESSING[number];
 
-// Stato editoriale del bando (data-driven dal preprocess v2).
-export const STATI_BANDO = ['aperto', 'chiuso', 'in apertura prossimamente'] as const;
-export type StatoBando = typeof STATI_BANDO[number];
+// Stato editoriale del bando (data-driven dal preprocess v2): vive in
+// stato-bando.ts, puro e testabile sotto node; qui resta ri-esportato.
+export { STATI_BANDO } from './stato-bando';
+export type { StatoBando } from './stato-bando';
 
 // Stato scadenza calcolato in-app (NON colonna DB).
 export const STATI_SCADENZA = ['aperto', 'in_scadenza', 'scaduto'] as const;
@@ -261,29 +263,9 @@ export function computeScadenzaStato(dataScadenza: string | null): StatoScadenza
   return 'aperto';
 }
 
-/**
- * Data odierna (YYYY-MM-DD) nel fuso Europe/Rome, indipendente dal timezone
- * del server/browser. 'en-CA' formatta come ISO date.
- */
-export function todayRomeISO(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Rome' }).format(new Date());
-}
-
-/**
- * Stato EFFETTIVO del bando da mostrare all'utente. La colonna `stato_bando`
- * viene scritta dal preprocess dello scraper e mai piu' aggiornata: un bando
- * con scadenza passata resterebbe "aperto" per sempre. Regola: se la
- * scadenza e' passata il bando e' 'chiuso' (dal giorno successivo alla
- * scadenza — il giorno stesso e' ancora valido), qualunque sia lo stato
- * salvato; la scadenza puo' solo chiudere, mai riaprire.
- */
-export function effectiveStatoBando(
-  stato: StatoBando | null | undefined,
-  dataScadenza: string | null | undefined,
-): StatoBando | null {
-  if (dataScadenza && String(dataScadenza).slice(0, 10) < todayRomeISO()) return 'chiuso';
-  return stato ?? null;
-}
+// todayRomeISO ed effectiveStatoBando vivono in stato-bando.ts (logica pura,
+// testabile sotto node senza il client Supabase creato qui sopra).
+export { todayRomeISO, effectiveStatoBando } from './stato-bando';
 
 /**
  * Formatta un importo EUR senza decimali in italiano (es. "12.500.000 €").

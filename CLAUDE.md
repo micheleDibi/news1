@@ -45,12 +45,24 @@ src/pages/[category].astro               elenco articoli: pattern di paginazione
 src/layouts/Layout.astro                 canonical, meta, JSON-LD org, <slot name="head" />
 src/lib/seo.ts                           Article / Breadcrumb / ItemList / FAQ structured data
 src/lib/supabase.ts, supabase-bandi.ts   i due client + dominio bandi
-src/middleware.ts                        content negotiation Markdown, well-known per agenti
+src/middleware.ts                        guardia sugli header di inoltro (prima istruzione,
+                                         src/lib/intestazioni-inoltro.ts: X-Forwarded-Host/Proto/Port
+                                         malformati → 400 su tutto il sito), content negotiation
+                                         Markdown, well-known per agenti
 src/pages/sitemap-*.xml.ts               ~17 rotte sitemap (vedi sotto)
+src/lib/api-v1/                          API pubblica in sola lettura: moduli puri, più
+                                         fonte-supabase.ts e rotta.ts impuri
+src/pages/api/v1/**                      13 rotte di poche righe, logica in api-v1/risorse.ts
+src/pages/sviluppatori/api.astro         documentazione pubblica (contenuti in api-v1/documentazione.ts)
 public/robots.txt                        statico
 docs/analisi-seo-elenchi.md              fotografia SEO delle tre liste, numeri reali dei DB
 docs/report-seo-elenchi.md               intervento SEO: cosa è cambiato e cosa resta fuori scope
 ```
+
+API v1: select esplicite solo in `api-v1/colonne.ts` (mai `*`), predicati di pubblicazione solo in
+`api-v1/filtri.ts`, nessun testo integrale (solo sintesi e metadati), autore solo `public_name`
+(mai `creator` né `full_name`). `tests/api-v1/contratto.test.ts` valida output ed esempi contro
+gli schemi di `openapi.ts`.
 
 ### Pagine filtro e sitemap
 
@@ -107,9 +119,10 @@ condizione della RLS pubblica (`completed AND slug IS NOT NULL`).
 
 - Lo **slug degli interpelli non è a DB**: si ricalcola da `interpello_name + provincia|città +
   regione + id`. Le copie sono **due**, una per linguaggio (`slugInterpello` in
-  `src/lib/liste/interpelli.ts`, `_generate_interpello_slug` in `backend/app/interpelli.py`):
-  devono restare identiche byte per byte. Per questo la correzione ortografica **non** tocca
-  `interpello_name` né i campi geografici.
+  `src/lib/liste/slug-interpello.ts`, ri-esportato da `src/lib/liste/interpelli.ts`;
+  `_generate_interpello_slug` in `backend/app/interpelli.py`): devono restare identiche byte per
+  byte, e `tests/estrazioni/slug-interpello.test.ts` lo verifica eseguendo la funzione Python.
+  Per questo la correzione ortografica **non** tocca `interpello_name` né i campi geografici.
 - **`scripts/migrate-slugs.ts` non va eseguito alla leggera**: riempie solo gli slug mancanti e
   pretende `MIGRAZIONE_SLUG=si` più `SCRIVI=si`. Nella versione precedente riscriveva lo slug di
   *tutte* le righe ed era l'unico punto capace di mandare in 410 l'intero archivio in un colpo solo.
@@ -147,6 +160,11 @@ Entrambi leggono `tests/ortografia/casi.json`, che contiene i casi di `correggi(
 `slugifica()` con lo `sha256` atteso e un conteggio minimo: nessuno può cancellare casi in
 silenzio. `npx astro check` **non** è disponibile (richiederebbe `@astrojs/check`): per il
 controllo dei tipi si usa `npx tsc --noEmit -p tsconfig.json`, che ha errori preesistenti.
+
+`npm test` carica il resolve hook `tests/supporto/registra-risolutore.mjs` (i moduli di `src/`
+importano senza estensione) ed esegue `tests/**/*.test.ts` con `TZ=Asia/Kathmandu` (fuso fisso
++05:45, smaschera l'ora locale). Per un solo file:
+`TZ=Asia/Kathmandu node --experimental-strip-types --disable-warning=ExperimentalWarning --import ./tests/supporto/registra-risolutore.mjs --test <file>`.
 
 ## Cosa NON toccare
 

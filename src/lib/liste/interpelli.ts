@@ -8,10 +8,9 @@ import { PAGINE_FILTRO } from '../../config/pagine-filtro';
  * Dominio della sezione interpelli: tipo della riga e slug canonico.
  *
  * Lo slug NON e' salvato a DB: si ricalcola da interpello_name + provincia|citta +
- * regione + id. Prima di questo modulo la stessa funzione era copiata in tre file
- * del frontend (la pagina elenco, il dettaglio e la sitemap) piu' una quarta volta
- * dentro lo script client. Resta una copia in backend/app/interpelli.py:46-59, fuori
- * dal perimetro di questo intervento: se si tocca l'algoritmo va allineata anche quella.
+ * regione + id con slugInterpello (src/lib/liste/slug-interpello.ts). Il gemello
+ * Python e' _generate_interpello_slug in backend/app/interpelli.py: se si tocca
+ * l'algoritmo va allineato anche quello (la parita' e' coperta dai test).
  */
 export interface Interpello {
   id: number;
@@ -35,21 +34,9 @@ export interface Interpello {
 export type InterpelloSlugabile = Pick<Interpello, 'id'> &
   Partial<Pick<Interpello, 'interpello_name' | 'interpello_provincia' | 'interpello_citta' | 'interpello_regione'>>;
 
-export function slugInterpello(interpello: InterpelloSlugabile): string {
-  const parts = [
-    interpello.interpello_name,
-    interpello.interpello_provincia || interpello.interpello_citta,
-    interpello.interpello_regione,
-    interpello.id?.toString(),
-  ].filter(Boolean);
-
-  return parts
-    .join('-')
-    .toLowerCase()
-    .replace(/[^a-z0-9\-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
+// L'algoritmo vive in slug-interpello.ts (puro, testabile sotto node e verificato
+// contro il gemello Python): qui resta ri-esportato per i chiamanti esistenti.
+export { slugInterpello } from './slug-interpello';
 
 /**
  * Colonne necessarie alla card. NON include article_content: con select('*') venti

@@ -3,13 +3,37 @@ import { API_CATALOG, API_CATALOG_CONTENT_TYPE, API_CATALOG_PATH } from './lib/a
 import { WEB_BOT_AUTH_JWKS, WEB_BOT_AUTH_CONTENT_TYPE, WEB_BOT_AUTH_DIRECTORY_PATH } from './lib/web-bot-auth';
 import { wantsMarkdown, htmlToMarkdown, estimateTokens } from './lib/markdown-negotiation';
 import { riscaldaCorpus } from './lib/corpus';
+import { verificaIntestazioniInoltro } from './lib/intestazioni-inoltro';
 
 // Riscaldamento della cache delle faccette: parte al primo hit del processo e non
 // blocca la richiesta. Serve a evitare che la prima visita a una pagina filtro paghi
 // la costruzione del corpus (qualche secondo).
 let corpusRiscaldato = false;
 
+// Log della guardia sugli header di inoltro: al massimo uno al minuto, senza valori.
+let ultimoLogIntestazioni = 0;
+
 export const onRequest = defineMiddleware(async ({ request, rewrite }, next) => {
+  // Prima di tutto: Astro ha gia' costruito request.url (e scelto la rotta) usando
+  // X-Forwarded-Host/Proto/Port senza validarli. Header malformati -> 400, cosi'
+  // nessuna risposta servita per il path sbagliato puo' finire in una cache.
+  const intestazioneRifiutata = verificaIntestazioniInoltro(request.headers);
+  if (intestazioneRifiutata) {
+    const adesso = Date.now();
+    if (adesso - ultimoLogIntestazioni > 60_000) {
+      ultimoLogIntestazioni = adesso;
+      console.error(`[middleware] richiesta rifiutata: header ${intestazioneRifiutata} malformato`);
+    }
+    return new Response('Bad Request', {
+      status: 400,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Robots-Tag': 'noindex',
+      },
+    });
+  }
+
   if (!corpusRiscaldato) {
     corpusRiscaldato = true;
     riscaldaCorpus();

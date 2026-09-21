@@ -20,6 +20,9 @@ Sitemap: https://edunews24.it/sitemap-pagine-filtro.xml
 
 # Disallow admin and private areas
 Allow: /api/search
+# API pubblica /api/v1: i feed sono leggibili dai crawler; il JSON resta escluso da
+# Disallow: /api/ e ogni risposta porta X-Robots-Tag: noindex.
+Allow: /api/v1/feeds/
 Disallow: /admin/
 Disallow: /private/
 Disallow: /api/
@@ -28,12 +31,20 @@ Disallow: /cdn-cgi/
 # Crawl delay for heavy bots
 User-agent: AhrefsBot
 Crawl-delay: 10
+Allow: /api/v1/feeds/
+Disallow: /api/v1
 
 User-agent: SemrushBot
 Crawl-delay: 10
+Allow: /api/v1/feeds/
+Disallow: /api/v1
 
 User-agent: msnbot
 Crawl-delay: 5
+Allow: /api/v1/feeds/
+Disallow: /api/v1
 
 User-agent: bingbot
 Crawl-delay: 5
+Allow: /api/v1/feeds/
+Disallow: /api/v1
