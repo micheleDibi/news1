@@ -214,6 +214,33 @@ Se un evento è stato annotato per sbaglio, l'unica via di rientro è
 Un giro con `applicati: 0` e `rifiutati: N` **non** è un giro riuscito: è un blocco fermo. Un giro
 con `non_tentati: N` dice che manca una migrazione, e non ha rovinato niente.
 
+### `link-verifica` dichiarava un lavoro che il database rifiutava (23/09/2026)
+
+Il primo blocco da mille in produzione ha riferito `pubblicabili: 847, ritirati: 153, errori: 0` e
+ha scritto **153 righe su 1 000**. Le 847 non sono mai arrivate a destinazione.
+
+La catena: `oe-dettaglio` scriveva le righe di `bando_link` senza `trovato_in_fonte_at`; il CHECK
+della migrazione 02 (`NOT pubblicabile OR trovato_in_fonte_at IS NOT NULL`) rifiutava ogni UPDATE
+che provasse a renderle pubblicabili; `db.controllo.aggiorna` cattura l'eccezione e la mette in un
+warning; `link-verifica` ignorava l'esito e incrementava il contatore lo stesso.
+
+Il guaio peggiore non era il conteggio. Senza scrittura `esito_http` restava NULL, cioè «mai
+verificata», quindi il lancio successivo ripresentava le stesse righe: **il ciclo «rilancia finché
+`esaminati` non arriva a zero» non sarebbe finito mai.**
+
+Tre correzioni: `oe-dettaglio` registra `trovato_in_fonte_at` quando trova l'href nella scheda, che
+è esattamente ciò che quella colonna significa; `link-verifica` colma l'istante sulle 3 887 righe
+già scritte, quando le rende pubblicabili (la prova `sha256#offset` c'è già, serviva solo la data, e
+così non serve una migrazione); e soprattutto **il contatore segue la scrittura, non l'intenzione**,
+con `non_scritte` a dire quante righe il database ha rifiutato.
+
+Contatore nuovo anche per la provenienza: `senza_prova` sono le righe che rispondono 2xx ma non
+vengono dall'HTML di una pagina che abbiamo scaricato. Sono le 3 739 righe `raw` del backfill della
+02, che vengono da `bando.link_bando` e dagli allegati. Restano non pubblicabili, perché §13.4
+promette a chi legge che ogni riga leggibile compare nella pagina di riferimento. Quei link tornano
+pubblicabili per un'altra strada: il resolver li riscrive come righe proprie, con la prova, quando
+trova la fonte ufficiale.
+
 ### La giuntura fra i due lotti: corretta (23/09/2026)
 
 `oe-dettaglio` scarica le schede dell'aggregatore e scrive gli href all'ente in `bando_link` con la

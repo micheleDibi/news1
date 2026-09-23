@@ -1131,10 +1131,14 @@ class TestRunnerAusiliari(unittest.TestCase):
         self.assertEqual(esito["saltato"], "scarico_non_configurato")
 
     def test_link_verifica_pubblicabile_solo_con_2xx(self):
+        # `impronta_pagina` e' la prova che l'href e' stato trovato nell'HTML
+        # di una pagina: senza, il CHECK della 02 rifiuta una riga pubblicabile
+        # e la riga resta non pubblicabile per costruzione (vedi
+        # `test_senza_prova_non_si_pubblica`).
         righe = [
-            {"id": 1, "url": "https://regione.marche.it/a"},
-            {"id": 2, "url": "https://regione.marche.it/b"},
-            {"id": 3, "url": "https://www.obiettivoeuropa.com/x"},
+            {"id": 1, "url": "https://regione.marche.it/a", "impronta_pagina": "a#1"},
+            {"id": 2, "url": "https://regione.marche.it/b", "impronta_pagina": "b#1"},
+            {"id": 3, "url": "https://www.obiettivoeuropa.com/x", "impronta_pagina": "c#1"},
         ]
         esiti = {
             "https://regione.marche.it/a": (200, "text/html", "", None, None),
@@ -1147,6 +1151,26 @@ class TestRunnerAusiliari(unittest.TestCase):
         # L'aggregatore risponde 200 ma non e' pubblicabile: il dominio decide.
         self.assertEqual(esito["pubblicabili"], 1)
         self.assertEqual(esito["ritirati"], 2)
+        self.assertEqual(esito["senza_prova"], 0)
+
+    def test_senza_prova_non_si_pubblica_e_lo_dice(self):
+        """Una riga che risponde 200 ma non ha prova di provenienza.
+
+        Sono le 3 739 righe `raw` del backfill della 02: vengono da
+        `bando.link_bando` e dagli allegati, non dall'HTML di una pagina che
+        qualcuno ha scaricato. Il CHECK della 02 rifiuta una riga pubblicabile
+        senza `trovato_in_fonte_at`, e §13.4 promette che ogni riga leggibile
+        compare nell'HTML della pagina di riferimento. Prima il comando le
+        dichiarava pubblicabili e l'UPDATE veniva rifiutato in silenzio.
+        """
+        righe = [{"id": 1, "url": "https://regione.marche.it/a"}]
+        esito = esegui(fu.run_link_verifica(
+            dry_run=True, righe=righe,
+            verifica=lambda _url: (200, "text/html", "", None, None),
+        ))
+        self.assertEqual(esito["pubblicabili"], 0)
+        self.assertEqual(esito["senza_prova"], 1)
+        self.assertEqual(esito["ritirati"], 1)
 
     def test_fondi_doppioni_in_ombra_non_fonde(self):
         righe = [
@@ -1671,11 +1695,13 @@ class TestCodaDeiLinkMorti(unittest.TestCase):
         for i in range(1, quanti_morti + 1):
             righe[i] = {"id": i, "bando_id": i, "url": f"https://morto.invalid/{i}",
                         "tipo": "pagina_bando", "esito_http": None,
+                        "impronta_pagina": f"sha{i}#0",
                         "updated_at": "2026-09-23T08:00:00+00:00",
                         "trovato_in_fonte_at": None}
         for i in range(quanti_morti + 1, quanti_morti + quanti_vivi + 1):
             righe[i] = {"id": i, "bando_id": i, "url": f"https://ente.it/{i}",
                         "tipo": "pagina_bando", "esito_http": None,
+                        "impronta_pagina": f"sha{i}#0",
                         "updated_at": "2026-09-23T08:00:00+00:00",
                         "trovato_in_fonte_at": None}
         return righe
@@ -1922,6 +1948,83 @@ class TestLinkGiaRegistrati(unittest.TestCase):
             [self._riga_link()], tabella=TABELLA_ENTE)
         self.assertEqual(candidati[0].prova, "abc123#4096")
         self.assertEqual(candidati[0].url_prova, self.LINK_OE)
+
+
+class TestScritturaRifiutata(unittest.TestCase):
+    """Il comando non puo' contare un lavoro che il database ha rifiutato.
+
+    Difetto misurato in produzione il 23/09/2026. `oe-dettaglio` scriveva le
+    righe di `bando_link` **senza** `trovato_in_fonte_at`, e il CHECK della
+    migrazione 02 (`NOT pubblicabile OR trovato_in_fonte_at IS NOT NULL`)
+    rifiutava ogni UPDATE che provasse a renderle pubblicabili.
+    `db.controllo.aggiorna` cattura l'eccezione e la mette in un warning, e
+    `link-verifica` ignorava l'esito: il primo blocco da mille ha riferito
+    «pubblicabili: 847, errori: 0» e ha scritto **zero** righe.
+
+    Il seguito era peggio del conteggio sbagliato: senza scrittura
+    `esito_http` restava NULL, cioe' «mai verificata», quindi il lancio dopo
+    ripresentava le stesse righe. Il ciclo «rilancia finche' esaminati non
+    arriva a zero» suggerito nel runbook non sarebbe finito mai.
+    """
+
+    def _righe(self, quante=3):
+        return [{"id": i, "bando_id": i, "url": f"https://ente.it/{i}",
+                 "tipo": "pagina_bando", "esito_http": None,
+                 "impronta_pagina": f"sha{i}#0", "trovato_in_fonte_at": None}
+                for i in range(1, quante + 1)]
+
+    def _giro(self, esito_aggiorna):
+        scritture = []
+
+        def _aggiorna(identificativo, payload):
+            scritture.append((identificativo, dict(payload)))
+            return esito_aggiorna
+
+        with unittest.mock.patch.object(fu.db, "aggiorna_link", _aggiorna):
+            esito = esegui(fu.run_link_verifica(
+                attivo=True, righe=self._righe(),
+                verifica=lambda _url: (200, "text/html", "", None, None),
+            ))
+        return esito, scritture
+
+    def test_la_riga_rifiutata_non_conta_come_pubblicabile(self):
+        esito, _ = self._giro({"scritto": False, "motivo": "vincolo"})
+        self.assertEqual(esito["pubblicabili"], 0,
+                         "il comando dichiara pubblicabile una riga che non ha scritto")
+        self.assertEqual(esito["non_scritte"], 3)
+
+    def test_la_riga_scritta_conta(self):
+        esito, _ = self._giro({"scritto": True})
+        self.assertEqual(esito["pubblicabili"], 3)
+        self.assertEqual(esito["non_scritte"], 0)
+
+    def test_la_prova_senza_istante_viene_colmata(self):
+        """Le 3 887 righe gia' scritte da `oe-dettaglio` si riparano da sole.
+
+        Portano `impronta_pagina` ma non `trovato_in_fonte_at`, perche' il
+        comando che le ha scritte non lo metteva. Invece di una migrazione, lo
+        scrive `link-verifica` quando le rende pubblicabili: la prova c'e', e
+        l'istante e' quello in cui la pubblicabilita' viene decisa.
+        """
+        _, scritture = self._giro({"scritto": True})
+        for _id, payload in scritture:
+            self.assertTrue(payload["pubblicabile"])
+            self.assertIn("trovato_in_fonte_at", payload)
+
+    def test_chi_ha_gia_l_istante_non_lo_riscrive(self):
+        scritture = []
+
+        def _aggiorna(identificativo, payload):
+            scritture.append(dict(payload))
+            return {"scritto": True}
+
+        righe = self._righe(1)
+        righe[0]["trovato_in_fonte_at"] = "2026-09-20T10:00:00+00:00"
+        with unittest.mock.patch.object(fu.db, "aggiorna_link", _aggiorna):
+            esegui(fu.run_link_verifica(
+                attivo=True, righe=righe,
+                verifica=lambda _url: (200, "text/html", "", None, None)))
+        self.assertNotIn("trovato_in_fonte_at", scritture[0])
 
 
 class TestReteGiuNonRitiraILinkBuoni(unittest.TestCase):

@@ -2216,6 +2216,15 @@ async def run_oe_dettaglio(
                 # Senza offset la prova non e' verificabile: meglio NULL che
                 # una stringa che sembra una prova (`oe_scheda._offset`).
                 "impronta_pagina": c.prova or None,
+                # Questo href e' stato trovato ADESSO nell'HTML della scheda:
+                # e' esattamente cio' che la colonna registra, ed e' quello che
+                # il CHECK della 02 pretende da una riga pubblicabile
+                # (`NOT pubblicabile OR trovato_in_fonte_at IS NOT NULL`).
+                # Senza, `link-verifica` non poteva rendere pubblicabile
+                # nemmeno una riga: l'UPDATE veniva rifiutato dal vincolo e
+                # `db.controllo.aggiorna` lo inghiottiva con un warning, quindi
+                # il comando riferiva «pubblicabili: 847» e scriveva zero.
+                "trovato_in_fonte_at": _adesso(),
                 # Mai pubblicabile finche' `link-verifica` non conferma il 2xx.
                 "pubblicabile": False,
             }
@@ -2359,8 +2368,11 @@ async def run_link_verifica(
     # `rimandati` sono le righe gia' pubblicabili su cui il verificatore non ha
     # avuto risposta: si lasciano come sono (vedi `_verifica_link`) e tornano al
     # giro dopo. Se e' un numero alto, il problema e' la nostra rete.
+    # `non_scritte` e `senza_prova` non sono decorazioni: sono i due modi in cui
+    # questo comando poteva dichiarare un lavoro che non aveva fatto.
     contatori = {"esaminati": 0, "pubblicabili": 0, "ritirati": 0,
-                 "rimandati": 0, "saltate": 0, "errori": 0}
+                 "rimandati": 0, "senza_prova": 0, "non_scritte": 0,
+                 "saltate": 0, "errori": 0}
     if righe is None:
         elenco = _da_verificare(
             limit=limit, offset=offset, bando_id=bando_id,
@@ -2427,7 +2439,18 @@ async def _verifica_link(
             esito = None
             contatori["errori"] += 1
             logger.info("[link-verifica] {} non verificato: {}", url, e)
-        pubblicabile = bool(esito and esito.ok) and not e_aggregatore(url)
+        # La pubblicabilita' pretende una prova di provenienza: il CHECK della
+        # 02 rifiuta una riga pubblicabile senza `trovato_in_fonte_at`, e §13.4
+        # promette a chi legge che ogni riga leggibile compare nell'HTML della
+        # pagina di riferimento. `impronta_pagina` (lo `sha256#offset` della
+        # scheda) e' quella prova; le righe `raw` del backfill della 02 non ce
+        # l'hanno, e restano non pubblicabili invece di far fallire l'UPDATE.
+        prova = riga.get("impronta_pagina")
+        trovato = riga.get("trovato_in_fonte_at")
+        ha_prova = bool(prova or trovato)
+        pubblicabile = bool(esito and esito.ok) and not e_aggregatore(url) and ha_prova
+        if bool(esito and esito.ok) and not e_aggregatore(url) and not ha_prova:
+            contatori["senza_prova"] = contatori.get("senza_prova", 0) + 1
         stato = esito.esito_http if esito is not None else None
         # «Non ho ricevuto risposta»: l'eccezione, oppure un verificatore che
         # torna `None` o senza codice. Non e' un giudizio sul link.
@@ -2457,7 +2480,24 @@ async def _verifica_link(
         # link ha funzionato.
         if pubblicabile:
             payload["ultimo_visto_at"] = _adesso()
-        db.aggiorna_link(riga.get("id"), payload)
+            if not trovato:
+                # La riga porta la prova ma non l'istante: e' il caso delle
+                # 3 887 righe scritte da `oe-dettaglio` prima della correzione.
+                # Si colma qui invece che con una migrazione.
+                payload["trovato_in_fonte_at"] = _adesso()
+        scritto = db.aggiorna_link(riga.get("id"), payload)
+        if isinstance(scritto, Mapping) and not scritto.get("scritto"):
+            # Non si conta come verificata una riga che non e' stata scritta.
+            # Era il difetto piu' insidioso del comando: l'UPDATE rifiutato dal
+            # vincolo tornava dentro un warning, il contatore diceva
+            # «pubblicabili» e la riga restava con `esito_http` NULL — cioe'
+            # «mai verificata» — quindi il lancio successivo la ripresentava, e
+            # un ciclo «finche' esaminati non arriva a zero» non finiva mai.
+            contatori["non_scritte"] = contatori.get("non_scritte", 0) + 1
+            if pubblicabile:
+                contatori["pubblicabili"] -= 1
+            else:
+                contatori["ritirati"] -= 1
     return {"status": "ok", "dry_run": dry_run, "attivo": attivo, **contatori}
 
 
