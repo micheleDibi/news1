@@ -16,8 +16,9 @@ import json
 import random
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Iterable, Mapping
 
+from .impronte import normalizza_url
 from .logger import logger
 from .preprocessor import _get_anthropic_client
 from .settings import get_settings
@@ -334,12 +335,94 @@ _REQUIRED_FIELDS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Gate sugli URL del contenuto (piano §5, «gate anti-allucinazione»)
+# ---------------------------------------------------------------------------
+#
+# Il modello scrive i segmenti `link` del `contenuto` guardando il markdown
+# della pagina: puo' quindi produrre un URL plausibile che nessuno ha mai
+# scaricato, oppure ricopiare un link verso l'aggregatore. §5 chiude la porta
+# con un'appartenenza, non con un giudizio: **ogni URL di un segmento `link`
+# deve stare nell'unione fra fonte ufficiale, allegati ammessi e `bando_link`
+# pubblicabili**, altrimenti il segmento viene degradato a testo (il testo
+# resta, sparisce solo il collegamento).
+#
+# `ammessi=None` significa «nessun elenco disponibile»: il gate non si applica
+# e vale il comportamento di prima. Un insieme **vuoto** e' invece una
+# risposta: nessun URL e' provato, quindi nessun link va pubblicato. Tenere
+# distinti i due casi e' cio' che permette di attivare il gate un pezzo alla
+# volta senza spegnere i link di tutto l'archivio al primo rilascio.
+
+
+def normalizza_ammessi(urls: Iterable[str] | None) -> frozenset[str] | None:
+    """Gli URL ammessi in forma normalizzata, o None se l'elenco non c'e'."""
+    if urls is None:
+        return None
+    normalizzati = (normalizza_url(str(u)) for u in urls if u)
+    return frozenset(u for u in normalizzati if u)
+
+
+def _url_ammesso(url: Any, ammessi: frozenset[str]) -> bool:
+    if not isinstance(url, str) or not url.strip():
+        return False
+    normalizzato = normalizza_url(url)
+    return bool(normalizzato) and normalizzato in ammessi
+
+
+def degrada_link_non_ammessi(
+    contenuto: Any, ammessi: frozenset[str] | None,
+) -> tuple[Any, int]:
+    """(contenuto ripulito, quanti segmenti degradati).
+
+    La visita e' generica — dizionari e liste, a qualunque profondita' — perche'
+    i segmenti `link` compaiono nei paragrafi, negli `items` degli elenchi e
+    nelle risposte delle FAQ: elencare i contenitori significherebbe dimenticarne
+    uno alla prossima forma di sezione.
+    """
+    if ammessi is None:
+        return contenuto, 0
+    degradati = 0
+
+    def visita(nodo: Any) -> Any:
+        nonlocal degradati
+        if isinstance(nodo, Mapping):
+            if nodo.get("kind") == "link" and not _url_ammesso(nodo.get("url"), ammessi):
+                degradati += 1
+                testo = nodo.get("text") or nodo.get("url") or ""
+                return {"kind": "text", "text": str(testo)}
+            return {chiave: visita(valore) for chiave, valore in nodo.items()}
+        if isinstance(nodo, list):
+            return [visita(valore) for valore in nodo]
+        return nodo
+
+    return visita(contenuto), degradati
+
+
+def filtra_allegati(
+    allegati: Any, ammessi: frozenset[str] | None,
+) -> tuple[list[dict[str, str]], int]:
+    """Intersezione con gli allegati verificati da `allegati.py` (§5, §13.4).
+
+    Il modello «estrae dal markdown tutti i link a documenti»: qui restano solo
+    quelli che hanno risposto 2xx e che compaiono nell'HTML della pagina di
+    riferimento. E' la promessa di §13.4, che un LLM non puo' mantenere.
+    """
+    righe = [a for a in (allegati or []) if isinstance(a, dict)]
+    if ammessi is None:
+        return righe, 0
+    tenuti = [a for a in righe if _url_ammesso(a.get("url"), ammessi)]
+    return tenuti, len(righe) - len(tenuti)
+
+
 async def _validate_payload(
     payload: dict[str, Any],
     bando_id: int,
     input_ctx: dict[str, Any],
     markdown: str,
     reachability_check: bool,
+    *,
+    link_ammessi: Iterable[str] | None = None,
+    allegati_ammessi: Iterable[str] | None = None,
 ) -> dict[str, Any] | None:
     """Gate Python: ritorna il payload normalizzato o None se invalid.
 
@@ -348,7 +431,13 @@ async def _validate_payload(
       - link_candidatura: reachability check (graceful demote a 'missing').
       - ente_erogatore: warning se non substring (no block).
       - lunghezze fuori range: block.
-      - allegati: filter url validi, max 20.
+      - allegati: filter url validi, max 20, poi intersezione con
+        `allegati_ammessi` (§5: solo i documenti verificati 2xx).
+      - contenuto: ogni segmento `link` il cui URL non sta in `link_ammessi`
+        viene degradato a testo (§5, gate anti-allucinazione).
+
+    `link_ammessi`/`allegati_ammessi` a None disattivano i due gate: e' il caso
+    del bando che il resolver non ha ancora visto.
     """
     # 1. Required fields
     for f in _REQUIRED_FIELDS:
@@ -425,7 +514,7 @@ async def _validate_payload(
             payload["link_candidatura"] = None
             payload["link_candidatura_source"] = "missing"
 
-    # 7. allegati: filter validi + max 20
+    # 7. allegati: filter validi + max 20 (poi l'intersezione al punto 10)
     allegati = payload.get("allegati") or []
     cleaned_allegati = []
     seen_urls: set[str] = set()
@@ -478,6 +567,25 @@ async def _validate_payload(
                 payload[k] = iv
         except (TypeError, ValueError):
             payload[k] = None
+
+    # 10. Gate degli URL (§5). Va per ultimo, dopo che allegati e contenuto
+    # sono gia' normalizzati: degradare un segmento prima della normalizzazione
+    # lo rimetterebbe in gioco al passo successivo.
+    ammessi_link = normalizza_ammessi(link_ammessi)
+    ammessi_allegati = normalizza_ammessi(allegati_ammessi)
+    payload["allegati"], scartati = filtra_allegati(payload.get("allegati"), ammessi_allegati)
+    if scartati:
+        logger.info(
+            "[seo] bando_id={} {} allegati non verificati scartati dal gate", bando_id, scartati,
+        )
+    payload["contenuto"], degradati = degrada_link_non_ammessi(
+        payload.get("contenuto"), ammessi_link,
+    )
+    if degradati:
+        logger.info(
+            "[seo] bando_id={} {} link del contenuto degradati a testo (URL non provato)",
+            bando_id, degradati,
+        )
 
     return payload
 
@@ -610,8 +718,16 @@ async def _call_anthropic_tool(
 async def enrich_seo(
     input_ctx: dict[str, Any],
     markdown: str,
+    *,
+    link_ammessi: Iterable[str] | None = None,
+    allegati_ammessi: Iterable[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Esegue 1 LLM call Opus + validation. Ritorna payload validato o None."""
+    """Esegue 1 LLM call Opus + validation. Ritorna payload validato o None.
+
+    `link_ammessi` e `allegati_ammessi` arrivano dal resolver (fonte ufficiale,
+    allegati verificati, `bando_link` pubblicabili) e alimentano il gate del
+    punto 10 di `_validate_payload`.
+    """
     bando_id = input_ctx["id"]
     settings = get_settings()
     client = _get_anthropic_client()
@@ -631,6 +747,8 @@ async def enrich_seo(
     validated = await _validate_payload(
         raw_payload, bando_id, input_ctx, markdown,
         reachability_check=settings.seo_reachability_check,
+        link_ammessi=link_ammessi,
+        allegati_ammessi=allegati_ammessi,
     )
     if not validated:
         return None
