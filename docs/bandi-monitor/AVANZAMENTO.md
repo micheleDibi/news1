@@ -99,6 +99,12 @@ Se resta vuota dopo un giro completo, il processo ha ancora la fotografia vecchi
 
 **01 → 02 → seed → 03 → 04 → 05**, tutte nella stessa seduta e fuori dai giri delle 00/06/12/18.
 È l'ordine eseguibile: il seed popola `dominio_ufficiale`, creata dalla 02 e letta dai trigger della 03.
+La **08** (`bando_v11_08_evento_pubblicazione.sql`) è correttiva e va applicata appena possibile:
+senza di lei i bandi pubblicati dopo la 02 non emettono l'evento `pubblicazione` e chi segue il
+flusso a cursore non li vede mai. Dipende solo da 01 e 02, non serve riavviare il sender (aggiunge
+solo una funzione e un trigger), e conviene applicarla **fra un giro di pipeline e l'altro**: crea
+un trigger su `bando` e il file si protegge con `lock_timeout` di 5 secondi.
+
 La **06** si applica solo dopo il rilascio difensivo R0-a di BandoFit; la **07** solo dopo che BandoFit
 legge il contratto (`docs/contratto-db-bandi.md`). Ogni file ha il blocco Verifica in coda: se una
 verifica non dà il valore atteso, fermarsi lì e non proseguire con il file successivo.

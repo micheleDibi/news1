@@ -430,7 +430,8 @@ Cose che è meglio sapere prima che succedano.
 
 ### 10.2 Le migrazioni
 
-Ordine di applicazione della fase (b): **01 → 02 → seed → 03 → 04 → 05**. Ogni file è
+Ordine di applicazione della fase (b): **01 → 02 → seed → 03 → 04 → 05**, più la **08**, che è
+correttiva e si applica quando serve (prima o dopo le altre: dipende solo da 01 e 02). Ogni file è
 idempotente, porta un blocco Riconciliazione rieseguibile, un blocco Verifica con le query e i
 valori attesi, e un file di rollback.
 
@@ -454,6 +455,7 @@ nelle loro intestazioni.
 | `bando_v11_seed_dominio_ufficiale.sql` | (b) | popolamento di `dominio_ufficiale`: portali pubblici, pattern, blocklist | **No** |
 | `bando_v11_04_transizioni.sql` | (b) | la tabella delle transizioni ammesse e le RPC (`bando_registra_evento`, `bando_applica_evento`, `bando_fondi`, `bando_separa`, `bando_pubblica`, `bando_ritira`, `bando_cambia_slug`, `lock_acquisisci`, `lock_rilascia`), tutte con REVOKE EXECUTE e guardia sul ruolo; il job orario `5 * * * *` che sostituisce la vecchia chiusura giornaliera | **No** (`stato_bando` resta allineato come oggi) |
 | `bando_v11_05_vista_pubblica.sql` | (b) | il `GRANT EXECUTE` ad `anon` sulle tre funzioni dell'allowlist, il grant di colonna `(bando_id, ultimo_controllo_at)` su `bando_controllo`, e la vista `bando_pubblico` | **No** (oggetto nuovo) |
+| `bando_v11_08_evento_pubblicazione.sql` | (b) | il trigger che emette l'evento `pubblicazione` quando una riga diventa pubblicata, più il recupero di quelle rimaste senza. Fino alla 08 l'evento esisteva solo come riempimento iniziale della 02: i bandi pubblicati dopo quel momento non entravano nel flusso a cursore, cioè un consumatore che segue gli eventi non veniva a sapere dei bandi nuovi. Si applica prima o dopo le altre, non dipende da 03, 04 e 05 | **No**: compaiono solo righe nuove in `bando_evento`, con lo stesso tipo e gli stessi valori di quelle già seminate |
 | `bando_v11_06_stati_cinque.sql` | (b), **dopo** la (a) | CHECK di `stato_bando` a 5 valori | **Sì se applicata prima di R0-a**: badge sbagliato, filtro `stato` in 400, `sospeso`/`revocato` nei segmenti |
 | `bando_v11_07_fase_d.sql` | (d) | `DROP VIEW` + ricreazione senza le colonne deprecate; policy di `bando` su `pubblicato`; REVOKE di colonna su `bando` con GRANT solo sulle colonne del contratto | **Sì** se un consumatore legge ancora `bando` con `link_bando`, `stato_processing`, `allegati`, `link_candidatura` o `descrizione_raw` |
 
