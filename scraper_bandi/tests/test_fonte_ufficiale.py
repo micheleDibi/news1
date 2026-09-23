@@ -975,8 +975,55 @@ class TestRunnerAusiliari(unittest.TestCase):
             ))
         self.assertEqual(visti.get("modo"), "backlog")
         self.assertTrue(visti.get("forza"))
-        self.assertEqual(visti.get("limit"), 7)
         self.assertTrue(visti.get("solo_oe"))
+        # Alla query si chiede una PAGINA, non il limite dell'operatore: il
+        # limite conta le righe da leggere davvero, non quelle guardate.
+        self.assertEqual(visti.get("limit"), fu.PAGINA_SELEZIONE_OE)
+        self.assertEqual(visti.get("offset"), 0)
+
+    def test_oe_dettaglio_scorre_oltre_le_schede_gia_lette(self):
+        """Due lanci di fila devono avanzare, non ripetere le stesse righe.
+
+        Misurato in produzione il 23/09/2026: `oe-dettaglio --backlog --forza
+        --limit 800` lanciato due volte ha dato gli stessi identici contatori
+        (800 esaminati, 799 scaricate, 1866 link) e ha coperto 799 bandi in
+        tutto. La selezione ordina per `id` e prende i primi N, e nulla
+        escludeva le schede gia' lette: senza scorrere, il lotto non finisce
+        mai.
+        """
+        pagine = {
+            0: [{"id": i, "link_bando": f"https://www.obiettivoeuropa.com/bandi/{i}",
+                 "raw_data": {"status": "1"}} for i in range(1, 6)],
+            5: [{"id": i, "link_bando": f"https://www.obiettivoeuropa.com/bandi/{i}",
+                 "raw_data": {"status": "1"}} for i in range(6, 9)],
+        }
+        offset_visti = []
+
+        def _finta(**kwargs):
+            offset_visti.append(kwargs.get("offset"))
+            return pagine.get(kwargs.get("offset"), [])
+
+        class _Scarico:
+            fermato = ""
+
+            async def scheda(self, url, archiviato=False):
+                return None
+
+        # I primi cinque sono gia' stati letti: devono essere saltati e NON
+        # devono consumare il limite di due. La pagina della selezione va
+        # ridotta a 5 perche' il finto la riempia: una pagina piu' corta di
+        # quella richiesta significa «selezione finita», ed e' giusto cosi'.
+        with unittest.mock.patch.object(fu, "PAGINA_SELEZIONE_OE", 5), \
+                unittest.mock.patch.object(fu.db, "select_bandi_da_risolvere", _finta), \
+                unittest.mock.patch.object(
+                    fu, "schede_gia_lette",
+                    side_effect=lambda ids: frozenset(i for i in ids if i <= 5)):
+            esito = esegui(fu.run_oe_dettaglio(dry_run=True, limit=2, modo="backlog",
+                                               scarico=_Scarico()))
+        self.assertEqual(esito["saltate"], 5)
+        self.assertEqual(esito["da_scaricare"], 2)
+        self.assertEqual(esito["esaminati"], 2)
+        self.assertEqual(offset_visti[:2], [0, 5])
 
     def test_oe_dettaglio_modo_predefinito_nuovi(self):
         class _Scarico:

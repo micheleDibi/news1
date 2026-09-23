@@ -1836,6 +1836,58 @@ def schede_gia_lette(
     )
 
 
+#: Quante righe si chiedono per pagina mentre si cercano quelle da leggere.
+#: Non e' il `--limit` dell'operatore: e' la finestra su cui si scorre.
+PAGINA_SELEZIONE_OE = 500
+
+
+def _da_leggere(
+    *,
+    limit: int | None,
+    modo: str,
+    solo_oe: bool,
+    bando_id: Any,
+    forza: bool,
+    contatori: dict[str, int],
+) -> tuple[list[Mapping[str, Any]], frozenset[Any]]:
+    """Le righe che hanno bisogno della scheda, scorrendo la selezione.
+
+    Ritorna `(righe, gia_lette)`; incrementa `contatori['saltate']` per ogni
+    riga scartata perche' la sua scheda e' gia' stata letta. Si ferma quando ha
+    raccolto `limit` righe, quando la selezione finisce, o dopo un numero di
+    pagine che non puo' degenerare (la selezione e' al massimo l'intero corpus
+    pubblicato).
+    """
+    raccolte: list[Mapping[str, Any]] = []
+    lette_viste: set[Any] = set()
+    offset = 0
+    while True:
+        blocco = db.select_bandi_da_risolvere(
+            limit=PAGINA_SELEZIONE_OE, offset=offset, modo=modo, solo_oe=solo_oe,
+            bando_id=bando_id, forza=forza, fonti_oe=FONTI_OE,
+        )
+        if not blocco:
+            break
+        offset += len(blocco)
+        gia = schede_gia_lette([b.get("id") for b in blocco])
+        lette_viste |= set(gia)
+        for bando in blocco:
+            grezzo = bando.get("raw_data") if isinstance(bando.get("raw_data"), Mapping) else {}
+            letta = bando.get("id") in gia
+            riscarica, _motivo = oe_scheda.deve_riscaricare(
+                prima=grezzo if letta else None, dopo=grezzo, forza=forza,
+            )
+            if not riscarica or not oe_scheda.e_host_oe(str(bando.get("link_bando") or "")):
+                contatori["saltate"] += 1
+                continue
+            raccolte.append(bando)
+            if limit is not None and len(raccolte) >= limit:
+                return raccolte, frozenset(lette_viste)
+        if len(blocco) < PAGINA_SELEZIONE_OE:
+            break
+    return raccolte, frozenset(lette_viste)
+
+
 async def run_oe_dettaglio(
     dry_run: bool = False,
     limit: int | None = None,
@@ -1884,17 +1936,28 @@ async def run_oe_dettaglio(
         }
 
     tabella = _tabella_corrente() if bandi is None else TABELLA_SEED
-    righe = list(bandi) if bandi is not None else db.select_bandi_da_risolvere(
-        limit=limit, modo=modo, solo_oe=solo_oe, bando_id=bando_id,
-        forza=forza, fonti_oe=FONTI_OE,
-    )
-    if limit is not None:
-        righe = righe[:limit]
     contatori = {
         "esaminati": 0, "scaricate": 0, "saltate": 0, "candidati": 0, "link": 0,
         "da_scaricare": 0,
     }
-    gia_lette = schede_gia_lette([b.get("id") for b in righe])
+    if bandi is not None:
+        righe = list(bandi)
+        if limit is not None:
+            righe = righe[:limit]
+        gia_lette = schede_gia_lette([b.get("id") for b in righe])
+    else:
+        # La selezione ordina per `id` e prende i primi N: senza scorrere oltre,
+        # ogni lancio ripeterebbe le stesse righe. Misurato il 23/09/2026: due
+        # giri da 800 di fila, numeri identici (800 esaminati, 1866 link) e 799
+        # bandi coperti in tutto. Qui si scorre la selezione a pagine finche'
+        # non si sono raccolte `limit` righe che hanno DAVVERO bisogno della
+        # scheda; le gia' lette si contano in `saltate` e non consumano il
+        # limite. Con `--forza` nessuna riga e' «gia' letta» per definizione:
+        # il flag vuol dire «rifai», e allora si riparte dalla prima pagina.
+        righe, gia_lette = _da_leggere(
+            limit=limit, modo=modo, solo_oe=solo_oe, bando_id=bando_id,
+            forza=forza, contatori=contatori,
+        )
     for bando in righe:
         contatori["esaminati"] += 1
         grezzo = bando.get("raw_data") if isinstance(bando.get("raw_data"), Mapping) else {}

@@ -1348,6 +1348,7 @@ def _colonne_disponibili(tabella: str, desiderate: Sequence[str], strumento: Any
 def select_bandi_da_risolvere(
     *,
     limit: int | None = None,
+    offset: int = 0,
     modo: str = "nuovi",
     solo_oe: bool = False,
     solo_in_verifica: bool = False,
@@ -1394,8 +1395,16 @@ def select_bandi_da_risolvere(
         # quello che un operatore mette per non toccare niente. Trattarlo come
         # «nessun limite» farebbe girare `risolvi-fonte --limit 0 --attivo`
         # sull'intero corpus: l'esatto contrario di cio' che ha chiesto.
-        if limit is not None:
+        if limit is not None and offset:
+            # `range` e' inclusivo agli estremi: e' l'unico modo di scorrere
+            # oltre i primi N con PostgREST. Serve a chi deve saltare le righe
+            # gia' lavorate (`oe-dettaglio`): l'ordine e' per `id`, quindi
+            # l'offset e' stabile fra una pagina e l'altra.
+            query = query.range(int(offset), int(offset) + int(limit) - 1)
+        elif limit is not None:
             query = query.limit(int(limit))
+        elif offset:
+            query = query.range(int(offset), int(offset) + 999)
         return list(query.execute().data or [])
     except Exception as e:
         logger.warning("[db] select_bandi_da_risolvere fallita, nessun candidato: {}", e)
