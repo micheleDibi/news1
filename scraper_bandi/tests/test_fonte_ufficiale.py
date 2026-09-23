@@ -1786,6 +1786,144 @@ class TestCodaDeiLinkMorti(unittest.TestCase):
         self.assertIsNone(magazzino[1]["esito_http"])
 
 
+class TestLinkGiaRegistrati(unittest.TestCase):
+    """Il passo 1 deve leggere i link che un giro precedente ha messo in tabella.
+
+    E' la giuntura fra i due lotti, e si era spezzata in silenzio.
+    `oe-dettaglio` scarica la scheda dell'aggregatore, ne estrae gli href
+    all'ente e li scrive in `bando_link` con la prova `sha256#offset`. Poi la
+    regola A29 vieta — giustamente — di riscaricare una scheda gia' letta,
+    quindi `candidati_da_scheda` restituisce vuoto. Se nessuno rilegge la
+    tabella, al passo 1 non arriva niente: il `link_bando` di quei bandi e'
+    l'URL dell'aggregatore e viene scartato, e il bando scende fino alla
+    ricerca a pagamento.
+
+    Misurato in produzione il 23/09/2026: 3 887 link estratti su 1 724 bandi.
+    Tutti e 1 724 avrebbero pagato una ricerca che non serviva.
+    """
+
+    LINK_OE = "https://www.obiettivoeuropa.com/bandi/formazione-2026"
+
+    def _bando(self, **kwargs):
+        valori = {
+            "id": 1, "titolo": TITOLO, "ente_erogatore": ENTE,
+            "data_scadenza": "2026-09-30", "importo_totale_eur": IMPORTO,
+            "raw_data": {}, "link_bando": self.LINK_OE,
+        }
+        valori.update(kwargs)
+        return valori
+
+    def _riga_link(self, **kwargs):
+        valori = {
+            "id": 10, "bando_id": 1, "url": URL_BUONO, "tipo": "pagina_bando",
+            "origine": "aggregatore", "etichetta": "avviso",
+            "impronta_pagina": "abc123#4096", "url_prova": self.LINK_OE,
+            "esito_http": None, "pubblicabile": False,
+        }
+        valori.update(kwargs)
+        return valori
+
+    def _conta(self):
+        chiamate = {"sonda": 0, "ricerca": 0}
+
+        async def sonda(_ctx, _host):
+            chiamate["sonda"] += 1
+            return []
+
+        async def ricerca(_query, _domini):
+            chiamate["ricerca"] += 1
+            return []
+
+        return chiamate, sonda, ricerca
+
+    def test_il_link_in_tabella_chiude_la_cascata_al_passo_1(self):
+        chiamate, sonda, ricerca = self._conta()
+        amb = ambiente(
+            pagine={URL_BUONO: pagina(URL_BUONO, corpo=CORPO_COMPLETO)},
+            sonda=sonda, ricerca=ricerca,
+            link_registrati={1: [self._riga_link()]},
+        )
+        esito = esegui(fu.risolvi(self._bando(), amb))
+        self.assertEqual(esito.stato, fu.STATO_TROVATA)
+        self.assertEqual(esito.url, URL_BUONO)
+        # Il metodo e' quello della scheda: la prova c'e', quindi vale anche il
+        # punteggio «provenienza strutturata».
+        self.assertEqual(esito.metodo, "oe_scheda")
+        self.assertEqual(chiamate, {"sonda": 0, "ricerca": 0},
+                         "con il link gia' in tabella non si paga nessuna ricerca")
+
+    def test_senza_i_link_in_tabella_si_arriva_a_pagare(self):
+        """Il contro-esempio: e' lo stato in cui era il codice."""
+        chiamate, sonda, ricerca = self._conta()
+        amb = ambiente(
+            pagine={URL_BUONO: pagina(URL_BUONO, corpo=CORPO_COMPLETO)},
+            sonda=sonda, ricerca=ricerca,
+        )
+        esito = esegui(fu.risolvi(self._bando(), amb))
+        self.assertNotEqual(esito.stato, fu.STATO_TROVATA)
+        self.assertEqual(chiamate["ricerca"], 1)
+
+    def test_il_lotto_carica_i_link_una_volta_sola(self):
+        """Il giro intero: una lettura di `bando_link`, e i candidati arrivano.
+
+        Prova la giuntura dove si era rotta: `run` deve leggere le righe e
+        passarle all'ambiente, non solo `risolvi` se qualcuno gliele mette in
+        mano. La stessa lettura serve anche a `schede_gia_lette`, quindi si
+        controlla che sia **una**: due sarebbero 7 626 righe lette due volte.
+        """
+        letture: list[dict[str, Any]] = []
+
+        def _link(**parametri):
+            letture.append(dict(parametri))
+            return [self._riga_link()]
+
+        bando = self._bando()
+        amb = ambiente(pagine={URL_BUONO: pagina(URL_BUONO, corpo=CORPO_COMPLETO)})
+        with unittest.mock.patch.object(fu.blocco, "acquisisci", return_value=_LockFinto()), \
+                unittest.mock.patch.object(fu.blocco, "rilascia", lambda _l: None), \
+                unittest.mock.patch.object(
+                    fu.db, "select_bandi_da_risolvere",
+                    lambda **k: [bando] if not k.get("offset") else []), \
+                unittest.mock.patch.object(fu.db, "select_controlli", lambda ids, **k: {}), \
+                unittest.mock.patch.object(
+                    fu.db, "select_pubblicati_per_gemelli", return_value=[]), \
+                unittest.mock.patch.object(fu.db, "select_link_da_verificare", _link), \
+                unittest.mock.patch.object(fu, "_registra", lambda *_a, **_k: None), \
+                unittest.mock.patch.object(
+                    fu, "scrivi_esito", lambda *_a, **_k: {"status": "ok"}):
+            esito = esegui(fu.run(dry_run=True, modo="backlog", ambiente=amb))
+
+        self.assertEqual(len(letture), 1, "bando_link letta piu' di una volta per lotto")
+        self.assertEqual(letture[0].get("bando_ids"), [1])
+        self.assertEqual(amb.link_registrati.get(1)[0]["url"], URL_BUONO)
+        self.assertEqual(esito["trovate"], 1)
+
+    def test_una_riga_verso_l_aggregatore_non_diventa_candidato(self):
+        candidati = fu.candidati_da_link_registrati(
+            [self._riga_link(url=self.LINK_OE)], tabella=TABELLA_ENTE)
+        self.assertEqual(candidati, ())
+
+    def test_senza_prova_e_un_link_grezzo_non_una_scheda(self):
+        candidati = fu.candidati_da_link_registrati(
+            [self._riga_link(impronta_pagina=None, origine="raw")],
+            tabella=TABELLA_ENTE)
+        self.assertEqual([c.metodo for c in candidati], ["link_strutturato"])
+        self.assertEqual([c.prova for c in candidati], [""])
+
+    def test_le_righe_doppie_collassano_per_url_normalizzato(self):
+        candidati = fu.candidati_da_link_registrati([
+            self._riga_link(),
+            self._riga_link(id=11, url=URL_BUONO + "?utm_source=x"),
+        ], tabella=TABELLA_ENTE)
+        self.assertEqual(len(candidati), 1)
+
+    def test_la_prova_e_l_url_della_scheda_arrivano_nel_candidato(self):
+        candidati = fu.candidati_da_link_registrati(
+            [self._riga_link()], tabella=TABELLA_ENTE)
+        self.assertEqual(candidati[0].prova, "abc123#4096")
+        self.assertEqual(candidati[0].url_prova, self.LINK_OE)
+
+
 class TestReteGiuNonRitiraILinkBuoni(unittest.TestCase):
     """Un fallimento nostro non e' una prova sul link (N2).
 

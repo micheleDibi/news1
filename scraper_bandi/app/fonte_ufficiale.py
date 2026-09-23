@@ -315,6 +315,15 @@ class Ambiente:
     spesa_scarico: Callable[[], Any] | None = None
     #: Id dei bandi la cui scheda OE e' gia' stata letta (regola A29).
     schede_lette: frozenset[Any] = frozenset()
+    #: Le righe di `bando_link` gia' in tabella, per bando. Sono i candidati che
+    #: un giro precedente ha estratto — quasi tutti dalle schede OE — e senza
+    #: di esse il passo 1 non li vedrebbe: la regola A29 vieta di riscaricare
+    #: una scheda gia' letta, quindi `candidati_da_scheda` restituisce vuoto e
+    #: il `link_bando` di quei bandi e' l'URL dell'aggregatore, che viene
+    #: scartato. Il lotto `oe-dettaglio` riempirebbe una tabella che nessuno
+    #: legge, e 1 724 bandi scenderebbero fino alla ricerca a pagamento.
+    link_registrati: Mapping[Any, Sequence[Mapping[str, Any]]] = field(
+        default_factory=dict)
     step: str = "resolver"
     oggi: date_cls = field(default_factory=oggi_roma)
     attivo: bool = False
@@ -863,6 +872,52 @@ def candidati_da_scheda(
     return tuple(prodotti)
 
 
+def candidati_da_link_registrati(
+    righe: Sequence[Mapping[str, Any]], *, tabella: Tabella = TABELLA_SEED,
+) -> tuple[Candidato, ...]:
+    """I candidati che stanno gia' in `bando_link`, messi li' da un giro prima.
+
+    Sono la memoria del lotto `oe-dettaglio`: l'href all'ente trovato sulla
+    scheda dell'aggregatore, con la prova `sha256#offset` e l'URL della scheda
+    da cui viene. Il resolver li rivaluta da se' — scarica la pagina, applica i
+    gate, assegna il punteggio — quindi **non serve** che la riga sia gia'
+    `pubblicabile`: quella colonna la decide `link-verifica`, che e' un altro
+    mestiere.
+
+    Senza questa funzione la catena si spezzava in silenzio nel punto peggiore:
+    `oe-dettaglio` scriveva 3 887 link, la regola A29 vietava (giustamente) di
+    riscaricare le schede gia' lette, e al passo 1 non arrivava niente.
+
+    Le righe `raw` del backfill della 02 non si escludono: sono `link_bando` e
+    allegati che il passo 1 guarda comunque, e il dedup per URL normalizzato le
+    fa collassare.
+    """
+    prodotti: list[Candidato] = []
+    viste: set[str] = set()
+    for riga in righe:
+        url = str(riga.get("url") or "")
+        if not url or e_aggregatore(url, tabella):
+            continue
+        chiave = impronte.normalizza_url(url) or url
+        if chiave in viste:
+            continue
+        viste.add(chiave)
+        prova = riga.get("impronta_pagina")
+        prodotti.append(Candidato(
+            url=url,
+            # Con la prova della scheda il metodo e' quello: vale il punteggio
+            # «provenienza strutturata», come se la scheda fosse stata letta in
+            # questo giro. Senza prova e' un link grezzo del backfill.
+            metodo="oe_scheda" if prova else "link_strutturato",
+            origine=str(riga.get("origine") or _origine_link(url, tabella)),
+            tipo_dichiarato=str(riga.get("tipo") or ""),
+            ancora=str(riga.get("etichetta") or ""),
+            prova=str(prova) if prova else "",
+            url_prova=str(riga.get("url_prova") or ""),
+        ))
+    return tuple(prodotti)
+
+
 def _origine_da_metodo(url: str, metodo: str, tabella: Tabella) -> str:
     """Valore di `bando_link.origine` (CHECK della 02), dal metodo o dal dominio.
 
@@ -1160,9 +1215,15 @@ async def risolvi(bando: Mapping[str, Any], ambiente: Ambiente) -> Esito:
             ambiente.contatori.errori += 1
             logger.info("[resolver] scheda OE non letta per {}: {}", contesto.bando_id, e)
 
-    # Passo 1 — link strutturati e scheda OE.
+    # Passo 1 — link strutturati, scheda OE e cio' che un giro precedente ha
+    # gia' registrato in `bando_link` (senza questi ultimi il lotto delle
+    # schede non alimenta niente: vedi `candidati_da_link_registrati`).
     candidati = list(candidati_strutturati(bando, tabella=ambiente.tabella))
     candidati.extend(candidati_da_scheda(scheda, tabella=ambiente.tabella))
+    candidati.extend(candidati_da_link_registrati(
+        ambiente.link_registrati.get(bando.get("id")) or (),
+        tabella=ambiente.tabella,
+    ))
     candidati.extend(_candidati_sedia(contesto, ambiente))
     valutati = await _valuta(candidati, contesto, ambiente)
     migliore = _migliore(valutati)
@@ -1689,12 +1750,28 @@ async def run(
             )
         if bandi:
             ambiente.pubblicati = ambiente.pubblicati or db.select_pubblicati_per_gemelli()
+            # Una lettura sola di `bando_link` per il lotto, non una per bando:
+            # serve a due cose insieme, e la seconda e' quella che tiene in
+            # piedi la catena.
+            righe_link = db.select_link_da_verificare(
+                bando_ids=[b.get("id") for b in bandi])
             # Regola A29: la scheda OE si riscarica solo alla scoperta o su un
             # cambio dichiarato. Chi l'ha gia' letta si riconosce dalla prova
-            # in `bando_link`, e si chiede una volta per lotto, non per bando.
+            # in `bando_link`.
             ambiente.schede_lette = ambiente.schede_lette or schede_gia_lette(
-                [b.get("id") for b in bandi]
+                [b.get("id") for b in bandi], righe=righe_link,
             )
+            # E i link di quelle schede sono i candidati del passo 1. Senza
+            # questa riga il lotto `oe-dettaglio` riempiva una tabella che
+            # nessuno rileggeva: la regola A29 vieta di riscaricare la scheda,
+            # quindi `candidati_da_scheda` tornava vuoto, il `link_bando` di
+            # quei bandi e' l'URL dell'aggregatore e veniva scartato, e 1 724
+            # bandi scendevano fino alla ricerca a pagamento.
+            if not ambiente.link_registrati:
+                per_bando: dict[Any, list[Mapping[str, Any]]] = {}
+                for riga in righe_link:
+                    per_bando.setdefault(riga.get("bando_id"), []).append(riga)
+                ambiente.link_registrati = per_bando
     except Exception as e:                               # pragma: no cover - difesa
         contatori.errori += 1
         logger.exception("[resolver] selezione dei candidati fallita: {}", e)

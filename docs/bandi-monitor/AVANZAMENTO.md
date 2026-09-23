@@ -164,7 +164,7 @@ scattare mai. Ora le tre scorrono a pagine e le letture per lista di id spezzano
 | 1 | `domini --import --dry-run` poi `domini --import --attivo` | riempie `dominio_ufficiale` con gli host delle fonti e il seed (misurato il 23/09: 109 domini dalle 121 fonti). Con `--enti <file.xlsx>` aggiunge anche l'elenco IndicePA, facoltativo | righe in `dominio_ufficiale` > 52 |
 | 2 | `oe-dettaglio --backlog --dry-run --limit 5` poi `oe-dettaglio --backlog --attivo --limit 800`, a blocchi | scarica le schede dell'aggregatore e ne estrae i link all'ente. **`--backlog` è obbligatorio**: sceglie i 1702 pubblicati, mentre senza il flag si guarda solo la coda dei nuovi (una manciata). **`--attivo` è obbligatorio**: il marcatore «scheda già letta» è la riga di `bando_link`, e in ombra non viene scritta — il giro scarica lo stesso (e consuma `OE_SCHEDE_GIORNO`), `saltate` resta 0 e il lancio dopo riparte dalle stesse prime N schede. Senza `--forza` e in attivo il lotto avanza da solo; in ombra, o con `--forza` (che toglie il «già letta»), i blocchi si lanciano con `--offset 0`, `800`, `1600` | righe nuove in `bando_link` con `origine='aggregatore'` |
 | 3 | `link-verifica --dry-run --limit 20` poi senza, a blocchi | verifica che quei link rispondano 2xx e li rende pubblicabili. Il `--limit` conta le verifiche: le righe già verificate oggi vanno in `saltate`. In ombra e con `--dry-run` non si scrive nulla, quindi i blocchi si scorrono con `--offset`. Un link che **non risponde** riceve `esito_http = 0` (il marcatore «guardato, irraggiungibile»): serve a non ripresentarlo per sempre. Ma se quel link era **già pubblicabile** non si tocca e va in `rimandati`: «non ho ricevuto risposta» è una notizia sulla nostra rete, non una prova sul link, e con la rete giù un solo giro avrebbe ritirato dalle schede tutti i link verificati fino a domani | `bando_link` con `esito_http` valorizzato; `rimandati` alto = problema di rete nostro, non dei link |
-| 4 | `risolvi-fonte --backlog --dry-run --limit 20` poi senza, a blocchi | cerca la fonte ufficiale dei bandi già pubblicati. Il `--limit` conta i bandi da risolvere: quelli il cui ricontrollo non è ancora dovuto vanno in `saltate` e non ripagano la ricerca. Con `--forza` serve `--offset` | `bando.fonte_ufficiale_stato='trovata'` cresce |
+| 4 | `risolvi-fonte --backlog --dry-run --limit 20` poi `--attivo --lotto L5`, tutto in un colpo | cerca la fonte ufficiale dei bandi già pubblicati. Il `--limit` conta i bandi da risolvere: quelli il cui ricontrollo non è ancora dovuto vanno in `saltate` e non ripagano la ricerca. Con `--forza` serve `--offset`. **Va lanciato dopo il passo 2**, perché il passo 1 della cascata legge i link che `oe-dettaglio` ha registrato in `bando_link`: senza quelli i bandi dell'aggregatore scendono fino alla ricerca a pagamento. **Senza `--lotto` valgono i tetti giornalieri** (50 ricerche, 120 crediti, 1,5 dollari) e il giro si ferma dopo poche decine di bandi; con `--lotto L5` valgono quelli del backfill (8 000 crediti, 60 dollari) e la spesa resta fuori dal contatore mensile del regime | `bando.fonte_ufficiale_stato='trovata'` cresce |
 | 5 | `monitor --ombra --limit 50` poi a regime | primo controllo: semina le impronte delle pagine. `--senza-rete` riferisce ora `controllati: 0, saltati: N, motivo_saltati: senza rete`: è una ricognizione della coda, non un giro. Senza `ANTHROPIC_API_KEY` il giro esce con `saltato: scarico_non_configurato` (exit 5) invece di dirsi riuscito | `bando_controllo.ultimo_controllo_at` valorizzato |
 | 6 | `report-ombra --campione 100` | la misura da firmare prima di attivare | precisione ≥ 95% su ≥ 100 eventi |
 | 7 | `fondi-doppioni --dry-run` | propone le fusioni; applica solo i criteri esatti. Niente `--offset`: legge il corpus intero e il `--limit` è il numero di fusioni applicate. **In `--dry-run`, in ombra e con `--limit 0` il report è completo.** Con `--attivo --limit N` (N > 0) il confronto si **ferma** quando le N fusioni sono fatte, perché è quadratico (misurato: 176 s contro 19 s su 1 200 righe): il report di quel lancio è parziale, lo dice l'allarme «confronto dei gemelli fermato dal budget» e il numero di righe non guardate è `non_esaminati`. Per il report completo si lancia in `--dry-run` | elenco coppie e master proposto; `non_esaminati: 0` = report completo |
@@ -213,6 +213,20 @@ Se un evento è stato annotato per sbaglio, l'unica via di rientro è
 
 Un giro con `applicati: 0` e `rifiutati: N` **non** è un giro riuscito: è un blocco fermo. Un giro
 con `non_tentati: N` dice che manca una migrazione, e non ha rovinato niente.
+
+### La giuntura fra i due lotti: corretta (23/09/2026)
+
+`oe-dettaglio` scarica le schede dell'aggregatore e scrive gli href all'ente in `bando_link` con la
+prova `sha256#offset`. Poi la regola A29 vieta di riscaricare una scheda già letta, e fa bene. Ma
+**nessuno rileggeva quella tabella**: il passo 1 della cascata guardava `raw_data`, `link_bando` e i
+link nel testo, e per i bandi dell'aggregatore `link_bando` è l'URL di Obiettivo Europa, che viene
+scartato. Quindi i 3 887 link estratti su 1 724 bandi erano invisibili e ogni bando scendeva fino
+alla ricerca a pagamento: da tremila a settemila crediti Firecrawl per un lavoro già fatto e gratis.
+
+Ora il giro legge `bando_link` una volta per lotto e ne ricava i candidati del passo 1. La stessa
+lettura serve già a riconoscere le schede lette, quindi non costa una richiesta in più. Le righe non
+devono essere `pubblicabile`: quella colonna la scrive `link-verifica`, e il resolver rivaluta la
+pagina da sé.
 
 ## Punto aperto: `bando_controllo.volatilita` si scrive e non si legge
 
