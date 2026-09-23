@@ -272,6 +272,42 @@ Conseguenza da sapere leggendo il DB: la colonna oggi codifica «l'ultimo giro h
 una memoria. Per farla funzionare davvero serve una migrazione che aggiunga `controlli_senza_diff`;
 non è stata scritta.
 
+## F2: il frontend legge dalla vista (23/09/2026)
+
+Il secondo rilascio del frontend è scritto e verificato, e **non è ancora acceso**: il deploy e
+l'accensione sono due gesti separati. Si accende con una variabile nell'unit del frontend:
+
+```
+BANDI_FONTE_LETTURA=bando_pubblico
+```
+
+Per tornare indietro si rimette a `bando`, o si toglie. La variabile vale a runtime, quindi non
+serve ricostruire: basta riavviare il servizio del frontend.
+
+**Cosa cambia per chi legge.** La scheda mostra la fonte ufficiale con host, tipo e data di verifica;
+il pulsante porta alla pagina dell'ente invece di non esserci; gli allegati arrivano dalle righe
+verificate di `bando_link`; compare il box «Aggiornamenti» con gli eventi datati e il link alla
+pagina che li prova; gli slug vecchi e i doppioni rispondono 301 invece di 404. L'API riempie i
+quattro campi della 1.1 (`official_source`, `opens_on_verified`, `deadline_verified`,
+`last_checked_at`) che prima erano `null` scritti a mano.
+
+**Cosa cambia nei numeri: niente.** I conteggi per stato coincidono esattamente fra tabella e vista
+(aperti 1 283, chiusi 668, in apertura 183, totale 2 134, misurati il 23/09). La vista non cambia
+quello che si vede: rende il calcolo autorevole e pronto per i due stati nuovi, per l'ora di
+scadenza e per i flag di verifica, che una ricostruzione lato client non può conoscere.
+
+**Il `lastmod` della sitemap cambia significato**, ed è il punto da sapere prima di accendere. Sulla
+tabella era `updated_at`, che l'upsert dello scrape riscrive a ogni giro anche quando per chi legge
+non è cambiato niente; sulla vista è `ultimo_cambiamento_at`, che si muove solo per una modifica
+pubblica. Sullo stesso bando la prima diceva 23 settembre e la seconda 27 agosto. Le date nella
+sitemap **andranno indietro**: è la correzione di un difetto, non una regressione, e va atteso.
+
+**Verificato sul server compilato contro i dati di produzione**: una scheda risponde in 0,66 s, uno
+slug inesistente dà 404, l'elenco e i suoi filtri 200, l'API 200 con `api_version: 1.1`. Su ogni
+filtro di stato tutte le card portano il badge di quello stato, quindi filtro e badge non possono
+divergere. Nella pagina non compare nessun link all'aggregatore. I tempi delle query stanno fra 58 e
+172 ms contro i 3 000 del timeout della chiave pubblica.
+
 ## Regola operativa: dopo ogni migrazione, riavviare il sender
 
 Il codice legge lo schema del database **una sola volta all'avvio del processo**

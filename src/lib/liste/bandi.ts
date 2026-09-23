@@ -92,7 +92,7 @@ export async function caricaBandi(valori: Valori, pagina: number): Promise<Pagin
   // qui era un intreccio di or/and che faceva finire fra i "chiusi" anche i
   // sospesi e i revocati con la scadenza passata.
   const stati = statiRichiesti(valori.stato, BANDI_STATI_ESTESI);
-  condizioni.push(...condizioneStatoBando(stati, todayRomeISO()));
+  condizioni.push(...condizioneStatoBando(stati, todayRomeISO(), FONTE_BANDI.colonnaStato));
 
   const imin = soloInteri(valori.imin)[0];
   const imax = soloInteri(valori.imax)[0];
@@ -103,7 +103,13 @@ export async function caricaBandi(valori: Valori, pagina: number): Promise<Pagin
   if (scadDa) condizioni.push(`data_scadenza.gte.${scadDa}`);
   if (scadA) condizioni.push(`data_scadenza.lte.${scadA}`);
 
-  const select = embeds.length ? `${BANDO_SELECT_LIST},${embeds.join(',')}` : BANDO_SELECT_LIST;
+  // Lo stato calcolato entra nella select solo se la fonte ce l'ha: la card lo
+  // preferisce alla colonna, e chiederlo alla tabella darebbe 42703 su tutta la
+  // lista.
+  const colonne = FONTE_BANDI.colonnaStato === null
+    ? BANDO_SELECT_LIST
+    : `${BANDO_SELECT_LIST},${FONTE_BANDI.colonnaStato}`;
+  const select = embeds.length ? `${colonne},${embeds.join(',')}` : colonne;
   // Tabella e predicato di pubblicazione da FONTE_BANDI (sulla tabella la RLS
   // li ripete gia', ma dalla vista il nome cambia e le operazioni spariscono).
   let query = supabaseBandi.from(FONTE_BANDI.tabella).select(select, { count: 'exact' });

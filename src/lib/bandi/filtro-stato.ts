@@ -69,8 +69,20 @@ function valore(v: string): string {
  *    passata, altrimenti la lista mostrerebbe come aperti bandi già scaduti che
  *    il cron non ha ancora allineato.
  */
-export function condizioneStatoBando(stati: readonly StatoBando[], oggi: string): string[] {
+export function condizioneStatoBando(
+  stati: readonly StatoBando[],
+  oggi: string,
+  colonnaStato: string | null = null,
+): string[] {
   if (stati.length === 0) return [];
+  // Quando la fonte calcola lo stato (la vista, `stato_effettivo`) tutta la
+  // ricostruzione qui sotto diventa una condizione sola — ed e' anche piu'
+  // giusta: la vista conosce l'ora di scadenza e sa se la data di apertura ha
+  // una prova, cose che una ricostruzione su `stato_bando` e `data_scadenza`
+  // non puo' sapere. Il filtro smette quindi di poter divergere dal badge.
+  if (colonnaStato !== null) {
+    return [`${colonnaStato}.in.(${stati.map(valore).join(',')})`];
+  }
   const rami: string[] = [];
   for (const stato of stati) {
     if (stato === 'chiuso') {

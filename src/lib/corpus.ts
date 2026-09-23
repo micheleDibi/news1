@@ -275,6 +275,8 @@ interface RigaBando {
   stato_bando: string | null;
   data_scadenza: string | null;
   data_pubblicazione: string | null;
+  /** Solo dalla vista: lo stato che il DB calcola alla lettura. */
+  stato_effettivo?: string | null;
 }
 
 /** Slug di una voce di catalogo: per le regioni vince il registro statico. */
@@ -293,9 +295,14 @@ async function costruisciBandi(): Promise<Corpus> {
       // Tabella e predicato da FONTE_BANDI: e' l'unico posto dove sta scritto
       // che cosa vuol dire "pubblicato" (prima era ricopiato qui a mano). Sulla
       // vista le operazioni sono zero, perche' il predicato ce l'ha dentro.
+      // Lo stato calcolato si chiede solo se la fonte ce l'ha: sulla tabella
+      // `stato_effettivo` non esiste e la richiesta fallirebbe con 42703,
+      // spegnendo tutte le pagine filtro insieme.
+      const colonne = 'id, programma_id, tipologia_bando_id, stato_bando, data_scadenza, data_pubblicazione'
+        + (FONTE_BANDI.colonnaStato === null ? '' : `, ${FONTE_BANDI.colonnaStato}`);
       let query = supabaseBandi
         .from(FONTE_BANDI.tabella)
-        .select('id, programma_id, tipologia_bando_id, stato_bando, data_scadenza, data_pubblicazione');
+        .select(colonne);
       for (const [colonna, operatore, valore] of FONTE_BANDI.operazioni) {
         query = query.filter(colonna, operatore, valore);
       }
@@ -341,11 +348,15 @@ async function costruisciBandi(): Promise<Corpus> {
   let aperti = 0;
 
   for (const b of righe) {
+    // Lo stato calcolato dal DB quando c'e', altrimenti ricostruito qui.
     // statoEffettivo (cinque stati) e non piu' effectiveStatoBando: un bando
     // sospeso o revocato non e' aperto, e con la scadenza passata non e'
-    // nemmeno chiuso (A3). Sulle tre colonne che il DB ammette oggi il conteggio
-    // non cambia; cambia il giorno in cui la migrazione 06 entra in vigore.
-    const aperto = statoEffettivo({ stato: b.stato_bando, data_scadenza: b.data_scadenza }) === 'aperto';
+    // nemmeno chiuso (A3). Il conteggio deve usare la stessa sorgente del
+    // filtro della lista, altrimenti una pagina filtro dichiara un numero di
+    // aperti che la lista non mostra.
+    const aperto = (typeof b.stato_effettivo === 'string' && b.stato_effettivo !== ''
+      ? b.stato_effettivo
+      : statoEffettivo({ stato: b.stato_bando, data_scadenza: b.data_scadenza })) === 'aperto';
     if (aperto) aperti++;
     const data = b.data_pubblicazione;
 

@@ -70,6 +70,20 @@ export interface FonteBandi {
    * risorsa che risponde 500.
    */
   readonly colonneV11: readonly string[];
+  /**
+   * La colonna con lo stato **effettivo**, quando la fonte lo calcola lei.
+   *
+   * Sulla vista e' `stato_effettivo`: una condizione sola, esatta per
+   * costruzione, e che sa cose che una ricostruzione lato client non puo'
+   * sapere — l'ora di scadenza e se la data di apertura ha una prova.
+   *
+   * Sulla tabella e' `null`, e chi filtra deve ricostruire lo stato con un
+   * intreccio di `or`/`and` su `stato_bando` e `data_scadenza`
+   * (`filtro-stato.ts`). Quella ricostruzione e' corretta ma piu' grossolana, e
+   * finche' esiste puo' divergere dal badge: e' il motivo per cui la vista e'
+   * la destinazione e non un'alternativa.
+   */
+  readonly colonnaStato: string | null;
 }
 
 export const FONTI_BANDI = {
@@ -82,6 +96,7 @@ export const FONTI_BANDI = {
     selectFreschezza: 'updated_at',
     colonnaFreschezza: 'updated_at',
     colonneV11: [],
+    colonnaStato: null,
   },
   bando_pubblico: {
     tabella: 'bando_pubblico',
@@ -94,6 +109,7 @@ export const FONTI_BANDI = {
       'data_apertura_verificata', 'data_scadenza_verificata',
       'ora_scadenza', 'ultimo_controllo_at',
     ],
+    colonnaStato: 'stato_effettivo',
   },
 } as const satisfies Record<string, FonteBandi>;
 

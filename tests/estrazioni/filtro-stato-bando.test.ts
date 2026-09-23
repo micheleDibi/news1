@@ -92,3 +92,60 @@ test('più stati: un ramo ciascuno dentro un solo or()', () => {
 test('nessuno stato richiesto: nessuna condizione', () => {
   assert.deepEqual(condizioneStatoBando([], OGGI), []);
 });
+
+// ---------------------------------------------------------------------------
+// F2: quando la fonte calcola lo stato, la ricostruzione non serve piu'
+// ---------------------------------------------------------------------------
+
+test('sulla vista il filtro è una condizione sola', () => {
+  // Tutta la ricostruzione di sopra esiste perché la tabella non ha lo stato
+  // effettivo: va ricomposto da `stato_bando` e `data_scadenza` con un
+  // intreccio di or/and. La vista lo calcola lei, quindi il filtro diventa una
+  // riga — e diventa anche più giusto, perché la vista conosce l'ora di
+  // scadenza e sa se la data di apertura ha una prova.
+  assert.deepEqual(
+    condizioneStatoBando(['aperto'], OGGI, 'stato_effettivo'),
+    ['stato_effettivo.in.(aperto)'],
+  );
+  // Nessuna condizione sulle date: la vista le ha già applicate. Se ne
+  // restasse una, un bando scaduto ma non ancora allineato sparirebbe dalla
+  // lista pur avendo il badge «Chiuso».
+  const [condizione] = condizioneStatoBando(['aperto'], OGGI, 'stato_effettivo');
+  assert.ok(!condizione.includes('data_scadenza'));
+  assert.ok(!condizione.includes(OGGI));
+});
+
+test('sulla vista i valori con spazi restano fra apici', () => {
+  assert.deepEqual(
+    condizioneStatoBando(['in apertura prossimamente'], OGGI, 'stato_effettivo'),
+    ['stato_effettivo.in.("in apertura prossimamente")'],
+  );
+});
+
+test('sulla vista i cinque stati stanno in un solo `in`', () => {
+  const [condizione] = condizioneStatoBando(
+    ['aperto', 'chiuso', 'sospeso'], OGGI, 'stato_effettivo',
+  );
+  assert.equal(condizione, 'stato_effettivo.in.(aperto,chiuso,sospeso)');
+  // In particolare `chiuso` non porta più l'esclusione di sospeso e revocato:
+  // sulla vista un sospeso non è chiuso per costruzione.
+  assert.ok(!condizione.includes('not.in'));
+});
+
+test('senza colonna calcolata la ricostruzione resta quella di prima', () => {
+  // Il ripiego deve continuare a funzionare: tornare indietro sul flag è il
+  // modo di rientrare da un guasto, e non deve cambiare comportamento.
+  const conColonna = condizioneStatoBando(['chiuso'], OGGI, 'stato_effettivo');
+  const senza = condizioneStatoBando(['chiuso'], OGGI, null);
+  assert.notDeepEqual(conColonna, senza);
+  assert.ok(senza[0].includes('data_scadenza.lt.' + OGGI));
+  assert.ok(senza[0].includes('not.in.(sospeso,revocato)'));
+  // E il default del parametro è la ricostruzione: chi non passa nulla si
+  // comporta come prima di F2.
+  assert.deepEqual(condizioneStatoBando(['chiuso'], OGGI), senza);
+});
+
+test('nessuno stato richiesto: nessuna condizione, con o senza colonna', () => {
+  assert.deepEqual(condizioneStatoBando([], OGGI, 'stato_effettivo'), []);
+  assert.deepEqual(condizioneStatoBando([], OGGI, null), []);
+});
