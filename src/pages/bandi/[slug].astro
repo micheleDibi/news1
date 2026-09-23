@@ -4,6 +4,7 @@ import { format, parseISO, isValid } from 'date-fns';
 import { it } from 'date-fns/locale';
 import {
   supabaseBandi, loadCatalogo, resolveBandoRelations, BANDO_SELECT_DETTAGLIO, FONTE_BANDI,
+  F2_DISPONIBILE, caricaLinkEEventi, risolviSlugStorico,
   type Bando, type BandoDetail,
 } from '../../lib/supabase-bandi';
 import { statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
@@ -11,6 +12,7 @@ import { corpoBando } from '../../lib/bandi/contenuto';
 import { soloPubblicabili } from '../../lib/bandi/domini';
 import { badgeStato, partecipazioneAperta, sottotestoStato, testoFonteUfficiale } from '../../lib/bandi/testi-stato';
 import { sceltaCta } from '../../lib/bandi/cta';
+import { statoDaEventi, vociAggiornamento } from '../../lib/bandi/aggiornamenti';
 import { jsonLdBando } from '../../lib/bandi/jsonld';
 import { esitoSlug, RITENTA_DOPO_SECONDI, type Lettura } from '../../lib/bandi/slug-storico';
 import BandiExpertCta from '../../components/BandiExpertCta.astro';
@@ -49,11 +51,15 @@ try {
   lettura = { stato: 'errore' };
 }
 
-// La mappa degli slug storici (`bando_slug_storico`, `bando_fusione`) nasce con
-// le migrazioni 02-05: in questo rilascio non esiste ancora, quindi la lettura
-// non si fa e uno slug ignoto resta 404 — passando pero' dalla stessa funzione
-// che in F2 emettera' 301 e 410.
-const esito = esitoSlug({ scheda: lettura, storico: { stato: 'non_eseguita' } });
+// La mappa degli slug storici (`bando_slug_storico`, `bando_fusione`) si legge
+// solo quando lo slug richiesto non ha dato una scheda: e' il caso raro, e
+// pagarla su ogni pagina sarebbe due richieste in piu' per niente. Sulla
+// tabella `bando` la lettura non si fa affatto (`risolviSlugStorico` risponde
+// `non_eseguita`) e uno slug ignoto resta 404, come in F1.
+const storico = lettura.stato === 'ok' && lettura.riga === null
+  ? await risolviSlugStorico(String(slug))
+  : { stato: 'non_eseguita' as const };
+const esito = esitoSlug({ scheda: lettura, storico });
 
 if (esito.stato === 503) {
   // Mai `noindex` su un guasto temporaneo: sarebbe l'unico modo di trasformare
@@ -115,22 +121,68 @@ const formatImporto = (n: number | null): string => {
 // poter cadere a cavallo della mezzanotte l'uno rispetto all'altro.
 const oggi = todayRomeISO();
 
-const stato = statoEffettivo({ stato: bando.stato_bando, data_scadenza: bando.data_scadenza });
+/**
+ * Le colonne che esistono solo sulla vista, lette senza pretendere che ci
+ * siano. La select le chiede solo dalla fonte giusta (`BANDO_SELECT_DETTAGLIO`),
+ * quindi qui non si sa a compile time se il campo c'e': un accesso diretto
+ * sarebbe un errore di tipo, e un cast su tutto il bando perderebbe i tipi
+ * delle colonne vere.
+ */
+const colonne = bando as unknown as Record<string, unknown>;
+const campo = (nome: string): unknown => colonne[nome];
+const campoTesto = (nome: string): string | null => {
+  const valore = colonne[nome];
+  return typeof valore === 'string' && valore !== '' ? valore : null;
+};
+
+// I link e gli eventi del bando: due letture sole, e solo se la fonte le ha.
+const { link: linkBando, eventi } = await caricaLinkEEventi(bando.id);
+const aggiornamenti = vociAggiornamento(eventi);
+
+// Lo stato: dalla vista arriva gia' calcolato (`stato_effettivo`), altrimenti si
+// calcola qui dalla colonna. In piu', finche' la migrazione 06 non estende il
+// CHECK a cinque valori, una sospensione o una revoca verificata resta
+// `applicato=false`: la colonna dice «aperto» e la verita' sta nell'evento.
+const statoDalDb = (bando as unknown as Record<string, unknown>).stato_effettivo;
+const statoRegistrato = typeof statoDalDb === 'string' && statoDalDb !== ''
+  ? (statoDalDb as typeof stato)
+  : statoEffettivo({
+      stato: bando.stato_bando,
+      data_scadenza: bando.data_scadenza,
+      data_apertura: bando.data_apertura,
+      data_apertura_verificata: campo('data_apertura_verificata') === true,
+      ora_apertura: campoTesto('ora_apertura'),
+      ora_scadenza: campoTesto('ora_scadenza'),
+    });
+const stato = statoDaEventi(eventi) ?? statoRegistrato;
 const badge = badgeStato(stato);
 const sottotesto = sottotestoStato({
   stato,
   data_apertura: bando.data_apertura,
+  data_apertura_verificata: campo('data_apertura_verificata') === true,
   data_scadenza: bando.data_scadenza,
+  ora_scadenza: campoTesto('ora_scadenza'),
+  data_scadenza_verificata: campo('data_scadenza_verificata') === true,
   oggi,
 });
 // Su un sospeso o un revocato spariscono CTA e conto alla rovescia: invitare a
 // candidarsi a un bando revocato e' peggio che non dire niente.
 const partecipabile = partecipazioneAperta(stato);
 
-// F1: la fonte ufficiale non ha ancora colonne (le crea la migrazione 01), e
-// `ultimo_controllo_at` vive in `bando_controllo` (migrazione 02). La riga dice
-// quindi «Fonte ufficiale in verifica», che e' la verita' di oggi.
-const rigaFonte = testoFonteUfficiale(null, null);
+// La fonte ufficiale e la data dell'ultimo controllo: le porta la vista. Sulla
+// tabella quelle colonne non ci sono e la riga resta «Fonte ufficiale in
+// verifica», che e' la verita' di quella configurazione.
+const fonteUfficiale = F2_DISPONIBILE && campoTesto('fonte_ufficiale_stato') !== null
+  ? {
+      stato: campoTesto('fonte_ufficiale_stato') as 'trovata' | 'in_verifica' | 'non_trovata',
+      url: campoTesto('fonte_ufficiale_url'),
+      host: campoTesto('fonte_ufficiale_host'),
+      tipo: campoTesto('fonte_ufficiale_tipo') as 'ente' | 'portale_pubblico' | null,
+      e_atto: campo('fonte_ufficiale_e_atto') === true,
+      verificata_il: campoTesto('fonte_ufficiale_verificata_at'),
+    }
+  : null;
+const rigaFonte = testoFonteUfficiale(fonteUfficiale, campoTesto('ultimo_controllo_at'));
 
 const daysToDeadline = (() => {
   // Giorni rispetto a oggi-Europe/Rome, stesso ancoraggio del badge: col fuso
@@ -158,18 +210,30 @@ alias.codici_ateco = bando.codici_ateco_resolved.map(c =>
   c.descrizione ? `${c.codice} — ${c.descrizione}` : c.codice
 );
 
-// CTA: in F1 l'unico ingresso e' `link_candidatura` con source='extracted'.
-// `link_bando` non e' piu' nemmeno selezionato: era l'URL sull'aggregatore, e
-// il ripiego su di lui ci mandava 94 CTA su 230.
+// CTA, in ordine di affidabilita': il modulo di candidatura trovato sulla
+// pagina ufficiale, poi la pagina ufficiale stessa, poi il portale pubblico.
+// `link_bando` non e' nemmeno selezionato: era l'URL sull'aggregatore, e il
+// ripiego su di lui ci mandava 94 CTA su 230 verso un sito terzo.
 const cta = partecipabile
   ? sceltaCta({
+      link: linkBando,
+      fonteUfficiale,
       candidaturaEstratta: bando.link_candidatura_source === 'extracted' ? bando.link_candidatura : null,
     })
   : null;
 
-// Allegati: la stessa cintura di ogni altro URL in uscita. In F1 la fonte resta
-// la colonna `bando.allegati`; da F2 arrivano da `bando_link` tipo 'allegato'.
-const allegati = soloPubblicabili(bando.allegati, a => a?.url);
+// Allegati: la stessa cintura di ogni altro URL in uscita. Si preferiscono le
+// righe di `bando_link`, che hanno risposto 2xx all'ultimo controllo e portano
+// la prova di essere state trovate nella pagina di riferimento; la colonna
+// `bando.allegati` resta il ripiego per le schede che il resolver non ha ancora
+// toccato.
+const allegatiDaLink = linkBando
+  .filter(l => l.tipo === 'allegato')
+  .map(l => ({ url: l.url, label: l.etichetta ?? null, tipo: 'altro' }));
+const allegati = soloPubblicabili(
+  allegatiDaLink.length > 0 ? allegatiDaLink : bando.allegati,
+  a => a?.url,
+);
 
 // Tipo allegato → icona/colore
 const allegatoTipoLabel = (tipo: string): string => {
@@ -244,7 +308,10 @@ const jsonLd = jsonLdBando({
   beneficiari: bando.beneficiari_nomi,
   tematiche: bando.tematica,
   importoTotaleEur: bando.importo_totale_eur,
-  fonteUfficiale: null,
+  // `sameAs` esce solo con una fonte `trovata`: prima era `link_bando`, cioe'
+  // l'URL sull'aggregatore, e diceva a Google che la pagina ufficiale del
+  // bando era su un sito terzo.
+  fonteUfficiale,
 });
 
 const breadcrumbStructuredData = generateBreadcrumbStructuredData({
@@ -345,6 +412,46 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData({
                 {cta.etichetta}
                 <svg class="inline w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
               </a>
+            </div>
+          )}
+
+          {/* Aggiornamenti: gli eventi datati che la fonte ufficiale ha
+              pubblicato dopo la nostra scheda. La frase e' templata dal tipo
+              dell'evento, il link punta alla pagina che lo prova. Sta sopra gli
+              allegati di proposito: una proroga o una revoca vale piu' di un
+              PDF. */}
+          {aggiornamenti.length > 0 && (
+            <div class="bg-amber-50 rounded-xl shadow-sm border border-amber-200 p-5">
+              <h3 class="text-sm font-semibold text-amber-800 uppercase tracking-wider mb-3">
+                Aggiornamenti
+              </h3>
+              <ul class="space-y-3">
+                {aggiornamenti.map(voce => (
+                  <li class="text-sm text-gray-800">
+                    <span class="font-medium">{voce.testo}</span>
+                    {voce.quando && (
+                      <span class="text-gray-500"> · {voce.quando}</span>
+                    )}
+                    {voce.url && voce.host && (
+                      <>
+                        {' '}
+                        <a
+                          href={voce.url}
+                          target="_blank"
+                          rel="noopener noreferrer nofollow"
+                          class="text-blue-700 hover:underline break-words"
+                        >
+                          {voce.host}
+                        </a>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <p class="text-xs text-amber-700 mt-3">
+                Le date nel testo sono quelle rilevate alla pubblicazione: fanno
+                fede i riquadri qui sopra e questi aggiornamenti.
+              </p>
             </div>
           )}
 
