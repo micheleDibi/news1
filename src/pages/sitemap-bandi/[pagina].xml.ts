@@ -18,6 +18,23 @@ import {
  * posto solo. Sulla vista `bando_pubblico` sono zero, perche' il predicato ce
  * l'ha dentro: ripetere `stato_processing` darebbe 42703.
  */
+/**
+ * La forma delle righe che la select porta indietro.
+ *
+ * Dichiarata a mano con `.returns<>()` perche' la select e' composta a runtime
+ * (`FONTE_BANDI.selectFreschezza` cambia nome fra la tabella e la vista) e il
+ * parser di tipi di supabase-js pretende una stringa letterale: con
+ * un'interpolazione restituisce `ParserError` e ogni accesso al campo diventa
+ * un errore di compilazione. Il campo si chiama `updated_at` in entrambi i
+ * casi, per via dell'alias.
+ */
+interface RigaSitemapBando {
+  id: number;
+  slug: string | null;
+  updated_at: string | null;
+  data_pubblicazione: string | null;
+}
+
 export async function GET({ params }: { params: { pagina: string } }) {
   try {
     if (!/^[1-9]\d*$/.test(params.pagina)) return rispostaParametroNonValido();
@@ -35,17 +52,14 @@ export async function GET({ params }: { params: { pagina: string } }) {
     if (n > numeroChunk(count ?? 0)) return rispostaChunkInesistente();
 
     const da = (n - 1) * URL_PER_SITEMAP;
-    // `updated_at` resta la colonna del lastmod: `ultimo_cambiamento_at` (§7.5
-    // del piano) nasce con la migrazione 01, che non e' applicata, e chiederla
-    // oggi farebbe fallire l'intera sitemap con un 42703. Il rovescio: dopo
-    // questo giro anche la sitemap segue `FONTE_BANDI`, e `updated_at` non e'
-    // fra le colonne della vista `bando_pubblico` (§13.2, «assenti per
-    // scelta»). Il file non e' ancora pronto per la vista: prima di accendere
-    // `BANDI_FONTE_LETTURA=bando_pubblico` va spostata questa select (e quella
-    // di sitemap-index) su `ultimo_cambiamento_at` — runbook di F2.
+    // La colonna del `lastmod` la nomina la fonte (`FONTE_BANDI.selectFreschezza`):
+    // `updated_at` su `bando`, `ultimo_cambiamento_at` sulla vista, presentato
+    // con lo stesso nome dall'alias di PostgREST. Il blocco e l'indice devono
+    // usare la STESSA colonna, altrimenti due sitemap dichiarano due date
+    // diverse per lo stesso URL.
     let pagina = supabaseBandi
       .from(FONTE_BANDI.tabella)
-      .select('id, slug, updated_at, data_pubblicazione');
+      .select(`id, slug, ${FONTE_BANDI.selectFreschezza}, data_pubblicazione`);
     for (const [colonna, operatore, valore] of FONTE_BANDI.operazioni) {
       pagina = pagina.filter(colonna, operatore, valore);
     }
@@ -53,7 +67,8 @@ export async function GET({ params }: { params: { pagina: string } }) {
       .order('data_pubblicazione', { ascending: false, nullsFirst: false })
       // Tiebreak indispensabile: data_pubblicazione e' NULL sul 92% dei bandi.
       .order('id', { ascending: false })
-      .range(da, da + URL_PER_SITEMAP - 1);
+      .range(da, da + URL_PER_SITEMAP - 1)
+      .returns<RigaSitemapBando[]>();
     if (error) throw error;
 
     const voci = (data ?? [])

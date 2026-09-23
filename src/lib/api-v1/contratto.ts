@@ -406,6 +406,19 @@ export interface PianoQuery<S extends NomeSelect = NomeSelect> {
   db: Db;
   tabella: Tabella;
   select: S;
+  /**
+   * Colonne che dipendono dalla **fonte** e non dalla risorsa, appese alla
+   * select. Serve a una sola cosa oggi: i bandi si possono leggere dalla
+   * tabella `bando` o dalla vista `bando_pubblico`, e la colonna della
+   * freschezza si chiama in modo diverso nelle due
+   * (`FonteBandi.selectFreschezza`). Chiedere quella sbagliata fa rispondere
+   * 42703 a PostgREST, cioe' manda in 500 l'intera risorsa.
+   *
+   * Sta nel piano e non in `colonne.ts` perche' `colonne.ts` e' un modulo puro
+   * e non puo' leggere il flag; il piano lo compone `filtri.ts`, che la fonte
+   * la conosce gia'.
+   */
+  colonneExtra?: string;
   operazioni: readonly Operazione[];
 }
 

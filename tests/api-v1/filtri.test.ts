@@ -155,6 +155,42 @@ test('bandi: il predicato viene da FONTI_BANDI, tabella compresa', () => {
   assert.equal(pianoQuery('articles', contesto({ modo: 'dettaglio', id: 1, fonteBandi: 'bando_pubblico' })).tabella, 'articles');
 });
 
+test('la freschezza arriva dal piano, con il nome giusto per la fonte', () => {
+  // `colonne.ts` e' puro e non puo' leggere il flag, quindi la colonna della
+  // freschezza non sta nella costante `SELECT_BANDO`: la mette il piano. Se
+  // sparisse, il DTO perderebbe `updated_at` e l'API risponderebbe `null` su
+  // ogni `updated_at` senza che nessun test lo noti.
+  const tabella = pianoQuery('bandi', contesto({ modo: 'dettaglio', id: 1 }));
+  assert.equal(tabella.colonneExtra, 'updated_at');
+
+  const vista = pianoQuery('bandi', contesto({ modo: 'dettaglio', id: 1, fonteBandi: 'bando_pubblico' }));
+  assert.equal(vista.colonneExtra, 'updated_at:ultimo_cambiamento_at',
+    'sulla vista serve l\'alias: `updated_at` non esiste e darebbe 42703');
+
+  // Le altre risorse leggono da una tabella sola e la colonna ce l'hanno nella
+  // select: appendere qualcosa sarebbe una colonna chiesta due volte.
+  for (const risorsa of ['articles', 'interpelli', 'selezione-personale'] as const) {
+    assert.equal(pianoQuery(risorsa, contesto({ modo: 'dettaglio', id: 1 })).colonneExtra, undefined, risorsa);
+  }
+});
+
+test('updated_since filtra sulla colonna nuda, non sull\'alias', () => {
+  // Un alias dentro un `filter` PostgREST non lo accetta. E il significato
+  // cambia: sulla vista si filtra sull'ultima modifica PUBBLICA, non
+  // sull'ultimo passaggio dello scraper, che riscriveva migliaia di righe per
+  // giro e rendeva `updated_since` inservibile.
+  const query = 'updated_since=2026-09-01T00:00:00Z';
+  const sullaTabella = pianoQuery('bandi', contesto({ filtri: filtri('bandi', query) }));
+  assert.equal(filtroOp(sullaTabella.operazioni, 'updated_at').length, 1);
+
+  const sullaVista = pianoQuery('bandi', contesto({
+    filtri: filtri('bandi', query), fonteBandi: 'bando_pubblico',
+  }));
+  assert.deepEqual(filtroOp(sullaVista.operazioni, 'updated_at'), [],
+    'sulla vista `updated_at` non esiste: filtrarci darebbe 42703');
+  assert.equal(filtroOp(sullaVista.operazioni, 'ultimo_cambiamento_at').length, 1);
+});
+
 test('builder di valori', () => {
   assert.equal(listaInPg(['Lazio']), '("Lazio")');
   assert.equal(listaInPg(['Lazio")']), '("Lazio\\")")');

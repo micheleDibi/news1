@@ -265,22 +265,48 @@ export const BANDO_SELECT_LIST = [
 ].join(', ');
 
 /**
- * Colonne SELECT per la scheda di dettaglio, riscritte da zero per il rilascio
- * F1. La `BANDO_SELECT_DETAIL` precedente e' stata rimossa: citava
+ * Colonne SELECT per la scheda di dettaglio.
+ *
+ * Riscritta da zero per F1: la `BANDO_SELECT_DETAIL` precedente citava
  * `fonte_id, hash_bando, tipo_link, confidence_score, stato_processing,
  * titolo_raw, link_bando`, colonne che la pagina non rende e che sulla vista
  * `bando_pubblico` non esistono — una sola di loro fa rispondere PostgREST
  * 42703 e fallire l'intera richiesta, cioe' ogni scheda del sito.
  *
- * Nessuna colonna nuova: le migrazioni non sono applicate, e chiedere
- * `ultimo_controllo_at` o `fonte_ufficiale_url` oggi darebbe lo stesso 42703.
+ * Le colonne del lavoro v11 (fonte ufficiale, ore, flag di verifica, stato
+ * effettivo, ultimo controllo) si chiedono **solo quando la fonte le ha**:
+ * esistono sulla vista e sulla tabella dopo le migrazioni 01 e 03, ma la
+ * tabella non ha `stato_effettivo` ne' `ultimo_controllo_at`, che la vista
+ * calcola. Chiederle a `bando` darebbe 42703 su ogni scheda, quindi la lista
+ * si compone dalla fonte e non e' una costante.
  */
-export const BANDO_SELECT_DETTAGLIO = [
+const COLONNE_DETTAGLIO_COMUNI = [
   'id', 'slug', 'titolo', 'titolo_breve', 'descrizione_breve', 'contenuto',
   'ente_erogatore', 'area_geografica', 'tematica',
   'data_pubblicazione', 'data_apertura', 'data_scadenza',
   'importo_totale_eur', 'importo_max_per_progetto_eur',
   'link_candidatura', 'link_candidatura_source', 'allegati', 'stato_bando',
   'tipologia_bando_id', 'modalita_erogazione_id', 'programma_id',
-  'created_at', 'updated_at',
+  'created_at',
+];
+
+/**
+ * Cio' che solo la vista sa dire: lo stato calcolato alla lettura, l'ora di
+ * apertura e scadenza, se le date hanno una prova, la fonte ufficiale e quando
+ * l'abbiamo controllata. Sono le colonne che rendono visibile tutto il lavoro
+ * del resolver e del monitor: senza la vista la scheda resta quella di F1.
+ */
+const COLONNE_DETTAGLIO_VISTA = [
+  'stato_effettivo', 'stato_bando_verificato',
+  'ora_apertura', 'ora_scadenza',
+  'data_apertura_verificata', 'data_scadenza_verificata',
+  'fonte_ufficiale_url', 'fonte_ufficiale_host', 'fonte_ufficiale_tipo',
+  'fonte_ufficiale_stato', 'fonte_ufficiale_e_atto', 'fonte_ufficiale_verificata_at',
+  'ultimo_controllo_at',
+];
+
+export const BANDO_SELECT_DETTAGLIO = [
+  ...COLONNE_DETTAGLIO_COMUNI,
+  FONTE_BANDI.selectFreschezza,
+  ...(FONTE_BANDI.tabella === 'bando_pubblico' ? COLONNE_DETTAGLIO_VISTA : []),
 ].join(', ');

@@ -28,11 +28,20 @@ export const SELECT_SELEZIONE =
   'id, slug, codice, titolo, article_title, article_subtitle, figura_ricercata, num_posti, tipo_procedura, ' +
   'data_pubblicazione, data_scadenza, sedi, categorie, settori, enti_riferimento, salary_min, salary_max, updated_at';
 
-/** Relazioni dei bandi in UNA query con embed annidati via junction (l'embed diretto fallisce: PGRST200). */
+/**
+ * Relazioni dei bandi in UNA query con embed annidati via junction (l'embed
+ * diretto fallisce: PGRST200).
+ *
+ * **Senza la colonna della freschezza**: si chiama `updated_at` sulla tabella e
+ * `ultimo_cambiamento_at` sulla vista, quindi la mette il piano
+ * (`PianoQuery.colonneExtra`, da `FonteBandi.selectFreschezza`). Scriverla qui
+ * vorrebbe dire scegliere una delle due fonti a compile time, e questo modulo
+ * e' puro: il flag non lo puo' leggere.
+ */
 export const SELECT_BANDO =
   'id, slug, titolo, titolo_breve, descrizione_breve, ente_erogatore, area_geografica, tematica, ' +
   'data_pubblicazione, data_apertura, data_scadenza, importo_totale_eur, importo_max_per_progetto_eur, ' +
-  'stato_bando, created_at, updated_at, ' +
+  'stato_bando, created_at, ' +
   'tipologia:tipologie_bando(nome), programma:programmi(nome), modalita:modalita_erogazione(nome), ' +
   'bando_regioni(regioni(nome, slug)), bando_settori(settori(nome)), bando_beneficiari(beneficiari(nome)), ' +
   'bando_codici_ateco(codici_ateco(codice, descrizione))';

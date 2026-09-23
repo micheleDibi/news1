@@ -39,19 +39,39 @@ test('fonteBandiDa: default `bando`, nessun ripiego automatico', () => {
   assert.equal(nomeFonteBandiDa(null), 'bando');
 });
 
-test('`bando_pubblico` è dichiarata ma non ancora servibile: il flag si ignora', () => {
-  // La vista espone `ultimo_cambiamento_at`, non `updated_at`, e quattro
-  // select lo chiedono ancora: PostgREST risponderebbe 42703 e manderebbe
-  // in 500, nello stesso istante, la scheda di ogni bando, entrambe le
-  // sitemap e /api/v1/bandi. Finché F2 non le sposta, la variabile non deve
-  // poter spegnere il dominio bandi.
-  assert.ok(FONTI_NON_PRONTE.bando_pubblico, 'la vista deve restare disarmata');
-  assert.equal(fonteBandiDa(' bando_pubblico ').tabella, 'bando');
-  assert.equal(nomeFonteBandiDa('bando_pubblico'), 'bando');
-  // L'instradamento interno resta intatto: quando la guardia cadrà, non c'è
-  // altro da cambiare.
-  assert.equal(fontePerNome('bando_pubblico').tabella, 'bando_pubblico');
-  assert.deepEqual(fontePerNome('bando_pubblico').operazioni, []);
+test('`bando_pubblico` è servibile: il flag la seleziona davvero', () => {
+  // Rovesciato da F2 (23/09/2026). Prima la vista restava disarmata perché
+  // quattro select chiedevano `updated_at`, che sulla vista non esiste:
+  // PostgREST risponde 42703 e manda in 500, nello stesso istante, la scheda
+  // di ogni bando, entrambe le sitemap e /api/v1/bandi. Ora quelle select
+  // passano da `selectFreschezza` e la guardia è vuota.
+  assert.deepEqual(FONTI_NON_PRONTE, {}, 'nessuna fonte deve restare disarmata');
+  assert.equal(fonteBandiDa(' bando_pubblico ').tabella, 'bando_pubblico');
+  assert.equal(nomeFonteBandiDa('bando_pubblico'), 'bando_pubblico');
+  assert.deepEqual(fontePerNome('bando_pubblico').operazioni, [],
+    'sulla vista il predicato è dentro: ripeterlo darebbe 42703');
+});
+
+test('la colonna della freschezza ha un nome per fonte, e due forme per uso', () => {
+  // Due campi perché servono in due posti che vogliono forme diverse: nella
+  // `select` ci va l'alias, nei filtri e negli `order` il nome nudo. Un alias
+  // dentro un `filter` non è ammesso, e confonderli darebbe 42703 proprio sul
+  // filtro `updated_since` dell'API.
+  const tabella = fontePerNome('bando');
+  const vista = fontePerNome('bando_pubblico');
+
+  assert.equal(tabella.colonnaFreschezza, 'updated_at');
+  assert.equal(tabella.selectFreschezza, 'updated_at');
+
+  assert.equal(vista.colonnaFreschezza, 'ultimo_cambiamento_at');
+  assert.equal(vista.selectFreschezza, 'updated_at:ultimo_cambiamento_at',
+    'sulla vista serve l\'alias: i consumatori leggono un campo `updated_at`');
+
+  // La forma dell'alias è `nome_atteso:colonna_vera`, e la parte prima dei due
+  // punti deve coincidere con il nome che la tabella usa: è ciò che permette a
+  // sitemap, scheda e API di non cambiare una riga quando la fonte cambia.
+  assert.equal(vista.selectFreschezza.split(':')[0], tabella.colonnaFreschezza);
+  assert.equal(vista.selectFreschezza.split(':')[1], vista.colonnaFreschezza);
 });
 
 test('override svuotato: la stringa vuota vale `bando` da entrambi i lati', () => {

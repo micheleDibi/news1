@@ -33,6 +33,32 @@ export type OperazionePubblicazione = readonly [string, OperatorePubblicazione, 
 export interface FonteBandi {
   readonly tabella: string;
   readonly operazioni: readonly OperazionePubblicazione[];
+  /**
+   * Il frammento di `select` che porta la **freschezza pubblica**, sempre sotto
+   * il nome `updated_at` qualunque sia la fonte.
+   *
+   * Le due fonti la chiamano in modo diverso e non e' un dettaglio di nomi: su
+   * `bando` la colonna e' `updated_at`, che l'upsert dello scrape riscrive a
+   * ogni giro (3 969 righe toccate in sei minuti, misurate il 22/09) anche
+   * quando niente e' cambiato per chi legge; sulla vista e'
+   * `ultimo_cambiamento_at`, che si muove solo per una modifica pubblica. La
+   * differenza si vede: sullo stesso bando la prima diceva 23 settembre e la
+   * seconda 16 luglio.
+   *
+   * L'alias di PostgREST (`updated_at:ultimo_cambiamento_at`, verificato sulla
+   * vista anche con gli embed) fa arrivare il campo col nome che i consumatori
+   * usano gia', quindi il `lastmod` delle sitemap e l'`updated_since` dell'API
+   * cambiano **significato** senza che una riga a valle cambi forma.
+   *
+   * Due campi e non uno, perche' servono in due posti che vogliono forme
+   * diverse: `selectFreschezza` e' il frammento con l'alias e va nella
+   * `select`; `colonnaFreschezza` e' il nome nudo e va nei **filtri** e negli
+   * ordinamenti, dove un alias non e' ammesso. Confonderli darebbe 42703
+   * proprio sul filtro `updated_since` dell'API.
+   */
+  readonly selectFreschezza: string;
+  /** Il nome nudo della colonna, per filtri e `order`. */
+  readonly colonnaFreschezza: string;
 }
 
 export const FONTI_BANDI = {
@@ -42,10 +68,14 @@ export const FONTI_BANDI = {
       ['stato_processing', 'eq', 'completed'],
       ['slug', 'not.is', 'null'],
     ],
+    selectFreschezza: 'updated_at',
+    colonnaFreschezza: 'updated_at',
   },
   bando_pubblico: {
     tabella: 'bando_pubblico',
     operazioni: [],
+    selectFreschezza: 'updated_at:ultimo_cambiamento_at',
+    colonnaFreschezza: 'ultimo_cambiamento_at',
   },
 } as const satisfies Record<string, FonteBandi>;
 
@@ -56,23 +86,22 @@ export const FONTE_BANDI_PREDEFINITA: NomeFonteBandi = 'bando';
 /**
  * Fonti dichiarate ma **non ancora servibili**, con il motivo.
  *
- * `bando_pubblico` espone `ultimo_cambiamento_at`, non `updated_at`, e quattro
- * select chiedono ancora `updated_at`: `supabase-bandi.ts`
- * (`BANDO_SELECT_DETTAGLIO`), `api-v1/colonne.ts` (`SELECT_BANDO`),
- * `sitemap-index.xml.ts` e `sitemap-bandi/[pagina].xml.ts`. PostgREST
- * risponde 42703 e fa fallire l'**intera** richiesta: la scheda di ogni
- * bando, entrambe le sitemap e `/api/v1/bandi` andrebbero in 500 insieme,
- * tutti nello stesso istante in cui qualcuno esporta la variabile.
+ * Vuoto da F2 (23/09/2026), e va tenuto vuoto. Prima conteneva
+ * `bando_pubblico`, perche' quattro select chiedevano `updated_at`, che sulla
+ * vista non esiste: PostgREST risponde 42703 e fa fallire l'**intera**
+ * richiesta, quindi la scheda di ogni bando, entrambe le sitemap e
+ * `/api/v1/bandi` sarebbero andate in 500 insieme nell'istante in cui qualcuno
+ * esportava la variabile. Ora quelle quattro select passano da
+ * `FonteBandi.freschezza` e chiedono la colonna giusta per la fonte giusta.
  *
- * Finché il lavoro F2 non ha spostato quelle select, il flag si ignora: è
- * l'unica riga che sta fra una variabile d'ambiente e il dominio bandi spento.
- * Toglierla è il primo passo di F2, non un dettaglio.
+ * Il meccanismo resta perche' serve alla prossima volta: e' il modo di
+ * dichiarare una fonte scritta nel codice ma non ancora pronta, senza che una
+ * variabile d'ambiente possa spegnere il dominio bandi.
+ * `tests/estrazioni/colonne-anon.test.ts` confronta le colonne citate dai
+ * quattro file con quelle della migrazione 05 e impone di rimettere la guardia
+ * se una colonna torna fuori dalla vista.
  */
-export const FONTI_NON_PRONTE: Readonly<Record<string, string>> = {
-  bando_pubblico:
-    'la vista espone `ultimo_cambiamento_at`, non `updated_at`: quattro select '
-    + 'lo chiedono ancora e PostgREST risponderebbe 42703 su scheda, sitemap e /api/v1/bandi',
-};
+export const FONTI_NON_PRONTE: Readonly<Record<string, string>> = {};
 
 /** Il nome pulito del flag, o `null` se non nomina una fonte conosciuta. */
 function nomeRiconosciuto(valore: string | null | undefined): NomeFonteBandi | null {

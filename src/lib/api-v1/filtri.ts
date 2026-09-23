@@ -219,7 +219,13 @@ function pianoBandi(contesto: ContestoPiano): Operazione[] {
     if (f.national === false) ops.push(or('area_geografica.is.null,area_geografica.not.ilike.nazionale'));
     if (f.since !== null) ops.push(filtro('created_at', 'gte', isoUtc(f.since)));
     if (f.until !== null) ops.push(filtro('created_at', 'lt', isoUtc(f.until)));
-    if (f.updated_since !== null) ops.push(filtro('updated_at', 'gte', isoUtc(f.updated_since)));
+    // Il filtro vuole il nome NUDO della colonna: un alias in un `filter` non
+    // e' ammesso. Sulla vista e' `ultimo_cambiamento_at`, cioe' l'ultima
+    // modifica pubblica; `updated_since` smette quindi di rispondere ai
+    // passaggi dello scraper, che riscrivevano migliaia di righe per giro.
+    if (f.updated_since !== null) {
+      ops.push(filtro(fonte.colonnaFreschezza, 'gte', isoUtc(f.updated_since)));
+    }
   }
   return [...ops, ...coda('bandi', contesto)];
 }
@@ -245,6 +251,13 @@ export function pianoQuery(risorsa: Risorsa, contesto: ContestoPiano): PianoQuer
     db: risorsa === 'bandi' ? 'bandi' : 'principale',
     tabella: tabellaDi(risorsa, contesto),
     select: selectDi(risorsa, contesto),
+    // La colonna della freschezza dipende dalla fonte, non dalla risorsa:
+    // `colonne.ts` e' puro e non puo' leggere il flag, quindi la mette il
+    // piano. Vale solo per i bandi; le altre risorse hanno `updated_at` nella
+    // loro select, perche' leggono da una tabella sola.
+    colonneExtra: risorsa === 'bandi'
+      ? fontePerNome(contesto.fonteBandi ?? FONTE_BANDI_PREDEFINITA).selectFreschezza
+      : undefined,
     operazioni,
   };
 }

@@ -101,7 +101,11 @@ test('select: insieme esatto delle colonne, nessuna colonna vietata', () => {
     ['bando', [
       ...['id', 'slug', 'titolo', 'titolo_breve', 'descrizione_breve', 'ente_erogatore', 'area_geografica', 'tematica',
         'data_pubblicazione', 'data_apertura', 'data_scadenza', 'importo_totale_eur', 'importo_max_per_progetto_eur',
-        'stato_bando', 'created_at', 'updated_at'].map((c) => `bando.${c}`),
+        // Senza la colonna della freschezza: si chiama `updated_at` sulla
+        // tabella e `ultimo_cambiamento_at` sulla vista, quindi la mette il
+        // piano (`PianoQuery.colonneExtra`). Il test che la verifica e' qui
+        // sotto, «la freschezza arriva dal piano».
+        'stato_bando', 'created_at'].map((c) => `bando.${c}`),
       'tipologie_bando.nome', 'programmi.nome', 'modalita_erogazione.nome', 'regioni.nome', 'regioni.slug',
       'settori.nome', 'beneficiari.nome', 'codici_ateco.codice', 'codici_ateco.descrizione',
     ]],

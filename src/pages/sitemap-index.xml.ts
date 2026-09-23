@@ -41,6 +41,21 @@ async function leggiSezione(
   return { percorso, totale, lastmodPerChunk };
 }
 
+/**
+ * La forma delle righe che la select porta indietro.
+ *
+ * Dichiarata a mano con `.returns<>()` perche' la select e' composta a runtime
+ * (`FONTE_BANDI.selectFreschezza` cambia nome fra la tabella e la vista) e il
+ * parser di tipi di supabase-js pretende una stringa letterale: con
+ * un'interpolazione restituisce `ParserError` e ogni accesso al campo diventa
+ * un errore di compilazione. Il campo si chiama `updated_at` in entrambi i
+ * casi, per via dell'alias.
+ */
+interface RigaFreschezzaBando {
+  updated_at: string | null;
+  data_pubblicazione: string | null;
+}
+
 export async function GET() {
   try {
     const interpelli = await leggiSezione(
@@ -101,22 +116,24 @@ export async function GET() {
         return count ?? 0;
       },
       async (offset) => {
-        // `updated_at` come nei blocchi: `ultimo_cambiamento_at` (§7.5 del
-        // piano) arriva con la migrazione 01, oggi non applicata. Attenzione:
-        // `updated_at` non e' fra le colonne della vista `bando_pubblico`
-        // (§13.2, «assenti per scelta»), quindi questo file non e' ancora
-        // pronto per `BANDI_FONTE_LETTURA=bando_pubblico`: accendere il flag
-        // prima di aver spostato la select su `ultimo_cambiamento_at` da 42703
-        // qui, sui blocchi e sulla scheda (vedi il runbook di F2).
+        // La colonna del `lastmod` la nomina la fonte (`FONTE_BANDI.selectFreschezza`):
+        // su `bando` e' `updated_at`, sulla vista e' `ultimo_cambiamento_at`
+        // presentato con quel nome tramite l'alias di PostgREST. Il campo che
+        // arriva si chiama `updated_at` in entrambi i casi, ma sulla vista
+        // significa «ultima modifica pubblica» invece di «ultimo passaggio
+        // dello scraper», che e' la ragione per cui questa riga esiste: la
+        // colonna della tabella veniva riscritta su migliaia di righe a ogni
+        // giro e riempiva la sitemap di date false.
         let query = supabaseBandi.from(FONTE_BANDI.tabella)
-          .select('data_pubblicazione, updated_at');
+          .select(`data_pubblicazione, ${FONTE_BANDI.selectFreschezza}`);
         for (const [colonna, operatore, valore] of FONTE_BANDI.operazioni) {
           query = query.filter(colonna, operatore, valore);
         }
         const { data, error } = await query
           .order('data_pubblicazione', { ascending: false, nullsFirst: false })
           .order('id', { ascending: false })
-          .range(offset, offset);
+          .range(offset, offset)
+          .returns<RigaFreschezzaBando[]>();
         if (error) throw error;
         return lastmodIso(data?.[0]?.updated_at ?? data?.[0]?.data_pubblicazione);
       },
