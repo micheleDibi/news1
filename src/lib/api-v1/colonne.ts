@@ -1,8 +1,10 @@
 /**
  * Select esplicite dell'API /api/v1: MAI '*'. Ogni colonna e' qui per un motivo;
  * quelle interne o sensibili (content, skill_*, article_content, descrizione HTML,
- * contenuto, raw_data, link alle fonti, email...) non compaiono. Il test di
- * contratto verifica l'insieme esatto delle colonne.
+ * contenuto, raw_data, email...) non compaiono. I link alle fonti dello scraper
+ * -- link_bando, allegati, raw_data -- non compaiono: l'unica eccezione e' la
+ * fonte ufficiale verificata (details.official_source della 1.1), che non e'
+ * ancora una colonna. Il test di contratto verifica l'insieme esatto delle colonne.
  */
 import type { NomeSelect } from './contratto';
 

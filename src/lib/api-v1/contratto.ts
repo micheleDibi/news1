@@ -16,7 +16,15 @@ export type Risorsa = 'articles' | 'interpelli' | 'selezione-personale' | 'bandi
 export type SezioneOpportunita = 'interpelli' | 'selezione-personale' | 'bandi';
 
 export type TipoOpportunita = 'interpello' | 'selezione-personale' | 'bando';
-export type StatoOpportunita = 'open' | 'closed' | 'upcoming';
+/**
+ * `suspended` e `revoked` sono aggiunte della v1.1: un valore nuovo in un enum
+ * gia' pubblicato e' compatibile solo perche' la promessa dell'API e' sempre
+ * stata «tollerare valori nuovi». I client che confrontano `status === 'open'`
+ * continuano a funzionare; quelli che facevano `status !== 'closed'` per dire
+ * «si puo' partecipare» ora sbagliano, ed e' esattamente il caso che la v1.0
+ * non sapeva raccontare (un bando revocato usciva come `open`).
+ */
+export type StatoOpportunita = 'open' | 'closed' | 'upcoming' | 'suspended' | 'revoked';
 export type Db = 'principale' | 'bandi';
 
 // ---------------------------------------------------------------------------
@@ -134,6 +142,22 @@ export interface CodiceAtecoDto {
   description: string | null;
 }
 
+/**
+ * Fonte ufficiale di un bando (v1.1). Esce **solo** quando il resolver l'ha
+ * conclusa (`fonte_ufficiale_stato='trovata'`) e l'host non e' in denylist:
+ * altrimenti `null`. Non e' mai un link a un aggregatore, e non e' mai «il link
+ * da cui abbiamo preso il bando».
+ */
+export interface FonteUfficialeDto {
+  url: string;
+  /** Host minuscolo senza `www.` (format `hostname` in OpenAPI). */
+  host: string;
+  /** `institution` = pagina o atto dell'ente; `public_portal` = portale pubblico. */
+  type: 'institution' | 'public_portal' | null;
+  /** Giorno (YYYY-MM-DD) della verifica, o null. */
+  verified_on: string | null;
+}
+
 export interface DettagliBando {
   short_title: string | null;
   issuer: string | null;
@@ -149,6 +173,13 @@ export interface DettagliBando {
   max_amount_per_project_eur: number | null;
   opens_on: string | null;
   source_published_on: string | null;
+  /** v1.1. `null` finche' il resolver non ha concluso. */
+  official_source: FonteUfficialeDto | null;
+  /** v1.1. `true`/`false` quando lo sappiamo, `null` quando non lo sappiamo. */
+  opens_on_verified: boolean | null;
+  deadline_verified: boolean | null;
+  /** v1.1. Istante dell'ultimo controllo sulla fonte, o null. */
+  last_checked_at: string | null;
 }
 
 export interface InterpelloDto extends OpportunitaBaseDto {
@@ -323,6 +354,8 @@ export type Tabella =
   | 'interpelli'
   | 'selezione_personale'
   | 'bando'
+  /** Vista pubblica dei bandi: esiste solo dopo la migrazione 05. */
+  | 'bando_pubblico'
   | 'categories'
   | 'secondary_categories'
   | 'profiles';

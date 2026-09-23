@@ -26,6 +26,8 @@ export const TITOLO_API = 'API pubblica EduNews24';
 /** Data della prima versione pubblica e della nota provvisoria sui termini. */
 export const DATA_RILASCIO = '2026-09-21';
 export const DATA_RILASCIO_ESTESA = '21 settembre 2026';
+/** Data della 1.1: additiva, stesso rilascio delle superfici bandi. */
+export const DATA_RILASCIO_1_1 = '2026-09-23';
 
 export const DESCRIZIONE_BREVE =
   'API pubblica in sola lettura di EduNews24: articoli, categorie, interpelli, concorsi e selezioni ' +
@@ -54,7 +56,12 @@ export const PARAGRAFI_FORMATO: readonly string[] = [
     'nello stesso ordine.',
   'Ogni campo è sempre presente: null significa "non disponibile". Gli array non sono mai null e le ' +
     'stringhe non sono mai vuote.',
-  'Gli URL sono sempre assoluti su ' + SITO + '. Non ci sono link alle fonti esterne.',
+  // La promessa e' qualificata, non negata: dalla 1.1 lo schema dichiara
+  // details.official_source.url con format uri e l'esempio lo valorizza. Dire
+  // ancora «non ci sono link esterni» contraddirebbe il contratto pubblicato.
+  'Gli URL delle schede sono sempre assoluti su ' + SITO + '. L\'unico URL esterno è ' +
+    'details.official_source.url dei bandi: è la pagina o l\'atto dell\'ente, mai un sito che ' +
+    'ripubblica bandi altrui.',
   'La chiave di un elemento è il suo id numerico, unico per tipo: gli slug sono informativi e non ' +
     'univoci. I client deduplicano per (type, id).',
 ];
@@ -227,7 +234,10 @@ export const PARAGRAFI_TESTO: readonly string[] = [
 ];
 
 export const PARAGRAFO_STATUS =
-  'status (open, closed, upcoming) usa deadline_on, confrontato con la data dell\'header Date della risposta ' +
+  'status vale open, closed, upcoming e, dalla 1.1, suspended (bando fermato dall\'ente) e revoked (bando ' +
+  'annullato, stato definitivo). Su suspended e revoked non si pu\u00f2 presentare domanda, qualunque cosa dica ' +
+  'deadline_on: chi deduceva «si pu\u00f2 partecipare» da status !== closed va corretto. ' +
+  'status usa deadline_on, confrontato con la data dell\'header Date della risposta ' +
   'nel calendario di Roma: il giorno della scadenza la scheda è ancora open, dal giorno dopo è closed. Per i ' +
   'bandi, finché la scadenza non è passata, vale lo stato indicato dalla fonte (anche upcoming); per gli ' +
   'interpelli status è sempre null. Per la selezione del personale deadline_on è il giorno UTC di ' +
@@ -235,7 +245,8 @@ export const PARAGRAFO_STATUS =
   'dopo la mezzanotte. Per il proprio archivio conviene ricalcolare lo stato da deadline_on. Una scadenza ' +
   'della fonte che supera di oltre 8 anni published_at è considerata implausibile: deadline_on e ' +
   'deadline_at sono null. Per la selezione del personale status è allora open; per i bandi resta quello ' +
-  'indicato dalla fonte. Quando deadline_on è null lo stato non si può ricalcolare: usare status così com\'è.';
+  'indicato dalla fonte. Quando deadline_on è null lo stato non si può ricalcolare: usare status così com\'è. ' +
+  'Attenzione alla cache: una risposta può riportare open fino a 15 minuti dopo l\'ora di scadenza.';
 
 // ---------------------------------------------------------------------------
 // Cache, limiti, CORS
@@ -433,6 +444,27 @@ export interface VoceChangelog {
 export const CHANGELOG: readonly VoceChangelog[] = [
   {
     versione: VERSIONE_API,
+    data: DATA_RILASCIO_1_1,
+    note: [
+      'Aggiunta compatibile: nessun campo rimosso o rinominato.',
+      'status dei bandi ammette due valori nuovi, suspended e revoked: prima un bando fermato o annullato ' +
+        'usciva come open. Chi deduceva «si pu\u00f2 partecipare» da status !== closed deve correggersi.',
+      'Bandi: nuovo oggetto details.official_source (url, host, type, verified_on), null finch\u00e9 la verifica ' +
+        'non \u00e8 conclusa; non contiene mai un sito che si limita a ripubblicare bandi altrui.',
+      'Bandi: nuovi details.opens_on_verified, details.deadline_verified e details.last_checked_at, tutti ' +
+        'null quando il dato non c\'\u00e8 ancora.',
+      // M17: fra la prima migrazione e il passaggio alla vista `updated_at`
+      // avanza a ogni re-scrape mentre l'istante del cambiamento vero no. Una
+      // regressione dei lastmod e' attesa e va dichiarata, non nascosta.
+      'updated_at e updated_since passeranno all\'istante dell\'ultimo cambiamento sostanziale: oggi avanzano ' +
+        'anche per una rilettura che non cambia niente. Al passaggio alcuni valori potranno risultare ' +
+        'anteriori a quelli gi\u00e0 letti; non sono mai anteriori a published_at.',
+    ],
+  },
+  {
+    // Letterale, non VERSIONE_API: e' la voce storica e deve restare 1.0 anche
+    // quando la costante avanza.
+    versione: '1.0',
     data: DATA_RILASCIO,
     note: [
       'Prima versione pubblica: articoli, categorie, interpelli, selezione del personale e bandi.',
@@ -616,6 +648,15 @@ export function esempioBando(): BandoDto {
       max_amount_per_project_eur: 50000,
       opens_on: '2026-09-01',
       source_published_on: '2026-09-12',
+      official_source: {
+        url: 'https://regione.marche.it/entra-in-regione/bandi/voucher-digitalizzazione-2026',
+        host: 'regione.marche.it',
+        type: 'institution',
+        verified_on: '2026-09-18',
+      },
+      opens_on_verified: true,
+      deadline_verified: true,
+      last_checked_at: '2026-09-20T03:12:55+02:00',
     },
   };
 }

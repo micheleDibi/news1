@@ -31,6 +31,7 @@ import type {
   ArticoloDto, FonteDati, OpportunitaDto, PianoQuery, RiferimentoCategorie, RiferimentoProfili, Risorsa,
   RigaArticolo, RigaBando, RigaInterpello, RigaSelezione,
 } from './contratto';
+import type { NomeFonteBandi } from '../bandi/pubblicazione';
 
 // ---------------------------------------------------------------------------
 // Contratti con il gestore e con il cablaggio
@@ -49,6 +50,13 @@ export interface DipendenzeRisorse {
   valoriRegioneCorpus(sezione: 'interpelli' | 'selezione-personale', slugRegione: string): readonly string[];
   /** Limite dichiarato nell'indice. */
   limiteDichiarato: { requests: number; window_seconds: number };
+  /**
+   * Bandi: da quale fonte leggere. Arriva dal flag, che solo `rotta.ts` puo'
+   * leggere (questo modulo e' puro). Assente = `bando`, cioe' il
+   * comportamento di sempre: e' quello che vale per i test e per chiunque
+   * cabli le dipendenze a mano.
+   */
+  fonteBandi?: NomeFonteBandi;
   registra(evento: string, dettaglio?: string): void;
 }
 
@@ -140,9 +148,20 @@ function valoriRegione(
   return [...ammessi];
 }
 
-function contestoPiano(extra: Partial<ContestoPiano> & { modo: ModoQuery; oggi: string }): ContestoPiano {
+/**
+ * Il contesto del piano parte sempre dalle dipendenze, non da un default
+ * scritto qui: `fonteBandi` e' l'unico campo che viene dal cablaggio (il flag
+ * lo legge `rotta.ts`) e deve arrivare a ogni modo — elenco, dettaglio e feed.
+ * Dimenticarlo in uno solo dei tre significherebbe un'API che serve i bandi
+ * da due tabelle diverse a seconda della rotta.
+ */
+function contestoPiano(
+  dipendenze: DipendenzeRisorse,
+  extra: Partial<ContestoPiano> & { modo: ModoQuery; oggi: string },
+): ContestoPiano {
   return {
     filtri: null, slugCategorieValide: [], categoria: null, valoriRegione: null, dopo: null, id: null, righe: 1,
+    fonteBandi: dipendenze.fonteBandi,
     ...extra,
   };
 }
@@ -268,7 +287,7 @@ async function produciElenco(
     valori = valoriRegione(dipendenze, risorsa, filtri.region);
   }
 
-  const piano = pianoQuery(risorsa, contestoPiano({
+  const piano = pianoQuery(risorsa, contestoPiano(dipendenze, {
     modo: 'elenco',
     oggi: esecuzione.oggi,
     filtri,
@@ -367,7 +386,7 @@ async function produciDettaglio(
 ): Promise<RisultatoRisorsa> {
   const percorso = PERCORSO.get(risorsa) as string;
   const riferimenti = risorsa === 'articles' ? await riferimentiArticoli(dipendenze, esecuzione.segnale) : null;
-  const piano = pianoQuery(risorsa, contestoPiano({
+  const piano = pianoQuery(risorsa, contestoPiano(dipendenze, {
     modo: 'dettaglio',
     oggi: esecuzione.oggi,
     id,
@@ -483,7 +502,7 @@ export const FEED: DescrittoreRotta = {
             nomeCategoria = categoria.name;
           }
         }
-        const piano = pianoQuery(risorsa, contestoPiano({
+        const piano = pianoQuery(risorsa, contestoPiano(dipendenze, {
           modo: 'feed',
           oggi: esecuzione.oggi,
           categoria: richiesta.categoria,

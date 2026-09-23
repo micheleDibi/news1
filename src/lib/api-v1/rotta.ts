@@ -13,9 +13,15 @@
  *   API_V1_FIDUCIA_IP    cloudflare (default) | nginx | diretta  -> limitatore.ts
  *   API_V1_RL_CAPACITA   richieste per client (default 60)
  *   API_V1_RL_RICARICA   gettoni al secondo (default 1)
+ *   BANDI_FONTE_LETTURA  bando (default) | bando_pubblico          -> filtri.ts
+ *
+ * Le prime tre saltano il valore vuoto e ricadono su quello compilato;
+ * BANDI_FONTE_LETTURA no, perche' deve dare lo stesso risultato di
+ * `supabase-bandi.ts` anche quando l'override e' definito ma vuoto (vedi sotto).
  */
 import type { APIContext, APIRoute } from 'astro';
 import { corpusSeCaldo } from '../corpus';
+import { nomeFonteBandiDa } from '../bandi/pubblicazione';
 import {
   ATTESA_SEMAFORO_MS, CODA_SEMAFORO, RATE_LIMIT_CAPACITA, RATE_LIMIT_MAX_CHIAVI, RATE_LIMIT_RICARICA, SLOT_SEMAFORO,
   TIMEOUT_QUERY_MS, TTL_RIFERIMENTI_MS,
@@ -64,7 +70,28 @@ function creaDipendenze(): DipendenzeGestore {
     primoValorizzato(process.env.API_V1_RL_CAPACITA, import.meta.env.API_V1_RL_CAPACITA), RATE_LIMIT_CAPACITA);
   const ricarica = interoPositivo(
     primoValorizzato(process.env.API_V1_RL_RICARICA, import.meta.env.API_V1_RL_RICARICA), RATE_LIMIT_RICARICA);
-  console.error(`[api-v1] configurazione: fiducia_ip=${fiducia.modalita}, rate_limit=${capacita} (+${ricarica}/s)`);
+  // Da quale fonte legge i bandi l'API. Il flag lo legge questo modulo e non
+  // `filtri.ts`: quello e' puro, e `PUBLIC_*` viene compilata al build mentre
+  // `BANDI_FONTE_LETTURA` vale a runtime (e' il ritorno indietro senza
+  // ricostruire). Un valore ignoto non solleva e non "prova" la vista:
+  // `nomeFonteBandiDa` torna `bando`.
+  //
+  // `??` e NON `primoValorizzato`: qui l'espressione dev'essere la stessa,
+  // carattere per carattere, di `supabase-bandi.ts`. Con l'override svuotato
+  // (`BANDI_FONTE_LETTURA=` in .env o nell'unit systemd) e
+  // `PUBLIC_BANDI_FONTE_LETTURA=bando_pubblico` compilata, `??` tiene la
+  // stringa vuota e ricade sul default `bando` — come le pagine —, mentre
+  // `primoValorizzato` salterebbe il vuoto e manderebbe la sola API sulla
+  // vista: due superfici pubbliche dello stesso corpus con insiemi di righe
+  // diversi (la vista toglie doppioni fusi e ritirati). Il vuoto che ricade
+  // sul valore compilato resta invece giusto per API_V1_FIDUCIA_IP e per i
+  // due interi, dove non c'e' nessun'altra superficie da tenere allineata.
+  const fonteBandi = nomeFonteBandiDa(
+    process.env.BANDI_FONTE_LETTURA ?? import.meta.env.PUBLIC_BANDI_FONTE_LETTURA,
+  );
+  console.error(
+    `[api-v1] configurazione: fiducia_ip=${fiducia.modalita}, rate_limit=${capacita} (+${ricarica}/s), `
+    + `fonte_bandi=${fonteBandi}`);
 
   const fonte = creaFonteSupabase();
 
@@ -111,6 +138,7 @@ function creaDipendenze(): DipendenzeGestore {
     fonte,
     categorie,
     profili,
+    fonteBandi,
     valoriRegioneCorpus(sezione, slugRegione) {
       return corpusSeCaldo(sezione)?.faccette.regione?.get(slugRegione)?.valoriDb ?? [];
     },

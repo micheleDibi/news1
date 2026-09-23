@@ -9,6 +9,7 @@ import {
   ELENCO_SELEZIONE, FEED, INDICE, NON_TROVATO, OPENAPI, type DescrittoreRotta, type DipendenzeRisorse,
   type RisultatoRisorsa,
 } from '../../src/lib/api-v1/risorse.ts';
+import { SELECT_PER_NOME } from '../../src/lib/api-v1/colonne.ts';
 import { Limitatore } from '../../src/lib/api-v1/limitatore.ts';
 import { Semaforo } from '../../src/lib/api-v1/semaforo.ts';
 import { CacheRisposte } from '../../src/lib/api-v1/cache.ts';
@@ -390,6 +391,32 @@ test('selezione e bandi: status calcolato su oggi, chiave di cache con la data',
   const bandi = await (await chiama(amb, ELENCO_BANDI, '/api/v1/bandi?region=lazio')).json();
   assert.equal(bandi.data[0].type, 'bando');
   assert.equal(amb.fonte.piani.at(-1)!.select, 'bando-con-regione');
+  // v1.1: i quattro campi nuovi escono sempre (null finche' non ci sono le
+  // colonne), e la versione dichiarata nei meta e' quella nuova.
+  assert.equal(bandi.meta.api_version, '1.1');
+  assert.deepEqual(
+    [bandi.data[0].details.official_source, bandi.data[0].details.opens_on_verified,
+      bandi.data[0].details.deadline_verified, bandi.data[0].details.last_checked_at],
+    [null, null, null, null],
+  );
+  // La select non chiede nessuna colonna delle migrazioni: una sola colonna
+  // assente fa rispondere PostgREST 42703 e cade l'intera richiesta.
+  // `PianoQuery.select` e' un NomeSelect (qui 'bando-con-regione'): l'`includes`
+  // va fatto sulle colonne vere, o l'asserzione passerebbe anche con la colonna
+  // aggiunta a SELECT_BANDO.
+  const colonne = SELECT_PER_NOME.get(amb.fonte.piani.at(-1)!.select)!;
+  assert.ok(colonne.includes('titolo'), 'nome select non risolto in colonne');
+  assert.equal(colonne.includes('fonte_ufficiale'), false);
+  assert.equal(colonne.includes('ultimo_controllo_at'), false);
+});
+
+test('bandi: i due stati nuovi arrivano fino al JSON', async () => {
+  const amb = ambiente();
+  amb.fonte.righe.set('bando', [{ ...BANDO, stato_bando: 'revocato', data_scadenza: '2020-01-01' }]);
+  const corpo = await (await chiama(amb, ELENCO_BANDI, '/api/v1/bandi')).json();
+  // Prima: `revocato` non era nel vocabolario, il DTO usciva con status null, e
+  // con una scadenza passata sarebbe stato `closed`. Nessuno dei due e' vero.
+  assert.equal(corpo.data[0].status, 'revoked');
 });
 
 test('categorie, indice, openapi', async () => {

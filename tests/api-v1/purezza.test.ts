@@ -14,6 +14,19 @@ const foglie = [
   new URL('../../src/lib/stato-bando.ts', import.meta.url),
   new URL('../../src/lib/liste/slug-interpello.ts', import.meta.url),
   new URL('../../src/lib/intestazioni-inoltro.ts', import.meta.url),
+  // Dominio bandi (piano §16.3.7): un modulo, un test omonimo in tests/estrazioni/.
+  // Sono foglie per forza: la scheda e le liste le usano, ma anche i test devono
+  // poterle caricare sotto `node --test`, dove non esiste nessuna PUBLIC_*.
+  new URL('../../src/config/domini-aggregatori.ts', import.meta.url),
+  new URL('../../src/lib/bandi/tipi.ts', import.meta.url),
+  new URL('../../src/lib/bandi/domini.ts', import.meta.url),
+  new URL('../../src/lib/bandi/contenuto.ts', import.meta.url),
+  new URL('../../src/lib/bandi/testi-stato.ts', import.meta.url),
+  new URL('../../src/lib/bandi/filtro-stato.ts', import.meta.url),
+  new URL('../../src/lib/bandi/cta.ts', import.meta.url),
+  new URL('../../src/lib/bandi/jsonld.ts', import.meta.url),
+  new URL('../../src/lib/bandi/pubblicazione.ts', import.meta.url),
+  new URL('../../src/lib/bandi/slug-storico.ts', import.meta.url),
 ];
 
 function sorgente(url: URL): string {
@@ -52,5 +65,8 @@ test('fonte-supabase.ts: solo cablaggio', () => {
 test('i moduli puri si importano sotto node senza variabili d\'ambiente', async () => {
   for (const f of puri) {
     await import(new URL(f, cartella).href);
+  }
+  for (const url of foglie) {
+    await import(url.href);
   }
 });

@@ -1,6 +1,10 @@
 ---
 /**
- * `/eu-funding` (e ogni suo sotto-percorso): 410 Gone.
+ * `/eu-funding/<qualsiasi cosa>`: 410 Gone, come l'indice della sezione.
+ *
+ * Serve un catch-all perche' gli URL indicizzati erano 1 135 schede
+ * `/eu-funding/<id>`: senza questa rotta risponderebbero 404, e un 404 lascia
+ * la pagina in coda di ricontrollo invece di toglierla.
  *
  * La sezione pubblicava 1 135 opportunità lette da un file JSON di 3,7 MB
  * inlinato nel repo, con gli URL di un aggregatore, self-canonical

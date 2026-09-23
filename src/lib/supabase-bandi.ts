@@ -1,66 +1,68 @@
 import { createClient } from '@supabase/supabase-js';
+import { fonteBandiDa } from './bandi/pubblicazione';
 import type { StatoBando } from './stato-bando';
+import type { FonteBandi } from './bandi/pubblicazione';
+import type { Allegato, ContenutoBando } from './bandi/tipi';
 
 const url = import.meta.env.PUBLIC_SUPABASE_BANDI_URL;
 const key = import.meta.env.PUBLIC_SUPABASE_BANDI_ANON_KEY;
 
 export const supabaseBandi = createClient(url, key);
 
+/**
+ * Da dove si leggono i bandi: la tabella `bando` (default) o la vista
+ * `bando_pubblico`, che esiste solo dopo la migrazione 05.
+ *
+ * Questo e' uno dei due moduli impuri autorizzati a leggere il flag (l'altro e'
+ * `api-v1/rotta.ts`): i moduli di `src/lib/bandi/` sono puri e `PUBLIC_*` viene
+ * compilata al build, non e' una variabile a runtime. `BANDI_FONTE_LETTURA`
+ * vale invece a runtime ed e' quella da usare per tornare indietro senza
+ * ricostruire. Nessun ripiego automatico "se la vista manca": il ripiego e'
+ * rimettere il flag a `bando`.
+ */
+export const FONTE_BANDI: FonteBandi = fonteBandiDa(
+  process.env.BANDI_FONTE_LETTURA ?? import.meta.env.PUBLIC_BANDI_FONTE_LETTURA,
+);
+
+/**
+ * `sospeso` e `revocato` sono valori legittimi del vocabolario ma il CHECK
+ * della colonna ne ammette tre finche' la migrazione 06 non e' applicata:
+ * offrirli nel filtro prima di allora significa offrire due chip che
+ * restituiscono sempre zero risultati.
+ */
+export const BANDI_STATI_ESTESI: boolean =
+  (process.env.BANDI_STATI_ESTESI ?? import.meta.env.PUBLIC_BANDI_STATI_ESTESI) === 'true';
+
 // =========================================================================
 // Costanti di dominio (schema v9 — vedi backend/sql/bando_alter_v9_*.sql)
 // =========================================================================
 
+// Vocabolari delle colonne di `bando`. Non sono esportati: nessuno fuori da
+// questo file li cercava piu' (chi ha bisogno degli stati editoriali usa
+// `STATI_BANDO` di `stato-bando.ts`, chi ha bisogno dei tipi degli allegati usa
+// `bandi/tipi.ts`, entrambi puri e caricabili sotto `node --test`, cosa che
+// questo file non e' perche' crea il client Supabase a livello di modulo).
+// Restano qui perche' danno il tipo alle colonne dell'interfaccia `Bando`, e
+// perche' scrivono nero su bianco che cosa ammette il CHECK a DB.
+
 // Stato pipeline interno (vedi CHECK bando_stato_processing_check).
 // Frontend pubblico vede SOLO stato_processing='completed' (RLS v9).
-export const STATI_PROCESSING = [
+const STATI_PROCESSING = [
   'scraped', 'processed', 'rejected', 'enriched', 'completed',
 ] as const;
-export type StatoProcessing = typeof STATI_PROCESSING[number];
-
-// Stato editoriale del bando (data-driven dal preprocess v2): vive in
-// stato-bando.ts, puro e testabile sotto node; qui resta ri-esportato.
-export { STATI_BANDO } from './stato-bando';
-export type { StatoBando } from './stato-bando';
-
-// Stato scadenza calcolato in-app (NON colonna DB).
-export const STATI_SCADENZA = ['aperto', 'in_scadenza', 'scaduto'] as const;
-export type StatoScadenza = typeof STATI_SCADENZA[number];
+type StatoProcessing = typeof STATI_PROCESSING[number];
 
 // Livello editoriale emesso dalla skill SEO v8.
-export const LIVELLI_BANDO = ['flash_bando', 'guida_bando'] as const;
-export type LivelloBando = typeof LIVELLI_BANDO[number];
+const LIVELLI_BANDO = ['flash_bando', 'guida_bando'] as const;
+type LivelloBando = typeof LIVELLI_BANDO[number];
 
 // Provenienza del link candidatura.
-export const LINK_CANDIDATURA_SOURCES = ['extracted', 'fallback_source', 'missing'] as const;
-export type LinkCandidaturaSource = typeof LINK_CANDIDATURA_SOURCES[number];
+const LINK_CANDIDATURA_SOURCES = ['extracted', 'fallback_source', 'missing'] as const;
+type LinkCandidaturaSource = typeof LINK_CANDIDATURA_SOURCES[number];
 
 // Tipo link fonte (scraper).
-export const TIPI_LINK = ['Opportunità', 'Preavviso'] as const;
-export type TipoLink = typeof TIPI_LINK[number];
-
-// Tipologie allegati supportate dalla skill SEO.
-export const ALLEGATO_TIPI = [
-  'pdf', 'doc', 'docx', 'zip', 'rtf', 'xlsx', 'xls', 'odt', 'ods',
-] as const;
-export type AllegatoTipo = typeof ALLEGATO_TIPI[number];
-
-export interface Allegato {
-  label: string;
-  url: string;
-  tipo: AllegatoTipo | string;
-}
-
-// Sezioni del contenuto editoriale generato dalla skill SEO v8.
-export type BandoSegment =
-  | { kind: 'text'; text: string }
-  | { kind: 'bold'; text: string }
-  | { kind: 'link'; text: string; url: string };
-
-export type BandoSection =
-  | { type: 'h2' | 'h3'; text: string }
-  | { type: 'paragraph'; segments: BandoSegment[] }
-  | { type: 'bullet_list' | 'numbered_list'; items: Array<{ segments: BandoSegment[] }> }
-  | { type: 'faq'; items: Array<{ q: string; a: { segments: BandoSegment[] } }> };
+const TIPI_LINK = ['Opportunità', 'Preavviso'] as const;
+type TipoLink = typeof TIPI_LINK[number];
 
 // =========================================================================
 // Tipo principale Bando (schema v9 — frontend pubblico)
@@ -101,7 +103,7 @@ export interface Bando {
   titolo: string | null;
   titolo_breve: string | null;
   descrizione_breve: string | null;
-  contenuto: { sections: BandoSection[] } | null;
+  contenuto: ContenutoBando | string | null;
   livello: LivelloBando | null;
   allegati: Allegato[] | null;
   ente_erogatore: string | null;
@@ -245,35 +247,10 @@ export async function resolveBandoRelations(
 // Helper runtime
 // =========================================================================
 
-/**
- * Calcola lo `scadenza_stato` in JS at-render-time (NON colonna DB).
- *  - null se data scadenza assente
- *  - 'scaduto' se data passata
- *  - 'in_scadenza' se mancano ≤7 giorni
- *  - 'aperto' altrimenti
- */
-export function computeScadenzaStato(dataScadenza: string | null): StatoScadenza | null {
-  if (!dataScadenza) return null;
-  const scad = new Date(dataScadenza);
-  if (Number.isNaN(scad.getTime())) return null;
-  const now = new Date();
-  const diffDays = Math.ceil((scad.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays < 0) return 'scaduto';
-  if (diffDays <= 7) return 'in_scadenza';
-  return 'aperto';
-}
-
-// todayRomeISO ed effectiveStatoBando vivono in stato-bando.ts (logica pura,
-// testabile sotto node senza il client Supabase creato qui sopra).
-export { todayRomeISO, effectiveStatoBando } from './stato-bando';
-
-/**
- * Formatta un importo EUR senza decimali in italiano (es. "12.500.000 €").
- */
-export function formatImportoEur(value: number | null): string | null {
-  if (value == null) return null;
-  return new Intl.NumberFormat('it-IT').format(value) + ' €';
-}
+// todayRomeISO vive in stato-bando.ts (logica pura, testabile sotto node senza
+// il client Supabase creato qui sopra) ed e' l'unico helper ancora ri-esportato
+// da qui: `effectiveStatoBando` e `statoEffettivo` si importano da stato-bando.
+export { todayRomeISO } from './stato-bando';
 
 /**
  * Colonne SELECT per la lista bandi (compatte, no contenuto).
@@ -283,23 +260,27 @@ export const BANDO_SELECT_LIST = [
   'ente_erogatore', 'area_geografica', 'tematica',
   'data_pubblicazione', 'data_apertura', 'data_scadenza',
   'importo_totale_eur', 'importo_max_per_progetto_eur',
-  'link_bando', 'stato_bando',
+  'stato_bando',
   'tipologia_bando_id', 'modalita_erogazione_id', 'programma_id',
 ].join(', ');
 
 /**
- * Colonne SELECT per il dettaglio bando (complete).
+ * Colonne SELECT per la scheda di dettaglio, riscritte da zero per il rilascio
+ * F1. La `BANDO_SELECT_DETAIL` precedente e' stata rimossa: citava
+ * `fonte_id, hash_bando, tipo_link, confidence_score, stato_processing,
+ * titolo_raw, link_bando`, colonne che la pagina non rende e che sulla vista
+ * `bando_pubblico` non esistono — una sola di loro fa rispondere PostgREST
+ * 42703 e fallire l'intera richiesta, cioe' ogni scheda del sito.
+ *
+ * Nessuna colonna nuova: le migrazioni non sono applicate, e chiedere
+ * `ultimo_controllo_at` o `fonte_ufficiale_url` oggi darebbe lo stesso 42703.
  */
-export const BANDO_SELECT_DETAIL = [
-  'id', 'fonte_id', 'hash_bando', 'tipo_link',
-  'stato_processing', 'stato_bando', 'confidence_score',
-  'data_pubblicazione', 'data_apertura', 'data_scadenza',
-  'tipologia_bando_id', 'modalita_erogazione_id', 'programma_id',
-  'slug', 'titolo', 'titolo_breve', 'descrizione_breve', 'contenuto',
-  'livello', 'allegati',
+export const BANDO_SELECT_DETTAGLIO = [
+  'id', 'slug', 'titolo', 'titolo_breve', 'descrizione_breve', 'contenuto',
   'ente_erogatore', 'area_geografica', 'tematica',
+  'data_pubblicazione', 'data_apertura', 'data_scadenza',
   'importo_totale_eur', 'importo_max_per_progetto_eur',
-  'link_candidatura', 'link_candidatura_source',
-  'link_bando', 'titolo_raw',
+  'link_candidatura', 'link_candidatura_source', 'allegati', 'stato_bando',
+  'tipologia_bando_id', 'modalita_erogazione_id', 'programma_id',
   'created_at', 'updated_at',
 ].join(', ');

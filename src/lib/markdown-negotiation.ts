@@ -13,7 +13,7 @@ export function wantsMarkdown(request: Request): boolean {
 /**
  * Converte l'HTML di una pagina in markdown. Estrae il contenuto principale
  * (`<main>`, unico per pagina; header/nav/ticker/footer del Layout restano
- * fuori); se non c'è `<main>` (es. eu-funding) ripiega sull'intero documento.
+ * fuori); se non c'è `<main>` ripiega sull'intero documento.
  * Il titolo della pagina viene anteposto come H1 quando la <main> non ne ha
  * gia' uno in cima.
  */

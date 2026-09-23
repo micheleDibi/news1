@@ -1,5 +1,10 @@
 # API pubblica `/api/v1`: guida di implementazione
 
+> Versione del contratto: **1.1** (additiva; `VERSIONE_API` in `costanti.ts`, OpenAPI `1.1.0`).
+> La 1.1 aggiunge ai bandi `details.official_source`, `details.opens_on_verified`,
+> `details.deadline_verified`, `details.last_checked_at` e due valori di `status`
+> (`suspended`, `revoked`). Nessun campo rimosso o rinominato.
+
 Per chi mantiene o estende l'API (sviluppatori e sessioni AI). Chi la **usa** trova il contratto in
 `https://edunews24.it/api/v1/openapi.json` e la guida in `https://edunews24.it/sviluppatori/api`
 (anche in Markdown con `Accept: text/markdown`).
@@ -17,7 +22,8 @@ documento contiene quello che serve per lavorare sul codice. I numeri sui dati s
   `OPTIONS`, niente credenziali).
 - **Perimetro:** articoli, categorie, interpelli, selezione personale, bandi. **Mai il testo
   integrale**: solo campi di sintesi, e ogni elemento porta l'URL canonico della scheda sul sito.
-  Nessun link alle fonti esterne.
+  L'unico URL esterno è `details.official_source.url` dei bandi (dalla 1.1): la pagina o l'atto
+  dell'ente, mai un sito che ripubblica bandi altrui.
 - **Formati:** REST JSON versionato, JSON Feed 1.1, RSS 2.0, OpenAPI 3.1.
 - **Contratto stabile:** in v1 si aggiunge soltanto (campi, parametri, valori di enum). Le modifiche
   incompatibili vanno in `/api/v2`, con almeno 6 mesi di coesistenza e gli header `Deprecation` e
@@ -84,6 +90,12 @@ src/lib/api-v1/fonte-supabase.ts  IMPURO: esegue un PianoQuery su supabase / sup
 | `indice.ts` | dati di `GET /api/v1` |
 | `risorse.ts`, `gestore.ts` | orchestrazione (vedi sopra) |
 | `fonte-supabase.ts`, `rotta.ts` | gli unici due moduli impuri |
+
+Fuori da `api-v1/`, il dominio dei bandi vive in `src/lib/bandi/` (moduli puri, un test omonimo
+ciascuno in `tests/estrazioni/`): `pubblicazione.ts` (il predicato e la fonte di lettura),
+`domini.ts` (denylist degli aggregatori, `urlPubblicabile`), `testi-stato.ts`, `filtro-stato.ts`,
+`contenuto.ts`, `cta.ts`, `jsonld.ts`, `slug-storico.ts`, `tipi.ts`. L'API ne usa
+`pubblicazione.ts`; gli altri servono alle pagine.
 
 **Moduli estratti** per renderli testabili, ri-esportati dai file originali (i chiamanti non cambiano):
 
@@ -166,7 +178,7 @@ la tabella lo dice: il resto tocca alla revisione del codice.
 | articles | `isdraft eq false`, `category_slug` fra le categorie del riferimento, `published_at not is null` | come il sito: le 1.256 righe con `isdraft` NULL restano fuori. Non usare `not.is.true` né controlli `!== true` lato app, che le includerebbero |
 | interpelli | `link_type eq single`, `status eq completed`, `interpello_date not is null` | il dettaglio del sito è più permissivo; l'API no |
 | selezione-personale | `status eq completed`, `data_pubblicazione not is null` | |
-| bandi | `stato_processing eq completed` e `slug not is null` (ripetono la RLS apposta: restano corretti anche se la policy cambia), `created_at not is null` | |
+| bandi | il predicato di `FONTI_BANDI` (`src/lib/bandi/pubblicazione.ts`) più `created_at not is null` | oggi `stato_processing eq completed` e `slug not is null`: ripetono la RLS apposta (restano corretti anche se la policy cambia), ma sono scritti in un posto solo, condiviso con liste, corpus e scheda. Sulla vista `bando_pubblico` il predicato è dentro la vista e le operazioni sono zero |
 
 Ogni risorsa ha `<colonna di ordinamento> not is null`: serve al keyset. Senza, una riga con chiave
 NULL in posizione `limit` fa rispondere 500 all'intera pagina (`posizioneDi` in `risorse.ts`).
@@ -217,8 +229,14 @@ UTC; 4-6 → Europe/Rome. **Errore noto:** ~436 articoli scritti dall'editor pre
   `status = deadline_on >= oggi(Roma) ? open : closed`. Per le scadenze fra 00:00 e 01:59 di Roma con
   l'ora legale (00:00-00:59 con l'ora solare) `deadline_on` precede di un giorno la data locale di
   `deadline_at`: è voluto (è il giorno che la fonte intende con «ore 24:00»).
-- Bandi: `effectiveStatoBando` come il sito (anche i 14 "in apertura prossimamente" con apertura già
-  passata restano `upcoming`).
+- Bandi: `effectiveStatoBando` come il sito (anche i 14 "in apertura prossimamente" con apertura
+  già passata restano `upcoming`): è la firma con `oggi` passato dal chiamante, che l'API fissa una
+  volta per richiesta.
+- Bandi, da 1.1: `status` ammette anche `suspended` (bando fermato dall'ente) e `revoked`
+  (annullato, stato definitivo). Su questi due non si può partecipare **qualunque** sia
+  `deadline_on`, e la scadenza passata non li trasforma in `closed` (garanzia A3: un sospeso non si
+  chiude mai d'ufficio). Chi deduceva "si può partecipare" da `status !== 'closed'` sbaglia.
+  I due valori non compariranno finché il CHECK della colonna non li ammette (migrazione 06).
 - Scadenza oltre 8 anni dalla pubblicazione → implausibile: `deadline_*` null (selezione: `status`
   `open`; bandi: lo stato della fonte). Oggi 22 righe della selezione (fino al 5026, sentinella
   2099-12-30).
@@ -322,8 +340,8 @@ Un campo nuovo è compatibile; rinominarne o toglierne uno no (va in v2).
    `gestore.test.ts` (`meta.filters`), `openapi.test.ts` (esempi) e `parametri.test.ts` (query
    canonica e `meta.filters`).
 
-Il filtro `status` (aperto/scaduto) non è in v1.0: il piano lo rinvia a v1.1 come aggiunta
-compatibile, senza progettarlo. Va progettato da zero, e la chiave di cache deve dipendere da `oggi`
+Il **filtro** `status` (aperto/scaduto) non esiste ancora: la 1.1 ha aggiunto due valori al campo,
+non un parametro per filtrarci. Va progettato da zero, e la chiave di cache deve dipendere da `oggi`
 (come già fa `dipendeDaOggi`).
 
 ### Aggiungere una risorsa
@@ -515,9 +533,11 @@ Poi il log: la riga `[api-v1] configurazione` compare dopo la prima richiesta.
   - bozze, `profiles` e `api_access_requests` leggibili con la chiave anon;
   - `/api/interpelli` che espone 7,7 MB di testo integrale;
   - injection nel `.or()` di `/api/search`;
-  - proxy news senza autenticazione (`news/publish`, `reconstruct`, `reset-generation`),
-    `eu-funding/refresh*` avviabili anche via GET, SSRF in `upload-from-url.ts`, `API_SECRET_KEY`
-    che non protegge nulla quando manca.
+  - proxy news senza autenticazione (`news/publish`, `reconstruct`, `reset-generation`), SSRF in
+    `upload-from-url.ts`, `API_SECRET_KEY` che non protegge nulla quando manca (corretto per
+    `indexnow-notify.ts`, da verificare altrove). Gli endpoint `eu-funding/refresh*`, che senza
+    autenticazione avviavano un processo Python e scrivevano nel repo anche via GET, sono stati
+    rimossi insieme alla sezione `/eu-funding` (ora 410).
 
   Dettagli e rimedi nella sezione finale del piano.
 - **Slug duplicati della selezione** (id 3740/3741, 12540/18661): la scheda sul sito risponde 404 per

@@ -9,6 +9,7 @@ import {
   type ContestoPiano, type CostruttoreQuery,
 } from '../../src/lib/api-v1/filtri.ts';
 import { validaQueryElenco, type FiltriElenco } from '../../src/lib/api-v1/parametri.ts';
+import { FONTI_BANDI } from '../../src/lib/bandi/pubblicazione.ts';
 import type { Operazione, Risorsa } from '../../src/lib/api-v1/contratto.ts';
 
 function filtri(risorsa: Risorsa, query: string): FiltriElenco {
@@ -118,6 +119,7 @@ test('bandi: filtro equivalente alla RLS in ogni modo, regione via embed', () =>
   for (const modo of MODI) {
     const p = pianoQuery('bandi', contesto({ modo, filtri: modo === 'elenco' ? filtri('bandi', '') : null, id: modo === 'dettaglio' ? 1 : null }));
     assert.equal(p.db, 'bandi');
+    assert.equal(p.tabella, 'bando');
     assert.equal(p.select, 'bando');
     assert.deepEqual(filtroOp(p.operazioni, 'stato_processing'), [{ tipo: 'filtro', colonna: 'stato_processing', operatore: 'eq', valore: 'completed' }], modo);
     assert.deepEqual(filtroOp(p.operazioni, 'slug'), [{ tipo: 'filtro', colonna: 'slug', operatore: 'not.is', valore: 'null' }], modo);
@@ -130,6 +132,27 @@ test('bandi: filtro equivalente alla RLS in ogni modo, regione via embed', () =>
   assert.deepEqual(p.operazioni.slice(-3, -1), [
     { tipo: 'ordina', colonna: 'created_at', crescente: false }, { tipo: 'ordina', colonna: 'id', crescente: false },
   ]);
+});
+
+test('bandi: il predicato viene da FONTI_BANDI, tabella compresa', () => {
+  // Non e' un doppione del test sopra: li' si controlla il valore, qui che il
+  // valore arrivi dal modulo e non da una copia ricopiata in filtri.ts.
+  const daModulo = FONTI_BANDI.bando.operazioni.map(([colonna, operatore, valore]) =>
+    ({ tipo: 'filtro', colonna, operatore, valore }));
+  const p = pianoQuery('bandi', contesto({ modo: 'dettaglio', id: 1 }));
+  assert.deepEqual(p.operazioni.slice(0, daModulo.length), daModulo);
+
+  // Sulla vista il predicato e' dentro la vista: ripeterlo darebbe 42703.
+  const vista = pianoQuery('bandi', contesto({ modo: 'dettaglio', id: 1, fonteBandi: 'bando_pubblico' }));
+  assert.equal(vista.tabella, 'bando_pubblico');
+  assert.deepEqual(filtroOp(vista.operazioni, 'stato_processing'), []);
+  assert.deepEqual(filtroOp(vista.operazioni, 'slug'), []);
+  // `created_at` resta: non e' pubblicazione, e' la chiave del cursore.
+  assert.deepEqual(filtroOp(vista.operazioni, 'created_at'),
+    [{ tipo: 'filtro', colonna: 'created_at', operatore: 'not.is', valore: 'null' }]);
+
+  // Solo i bandi cambiano tabella: le altre risorse non hanno una vista.
+  assert.equal(pianoQuery('articles', contesto({ modo: 'dettaglio', id: 1, fonteBandi: 'bando_pubblico' })).tabella, 'articles');
 });
 
 test('builder di valori', () => {

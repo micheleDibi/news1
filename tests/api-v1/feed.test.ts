@@ -269,6 +269,17 @@ test('JSON Feed: nessun membro vuoto fuori da _edunews24', () => {
   assert.equal(i.content_text, 'Scheda completa su EduNews24: https://edunews24.it/interpelli/ic-mazzini-roma-lazio-1523');
 });
 
+test('JSON Feed: i due status nuovi escono tali e quali', () => {
+  // Il feed non rimappa `status`: prima un bando sospeso o revocato sarebbe
+  // uscito come `open`, ora esce come `suspended`/`revoked` anche qui.
+  const { voci } = jsonFeed([
+    bando({ status: 'suspended' }),
+    bando({ status: 'revoked', deadline_on: '2026-01-01' }),
+  ]);
+  assert.deepEqual(voci[0]._edunews24, { type: 'bando', status: 'suspended', deadline_on: '2026-11-30' });
+  assert.deepEqual(voci[1]._edunews24, { type: 'bando', status: 'revoked', deadline_on: '2026-01-01' });
+});
+
 test('JSON Feed: _edunews24 esatto per tipo, null conservati', () => {
   const { voci } = jsonFeed([articolo(), interpello(), selezione(), bando({ status: 'upcoming', deadline_on: null })]);
   assert.deepEqual(voci[0]._edunews24, { type: 'article', category: 'scuola' });

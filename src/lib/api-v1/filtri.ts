@@ -10,10 +10,12 @@
  * valori presi da whitelist (registro regioni, riferimento categorie, valori del
  * corpus ammessi) e cursori validati. Mai stringhe grezze del client.
  */
+import { fontePerNome, FONTE_BANDI_PREDEFINITA } from '../bandi/pubblicazione';
 import { ELEMENTI_FEED, MARGINE_FUSO_MS } from './costanti';
 import { muroRoma, muroUtc } from './tempo';
 import type { FiltriElenco } from './parametri';
 import type { PosizioneCursore } from './cursore';
+import type { NomeFonteBandi } from '../bandi/pubblicazione';
 import type { NomeSelect, Operazione, PianoQuery, Risorsa, Tabella } from './contratto';
 
 export type ModoQuery = 'elenco' | 'dettaglio' | 'feed';
@@ -36,6 +38,13 @@ export interface ContestoPiano {
   id: number | null;
   /** Elenco: righe da leggere (limit + 1 per sapere se ce ne sono altre). */
   righe: number;
+  /**
+   * Bandi: da quale fonte leggere (`bando` o la vista `bando_pubblico`). Il
+   * valore lo decide il flag, che solo i moduli impuri possono leggere
+   * (`rotta.ts`); qui arriva gia' risolto. Assente = `bando`, cioe' il
+   * comportamento di sempre.
+   */
+  fonteBandi?: NomeFonteBandi;
 }
 
 /** Colonna di ordinamento (e del cursore) per ciascuna risorsa. */
@@ -50,8 +59,15 @@ const TABELLA: ReadonlyMap<Risorsa, Tabella> = new Map<Risorsa, Tabella>([
   ['articles', 'articles'],
   ['interpelli', 'interpelli'],
   ['selezione-personale', 'selezione_personale'],
+  // I bandi non sono qui: la loro tabella dipende dalla fonte (vedi tabellaDi).
   ['bandi', 'bando'],
 ]);
+
+/** Tabella della risorsa; per i bandi la decide FONTI_BANDI. */
+function tabellaDi(risorsa: Risorsa, contesto: ContestoPiano): Tabella {
+  if (risorsa === 'bandi') return fontePerNome(contesto.fonteBandi ?? FONTE_BANDI_PREDEFINITA).tabella as Tabella;
+  return TABELLA.get(risorsa) as Tabella;
+}
 
 // ---------------------------------------------------------------------------
 // Costruttori di valori PostgREST
@@ -185,10 +201,16 @@ function pianoSelezione(contesto: ContestoPiano): Operazione[] {
 
 function pianoBandi(contesto: ContestoPiano): Operazione[] {
   const f = contesto.filtri;
-  // Filtro equivalente alla RLS pubblica, ripetuto: l'API resta corretta anche se la policy cambia.
+  // Condizione di pubblicazione da FONTI_BANDI (src/lib/bandi/pubblicazione.ts),
+  // non piu' ricopiata qui: e' la stessa che usano liste, corpus e scheda.
+  // Resta ripetuta rispetto alla RLS di proposito — l'API deve restare corretta
+  // anche se la policy cambia — ma ora e' scritta in un posto solo. Sulla vista
+  // le operazioni sono zero: ripetere `stato_processing` darebbe 42703.
+  const fonte = fontePerNome(contesto.fonteBandi ?? FONTE_BANDI_PREDEFINITA);
   const ops: Operazione[] = [
-    filtro('stato_processing', 'eq', 'completed'),
-    filtro('slug', 'not.is', 'null'),
+    ...fonte.operazioni.map(([colonna, operatore, valore]) => filtro(colonna, operatore, valore)),
+    // Non e' parte del predicato di pubblicazione: `created_at` e' la chiave di
+    // ordinamento e del cursore, e una riga senza non sarebbe paginabile.
     filtro('created_at', 'not.is', 'null'),
   ];
   if (contesto.modo === 'elenco' && f) {
@@ -221,7 +243,7 @@ export function pianoQuery(risorsa: Risorsa, contesto: ContestoPiano): PianoQuer
   }
   return {
     db: risorsa === 'bandi' ? 'bandi' : 'principale',
-    tabella: TABELLA.get(risorsa) as Tabella,
+    tabella: tabellaDi(risorsa, contesto),
     select: selectDi(risorsa, contesto),
     operazioni,
   };

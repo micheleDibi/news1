@@ -34,7 +34,10 @@ type Proprieta = ReadonlyArray<readonly [string, Schema]>;
 
 const TIPI_OPPORTUNITA: readonly TipoOpportunita[] = ['interpello', 'selezione-personale', 'bando'];
 const RISORSE: readonly Risorsa[] = ['articles', 'interpelli', 'selezione-personale', 'bandi'];
-const STATI: readonly (string | null)[] = ['open', 'closed', 'upcoming', null];
+// v1.1: `suspended` e `revoked` si aggiungono in coda. L'ordine conta solo
+// per il confronto dei test, ma i valori nuovi vanno dopo i vecchi: un client
+// che generi codice dall'enum non deve vedersi rinumerare quelli esistenti.
+const STATI: readonly (string | null)[] = ['open', 'closed', 'upcoming', 'suspended', 'revoked', null];
 const PATTERN_SLUG = SLUG_VALIDO.source;
 
 // ---------------------------------------------------------------------------
@@ -59,6 +62,9 @@ const testo = (d?: string): Schema => conDescrizione({ type: 'string', minLength
 const testoONull = (d?: string): Schema => conDescrizione({ type: ['string', 'null'], minLength: 1 }, d);
 const uri = (d?: string): Schema => conDescrizione({ type: 'string', format: 'uri' }, d);
 const uriONull = (d?: string): Schema => conDescrizione({ type: ['string', 'null'], format: 'uri' }, d);
+// `hostname`: minuscolo, senza `www.`. E' un host, non testo libero: la guardia
+// «nessun URL esterno nei testi» di contratto.test.ts lo esenta come fa con `uri`.
+const nomeHost = (d?: string): Schema => conDescrizione({ type: 'string', format: 'hostname', minLength: 1 }, d);
 const istante = (d?: string): Schema => conDescrizione({ type: 'string', format: 'date-time' }, d);
 const istanteONull = (d?: string): Schema => conDescrizione({ type: ['string', 'null'], format: 'date-time' }, d);
 const giornoONull = (d?: string): Schema => conDescrizione({ type: ['string', 'null'], format: 'date' }, d);
@@ -332,6 +338,17 @@ function schemaDettagliSelezione(): Schema {
   ]);
 }
 
+function schemaFonteUfficiale(): Schema {
+  return oggetto([
+    ['url', uri('Pagina o atto sul dominio dell\'ente, oppure scheda su un portale pubblico.')],
+    ['host', nomeHost('Host in minuscolo, senza www.')],
+    ['type', { type: ['string', 'null'], enum: ['institution', 'public_portal', null],
+      description: 'institution: pagina o atto dell\'ente. public_portal: portale pubblico.' }],
+    ['verified_on', giornoONull('Giorno della verifica.')],
+  ], 'Fonte ufficiale del bando. Presente solo quando la verifica si è conclusa; mai un sito ' +
+    'che si limita a ripubblicare bandi altrui.');
+}
+
 function schemaDettagliBando(): Schema {
   return oggetto([
     ['short_title', testoONull()],
@@ -348,6 +365,13 @@ function schemaDettagliBando(): Schema {
     ['max_amount_per_project_eur', numeroONull()],
     ['opens_on', giornoONull()],
     ['source_published_on', giornoONull('Data di pubblicazione presso la fonte.')],
+    ['official_source', oppureNull(rif('FonteUfficiale'),
+      'null finché la verifica non è conclusa. Aggiunto in 1.1.')],
+    ['opens_on_verified', { type: ['boolean', 'null'],
+      description: 'La data di apertura è stata verificata sulla fonte ufficiale? null = non lo sappiamo. Aggiunto in 1.1.' }],
+    ['deadline_verified', { type: ['boolean', 'null'],
+      description: 'La data di scadenza è stata verificata sulla fonte ufficiale? null = non lo sappiamo. Aggiunto in 1.1.' }],
+    ['last_checked_at', istanteONull('Ultimo controllo sulla fonte ufficiale. Aggiunto in 1.1.')],
   ]);
 }
 
@@ -506,6 +530,7 @@ function schemi(): Schema {
       ['code', testo()],
       ['description', testoONull()],
     ])],
+    ['FonteUfficiale', schemaFonteUfficiale()],
     ['DettagliBando', schemaDettagliBando()],
     ['Interpello', schemaTipoOpportunita('interpello', 'DettagliInterpello', 'Interpello di una scuola.')],
     ['SelezionePersonale', schemaTipoOpportunita('selezione-personale', 'DettagliSelezione', 'Concorso o selezione pubblica.')],

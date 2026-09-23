@@ -10,6 +10,7 @@ import { sezioniDocumentazione } from '../../src/lib/api-v1/documentazione.ts';
 import { CODICI_ERRORE, DEFINIZIONE_ERRORE } from '../../src/lib/api-v1/errori.ts';
 import { ORDINE_PARAMETRI, SPEC_PARAMETRI } from '../../src/lib/api-v1/parametri.ts';
 import { CONTENT_SIGNAL, URL_TERMINI } from '../../src/lib/api-v1/costanti.ts';
+import { descrizioneOpenApi } from '../../src/lib/api-v1/testi-doc.ts';
 import type { Blocco, SezioneDoc } from '../../src/lib/api-v1/documentazione.ts';
 
 const sezioni = sezioniDocumentazione();
@@ -79,7 +80,15 @@ test('sezioni richieste presenti', () => {
   ]) {
     sezione(id);
   }
-  assert.ok(testoDi(sezione('changelog')).includes('1.0 | 2026-09-21'));
+  const changelog = testoDi(sezione('changelog'));
+  // La voce storica resta 1.0 anche ora che VERSIONE_API vale 1.1: e' un
+  // letterale in testi-doc.ts proprio per questo.
+  assert.ok(changelog.includes('1.0 | 2026-09-21'), '1.0');
+  assert.ok(changelog.includes('1.1 | 2026-09-23'), '1.1');
+  // La 1.1 dichiara sia l'aggiunta sia il modo in cui puo' rompere un client.
+  for (const frammento of ['suspended', 'revoked', 'official_source', 'Aggiunta compatibile']) {
+    assert.ok(changelog.includes(frammento), frammento);
+  }
   assert.ok(testoDi(sezione('introduzione')).includes('https://edunews24.it/api/v1'));
   assert.ok(testoDi(sezione('esempi')).includes('curl '));
   assert.ok(testoDi(sezione('paginazione')).includes('links.next'));
@@ -91,6 +100,20 @@ test('sezioni richieste presenti', () => {
   for (const frammento of ['_edunews24', 'application/feed+json', 'application/rss+xml', '<rss version="2.0"', '"version": "https://jsonfeed.org/version/1.1"']) {
     assert.ok(feed.includes(frammento), frammento);
   }
+});
+
+test('la promessa sugli URL nomina official_source (§16.3.9)', () => {
+  // La 1.1 dichiara details.official_source.url con `format: uri` e l'esempio
+  // lo valorizza con un host esterno: il paragrafo del formato non può più
+  // dire «non ci sono link alle fonti esterne» senza contraddire lo schema.
+  // L'asserzione lega i due: chi cambia lo schema deve passare di qui.
+  const formato = testoDi(sezione('formato'));
+  assert.ok(formato.includes('official_source'), 'il paragrafo del formato deve nominare official_source');
+  assert.equal(formato.includes('Non ci sono link alle fonti esterne'), false);
+  // Stessa promessa nella descrizione OpenAPI, che viene dagli stessi testi.
+  const descrizione = descrizioneOpenApi();
+  assert.ok(descrizione.includes('official_source'));
+  assert.equal(descrizione.includes('Non ci sono link alle fonti esterne'), false);
 });
 
 test('tabella dei filtri generata da SPEC_PARAMETRI', () => {

@@ -129,6 +129,17 @@ test('select: insieme esatto delle colonne, nessuna colonna vietata', () => {
   }
   const bando = colonneDi(SELECT_PER_NOME.get('bando')!, 'bando');
   assert.ok(bando.includes('regioni.slug') && bando.includes('codici_ateco.descrizione'));
+  // v1.1 e' additiva nel contratto, non nella select: official_source e i due
+  // flag di verifica escono `null` perche' le colonne che li alimentano non
+  // esistono ancora. Chiederle oggi non darebbe un campo vuoto: PostgREST
+  // risponderebbe 42703 e cadrebbe l'intera richiesta, per ogni bando.
+  for (const inesistente of [
+    'bando.fonte_ufficiale_url', 'bando.fonte_ufficiale_host', 'bando.fonte_ufficiale_stato',
+    'bando.fonte_ufficiale_tipo', 'bando.data_apertura_verificata', 'bando.data_scadenza_verificata',
+    'bando.ora_scadenza', 'bando.ultimo_controllo_at', 'bando.ultimo_cambiamento_at', 'bando.pubblicato',
+  ]) {
+    assert.ok(!bando.includes(inesistente), `select F1 con colonna non ancora migrata: ${inesistente}`);
+  }
   const conRegione = colonneDi(SELECT_PER_NOME.get('bando-con-regione')!, 'bando');
   assert.deepEqual(conRegione.slice(0, bando.length), bando);
   assert.deepEqual(conRegione.slice(bando.length), ['regioni.slug']);

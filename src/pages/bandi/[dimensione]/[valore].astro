@@ -10,7 +10,7 @@ export const prerender = false;
 
 import PaginaFiltro from '../../../components/filtro/PaginaFiltro.astro';
 import CardBando from '../../../components/liste/CardBando.astro';
-import { supabaseBandi, loadCatalogo, lookupNome, BANDO_SELECT_LIST, type Bando } from '../../../lib/supabase-bandi';
+import { supabaseBandi, loadCatalogo, lookupNome, BANDO_SELECT_LIST, FONTE_BANDI, type Bando } from '../../../lib/supabase-bandi';
 import { risolvi, sorelle, incrociate, hrefFiltro, hrefHub } from '../../../lib/pagine-filtro';
 import { leggiPagina, numeroPagine, intervalloRange, rispostaNonTrovata } from '../../../lib/paginazione';
 import { metaFiltro, introFiltro, etichettaBreve } from '../../../lib/seo-filtro';
@@ -53,7 +53,16 @@ const select = giunzione
   ? `${BANDO_SELECT_LIST}, ${giunzione.tabella}!inner(${giunzione.colonna})`
   : BANDO_SELECT_LIST;
 
-let query = supabaseBandi.from('bando').select(select);
+// Tabella e condizione di pubblicazione da FONTE_BANDI (src/lib/bandi/pubblicazione.ts).
+// Prima qui c'era solo `.from('bando')` e ci si affidava alla RLS: sulla tabella le
+// operazioni sono in AND con una policy che dice gia' la stessa cosa (nessuna riga in
+// piu' ne' in meno), ma il nome della tabella deve poter cambiare in un posto solo, e i
+// conteggi mostrati arrivano da corpus.ts, che la fonte la legge da li'. Sulla vista
+// `bando_pubblico` le operazioni sono zero: ripetere `stato_processing` darebbe 42703.
+let query = supabaseBandi.from(FONTE_BANDI.tabella).select(select);
+for (const [colonna, operatore, valore] of FONTE_BANDI.operazioni) {
+  query = query.filter(colonna, operatore, valore);
+}
 if (giunzione) {
   // .filter() e' l'unico metodo che non riscrive il nome puntato della colonna embedded.
   query = query.filter(`${giunzione.tabella}.${giunzione.colonna}`, 'in', `(${voce.idsDb.join(',')})`);

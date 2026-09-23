@@ -131,8 +131,18 @@ function uriValida(v: string): boolean {
   }
 }
 
+/**
+ * `hostname` come lo promette il contratto: minuscolo, senza `www.`, etichette
+ * separate da punti. E' piu' stretto della RFC di proposito: due host uguali
+ * scritti in modo diverso sono due chiavi diverse per chi ci costruisce sopra.
+ */
+function hostnameValido(v: string): boolean {
+  if (v !== v.toLowerCase() || v.startsWith('www.') || v.endsWith('.')) return false;
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(v);
+}
+
 const FORMATI: ReadonlyMap<unknown, (v: string) => boolean> = new Map<unknown, (v: string) => boolean>([
-  ['uri', uriValida], ['date-time', istanteValido], ['date', giornoValido],
+  ['uri', uriValida], ['date-time', istanteValido], ['date', giornoValido], ['hostname', hostnameValido],
 ]);
 
 function valida(v: unknown, schema: Schema, percorso: string, esito: Esito, chiave = '', parteDiAllOf = false): void {
@@ -170,7 +180,10 @@ function valida(v: unknown, schema: Schema, percorso: string, esito: Esito, chia
     if (typeof s.maxLength === 'number' && [...v].length > s.maxLength) errore('stringa oltre maxLength');
     if (typeof s.pattern === 'string' && !new RegExp(s.pattern, 'u').test(v)) errore(`non rispetta ${s.pattern}: ${v}`);
     if (s.format !== undefined && !(FORMATI.get(s.format)?.(v) ?? false)) errore(`format ${String(s.format)} non valido: ${v}`);
-    esito.stringhe.push({ percorso, chiave, valore: v, esente: s.format === 'uri' || 'const' in s });
+    esito.stringhe.push({
+      percorso, chiave, valore: v,
+      esente: s.format === 'uri' || s.format === 'hostname' || 'const' in s,
+    });
   }
   if (typeof v === 'number') {
     if (typeof s.minimum === 'number' && v < s.minimum) errore(`${v} sotto minimum ${s.minimum}`);

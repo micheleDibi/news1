@@ -16,7 +16,8 @@ import {
   esempioArticolo, esempioBando, esempioCategoria, esempioInterpello, esempioSelezione, esempioVideo,
 } from '../../src/lib/api-v1/testi-doc.ts';
 import type {
-  ArticoloDto, BandoDto, CategoriaDto, InterpelloDto, OpportunitaBaseDto, Risorsa, SelezioneDto, VideoDto,
+  ArticoloDto, BandoDto, CategoriaDto, FonteUfficialeDto, InterpelloDto, OpportunitaBaseDto, Risorsa,
+  SelezioneDto, VideoDto,
 } from '../../src/lib/api-v1/contratto.ts';
 import type { FiltriElenco } from '../../src/lib/api-v1/parametri.ts';
 
@@ -107,12 +108,17 @@ const SELEZIONE: SelezioneDto = {
   },
 };
 
+const FONTE_UFFICIALE: FonteUfficialeDto = {
+  url: 'https://comune.esempio.it/bando', host: 'comune.esempio.it', type: 'institution', verified_on: '2026-09-18',
+};
+
 const BANDO: BandoDto = {
   ...BASE, type: 'bando',
   details: {
     short_title: null, issuer: null, geographic_area: null, topics: [], kind: null, program: null,
     funding_method: null, sectors: [], beneficiaries: [], ateco_codes: [{ code: '62.01', description: null }],
     total_amount_eur: null, max_amount_per_project_eur: null, opens_on: null, source_published_on: null,
+    official_source: FONTE_UFFICIALE, opens_on_verified: null, deadline_verified: null, last_checked_at: null,
   },
 };
 
@@ -142,6 +148,7 @@ const COPPIE: readonly (readonly [string, object])[] = [
   ['DettagliSelezione', SELEZIONE.details],
   ['DettagliBando', BANDO.details],
   ['CodiceAteco', BANDO.details.ateco_codes[0]],
+  ['FonteUfficiale', FONTE_UFFICIALE],
   ['DatiIndice', INDICE],
   ['RisorsaIndice', INDICE.resources[0]],
 ];
@@ -316,7 +323,10 @@ test('schemi DTO: nullabilita\' coerente con i DTO', () => {
     ['DettagliInterpello', ['official_title', 'competition_class', 'province', 'city']],
     ['DettagliSelezione', ['official_title', 'code', 'position', 'positions_count', 'procedure_type', 'salary_min', 'salary_max']],
     ['DettagliBando', ['short_title', 'issuer', 'geographic_area', 'kind', 'program', 'funding_method',
-      'total_amount_eur', 'max_amount_per_project_eur', 'opens_on', 'source_published_on']],
+      'total_amount_eur', 'max_amount_per_project_eur', 'opens_on', 'source_published_on',
+      // v1.1: tutti nullabili, perche' oggi sono tutti null.
+      'official_source', 'opens_on_verified', 'deadline_verified', 'last_checked_at']],
+    ['FonteUfficiale', ['type', 'verified_on']],
     ['CodiceAteco', ['description']],
     ['RisorsaIndice', ['feeds']],
   ]);
@@ -331,7 +341,11 @@ test('schemi DTO: nullabilita\' coerente con i DTO', () => {
     }
   }
   const status = (schema('OpportunitaBase').properties as Record<string, Oggetto>).status;
-  assert.deepEqual(status.enum, ['open', 'closed', 'upcoming', null]);
+  // v1.1: due valori in piu', in coda ai tre gia' pubblicati.
+  assert.deepEqual(status.enum, ['open', 'closed', 'upcoming', 'suspended', 'revoked', null]);
+  // `host` e' un host, non un URL: format hostname (minuscolo, senza www.).
+  const host = (schema('FonteUfficiale').properties as Record<string, Oggetto>).host;
+  assert.equal(host.format, 'hostname');
 });
 
 test('Opportunita: oneOf con discriminatore type; tipi costanti', () => {

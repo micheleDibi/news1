@@ -5,8 +5,8 @@
 /** Host pubblico: tutti gli URL emessi sono assoluti su questa base, mai su request.url. */
 export const SITO = 'https://edunews24.it';
 export const BASE_API = `${SITO}/api/v1`;
-export const VERSIONE_API = '1.0';
-export const VERSIONE_OPENAPI = '1.0.0';
+export const VERSIONE_API = '1.1';
+export const VERSIONE_OPENAPI = '1.1.0';
 
 export const URL_DOCUMENTAZIONE = `${SITO}/sviluppatori/api`;
 export const URL_TERMINI = `${URL_DOCUMENTAZIONE}#termini`;

@@ -2,8 +2,10 @@
  * Da righe di interpelli, selezione del personale e bandi ai DTO dell'API (piano §3.9).
  *
  * - Oggetti costruiti campo per campo nell'ordine del contratto: nessuna colonna
- *   interna o link a fonti esterne puo' uscire (niente spread della riga).
- * - Ogni testo passa da pulisciTesto/pulisciElenco; gli URL sono solo di EduNews24.
+ *   interna o link dello scraper puo' uscire (niente spread della riga).
+ * - Ogni testo passa da pulisciTesto/pulisciElenco; gli URL sono di EduNews24, con
+ *   una sola eccezione dichiarata: details.official_source.url dei bandi (1.1),
+ *   la pagina dell'ente, mai un sito che ripubblica bandi altrui. In F1 e' null.
  * - `oggi` (YYYY-MM-DD di Roma) arriva dal chiamante, fissato una volta per richiesta:
  *   l'uscita non dipende dall'orologio ne' dal fuso del processo.
  * - Una riga inservibile (id, slug, titolo o data di pubblicazione non validi) da'
@@ -32,10 +34,16 @@ const ORDINE_REGIONE: ReadonlyMap<string, number> = new Map(REGIONI.map((r, i) =
 
 const PREFISSO_INTERPELLI = /^Interpelli Pubblicati Da:\s*/i;
 
+// v1.1: cinque stati. `sospeso` e `revocato` non usciranno finche' la
+// migrazione 06 non estende il CHECK della colonna, ma la mappa e' completa da
+// subito: mapparli su `closed` (o lasciarli cadere a null) sarebbe una bugia,
+// e un bando revocato che esce come `open` e' il difetto che la v1.0 aveva.
 const STATO_DA_BANDO: ReadonlyMap<StatoBando, StatoOpportunita> = new Map<StatoBando, StatoOpportunita>([
   ['aperto', 'open'],
   ['chiuso', 'closed'],
   ['in apertura prossimamente', 'upcoming'],
+  ['sospeso', 'suspended'],
+  ['revocato', 'revoked'],
 ]);
 
 // ---------------------------------------------------------------------------
@@ -376,6 +384,15 @@ export function mappaBando(riga: RigaBando, oggi: string): BandoDto | null {
       max_amount_per_project_eur: interoSicuro(riga.importo_max_per_progetto_eur),
       opens_on: giornoValido(riga.data_apertura),
       source_published_on: giornoValido(riga.data_pubblicazione),
+      // v1.1, additivi. Restano null finche' le migrazioni 01-02 non creano le
+      // colonne: `colonne.ts` non le puo' chiedere prima (PostgREST risponde
+      // 42703 e fa fallire l'intera richiesta, non il singolo campo). Il
+      // contratto pubblico e' pero' gia' quello definitivo, cosi' i client si
+      // preparano a leggerli senza aspettare un'altra versione.
+      official_source: null,
+      opens_on_verified: null,
+      deadline_verified: null,
+      last_checked_at: null,
     },
   };
 }

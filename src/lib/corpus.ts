@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
-import { supabaseBandi, loadCatalogo, effectiveStatoBando, todayRomeISO, type CatalogoRow } from './supabase-bandi';
+import { supabaseBandi, loadCatalogo, todayRomeISO, FONTE_BANDI, type CatalogoRow } from './supabase-bandi';
+import { statoEffettivo } from './stato-bando';
 import { regionePerValore, regionePerSlug } from './regioni';
 import { slugifica } from './slug';
 import { TTL_CORPUS_MS, configSezione, type Sezione } from '../config/pagine-filtro';
@@ -288,16 +289,22 @@ function slugCatalogo(riga: CatalogoRow, dimensione: string): { slug: string; et
 
 async function costruisciBandi(): Promise<Corpus> {
   const [righe, catalogo] = await Promise.all([
-    leggiTutto<RigaBando>((da, a) =>
-      supabaseBandi
-        .from('bando')
-        .select('id, programma_id, tipologia_bando_id, stato_bando, data_scadenza, data_pubblicazione')
-        .eq('stato_processing', 'completed')
-        .not('slug', 'is', null)
+    leggiTutto<RigaBando>((da, a) => {
+      // Tabella e predicato da FONTE_BANDI: e' l'unico posto dove sta scritto
+      // che cosa vuol dire "pubblicato" (prima era ricopiato qui a mano). Sulla
+      // vista le operazioni sono zero, perche' il predicato ce l'ha dentro.
+      let query = supabaseBandi
+        .from(FONTE_BANDI.tabella)
+        .select('id, programma_id, tipologia_bando_id, stato_bando, data_scadenza, data_pubblicazione');
+      for (const [colonna, operatore, valore] of FONTE_BANDI.operazioni) {
+        query = query.filter(colonna, operatore, valore);
+      }
+      return query
         .order('data_pubblicazione', { ascending: false, nullsFirst: false })
+        // Tiebreak indispensabile: data_pubblicazione e' NULL sul 92% dei bandi.
         .order('id', { ascending: false })
-        .range(da, a),
-    ),
+        .range(da, a);
+    }),
     loadCatalogo(),
   ]);
 
@@ -334,7 +341,11 @@ async function costruisciBandi(): Promise<Corpus> {
   let aperti = 0;
 
   for (const b of righe) {
-    const aperto = effectiveStatoBando(b.stato_bando, b.data_scadenza) === 'aperto';
+    // statoEffettivo (cinque stati) e non piu' effectiveStatoBando: un bando
+    // sospeso o revocato non e' aperto, e con la scadenza passata non e'
+    // nemmeno chiuso (A3). Sulle tre colonne che il DB ammette oggi il conteggio
+    // non cambia; cambia il giorno in cui la migrazione 06 entra in vigore.
+    const aperto = statoEffettivo({ stato: b.stato_bando, data_scadenza: b.data_scadenza }) === 'aperto';
     if (aperto) aperti++;
     const data = b.data_pubblicazione;
 

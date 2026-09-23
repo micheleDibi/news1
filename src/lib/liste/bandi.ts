@@ -1,8 +1,10 @@
 import {
   supabaseBandi, loadCatalogo, lookupNome, todayRomeISO, BANDO_SELECT_LIST,
-  STATI_BANDO, type Bando, type CatalogoRow,
+  BANDI_STATI_ESTESI, FONTE_BANDI, type Bando, type CatalogoRow,
 } from '../supabase-bandi';
 import { corpus } from '../corpus';
+import { condizioneStatoBando, statiRichiesti } from '../bandi/filtro-stato';
+import { opzioniStato } from '../bandi/testi-stato';
 import { orIlike, sanitizzaRicerca } from './postgrest';
 import type { DefLista, Valori } from './parametri';
 import { PAGINE_FILTRO } from '../../config/pagine-filtro';
@@ -56,8 +58,6 @@ const soloInteri = (valori: string[] | undefined): number[] =>
 
 const soloData = (v: string | undefined): string | null => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
 
-const quoteVal = (v: string) => (/[\s,()]/.test(v) ? `"${v.replace(/"/g, '')}"` : v);
-
 export interface PaginaBandi {
   righe: Bando[];
   totale: number;
@@ -87,22 +87,12 @@ export async function caricaBandi(valori: Valori, pagina: number): Promise<Pagin
   const tipologie = soloInteri(valori.tipologia);
   if (tipologie.length) condizioni.push(`tipologia_bando_id.in.(${tipologie.join(',')})`);
 
-  // Stato effettivo: la colonna stato_bando corretta dalla scadenza. Copia della
-  // logica che il client applicava a bandi.astro prima di questo intervento.
-  const stati = (valori.stato ?? []).filter((s) => (STATI_BANDO as readonly string[]).includes(s));
-  if (stati.length) {
-    const oggi = todayRomeISO();
-    const nonScaduto = `or(data_scadenza.gte.${oggi},data_scadenza.is.null)`;
-    const altri = stati.filter((s) => s !== 'chiuso');
-    if (stati.includes('chiuso')) {
-      const rami = ['stato_bando.eq.chiuso', `data_scadenza.lt.${oggi}`];
-      if (altri.length) rami.push(`and(stato_bando.in.(${altri.map(quoteVal).join(',')}),${nonScaduto})`);
-      condizioni.push(`or(${rami.join(',')})`);
-    } else {
-      condizioni.push(`stato_bando.in.(${stati.map(quoteVal).join(',')})`);
-      condizioni.push(nonScaduto);
-    }
-  }
+  // Stato effettivo: la colonna stato_bando corretta dalla scadenza. La
+  // condizione sta in `bandi/filtro-stato.ts`, dove e' testabile riga per riga:
+  // qui era un intreccio di or/and che faceva finire fra i "chiusi" anche i
+  // sospesi e i revocati con la scadenza passata.
+  const stati = statiRichiesti(valori.stato, BANDI_STATI_ESTESI);
+  condizioni.push(...condizioneStatoBando(stati, todayRomeISO()));
 
   const imin = soloInteri(valori.imin)[0];
   const imax = soloInteri(valori.imax)[0];
@@ -114,7 +104,12 @@ export async function caricaBandi(valori: Valori, pagina: number): Promise<Pagin
   if (scadA) condizioni.push(`data_scadenza.lte.${scadA}`);
 
   const select = embeds.length ? `${BANDO_SELECT_LIST},${embeds.join(',')}` : BANDO_SELECT_LIST;
-  let query = supabaseBandi.from('bando').select(select, { count: 'exact' });
+  // Tabella e predicato di pubblicazione da FONTE_BANDI (sulla tabella la RLS
+  // li ripete gia', ma dalla vista il nome cambia e le operazioni spariscono).
+  let query = supabaseBandi.from(FONTE_BANDI.tabella).select(select, { count: 'exact' });
+  for (const [colonna, operatore, valore] of FONTE_BANDI.operazioni) {
+    query = query.filter(colonna, operatore, valore);
+  }
   for (const g of giunzioniAttive) {
     // .filter() e' l'unico metodo di supabase-js che non riscrive il nome puntato.
     query = query.filter(`${g.tabella}.${g.colonna}`, 'in', `(${g.ids.join(',')})`);
@@ -171,11 +166,9 @@ export async function opzioniFiltroBandi(): Promise<OpzioniFiltroBandi> {
       modalita: map(c.modalita),
     },
     tipologie: map(c.tipologie),
-    stati: [
-      { value: 'aperto', label: 'Aperto' },
-      { value: 'in apertura prossimamente', label: 'In apertura' },
-      { value: 'chiuso', label: 'Chiuso' },
-    ],
+    // Le stesse etichette dei badge, e gli stessi valori che `statiRichiesti`
+    // accetta: un chip che la query scarterebbe non deve comparire.
+    stati: opzioniStato(BANDI_STATI_ESTESI).map((o) => ({ value: o.value, label: o.label })),
   };
 }
 

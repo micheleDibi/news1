@@ -343,18 +343,32 @@ test('bando: fixture completa', () => {
       max_amount_per_project_eur: 50000,
       opens_on: '2026-09-15',
       source_published_on: '2026-09-10',
+      // v1.1: presenti e null. Le colonne che li alimentano nascono con le
+      // migrazioni 01-02; chiederle prima darebbe 42703 sull'intera richiesta.
+      official_source: null,
+      opens_on_verified: null,
+      deadline_verified: null,
+      last_checked_at: null,
     },
   });
   assert.deepEqual(Object.keys(dto.details), [
     'short_title', 'issuer', 'geographic_area', 'topics', 'kind', 'program', 'funding_method', 'sectors',
     'beneficiaries', 'ateco_codes', 'total_amount_eur', 'max_amount_per_project_eur', 'opens_on', 'source_published_on',
+    'official_source', 'opens_on_verified', 'deadline_verified', 'last_checked_at',
   ]);
   for (const a of dto.details.ateco_codes) assert.deepEqual(Object.keys(a), ['code', 'description']);
 });
 
-test('regola B: stato del sito (aperto, chiuso, in apertura) e scadenza passata', () => {
+test('regola B: stato del sito (cinque valori) e scadenza passata', () => {
   assert.equal(bando({ stato_bando: 'aperto' }).status, 'open');
   assert.equal(bando({ stato_bando: 'chiuso' }).status, 'closed');
+  // v1.1: prima uscivano come `open` (la colonna non era nel vocabolario) o come
+  // `null`. Un bando revocato annunciato aperto e' il difetto che chiudono.
+  assert.equal(bando({ stato_bando: 'sospeso' }).status, 'suspended');
+  assert.equal(bando({ stato_bando: 'revocato' }).status, 'revoked');
+  // A3: la scadenza passata non chiude un sospeso e non tocca un revocato.
+  assert.equal(bando({ stato_bando: 'sospeso', data_scadenza: '2026-09-01' }).status, 'suspended');
+  assert.equal(bando({ stato_bando: 'revocato', data_scadenza: '2026-09-01' }).status, 'revoked');
   // domanda 8: in apertura anche con data_apertura gia' passata, come il sito
   assert.equal(bando({ stato_bando: 'in apertura prossimamente', data_apertura: '2026-01-01' }).status, 'upcoming');
   assert.equal(bando({ stato_bando: 'sconosciuto' }).status, null);
