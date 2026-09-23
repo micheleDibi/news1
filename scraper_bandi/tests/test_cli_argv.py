@@ -307,8 +307,33 @@ class TestComandiV11(_ConRunnerFinti):
         self.assertEqual(codice, cli.EXIT_TETTO)
         finto.run.assert_awaited_once_with(
             dry_run=True, limit=5, attivo=True, modo="backlog", solo_oe=True,
-            solo_in_verifica=False, bando_id="42", forza=True, lotto="L5",
+            solo_in_verifica=False, bando_id="42", forza=True, offset=0, lotto="L5",
         )
+
+    def test_offset_arriva_al_runner(self):
+        # `--offset N` e' il modo di lanciare i blocchi a mano quando niente
+        # puo' far uscire una riga dalla selezione (con `--forza`, in ombra o
+        # con `--dry-run`, dove nessun marcatore viene scritto).
+        finto = types.ModuleType(f"{ALIAS}.fonte_ufficiale")
+        finto.run = AsyncMock(return_value={})
+        with patch.dict(sys.modules, {f"{ALIAS}.fonte_ufficiale": finto}), \
+                patch.object(cli, "logger", MagicMock()):
+            codice = cli.main([
+                "risolvi-fonte", "--dry-run", "--backlog", "--forza",
+                "--limit", "800", "--offset", "1600",
+            ])
+        self.assertEqual(codice, cli.EXIT_OK)
+        self.assertEqual(finto.run.await_args.kwargs["offset"], 1600)
+
+    def test_offset_non_intero_exit_2(self):
+        stderr = io.StringIO()
+        with patch.object(cli, "logger", MagicMock()), \
+                contextlib.redirect_stderr(stderr):
+            codice = cli.main(["risolvi-fonte", "--offset", "meta'"])
+        self.assertEqual(codice, cli.EXIT_OPZIONI)
+        # Il messaggio dice che cosa manca: un `--offset` illeggibile passato
+        # avanti come zero farebbe ripartire il blocco dall'inizio.
+        self.assertIn("--offset richiede un intero", stderr.getvalue())
 
     def test_risolvi_fonte_default_ombra_e_selezione_nuovi(self):
         finto = types.ModuleType(f"{ALIAS}.fonte_ufficiale")
@@ -319,7 +344,7 @@ class TestComandiV11(_ConRunnerFinti):
         self.assertEqual(codice, cli.EXIT_OK)
         finto.run.assert_awaited_once_with(
             dry_run=True, limit=None, attivo=None, modo="nuovi", solo_oe=False,
-            solo_in_verifica=False, bando_id=None, forza=False, lotto=None,
+            solo_in_verifica=False, bando_id=None, forza=False, offset=0, lotto=None,
         )
 
     def test_solo_in_verifica_seleziona_i_ricontrolli(self):
@@ -381,7 +406,7 @@ class TestComandiV11(_ConRunnerFinti):
             cli.main(["oe-dettaglio", "--dry-run", "--forza"])
         finto.run_oe_dettaglio.assert_awaited_once_with(
             dry_run=True, limit=None, attivo=None, forza=True,
-            solo_oe=True, modo="nuovi", bando_id=None,
+            solo_oe=True, modo="nuovi", bando_id=None, offset=0,
         )
 
     def test_oe_dettaglio_backlog_cambia_la_selezione(self):
@@ -422,7 +447,7 @@ class TestComandiV11(_ConRunnerFinti):
                 patch.object(cli, "logger", log):
             cli.main(["link-verifica", "--dry-run", "--id", "42"])
         finto.run_link_verifica.assert_awaited_once_with(
-            dry_run=True, limit=None, attivo=None, bando_id="42",
+            dry_run=True, limit=None, attivo=None, bando_id="42", offset=0,
         )
         log.warning.assert_not_called()
 
@@ -746,14 +771,14 @@ class TestMonitorEOmbra(_ConRunnerFinti):
         ])
         finto.run_applica_eventi.assert_awaited_once_with(
             dry_run=True, limit=50, attivo=None,
-            dal=date(2026, 9, 1), tipi=("proroga", "rettifica"),
+            dal=date(2026, 9, 1), tipi=("proroga", "rettifica"), offset=0,
         )
         log.warning.assert_not_called()
 
     def test_applica_eventi_senza_filtri(self):
         _, finto, _ = self._monitor(["applica-eventi"])
         finto.run_applica_eventi.assert_awaited_once_with(
-            dry_run=False, limit=None, attivo=None, dal=None, tipi=(),
+            dry_run=False, limit=None, attivo=None, dal=None, tipi=(), offset=0,
         )
 
     def test_dal_malformata_exit_2(self):
@@ -823,7 +848,7 @@ class TestBackfill(_ConRunnerFinti):
         )
         self.assertEqual(codice, cli.EXIT_OK)
         finti["backfill"].run_pulisci_contenuto.assert_awaited_once_with(
-            dry_run=False, limit=115, attivo=None, lotto="L7",
+            dry_run=False, limit=115, attivo=None, lotto="L7", offset=0,
         )
         log.warning.assert_not_called()
 
@@ -833,7 +858,8 @@ class TestBackfill(_ConRunnerFinti):
         )
         self.assertEqual(codice, cli.EXIT_OK)
         finti["rigenera"].run_rigenera.assert_awaited_once_with(
-            dry_run=False, limit=9, attivo=True, lotto="L7", malformati=True,
+            dry_run=False, limit=9, attivo=True, lotto="L7", offset=0,
+            malformati=True,
         )
         log.warning.assert_not_called()
 

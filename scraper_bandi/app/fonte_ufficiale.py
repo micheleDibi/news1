@@ -262,6 +262,10 @@ class Contatori:
     allegati: int = 0
     link_scritti: int = 0
     scarti_blocklist: int = 0
+    #: Righe attraversate dalla selezione e NON lavorate perche' il loro
+    #: ricontrollo non e' ancora dovuto. Non consumano il `--limit`: sono qui
+    #: perche' un giro che ne salta 800 e ne lavora 2 deve poterlo dire.
+    saltate: int = 0
     errori: int = 0
     interrotto_per_tetto: bool = False
     motivo: str = ""
@@ -281,6 +285,7 @@ class Contatori:
             "allegati": self.allegati,
             "link_scritti": self.link_scritti,
             "scarti_blocklist": self.scarti_blocklist,
+            "saltate": self.saltate,
             "errori": self.errori,
         }
 
@@ -1510,6 +1515,107 @@ def _modalita_attiva(attivo: bool | None) -> bool:
         return False
 
 
+#: Quante righe si chiedono per pagina mentre si cercano quelle da risolvere.
+#: Non e' il `--limit` dell'operatore: e' la finestra su cui si scorre.
+PAGINA_SELEZIONE_RESOLVER = 500
+
+
+def _lavorata_oggi(controllo: Mapping[str, Any] | None, oggi: date_cls) -> bool:
+    """La riga e' gia' stata guardata OGGI? (`bando_controllo.ultimo_controllo_at`).
+
+    E' il marcatore giusto per lo scorrimento perche' e' l'unico che viene
+    scritto **anche in ombra**: `payload_controllo` sta fuori dal ramo
+    `if attivo:` di `scrivi_esito`, mentre `fonte_ufficiale_stato` — l'unico
+    predicato della query capace di far uscire una riga — in ombra non viene
+    scritto mai. Appoggiare l'avanzamento sullo stato pubblico significherebbe
+    non avanzare affatto nella modalita' predefinita.
+    """
+    if not controllo:
+        return False
+    quando = controllo.get("ultimo_controllo_at")
+    if not quando:
+        return False
+    try:
+        return date_cls.fromisoformat(str(quando)[:10]) >= oggi
+    except ValueError:
+        return False
+
+
+def _da_risolvere_ora(
+    controllo: Mapping[str, Any] | None, oggi: date_cls, forza: bool,
+) -> bool:
+    """Su questa riga c'e' davvero lavoro da fare in questo giro?
+
+    Mai vista (`ultimo_controllo_at` NULL) -> si lavora, sempre: e' il motivo
+    per cui la cadenza non puo' essere l'unico criterio (la migrazione 03
+    semina `prossimo_controllo_at` su tutte le righe, comprese quelle che il
+    resolver non ha mai guardato, e senza questa clausola i `nuovi`
+    aspetterebbero fino a due settimane).
+
+    Gia' vista: vale la cadenza di `scaduto()`, in tutti e tre i modi e non
+    solo nei `ricontrolli`. Prima una riga finita `non_trovata` restava in
+    testa alla coda e veniva rilavorata a ogni lancio, con il costo pieno
+    della cascata (fino a 4 crediti Firecrawl a bando) per rifare una ricerca
+    gia' fallita.
+
+    Con `--forza` la cadenza non c'e' («rifai» e' il suo scopo), ma una riga
+    lavorata **oggi** si salta lo stesso: senza, due lanci di fila nella stessa
+    giornata ripeterebbero lo stesso blocco di id, che e' il difetto misurato.
+    """
+    if not controllo or not controllo.get("ultimo_controllo_at"):
+        return True
+    if forza:
+        return not _lavorata_oggi(controllo, oggi)
+    return scaduto(controllo, oggi, forza=False)
+
+
+def _da_risolvere(
+    *,
+    limit: int | None,
+    offset: int,
+    modo: str,
+    solo_oe: bool,
+    solo_in_verifica: bool,
+    forza: bool,
+    oggi: date_cls,
+    contatori: Contatori,
+) -> tuple[list[Mapping[str, Any]], dict[Any, Mapping[str, Any]]]:
+    """Le righe su cui c'e' lavoro, scorrendo la selezione a pagine.
+
+    Ritorna `(righe, controlli)`; incrementa `contatori.saltate` per ogni riga
+    attraversata e non lavorata. Si ferma quando ha raccolto `limit` righe da
+    lavorare davvero, o quando la selezione finisce.
+
+    E' il gemello di `_da_leggere` (`oe-dettaglio`), e nasce dallo stesso
+    difetto: `select_bandi_da_risolvere` ordina per `id` e prende i primi N,
+    e il `--limit` contava le righe GUARDATE, non quelle da lavorare.
+    """
+    raccolte: list[Mapping[str, Any]] = []
+    controlli: dict[Any, Mapping[str, Any]] = {}
+    cursore = max(0, int(offset or 0))
+    while True:
+        blocco = db.select_bandi_da_risolvere(
+            limit=PAGINA_SELEZIONE_RESOLVER, offset=cursore, modo=modo,
+            solo_oe=solo_oe, solo_in_verifica=solo_in_verifica,
+            forza=forza, fonti_oe=FONTI_OE,
+        )
+        if not blocco:
+            break
+        cursore += len(blocco)
+        pagina = db.select_controlli([b.get("id") for b in blocco])
+        controlli.update(pagina)
+        for bando in blocco:
+            if not _da_risolvere_ora(pagina.get(bando.get("id")), oggi, forza):
+                contatori.saltate += 1
+                continue
+            raccolte.append(bando)
+            if limit is not None and len(raccolte) >= limit:
+                return raccolte, controlli
+        if len(blocco) < PAGINA_SELEZIONE_RESOLVER:
+            break
+    return raccolte, controlli
+
+
 async def run(
     dry_run: bool = False,
     limit: int | None = None,
@@ -1521,6 +1627,7 @@ async def run(
     solo_in_verifica: bool = False,
     bando_id: Any = None,
     forza: bool = False,
+    offset: int = 0,
     lotto: str | None = None,
     ambiente: Ambiente | None = None,
 ) -> dict[str, Any]:
@@ -1529,6 +1636,13 @@ async def run(
     Il lock e i tetti sono dati, non eccezioni: `saltato_per_lock` e
     `interrotto_per_tetto` tornano nel dizionario e `app/__main__.py` li
     traduce in exit code 3 e 4.
+
+    `--limit` conta le righe da **lavorare**, non quelle guardate: la selezione
+    si scorre a pagine (`_da_risolvere`) e le righe il cui ricontrollo non e'
+    ancora dovuto finiscono in `saltate`. `--offset N` fa partire lo
+    scorrimento oltre le prime N righe della selezione: e' il modo di lanciare
+    a mano i blocchi di un lotto (0, 800, 1600) quando `--forza` toglie ogni
+    altro filtro.
     """
     avvio = time.monotonic()
     attivo = _modalita_attiva(attivo)
@@ -1544,21 +1658,28 @@ async def run(
     bandi: list[Mapping[str, Any]] = []
     controlli: Mapping[Any, Mapping[str, Any]] = {}
     try:
-        bandi = db.select_bandi_da_risolvere(
-            limit=limit, modo=modo, solo_oe=solo_oe,
-            solo_in_verifica=solo_in_verifica, bando_id=bando_id,
-            forza=forza, fonti_oe=FONTI_OE,
-        )
-        controlli = db.select_controlli([b.get("id") for b in bandi]) if bandi else {}
-        if modo == "ricontrolli":
-            # La data vale solo per i ricontrolli (§5). Applicarla anche ai
-            # `nuovi` li farebbe aspettare fino a due settimane: la 03 semina
-            # `prossimo_controllo_at = now() + (id % 336) ore` su tutte le
-            # righe, comprese quelle che il resolver non ha ancora visto.
-            bandi = [
-                b for b in bandi
-                if scaduto(controlli.get(b.get("id")), ambiente.oggi, forza)
-            ]
+        if bando_id is not None:
+            # `--id X` e' una riga sola, chiesta a mano: nessuno scorrimento e
+            # nessuna cadenza. Saltarla perche' e' stata guardata stamattina
+            # renderebbe il comando inutile proprio quando serve.
+            bandi = db.select_bandi_da_risolvere(
+                limit=limit, modo=modo, solo_oe=solo_oe,
+                solo_in_verifica=solo_in_verifica, bando_id=bando_id,
+                forza=forza, fonti_oe=FONTI_OE,
+            )
+            controlli = db.select_controlli([b.get("id") for b in bandi]) if bandi else {}
+        else:
+            # La selezione ordina per `id` e prende i primi N: senza scorrere,
+            # ogni lancio ripeterebbe le stesse righe. Il filtro di data —
+            # che prima valeva solo per i `ricontrolli`, e per giunta DOPO il
+            # `--limit` — sta ora dentro lo scorrimento, e vale per tutti e
+            # tre i modi: e' cio' che fa avanzare la selezione anche in ombra,
+            # dove `fonte_ufficiale_stato` non viene scritto mai.
+            bandi, controlli = _da_risolvere(
+                limit=limit, offset=offset, modo=modo, solo_oe=solo_oe,
+                solo_in_verifica=solo_in_verifica, forza=forza,
+                oggi=ambiente.oggi, contatori=contatori,
+            )
         if bandi:
             ambiente.pubblicati = ambiente.pubblicati or db.select_pubblicati_per_gemelli()
             # Regola A29: la scheda OE si riscarica solo alla scoperta o su un
@@ -1573,7 +1694,11 @@ async def run(
         bandi = []
 
     if not bandi:
-        logger.info("[resolver] nessun bando candidato (modo={})", modo)
+        logger.info(
+            "[resolver] nessun bando candidato (modo={}, saltate={}): la selezione "
+            "e' stata attraversata ma nessuna riga aveva lavoro da fare",
+            modo, contatori.saltate,
+        )
 
     try:
         for bando in bandi:
@@ -1623,6 +1748,7 @@ async def run(
         "dry_run": dry_run,
         "attivo": attivo,
         "modo": modo,
+        "offset": offset,
         "elapsed_s": round(durata, 1),
     }
     if contatori.interrotto_per_tetto:
@@ -1844,6 +1970,7 @@ PAGINA_SELEZIONE_OE = 500
 def _da_leggere(
     *,
     limit: int | None,
+    offset: int = 0,
     modo: str,
     solo_oe: bool,
     bando_id: Any,
@@ -1860,7 +1987,7 @@ def _da_leggere(
     """
     raccolte: list[Mapping[str, Any]] = []
     lette_viste: set[Any] = set()
-    offset = 0
+    offset = max(0, int(offset or 0))
     while True:
         blocco = db.select_bandi_da_risolvere(
             limit=PAGINA_SELEZIONE_OE, offset=offset, modo=modo, solo_oe=solo_oe,
@@ -1897,6 +2024,7 @@ async def run_oe_dettaglio(
     solo_oe: bool = True,
     modo: str = "nuovi",
     bando_id: Any = None,
+    offset: int = 0,
     scarico: oe_scheda.ScaricoSchede | None = None,
     bandi: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -1922,6 +2050,12 @@ async def run_oe_dettaglio(
     `--dry-run` non scarica niente: le schede consumano il tetto
     `OE_SCHEDE_GIORNO` e passano da una sessione autenticata che un 403 puo'
     far bloccare. Una prova a vuoto conta cio' che avrebbe scaricato.
+
+    `--offset N` fa partire lo scorrimento oltre le prime N righe della
+    selezione. Serve proprio al caso che ha fatto emergere il difetto: con
+    `--forza` nessuna riga e' «gia' letta» per definizione, quindi lo
+    scorrimento non scarta niente e il lotto ripartirebbe ogni volta dalla
+    prima pagina. I blocchi si lanciano a mano: `--offset 0`, `800`, `1600`.
     """
     attivo = _modalita_attiva(attivo)
     if scarico is None:
@@ -1955,8 +2089,8 @@ async def run_oe_dettaglio(
         # limite. Con `--forza` nessuna riga e' «gia' letta» per definizione:
         # il flag vuol dire «rifai», e allora si riparte dalla prima pagina.
         righe, gia_lette = _da_leggere(
-            limit=limit, modo=modo, solo_oe=solo_oe, bando_id=bando_id,
-            forza=forza, contatori=contatori,
+            limit=limit, offset=offset, modo=modo, solo_oe=solo_oe,
+            bando_id=bando_id, forza=forza, contatori=contatori,
         )
     for bando in righe:
         contatori["esaminati"] += 1
@@ -1998,10 +2132,78 @@ async def run_oe_dettaglio(
         ])
         if scarico.fermato:
             break
-    return {"status": "ok", "dry_run": dry_run, "attivo": attivo, **contatori}
+    return {"status": "ok", "dry_run": dry_run, "attivo": attivo,
+            "offset": offset, **contatori}
 
 
 # --- runner: `link-verifica` ------------------------------------------------
+
+#: Quante righe di `bando_link` si chiedono per pagina mentre si cerca che
+#: cosa verificare. Non e' il `--limit` dell'operatore.
+PAGINA_SELEZIONE_LINK = 500
+
+
+def _da_verificare_ora(riga: Mapping[str, Any], oggi: date_cls) -> bool:
+    """Su questa riga di `bando_link` c'e' da fare una verifica, adesso?
+
+    Mai verificata (`esito_http` NULL) -> si', sempre: sono le righe che
+    `oe-dettaglio` scrive, che nascono `pubblicabile=false` e che senza questo
+    giro non diventerebbero pubblicabili mai.
+
+    Gia' verificata: si salta se il suo `updated_at` e' di oggi. E' l'unico
+    marcatore che la tabella porta (il trigger `trg_bando_link_updated_at` lo
+    mantiene su ogni UPDATE) e non esiste nessun predicato in `bando_link` che
+    faccia uscire una riga dalla selezione: senza questo scarto, due lanci di
+    fila rifarebbero gli stessi N HEAD sugli stessi id.
+    """
+    if riga.get("esito_http") is None:
+        return True
+    quando = riga.get("updated_at")
+    if not quando:
+        return True
+    try:
+        return date_cls.fromisoformat(str(quando)[:10]) < oggi
+    except ValueError:
+        return True
+
+
+def _da_verificare(
+    *,
+    limit: int | None,
+    offset: int,
+    bando_id: Any,
+    oggi: date_cls,
+    contatori: dict[str, int],
+) -> list[Mapping[str, Any]]:
+    """Le righe di `bando_link` da verificare, scorrendo la selezione a pagine.
+
+    Gemello di `_da_leggere`: le righe gia' verificate oggi si contano in
+    `saltate` e non consumano il `--limit`, che torna a significare «verificane
+    N» invece di «guardane N».
+    """
+    raccolte: list[Mapping[str, Any]] = []
+    cursore = max(0, int(offset or 0))
+    while True:
+        blocco = db.select_link_da_verificare(
+            limit=PAGINA_SELEZIONE_LINK, offset=cursore, bando_id=bando_id,
+        )
+        if not blocco:
+            break
+        cursore += len(blocco)
+        for riga in blocco:
+            # `--id X` e' un bando solo, chiesto a mano: saltarne i link
+            # perche' sono stati guardati stamattina renderebbe il comando
+            # inutile proprio quando serve.
+            if bando_id is None and not _da_verificare_ora(riga, oggi):
+                contatori["saltate"] += 1
+                continue
+            raccolte.append(riga)
+            if limit is not None and len(raccolte) >= limit:
+                return raccolte
+        if len(blocco) < PAGINA_SELEZIONE_LINK:
+            break
+    return raccolte
+
 
 async def run_link_verifica(
     dry_run: bool = False,
@@ -2009,6 +2211,7 @@ async def run_link_verifica(
     attivo: bool | None = None,
     *,
     bando_id: Any = None,
+    offset: int = 0,
     verifica: Callable[[str], Any] | None = None,
     righe: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -2026,10 +2229,22 @@ async def run_link_verifica(
 
     Qui `--dry-run` non sopprime la verifica — che e' una lettura, ed e' il
     punto del comando — ma solo la scrittura.
+
+    La selezione di `bando_link` non ha **nessun** predicato: niente puo' far
+    uscire una riga dopo che e' stata verificata, nemmeno in modalita' attiva.
+    Per questo il `--limit` conta le righe da verificare davvero e la
+    selezione si scorre (`_da_verificare`); `--offset N` fa partire lo
+    scorrimento oltre le prime N, ed e' il modo di lanciare i blocchi a mano
+    quando `--dry-run` o l'ombra non scrivono il marcatore.
     """
     attivo = _modalita_attiva(attivo)
+    contatori = {"esaminati": 0, "pubblicabili": 0, "ritirati": 0,
+                 "saltate": 0, "errori": 0}
     if righe is None:
-        elenco = list(db.select_link_da_verificare(limit=limit, bando_id=bando_id))
+        elenco = _da_verificare(
+            limit=limit, offset=offset, bando_id=bando_id,
+            oggi=oggi_roma(), contatori=contatori,
+        )
     else:
         elenco = list(righe)
     chiudi: Callable[[], None] | None = None
@@ -2039,7 +2254,6 @@ async def run_link_verifica(
             user_agent=getattr(get_settings(), "http_user_agent", ""),
         )
         verifica, chiudi = verificatore, verificatore.chiudi
-    contatori = {"esaminati": 0, "pubblicabili": 0, "ritirati": 0, "errori": 0}
     try:
         return await _verifica_link(elenco, verifica, contatori, dry_run, attivo)
     finally:
@@ -2087,6 +2301,17 @@ async def _verifica_link(
 
 # --- runner: `fondi-doppioni` -----------------------------------------------
 
+#: Quanti pubblicati si leggono per il confronto fra gemelli. Non e' un
+#: `--limit`: e' il tetto della lettura, e se morde il confronto sta guardando
+#: una fetta del corpus (allarme nel riepilogo).
+TETTO_GEMELLI = 5000
+
+ALLARME_GEMELLI_TRONCATO = (
+    f"confronto dei gemelli troncato a {TETTO_GEMELLI} pubblicati: le coppie "
+    "che hanno un id oltre il taglio non possono essere trovate"
+)
+
+
 async def run_fondi_doppioni(
     dry_run: bool = False,
     limit: int | None = None,
@@ -2098,18 +2323,38 @@ async def run_fondi_doppioni(
 
     Nessun arbitro LLM decide una fusione e il fuzzy non fonde mai: produce
     proposte con `applicato=false`, che restano nel report.
+
+    Qui — unico fra i comandi a lotti — il `--limit` **non** impagina la
+    lettura: il confronto e' fra righe dello stesso elenco, e una coppia con
+    un id in pagina 1 e l'altro in pagina 3 non verrebbe trovata da nessuna
+    delle due. Si legge sempre il corpus (fino a `TETTO_GEMELLI`) e il
+    `--limit` diventa il budget di fusioni **applicate**: `--limit 0` vuol dire
+    «solo report», che e' cio' che un operatore intende scrivendolo. Prima
+    valeva `limit or 5000`, cioe' l'esatto contrario: `--limit 0 --attivo`
+    leggeva l'intero corpus e applicava tutte le fusioni.
     """
     attivo = _modalita_attiva(attivo)
     elenco = list(righe) if righe is not None else db.select_pubblicati_per_gemelli(
-        limit=limit or 5000,
+        limit=TETTO_GEMELLI,
     )
-    contatori = {"esaminati": 0, "esatti": 0, "proposte": 0, "fusi": 0}
+    contatori = {"esaminati": 0, "esatti": 0, "proposte": 0, "fusi": 0, "rimandati": 0}
+    allarmi: list[str] = []
+    if righe is None and len(elenco) >= TETTO_GEMELLI:
+        allarmi.append(ALLARME_GEMELLI_TRONCATO)
+        logger.warning("[ALLARME] [resolver] {}", ALLARME_GEMELLI_TRONCATO)
     for riga in elenco:
         contatori["esaminati"] += 1
         altri = [r for r in elenco if r.get("id") != riga.get("id")]
         corrispondenze = gemelli.criteri_esatti(riga, altri)
         contatori["esatti"] += len(corrispondenze)
         contatori["proposte"] += len(gemelli.possibili_doppioni(riga, altri))
+        if corrispondenze and limit is not None and contatori["fusi"] >= limit:
+            # Budget finito: il report prosegue sull'intero corpus (e' gratis e
+            # serve a chi pianifica il lotto), le fusioni riprendono al lancio
+            # dopo. Contarle e' l'unico modo di distinguere «finito» da
+            # «fermato dal budget».
+            contatori["rimandati"] += 1
+            continue
         if not corrispondenze or dry_run or not attivo:
             continue
         gruppo = [riga] + [r for r in altri if r.get("id") in {c.bando_id for c in corrispondenze}]
@@ -2133,7 +2378,8 @@ async def run_fondi_doppioni(
                 logger.info(
                     "[resolver] fusione {} -> master {} (proposto {})",
                     candidato.get("id"), effettivo, master.get("id"))
-    return {"status": "ok", "dry_run": dry_run, "attivo": attivo, **contatori}
+    return {"status": "ok", "dry_run": dry_run, "attivo": attivo,
+            "allarmi": allarmi, **contatori}
 
 
 # --- runner: `domini --import` ----------------------------------------------
@@ -2161,7 +2407,11 @@ async def run_domini_import(
     righe_enti = list(indicepa) if indicepa is not None else _leggi_enti(enti)
     tabella = costruisci(fonti=righe_fonte, indicepa=righe_enti)
     attive = tabella.attive()
-    if limit:
+    composte = len(attive)
+    # `limit is not None` e non `if limit`: uno zero e' un limite (la
+    # convenzione di `db._pagina`), e `--limit 0 --attivo` scriveva invece
+    # l'intera whitelist — l'esatto contrario di cio' che ha chiesto.
+    if limit is not None:
         attive = attive[: int(limit)]
     payload = [
         {
@@ -2174,10 +2424,23 @@ async def run_domini_import(
     scritte = 0
     if not dry_run and attivo:
         scritte = db.upsert_domini(payload)
+    troncati = composte - len(payload)
+    if troncati > 0:
+        # Il `--limit` qui e' un troncamento del PREFISSO, non un cursore: la
+        # composizione ha sempre lo stesso ordine, quindi due lanci con lo
+        # stesso limite riscrivono gli stessi host e gli altri non arrivano
+        # mai. Una whitelist parziale che risponde «ok» e' il modo piu' rapido
+        # di far passare un aggregatore per dominio non classificato.
+        logger.warning(
+            "[ALLARME] [domini] whitelist troncata da --limit: {} host su {} "
+            "non importati (il limite taglia sempre lo stesso prefisso)",
+            troncati, composte,
+        )
     return {
         "status": "ok", "dry_run": dry_run, "attivo": attivo,
         "fonti": len(righe_fonte), "indicepa": len(righe_enti),
-        "domini": len(payload), "scritte": scritte,
+        "domini": len(payload), "composti": composte, "troncati": troncati,
+        "scritte": scritte,
     }
 
 

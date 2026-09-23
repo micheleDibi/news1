@@ -1345,6 +1345,104 @@ def _colonne_disponibili(tabella: str, desiderate: Sequence[str], strumento: Any
     return ",".join(scelte or ["id"])
 
 
+def _pagina(query: Any, limit: int | None, offset: int) -> Any:
+    """`limit`/`offset` su una query gia' ordinata, con le regole del package.
+
+    Due convenzioni in un posto solo, perche' erano ricopiate in cinque select
+    e in due di esse erano state ricopiate male:
+
+    * `limit is not None` e non `if limit`: uno zero e' un limite, ed e' quello
+      che un operatore mette per non toccare niente. Trattarlo come «nessun
+      limite» farebbe girare `--limit 0 --attivo` sull'intero corpus: l'esatto
+      contrario di cio' che ha chiesto;
+    * `range()` e' l'unico modo di scorrere oltre i primi N con PostgREST, ed e'
+      inclusivo agli estremi. Serve a chi salta le righe gia' lavorate: l'ordine
+      e' per `id`, quindi l'offset e' stabile fra una pagina e l'altra.
+    """
+    offset = max(0, int(offset or 0))
+    if limit is not None and offset and int(limit) > 0:
+        return query.range(offset, offset + int(limit) - 1)
+    if limit is not None:
+        # Anche `--limit 0 --offset 800`: un `range(800, 799)` sarebbe un
+        # intervallo vuoto alla rovescia, e un limite di zero righe si dice
+        # con `limit(0)`.
+        return query.limit(int(limit))
+    if offset:
+        return query.range(offset, offset + 999)
+    return query
+
+
+#: Quante righe PostgREST restituisce al massimo in una risposta (`max-rows`,
+#: configurato sul server, misurato 1 000 su questo progetto). Non e' una
+#: convenzione nostra ed e' la trappola piu' silenziosa del client: una
+#: `.limit(5000)` non solleva e non avvisa, restituisce 1 000 righe come se
+#: fossero tutte. Ogni lettura che puo' superarlo va **scorsa**, non limitata.
+PAGINA_POSTGREST = 1000
+
+
+def _scorri(
+    costruisci: Callable[[int, int], Any],
+    *,
+    tetto: int | None = None,
+    pagina: int = PAGINA_POSTGREST,
+) -> list[dict[str, Any]]:
+    """Legge una select a pagine finche' il server smette di dare righe.
+
+    `costruisci(quanto, salto)` deve restituire una query **nuova** gia'
+    impaginata (di norma `_pagina(costruisci_query(), quanto, salto)`): i
+    builder di postgrest accumulano i parametri con `add`, quindi riusare lo
+    stesso oggetto per due pagine produce `?limit=1000&limit=1000&offset=...`.
+
+    Si ferma quando la pagina torna piu' corta di quanto chiesto (le righe sono
+    finite) oppure al `tetto`, che resta l'unico limite dichiarato.
+    """
+    raccolte: list[dict[str, Any]] = []
+    salto = 0
+    while True:
+        quanto = min(pagina, tetto - len(raccolte)) if tetto is not None else pagina
+        if quanto <= 0:
+            break
+        blocco = list(costruisci(quanto, salto).execute().data or [])
+        raccolte.extend(blocco)
+        salto += len(blocco)
+        if len(blocco) < quanto:
+            break
+    return raccolte
+
+
+#: Quanti id per volta si passano a un `in_()`. Due motivi per non passarli
+#: tutti: la URL che ne esce ha un limite lato server, e la risposta resta
+#: comunque tagliata a `PAGINA_POSTGREST` (le righe per id possono essere piu'
+#: di una: `bando_link` ne ha in media una e mezza).
+BLOCCO_ID = 200
+
+
+def _a_blocchi(valori: Sequence[Any], dimensione: int = BLOCCO_ID) -> list[list[Any]]:
+    """Spezza una lista di id in blocchi, scartando i `None`."""
+    elenco = [v for v in valori if v is not None]
+    return [elenco[i:i + dimensione] for i in range(0, len(elenco), dimensione)]
+
+
+def _per_id(
+    costruisci: Callable[[list[Any]], Any],
+    ids: Sequence[Any],
+    *,
+    ordine: str = "id",
+) -> list[dict[str, Any]]:
+    """Legge per lista di id: a blocchi, e ogni blocco scorso fino in fondo.
+
+    `costruisci(blocco)` restituisce la query gia' filtrata sul blocco, senza
+    ordinamento ne' impaginazione: li mette questa.
+    """
+    righe: list[dict[str, Any]] = []
+    for blocco in _a_blocchi(ids):
+        righe.extend(_scorri(
+            lambda quanto, salto, _b=blocco: _pagina(
+                costruisci(_b).order(ordine), quanto, salto),
+        ))
+    return righe
+
+
 def select_bandi_da_risolvere(
     *,
     limit: int | None = None,
@@ -1391,21 +1489,9 @@ def select_bandi_da_risolvere(
         # Tiebreak obbligatorio: `data_pubblicazione` e' NULL sul 92% delle
         # righe e senza `id` due pagine si sovrappongono (trappola nota).
         query = query.order("id")
-        # `limit is not None` e non `if limit`: uno zero e' un limite, ed e'
-        # quello che un operatore mette per non toccare niente. Trattarlo come
-        # «nessun limite» farebbe girare `risolvi-fonte --limit 0 --attivo`
-        # sull'intero corpus: l'esatto contrario di cio' che ha chiesto.
-        if limit is not None and offset:
-            # `range` e' inclusivo agli estremi: e' l'unico modo di scorrere
-            # oltre i primi N con PostgREST. Serve a chi deve saltare le righe
-            # gia' lavorate (`oe-dettaglio`): l'ordine e' per `id`, quindi
-            # l'offset e' stabile fra una pagina e l'altra.
-            query = query.range(int(offset), int(offset) + int(limit) - 1)
-        elif limit is not None:
-            query = query.limit(int(limit))
-        elif offset:
-            query = query.range(int(offset), int(offset) + 999)
-        return list(query.execute().data or [])
+        # Le due convenzioni («zero e' un limite», «oltre i primi N si scorre
+        # con range()») stanno in `_pagina`, una volta per tutte le select.
+        return list(_pagina(query, limit, offset).execute().data or [])
     except Exception as e:
         logger.warning("[db] select_bandi_da_risolvere fallita, nessun candidato: {}", e)
         return []
@@ -1424,18 +1510,24 @@ def _filtra_selezione(
     ha_stato = strumento.ha("bando", "fonte_ufficiale_stato")
     ha_pubblicato = strumento.ha("bando", "pubblicato")
     senza_fonte = ha_stato and not forza
+    # `neq` su NULL non e' vero: una riga con la colonna vuota non veniva mai
+    # selezionata, e la colonna nasceva vuota. La migrazione 09 ha messo il
+    # DEFAULT e riempito le righe, ma la selezione non deve dipendere da una
+    # migrazione: un `INSERT` che scrive NULL esplicito, o il rollback della
+    # 09, riaprirebbero il buco senza che nessun contatore lo dica.
+    SENZA_FONTE = "fonte_ufficiale_stato.is.null,fonte_ufficiale_stato.neq.trovata"
     if modo == "backlog":
         query = query.eq("pubblicato", True) if ha_pubblicato else query.eq(
             "stato_processing", "completed")
         if senza_fonte:
-            query = query.neq("fonte_ufficiale_stato", "trovata")
+            query = query.or_(SENZA_FONTE)
     elif modo == "ricontrolli":
         if ha_stato:
             query = query.in_("fonte_ufficiale_stato", ["in_verifica", "non_trovata"])
     else:                                              # nuovi
         query = query.eq("stato_processing", "enriched")
         if senza_fonte:
-            query = query.neq("fonte_ufficiale_stato", "trovata")
+            query = query.or_(SENZA_FONTE)
     if solo_in_verifica and ha_stato:
         query = query.eq("fonte_ufficiale_stato", "in_verifica")
     if solo_oe and fonti_oe:
@@ -1443,26 +1535,52 @@ def _filtra_selezione(
     return query
 
 
+#: Le colonne che `select_controlli` legge per difetto: quelle che servono al
+#: resolver, cioe' la coda e i tentativi. Il monitor ne chiede altre — le
+#: colonne calde, `testo_norm` in testa — e le chiede con `colonne=`: sono
+#: decine di MB su 1 683 righe e non vanno lette da chi non le usa.
+COLONNE_CONTROLLO_CODA: tuple[str, ...] = (
+    "bando_id", "prossimo_controllo_at", "ultimo_controllo_at", "priorita_controllo",
+    "tentativi_resolver", "candidato_prioritario",
+)
+
+
 def select_controlli(
     bando_ids: Sequence[Any],
     *,
+    colonne: Sequence[str] | None = None,
     client: Any | None = None,
     strumento: Any | None = None,
 ) -> dict[Any, dict[str, Any]]:
-    """Righe di `bando_controllo` per id. `{}` se la tabella non c'e' ancora."""
+    """Righe di `bando_controllo` per id. `{}` se la tabella non c'e' ancora.
+
+    `colonne` sostituisce l'elenco predefinito: e' il modo in cui il monitor
+    chiede la propria **memoria** (`testo_norm`, `impronta_contenuto`, l'ETag,
+    `controlli_falliti`) sulle sole righe che lavorera' davvero. Senza,
+    leggeva le sei colonne del resolver e ogni giro ripartiva da zero:
+    `controlli_falliti` valeva sempre 1 e la promessa «cinque fallimenti e il
+    bando esce dalla coda» non si avverava mai. `_colonne_disponibili` scarta
+    da se' cio' che lo schema non espone, quindi chiedere di piu' non rompe
+    nulla su un DB non ancora migrato.
+    """
     strumento = _controllo(strumento)
     if not bando_ids or not strumento.tabella_esiste(TABELLA_CONTROLLO):
         return {}
     colonne = _colonne_disponibili(
         TABELLA_CONTROLLO,
-        ("bando_id", "prossimo_controllo_at", "ultimo_controllo_at", "priorita_controllo",
-         "tentativi_resolver", "candidato_prioritario"),
+        tuple(colonne) if colonne else COLONNE_CONTROLLO_CODA,
         strumento,
     )
     try:
-        righe = (
-            _client(client).table(TABELLA_CONTROLLO)
-            .select(colonne).in_("bando_id", list(bando_ids)).execute().data or []
+        # A blocchi e a pagine: la tabella e' 1:1 con `bando`, quindi con una
+        # coda di 2 000 id la risposta unica ne riportava 1 000 e le righe
+        # mancanti sembravano «mai controllate» — priorita' gonfiata,
+        # `controlli_falliti` di nuovo a zero, memoria del giro persa.
+        righe = _per_id(
+            lambda blocco: _client(client).table(TABELLA_CONTROLLO)
+            .select(colonne).in_("bando_id", blocco),
+            list(bando_ids),
+            ordine="bando_id",
         )
     except Exception as e:
         logger.warning("[db] select_controlli fallita: {}", e)
@@ -1491,13 +1609,21 @@ def select_pubblicati_per_gemelli(
          "chiave_esterna", "data_scadenza", "pubblicato_at", "slug"),
         strumento,
     )
-    try:
+    def _costruisci() -> Any:
         query = _client(client).table("bando").select(colonne)
         if strumento.ha("bando", "pubblicato"):
             query = query.eq("pubblicato", True)
         else:
             query = query.eq("stato_processing", "completed").not_.is_("slug", "null")
-        return list(query.order("id").limit(int(limit)).execute().data or [])
+        return query.order("id")
+
+    try:
+        # `.limit(5000)` chiedeva 5 000 righe e ne riceveva 1 000: `max-rows`
+        # taglia in silenzio. `gemelli.py` cercava quindi le corrispondenze
+        # esatte sui primi 1 000 pubblicati per id — meno di meta' del corpus —
+        # e i doppioni con id alto erano invisibili per costruzione.
+        return _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto),
+                       tetto=max(0, int(limit)))
     except Exception as e:
         logger.warning("[db] select_pubblicati_per_gemelli fallita: {}", e)
         return []
@@ -1506,6 +1632,7 @@ def select_pubblicati_per_gemelli(
 def select_link_da_verificare(
     *,
     limit: int | None = None,
+    offset: int = 0,
     bando_id: Any = None,
     bando_ids: Sequence[Any] = (),
     client: Any | None = None,
@@ -1516,6 +1643,14 @@ def select_link_da_verificare(
     `bando_ids` serve a chi deve sapere, per un intero lotto, quali bandi hanno
     gia' un link con la prova della scheda: una richiesta invece di una per
     bando.
+
+    `offset` serve a `link-verifica`, che altrimenti ripasserebbe per sempre
+    sulle stesse prime N righe: la tabella non ha nessun predicato che faccia
+    uscire una riga gia' verificata, quindi l'avanzamento puo' arrivare solo
+    dallo scorrimento. `updated_at` e' fra le colonne lette apposta: e' il
+    marcatore che il trigger `trg_bando_link_updated_at` mantiene su ogni
+    UPDATE, e senza leggerlo nessuno saprebbe quali righe sono gia' state
+    guardate oggi.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste(TABELLA_LINK):
@@ -1524,19 +1659,27 @@ def select_link_da_verificare(
         TABELLA_LINK,
         ("id", "bando_id", "url", "tipo", "origine", "etichetta", "esito_http",
          "pubblicabile", "ultimo_visto_at", "trovato_in_fonte_at", "content_type",
-         "url_prova", "impronta_pagina"),
+         "url_prova", "impronta_pagina", "updated_at"),
         strumento,
     )
     try:
+        if bando_ids and bando_id is None and limit is None:
+            # Il lotto si legge a blocchi e a pagine. Con una lista di 500 id
+            # la risposta unica si fermava a 1 000 righe (`max-rows`) e i bandi
+            # oltre quella soglia risultavano «scheda mai letta»: il lotto
+            # `oe-dettaglio` li riscaricava tutti a ogni lancio.
+            return _per_id(
+                lambda blocco: _client(client).table(TABELLA_LINK)
+                .select(colonne).in_("bando_id", blocco),
+                list(bando_ids),
+            )
         query = _client(client).table(TABELLA_LINK).select(colonne)
         if bando_id is not None:
             query = query.eq("bando_id", bando_id)
         elif bando_ids:
             query = query.in_("bando_id", list(bando_ids))
         query = query.order("id")
-        if limit is not None:                            # zero = nessuna riga
-            query = query.limit(int(limit))
-        return list(query.execute().data or [])
+        return list(_pagina(query, limit, offset).execute().data or [])
     except Exception as e:
         logger.warning("[db] select_link_da_verificare fallita: {}", e)
         return []
@@ -1788,6 +1931,11 @@ COLONNE_EVENTO: tuple[str, ...] = (
     "data_evento", "rilevato_at", "applicato", "applicato_at", "leggibile",
     "verificato", "in_aggiornamenti", "url_prova", "dominio_prova",
     "citazione", "impronta_pagina", "confidenza", "gate", "metodo",
+    # `riferisce_a` e' l'id dell'evento a cui questo si riferisce: e' come
+    # `bando_applica_evento` annota un rifiuto (`elaborazione_bloccata`). Senza
+    # leggerla, `applica-eventi` non potrebbe riconoscere gli eventi gia'
+    # rifiutati e li ripresenterebbe a ogni lancio in testa al blocco.
+    "riferisce_a",
 )
 
 #: Colonne dei pubblicati su cui lavorano `pulisci-contenuto` e `rigenera`.
@@ -1825,6 +1973,7 @@ def select_eventi(
     verificato: bool | None = None,
     bando_id: Any = None,
     limit: int | None = None,
+    offset: int = 0,
     client: Any | None = None,
     strumento: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -1836,7 +1985,11 @@ def select_eventi(
     e la baseline delle impronte non li ripresenterebbe mai piu' (§6.2).
 
     L'ordine e' `id` crescente: e' l'ordine in cui gli eventi sono stati
-    raccolti, ed e' l'unico stabile (`data_evento` e' NULL su molte righe).
+    raccolti, ed e' l'unico stabile (`data_evento` e' NULL su molte righe) —
+    ed e' cio' che rende `offset` utilizzabile per scorrere oltre i primi N.
+    Serve a chi deve superare le righe su cui non c'e' lavoro da fare: un
+    evento che la RPC rifiuta resta `applicato=false` all'id piu' basso e
+    riconsumerebbe il blocco a ogni lancio.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste(TABELLA_EVENTO):
@@ -1868,9 +2021,7 @@ def select_eventi(
             else:                                        # pragma: no cover - client datato
                 query = query.gte("rilevato_at", giorno)
         query = query.order("id")
-        if limit is not None:                            # zero = nessuna riga
-            query = query.limit(int(limit))
-        return list(query.execute().data or [])
+        return list(_pagina(query, limit, offset).execute().data or [])
     except Exception as e:
         logger.warning("[db] select_eventi fallita: {}", e)
         return []
@@ -1928,7 +2079,7 @@ def select_bandi_da_monitorare(
     if not strumento.tabella_esiste("bando"):
         return []
     colonne = _colonne_disponibili("bando", COLONNE_MONITOR, strumento)
-    try:
+    def _costruisci() -> Any:
         query = _pubblicati(_client(client).table("bando").select(colonne), strumento)
         if strumento.ha("bando", "fonte_ufficiale_stato"):
             query = query.eq("fonte_ufficiale_stato", "trovata")
@@ -1936,9 +2087,17 @@ def select_bandi_da_monitorare(
             query = query.is_("bando_master_id", "null")
         # Tiebreak obbligatorio: `data_pubblicazione` e' NULL sul 92 % delle
         # righe (trappola nota), e senza `id` due pagine si sovrappongono.
-        query = query.order("id")
-        query = query.limit(int(limit) if limit is not None else TETTO_CODA_MONITOR)
-        righe = list(query.execute().data or [])
+        return query.order("id")
+
+    tetto = int(limit) if limit is not None else TETTO_CODA_MONITOR
+    try:
+        # Si scorre invece di limitare: `.limit(5000)` tornava 1 000 righe
+        # (`max-rows`), quindi la coda vedeva meno di meta' dei pubblicati con
+        # fonte trovata e l'allarme qui sotto — tarato su 5 000 — non poteva
+        # scattare mai. Il troncamento era silenzioso proprio dove era stato
+        # scritto un allarme per non lasciarlo silenzioso.
+        righe = _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto),
+                        tetto=max(0, tetto))
     except Exception as e:
         logger.warning("[db] select_bandi_da_monitorare fallita: {}", e)
         return []
@@ -2003,6 +2162,7 @@ def consumo_oggi(
 def select_bandi_pubblicati_contenuto(
     *,
     limit: int | None = None,
+    offset: int = 0,
     bando_ids: Sequence[Any] = (),
     client: Any | None = None,
     strumento: Any | None = None,
@@ -2011,7 +2171,10 @@ def select_bandi_pubblicati_contenuto(
 
     Il filtro «quali contengono davvero un link all'aggregatore» non e'
     esprimibile in PostgREST su una colonna jsonb: si legge il lotto e si
-    sceglie in Python. E' il motivo per cui questi comandi hanno `--limit`.
+    sceglie in Python. E' il motivo per cui questi comandi hanno `--limit` —
+    e il motivo per cui hanno bisogno di `offset`: la scelta avviene dopo la
+    lettura, quindi senza scorrere il comando ripasserebbe per sempre sulle
+    stesse prime N righe (nessuna scrittura di L7 le fa uscire dai pubblicati).
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste("bando"):
@@ -2024,9 +2187,7 @@ def select_bandi_pubblicati_contenuto(
         else:
             query = _pubblicati(query, strumento)
         query = query.order("id")
-        if limit is not None:
-            query = query.limit(int(limit))
-        return list(query.execute().data or [])
+        return list(_pagina(query, limit, offset).execute().data or [])
     except Exception as e:
         logger.warning("[db] select_bandi_pubblicati_contenuto fallita: {}", e)
         return []
@@ -2035,6 +2196,7 @@ def select_bandi_pubblicati_contenuto(
 def select_processed_da_archiviare(
     *,
     limit: int | None = None,
+    offset: int = 0,
     client: Any | None = None,
     strumento: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -2043,6 +2205,11 @@ def select_processed_da_archiviare(
     Il filtro `pubblicato=false` si aggiunge solo quando la colonna esiste:
     prima della 01 un `processed` non e' pubblicato per definizione (la RLS
     pubblica chiede `completed`), quindi non serve e non si puo' chiedere.
+
+    `offset`: solo il ramo `archiviato` fa uscire una riga dalla selezione. Le
+    righe che `destinazione()` manda a `salta` o a `lavorazione` restano
+    `processed` per sempre e, stando in testa all'ordinamento per `id`,
+    riconsumerebbero il `--limit` a ogni lancio. Si scorre.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste("bando"):
@@ -2056,9 +2223,7 @@ def select_processed_da_archiviare(
         if strumento.ha("bando", "pubblicato"):
             query = query.eq("pubblicato", False)
         query = query.order("id")
-        if limit is not None:
-            query = query.limit(int(limit))
-        return list(query.execute().data or [])
+        return list(_pagina(query, limit, offset).execute().data or [])
     except Exception as e:
         logger.warning("[db] select_processed_da_archiviare fallita: {}", e)
         return []

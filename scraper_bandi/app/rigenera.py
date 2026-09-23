@@ -439,7 +439,14 @@ async def rigenera(
 
     # Passo 4: scrittura. `slug` e `titolo` non entrano MAI nel payload: li
     # toglie anche `_payload_completed`, ma non metterceli e' la prima difesa.
-    payload = {"contenuto": testo}
+    #
+    # Un testo identico a quello gia' in tabella non entra nel payload: al
+    # secondo giro sullo stesso evento la sostituzione non trova piu' la data
+    # vecchia (zero sostituzioni), il gate passa lo stesso perche' la data
+    # nuova c'e', e il comando riscriveva byte per byte cio' che c'era gia'
+    # contandolo in `scritti` — una UPDATE inutile, un bump di `updated_at` e
+    # un contatore illeggibile.
+    payload = {} if testo == contenuto else {"contenuto": testo}
 
     # `descrizione_breve` e' la meta description e il testo della card: e' la
     # superficie piu' vista di tutte, e lasciarcela vecchia rimetterebbe in
@@ -467,6 +474,11 @@ async def rigenera(
     payload.pop("slug", None)
     payload.pop("titolo", None)
     esito.payload = payload
+    if not payload:
+        # Niente da scrivere: e' un esito legittimo (il testo diceva gia' la
+        # cosa giusta), e una UPDATE vuota non deve nemmeno partire.
+        esito.motivi = esito.motivi + ("contenuto gia' in linea: nessuna scrittura",)
+        return esito
     if attivo and scrivi is not None:
         try:
             esito.scritto = bool(await scrivi(bando.get("id"), payload))
@@ -609,6 +621,7 @@ async def run_rigenera(
     attivo: bool | None = None,
     *,
     lotto: str | None = None,
+    offset: int = 0,
     malformati: bool = False,
     righe: Sequence[Mapping[str, Any]] | None = None,
     eventi: Sequence[Mapping[str, Any]] | None = None,
@@ -634,6 +647,14 @@ async def run_rigenera(
     senza l'altro non parte nessuna scrittura. Slug e titolo restano congelati
     (`scrivi_su_db` passa da `gia_pubblicato=True`) e **nessuna riga viene mai
     spubblicata**: questo comando non tocca `stato_processing` ne' `pubblicato`.
+
+    In tutti e due i modi il `--limit` conta il LAVORO, non le occhiate, e la
+    selezione si scorre (`--offset N` per lanciare un blocco preciso). Nessuna
+    scrittura di questo comando fa uscire una riga dalla propria selezione —
+    non tocca `bando_evento` nel modo date, non ripara il `contenuto` nel modo
+    malformati — quindi senza lo scorrimento due lanci di fila ripassavano
+    sulle stesse righe con gli stessi contatori. `attraversati` dice quante
+    righe (o eventi) sono state guardate per trovarle.
     """
     avvio = time.monotonic()
     lotto = lotto or LOTTO_PREDEFINITO
@@ -641,7 +662,8 @@ async def run_rigenera(
     scrive = _attivo(attivo) and not dry_run
     contatori = {
         "esaminati": 0, "candidati": 0, "rigenerati": 0, "scritti": 0,
-        "segnalati": 0, "saltati": 0, "errori": 0,
+        "segnalati": 0, "saltati": 0, "doppioni": 0, "attraversati": 0,
+        "errori": 0,
     }
     # E' l'unico dei tre lotti che puo' chiamare il modello (passo 3): senza
     # questi due il suo consumo non sarebbe attribuibile a nessuna riga di
@@ -655,14 +677,14 @@ async def run_rigenera(
     try:
         if malformati:
             riepilogo = await _lotto_malformati(
-                righe, limit=limit, scrive=scrive, contatori=contatori,
-                esiti=esiti, segnala=segnala,
+                righe, limit=limit, offset=offset, scrive=scrive,
+                contatori=contatori, esiti=esiti, segnala=segnala,
             )
         else:
             riepilogo = await _lotto_date(
-                righe, eventi, limit=limit, scrive=scrive, contatori=contatori,
-                esiti=esiti, riscrittore=riscrittore, scrivi=scrivi,
-                spesa=spesa, tetti=tetti, step=step,
+                righe, eventi, limit=limit, offset=offset, scrive=scrive,
+                contatori=contatori, esiti=esiti, riscrittore=riscrittore,
+                scrivi=scrivi, spesa=spesa, tetti=tetti, step=step,
             )
             interrotto = bool(riepilogo.pop("interrotto_per_tetto", False))
             motivo_tetto = str(riepilogo.pop("motivo", "") or "")
@@ -679,6 +701,7 @@ async def run_rigenera(
         "modo": "malformati" if malformati else "date",
         "dry_run": dry_run,
         "attivo": scrive,
+        "offset": max(0, int(offset or 0)),
         "interrotto_per_tetto": interrotto,
         "motivo": motivo_tetto,
         "saltato_per_lock": False,
@@ -755,27 +778,130 @@ def _bandi(righe: Sequence[Mapping[str, Any]] | None, **filtri: Any) -> list[dic
         return []
 
 
+#: Quante righe (o eventi) si chiedono per pagina mentre si cerca il lavoro.
+#: Non e' il `--limit` dell'operatore: e' la finestra su cui si scorre.
+PAGINA_SELEZIONE = 500
+
+
+def _pagine(
+    iniettate: Sequence[Mapping[str, Any]] | None,
+    leggi: Callable[..., Sequence[Mapping[str, Any]]],
+    *,
+    offset: int,
+) -> Any:
+    """Le pagine della selezione, o l'unica pagina iniettata dal chiamante.
+
+    Generatore: le pagine oltre quella in cui il `--limit` si riempie non
+    vengono nemmeno chieste.
+    """
+    if iniettate is not None:
+        yield [dict(r) for r in iniettate]
+        return
+    cursore = max(0, int(offset or 0))
+    while True:
+        try:
+            blocco = list(leggi(limit=PAGINA_SELEZIONE, offset=cursore))
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[rigenera] lettura della selezione fallita: {}", e)
+            return
+        if not blocco:
+            return
+        cursore += len(blocco)
+        yield [dict(r) for r in blocco]
+        if len(blocco) < PAGINA_SELEZIONE:
+            return
+
+
+def _malformati_da_segnalare(
+    righe: Sequence[Mapping[str, Any]] | None,
+    *,
+    limit: int | None,
+    offset: int,
+    contatori: dict[str, int],
+) -> list[dict[str, Any]]:
+    """Le sole righe malformate, scorrendo la selezione a pagine.
+
+    Il filtro (`contenuto_malformato`) e' puro e gratuito: non chiede niente al
+    DB, quindi funziona anche in ombra. Prima stava DOPO il `--limit`, e con
+    9 righe irrecuperabili su 2 104 pubblicati un `--limit 500` ne trovava
+    solo quelle che stavano nei primi 500 id — per sempre, a ogni lancio. Qui
+    il limite lo consumano le sole righe malformate e le sane vanno in
+    `saltati`.
+    """
+    raccolte: list[dict[str, Any]] = []
+
+    def _leggi(**filtri: Any) -> Sequence[Mapping[str, Any]]:
+        from . import db
+        return db.select_bandi_pubblicati_contenuto(**filtri)
+
+    for pagina in _pagine(righe, _leggi, offset=offset):
+        for riga in pagina:
+            contatori["attraversati"] += 1
+            if not contenuto_malformato(riga.get("contenuto")):
+                contatori["saltati"] += 1
+                continue
+            raccolte.append(riga)
+            if limit is not None and len(raccolte) >= limit:
+                return raccolte
+    return raccolte
+
+
+def _bandi_gia_segnalati(bando_ids: Sequence[Any]) -> frozenset[Any]:
+    """Gli id che hanno gia' un `elaborazione_bloccata` in `bando_evento`.
+
+    `db.registra_evento` e' un INSERT nudo senza deduplica: senza questa
+    lettura ogni lancio aggiungeva un evento nuovo per ogni riga malformata
+    (misurato: 4 eventi per 2 righe in due lanci). Gli id sono una manciata
+    — 9 sul corpus — quindi una lettura per id non e' un problema.
+    """
+    gia: set[Any] = set()
+    try:
+        from . import db
+        for bando_id in bando_ids:
+            if bando_id is None:
+                continue
+            if db.select_eventi(
+                    bando_id=bando_id, tipi=("elaborazione_bloccata",), limit=1):
+                gia.add(bando_id)
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.warning("[rigenera] eventi gia' registrati non leggibili: {}", e)
+        return frozenset()
+    return frozenset(gia)
+
+
 async def _lotto_malformati(
     righe: Sequence[Mapping[str, Any]] | None,
     *,
     limit: int | None,
+    offset: int = 0,
     scrive: bool,
     contatori: dict[str, int],
     esiti: list[dict[str, Any]],
     segnala: Callable[[Any, Mapping[str, Any]], Any] | None,
 ) -> dict[str, Any]:
     """Le righe con il `contenuto` irrecuperabile: si elencano e si segnalano."""
-    elenco = _bandi(righe, limit=limit)
+    elenco = _malformati_da_segnalare(
+        righe, limit=limit, offset=offset, contatori=contatori)
+    # La deduplica riguarda `db.registra_evento`, che e' un INSERT nudo: se il
+    # chiamante inietta il proprio `segnala` (i test, la pipeline), la
+    # deduplica e' sua e qui non si legge niente.
+    gia_segnalati = (
+        _bandi_gia_segnalati([r.get("id") for r in elenco])
+        if scrive and segnala is None else frozenset()
+    )
     identificativi: list[Any] = []
     for riga in elenco:
         contatori["esaminati"] += 1
-        if not contenuto_malformato(riga.get("contenuto")):
-            continue
         contatori["candidati"] += 1
         identificativi.append(riga.get("id"))
         esiti.append({"bando_id": riga.get("id"), "slug": riga.get("slug"),
                       "via": "segnalazione", "scritto": False})
         if not scrive:
+            continue
+        if riga.get("id") in gia_segnalati:
+            # Gia' segnalata da un lancio precedente: l'evento interno c'e'
+            # gia' e `bando_evento` non deve crescere di 9 righe a ogni giro.
+            contatori["doppioni"] += 1
             continue
         if _segnala_malformato(riga, segnala):
             contatori["segnalati"] += 1
@@ -821,11 +947,93 @@ def _segnala_malformato(
         return False
 
 
+def _da_rigenerare(
+    righe: Sequence[Mapping[str, Any]] | None,
+    eventi: Sequence[Mapping[str, Any]] | None,
+    *,
+    limit: int | None,
+    offset: int,
+    contatori: dict[str, int],
+) -> tuple[list[dict[str, Any]], dict[Any, dict[str, Any]]]:
+    """Gli eventi su cui c'e' davvero da rigenerare, e i bandi che li portano.
+
+    La selezione e' sugli EVENTI e **nessuna** scrittura di questo comando
+    tocca `bando_evento`: un evento verificato e applicato resta tale per
+    sempre, quindi i primi N per id erano gli stessi a ogni lancio. Qui si
+    scorre a pagine e il `--limit` lo consumano soltanto gli eventi il cui
+    bando contiene ancora la data vecchia in una frase del ruolo giusto; gli
+    altri vanno in `saltati` senza consumare niente.
+    """
+    def _leggi(**filtri: Any) -> Sequence[Mapping[str, Any]]:
+        from . import db
+        # `applicato=True` non e' un di piu': in ombra un evento nasce
+        # `verificato=True, applicato=False`, e rigenerare la prosa prima di
+        # `applica-eventi` scriverebbe nel testo una data che la colonna non
+        # ha ancora. Con questo filtro il comando diventa impossibile da
+        # lanciare fuori ordine.
+        return db.select_eventi(
+            tipi=TIPI_CON_DATA, verificato=True, applicato=True, **filtri)
+
+    raccolti: list[dict[str, Any]] = []
+    bandi: dict[Any, dict[str, Any]] = {}
+    for pagina in _pagine(eventi, _leggi, offset=offset):
+        identificativi = tuple({
+            e.get("bando_id") for e in pagina if e.get("bando_id") is not None
+        })
+        if not identificativi:
+            continue
+        # I bandi della pagina, non del lotto intero: con `--limit 2000` un
+        # solo `in_()` diventerebbe una URL PostgREST con duemila id.
+        pagina_bandi = {
+            r.get("id"): r for r in _bandi(righe, bando_ids=identificativi)
+        }
+        bandi.update(pagina_bandi)
+        for evento in pagina:
+            contatori["attraversati"] += 1
+            riga = pagina_bandi.get(evento.get("bando_id"))
+            if riga is None or not _c_e_da_rigenerare(riga, evento):
+                contatori["saltati"] += 1
+                continue
+            raccolti.append(evento)
+            if limit is not None and len(raccolti) >= limit:
+                return raccolti, bandi
+    return raccolti, bandi
+
+
+def _c_e_da_rigenerare(riga: Mapping[str, Any], evento: Mapping[str, Any]) -> bool:
+    """La prosa di questo bando dice ancora la data vecchia di questo evento?
+
+    E' il filtro che fa consumare il `--limit` al lavoro e non alle occhiate.
+    E' puro: si legge dal `contenuto` gia' in mano, quindi vale anche in ombra.
+    """
+    vecchia, nuova, ruolo = date_da_evento(evento)
+    if nuova is None or vecchia is None:
+        return False
+    if contenuto_malformato(riga.get("contenuto")):
+        return False
+    trasformato = _testo_del_contenuto(riga)
+    if trasformato is None:
+        return False
+    testo = str(trasformato[0].get("contenuto") or "")
+    if testo:
+        if sostituisci_data(testo, vecchia, nuova, ruolo)[1]:
+            return True
+        if paragrafi_con_data(testo, vecchia):
+            return True
+    # La `descrizione_breve` e' la meta description e il testo della card: una
+    # data vecchia li' dentro e' lavoro anche quando il contenuto e' a posto.
+    descrizione = riga.get("descrizione_breve")
+    if isinstance(descrizione, str) and descrizione.strip():
+        return bool(sostituisci_data(descrizione, vecchia, nuova, ruolo)[1])
+    return False
+
+
 async def _lotto_date(
     righe: Sequence[Mapping[str, Any]] | None,
     eventi: Sequence[Mapping[str, Any]] | None,
     *,
     limit: int | None,
+    offset: int = 0,
     scrive: bool,
     contatori: dict[str, int],
     esiti: list[dict[str, Any]],
@@ -836,7 +1044,8 @@ async def _lotto_date(
     step: str = STEP_RIGENERA,
 ) -> dict[str, Any]:
     """Le pagine la cui prosa non dice piu' quello che dicono le colonne."""
-    elenco_eventi = _eventi_con_data(eventi, limit=limit)
+    elenco_eventi, bandi = _da_rigenerare(
+        righe, eventi, limit=limit, offset=offset, contatori=contatori)
     if not elenco_eventi:
         return {"eventi": 0}
     per_bando: dict[Any, dict[str, Any]] = {}
@@ -848,7 +1057,6 @@ async def _lotto_date(
             # parte dal contenuto gia' corretto dalla prima.
             per_bando.setdefault(bando_id, {"eventi": []})["eventi"].append(evento)
 
-    bandi = {r.get("id"): r for r in _bandi(righe, bando_ids=tuple(per_bando))}
     if scrivi is None and scrive:
         scrivi = scrivi_su_db
 
@@ -1082,24 +1290,7 @@ def _scrittore_json(
     return dentro
 
 
-def _eventi_con_data(
-    eventi: Sequence[Mapping[str, Any]] | None, *, limit: int | None,
-) -> list[dict[str, Any]]:
-    """Gli eventi verificati che hanno spostato una data, dal DB o iniettati."""
-    if eventi is not None:
-        return [dict(e) for e in eventi]
-    try:
-        from . import db
-        # `applicato=True` non e' un di piu': in ombra un evento nasce
-        # `verificato=True, applicato=False`, e rigenerare la prosa prima di
-        # `applica-eventi` scriverebbe nel testo una data che la colonna non
-        # ha ancora. Con questo filtro il comando diventa impossibile da
-        # lanciare fuori ordine.
-        return [dict(e) for e in db.select_eventi(
-            tipi=TIPI_CON_DATA, verificato=True, applicato=True, limit=limit)]
-    except Exception as e:                                # pragma: no cover - ripiego
-        logger.warning("[rigenera] lettura degli eventi fallita: {}", e)
-        return []
+
 
 
 __all__ = [

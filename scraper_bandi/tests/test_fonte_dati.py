@@ -59,6 +59,62 @@ class CodaDelMonitor(unittest.TestCase):
         self.assertEqual([r["id"] for r in scelti], [905315])
         self.assertEqual(scelti[0]["priorita_controllo"], 90)
 
+    def test_candidati_portano_la_memoria_del_giro_precedente(self):
+        """Le colonne calde devono arrivare nella riga, non solo la coda.
+
+        `select_controlli` e' nato per il resolver e chiedeva sei colonne: la
+        coda e i tentativi. Il monitor lo riusava cosi' com'era, quindi ogni
+        giro ripartiva da zero — nessun `testo_norm` (nessun «prima», quindi
+        ogni controllo in variante G2'), nessun ETag (nessun 304 possibile) e
+        soprattutto `controlli_falliti` sempre letto come 0, cioe' la promessa
+        «cinque fallimenti e il bando esce dalla coda» che non si avvera mai.
+        """
+        chieste: list[dict] = []
+        coda = {905315: {"prossimo_controllo_at": "2026-09-01T00:00:00+00:00",
+                         "priorita_controllo": 90},
+                2: {"prossimo_controllo_at": "2027-01-01T00:00:00+00:00"}}
+        calde = {905315: {"testo_norm": b"testo di ieri", "etag": "W/\"abc\"",
+                          "impronta_contenuto": "sha-vecchia", "controlli_falliti": 4,
+                          "volatilita": 0.5}}
+
+        def _controlli(ids, **kwargs):
+            chieste.append({"ids": list(ids), "colonne": kwargs.get("colonne")})
+            return calde if kwargs.get("colonne") else coda
+
+        with patch.object(db, "select_bandi_da_monitorare",
+                          lambda **k: [_bando(), _bando(id=2)]), \
+                patch.object(db, "select_controlli", _controlli):
+            scelti = monitoraggio.FonteDatiSupabase().candidati(adesso=ADESSO)
+        self.assertEqual([r["id"] for r in scelti], [905315])
+        riga = scelti[0]
+        self.assertEqual(riga["testo_norm"], b"testo di ieri")
+        self.assertEqual(riga["impronta_contenuto"], "sha-vecchia")
+        self.assertEqual(riga["controlli_falliti"], 4)
+        self.assertEqual(riga["priorita_controllo"], 90)     # la coda resta
+        # Due letture, non una: la seconda chiede le colonne pesanti sulle
+        # sole righe scelte (`testo_norm` e' bytea e su 1 683 righe pesa
+        # decine di MB), non su tutta la coda.
+        self.assertEqual(len(chieste), 2)
+        self.assertIsNone(chieste[0]["colonne"])
+        self.assertEqual(chieste[1]["ids"], [905315])
+        for colonna in monitoraggio.COLONNE_CONTROLLO:
+            self.assertIn(colonna, chieste[1]["colonne"])
+
+    def test_memoria_non_leggibile_non_butta_via_i_candidati(self):
+        # Degradare qui vuol dire «giro senza baseline», che e' il
+        # comportamento di prima: si dichiara con un allarme e si prosegue.
+        def _controlli(ids, **kwargs):
+            if kwargs.get("colonne"):
+                raise RuntimeError("PostgREST giu'")
+            return {905315: {"prossimo_controllo_at": "2026-09-01T00:00:00+00:00"}}
+
+        with patch.object(db, "select_bandi_da_monitorare", lambda **k: [_bando()]), \
+                patch.object(db, "select_controlli", _controlli):
+            fonte = monitoraggio.FonteDatiSupabase()
+            scelti = fonte.candidati(adesso=ADESSO)
+        self.assertEqual([r["id"] for r in scelti], [905315])
+        self.assertIn(monitoraggio.ALLARME_MEMORIA_ASSENTE, fonte.allarmi)
+
     def test_senza_bando_controllo_nessun_candidato(self):
         # Se le colonne calde non si leggono, ogni riga sembrerebbe «mai
         # controllata» e l'intero corpus entrerebbe in coda in un giro solo.

@@ -10,6 +10,7 @@ Nessuna rete e nessun DB: scarico, classificatore e fonte dati sono iniettati.
 """
 import io
 import json
+import sys
 import unittest
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
@@ -17,7 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import quote
 
-from tests.supporto import carica_modulo
+from tests.supporto import ALIAS, carica_modulo
 
 monitoraggio = carica_modulo("monitoraggio")
 eventi = carica_modulo("eventi")
@@ -579,6 +580,31 @@ class TestRun(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(esito["status"], "ok")
         self.assertTrue(esito["saltato_per_lock"])
 
+    async def test_senza_classificatore_il_giro_si_dichiara_non_configurato(self):
+        """Un giro che non ha potuto fare niente non deve sembrare riuscito.
+
+        Senza `ANTHROPIC_API_KEY` `controlla` esce al passo 0 su ogni riga e
+        non salva niente: nessuna riga esce dalla coda, due giri di fila
+        guardano gli stessi id e l'esito era `status: ok`, exit 0. E' il caso
+        per cui esiste `EXIT_NON_CONFIGURATO`, e la chiave `saltato` e' quella
+        che `__main__._codice_da_contatori` traduce in 5.
+        """
+        async def scarica(url, **kw):
+            return _Risposta(html="<h1>x</h1><p>testo</p>")
+
+        with patch.object(monitoraggio, "classificatore_da_impostazioni",
+                          lambda *a, **k: None), \
+                patch.object(monitoraggio, "controlla") as controlla:
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(),
+                fonte_dati=monitoraggio.FonteDati(righe=[_bando(id=1), _bando(id=2)]),
+                scarica=scarica, lock=_lock_libero(), adesso=ADESSO,
+            )
+        controlla.assert_not_called()
+        self.assertEqual(esito["saltato"], "scarico_non_configurato")
+        self.assertEqual(esito["candidati"], 2)
+        self.assertEqual(esito["controllati"], 0)
+
     async def test_il_riepilogo_dichiara_se_il_G7_e_soddisfacibile(self):
         # G7 chiede una seconda prova indipendente: senza `seconda_opinione` e
         # senza `pagine_collegate` nessun evento con transizione o con una
@@ -729,7 +755,13 @@ class TestRun(unittest.IsolatedAsyncioTestCase):
             lock=_lock_libero(), adesso=ADESSO,
         )
         self.assertEqual(esito["status"], "ok")
-        self.assertEqual(esito["controllati"], 2)
+        # `controllati` conta le righe davvero controllate: un giro senza rete
+        # non ne controlla nessuna, e dire «controllati: 2» lo faceva
+        # somigliare a un giro riuscito. I due bandi sono `saltati`, con il
+        # motivo scritto nel riepilogo (e quindi in `pipeline_run`).
+        self.assertEqual(esito["controllati"], 0)
+        self.assertEqual(esito["saltati"], 2)
+        self.assertEqual(esito["motivo_saltati"], "senza rete")
         self.assertEqual(esito["fetch"], 0)
         self.assertEqual(esito["classificazioni"], 0)
 
@@ -1581,6 +1613,77 @@ class TestApplicaEventi(unittest.IsolatedAsyncioTestCase):
             impostazioni=_impostazioni(monitor_modalita="attivo"))
         self.assertEqual(esito["modalita"], "attivo")
         self.assertEqual(applicati, [10])
+
+    async def _da_db(self, pagine, *, rifiuti=(), **kwargs):
+        """Il giro che legge davvero dalla selezione, con `db` sostituito."""
+        visti = []
+
+        def _eventi(**parametri):
+            if "elaborazione_bloccata" in tuple(parametri.get("tipi") or ()):
+                return [{"id": 900 + i, "riferisce_a": r}
+                        for i, r in enumerate(rifiuti)]
+            visti.append(dict(parametri))
+            return list(pagine.get(parametri.get("offset"), []))
+
+        applicati = []
+        finto = MagicMock()
+        finto.select_eventi.side_effect = _eventi
+        kwargs.setdefault("lock", _lock_libero())
+        kwargs.setdefault("impostazioni", _impostazioni())
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True), \
+                patch.object(monitoraggio, "PAGINA_SELEZIONE_EVENTI", 5):
+            esito = await monitoraggio.run_applica_eventi(
+                applica=lambda riga: applicati.append(riga.get("id")) or True,
+                **kwargs)
+        return esito, applicati, visti
+
+    async def test_applica_eventi_scorre_oltre_gli_eventi_rifiutati(self):
+        """Gli eventi che la RPC ha gia' rifiutato non riconsumano il blocco.
+
+        `bando_applica_evento` ritorna `false` su tre uscite (RPC assente,
+        date incoerenti, transizione non ammessa prima della 06) lasciando
+        `applicato=false`: l'evento resta all'id piu' basso e si riprendeva una
+        fetta del blocco a ogni lancio. Con dodici eventi bloccati il blocco da
+        50 diventava 38 per sempre; con cinquanta, «letti 50, candidati 50,
+        applicati 0» — con exit 0.
+        """
+        pagine = {
+            0: [_evento_db(id=i) for i in range(1, 6)],
+            5: [_evento_db(id=i) for i in range(6, 9)],
+        }
+        esito, applicati, visti = await self._da_db(
+            pagine, rifiuti=range(1, 6), attivo=True, limit=2)
+        self.assertEqual(applicati, [6, 7])
+        self.assertEqual(esito["bloccati"], 5)
+        self.assertEqual(esito["attraversati"], 7)
+        self.assertEqual([v.get("offset") for v in visti[:2]], [0, 5])
+
+    async def test_applica_eventi_limit_conta_le_righe_da_applicare(self):
+        # I filtri Python (tipo interno, non verificato, gia' applicato)
+        # scartavano righe DOPO il limite della select: il `--limit` contava
+        # le righe lette, non quelle da applicare.
+        pagine = {
+            0: [_evento_db(id=i, verificato=False) for i in range(1, 6)],
+            5: [_evento_db(id=i) for i in range(6, 9)],
+        }
+        esito, applicati, visti = await self._da_db(pagine, attivo=True, limit=2)
+        self.assertEqual(applicati, [6, 7])
+        self.assertEqual(esito["letti"], 2)
+        self.assertEqual(esito["candidati"], 2)
+        # Alla query si chiede una pagina (ridotta a 5 dal patch), non il 2
+        # dell'operatore.
+        self.assertEqual(visti[0].get("limit"), 5)
+
+    async def test_i_rifiuti_della_rpc_si_vedono_nel_riepilogo(self):
+        # Un blocco fermo non deve somigliare a un giro riuscito.
+        esito = await monitoraggio.run_applica_eventi(
+            righe=[_evento_db(id=1), _evento_db(id=2)], attivo=True,
+            applica=lambda riga: False,
+            lock=_lock_libero(), impostazioni=_impostazioni(),
+        )
+        self.assertEqual(esito["applicati"], 0)
+        self.assertEqual(esito["rifiutati"], 2)
 
     async def test_lock_occupato_esce_senza_applicare(self):
         finto = MagicMock()

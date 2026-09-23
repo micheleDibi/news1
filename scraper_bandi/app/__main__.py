@@ -41,18 +41,30 @@ Comandi:
   risolvi-fonte  Step 5 — fonte ufficiale del bando (`app/fonte_ufficiale.py`).
                  Opzioni: --dry-run, --limit N, --nuovi|--backlog,
                  --solo-oe, --solo-in-verifica, --id X, --ombra|--attivo,
-                 --forza, --lotto Lx.
+                 --forza, --offset N, --lotto Lx.
+                 `--limit` conta le righe da LAVORARE: la selezione si scorre
+                 e le righe il cui ricontrollo non e' ancora dovuto finiscono
+                 in `saltate`. `--offset N` fa ripartire lo scorrimento oltre
+                 le prime N righe (serve con --forza, che toglie ogni filtro).
   oe-dettaglio   Scarico delle schede Obiettivo Europa e registrazione dei
                  candidati in `bando_link`. Opzioni: --dry-run, --limit N,
                  --id X, --ombra|--attivo, --forza (--solo-oe e' accettato ed
                  e' gia' il comportamento: il comando guarda solo le fonti OE).
                  Con --dry-run non scarica nulla (le schede consumano il tetto
                  OE_SCHEDE_GIORNO): conta quelle che avrebbe letto.
+                 --offset N riparte oltre le prime N righe della selezione:
+                 con --forza nessuna riga e' «gia' letta» e senza offset il
+                 lotto ripartirebbe ogni volta dalla prima pagina.
   link-verifica  Ricontrollo di `bando_link`: 2xx e dominio non aggregatore
                  decidono `pubblicabile`. Opzioni: --dry-run, --limit N,
-                 --id X, --ombra|--attivo.
+                 --id X, --offset N, --ombra|--attivo.
+                 `--limit` conta le righe da verificare davvero: quelle gia'
+                 verificate oggi finiscono in `saltate`.
   fondi-doppioni Gemelli esatti (fusione) e possibili doppioni (report).
                  Opzioni: --dry-run, --limit N, --ombra|--attivo.
+                 Qui il confronto e' fra righe dello stesso elenco e non si
+                 impagina: si legge il corpus e `--limit` e' il numero di
+                 FUSIONI applicate (--limit 0 = solo report).
   monitor        Step 7 — ricontrollo delle pagine ufficiali
                  (`app/monitoraggio.py`). Opzioni: --dry-run, --limit N,
                  --ombra|--attivo, --senza-rete (seleziona, ordina e riepiloga
@@ -71,17 +83,28 @@ Comandi:
                  (§6.2: senza questo comando la baseline delle impronte li
                  perderebbe). Opzioni: --dry-run, --limit N, --dal AAAA-MM-GG,
                  --tipo a,b,c (elenco separato da virgole: i tipi si attivano
-                 uno alla volta), --ombra|--attivo.
+                 uno alla volta), --offset N, --ombra|--attivo.
+                 Il --limit conta gli eventi da APPLICARE: quelli gia'
+                 rifiutati dalla RPC non consumano piu' il blocco.
   pulisci-contenuto  Backfill L7 (§6.4): toglie dal `contenuto` gia' generato i
                  segmenti che puntano all'aggregatore. Opzioni: --dry-run,
-                 --limit N, --lotto Lx, --ombra|--attivo.
+                 --limit N, --lotto Lx, --offset N, --ombra|--attivo.
   rigenera       Backfill L7: rigenerazione mirata delle pagine il cui testo
                  non dice piu' quello che dicono le colonne. Opzioni:
                  --dry-run, --limit N, --malformati (le righe con `contenuto`
-                 non JSON), --lotto Lx, --ombra|--attivo.
+                 non JSON), --lotto Lx, --offset N, --ombra|--attivo.
   archivia-processed  Backfill L8: porta ad `archiviato` i `processed` chiusi
                  che non verranno piu' lavorati. Opzioni: --dry-run,
-                 --limit N, --lotto Lx, --ombra|--attivo.
+                 --limit N, --lotto Lx, --offset N, --ombra|--attivo.
+                 Il --limit conta le ARCHIVIAZIONI, non le occhiate.
+
+**`--limit` conta il lavoro, non le occhiate.** Tutti i comandi a lotti
+scorrono la propria selezione a pagine e fanno consumare il limite alle sole
+righe su cui c'e' davvero qualcosa da fare; le altre finiscono in un contatore
+`saltate`/`saltati` del riepilogo. `--offset N` riparte oltre le prime N righe
+della selezione ed e' il modo di lanciare i blocchi a mano quando niente puo'
+far uscire una riga dalla selezione (con `--forza`, in ombra o con
+`--dry-run`, dove nessun marcatore viene scritto).
 
 **Modalita' ombra per difetto** su tutti i sottocomandi v11: senza `--attivo`
 esplicito (o `RESOLVER_MODALITA=attivo` / `MONITOR_MODALITA=attivo` in `.env`)
@@ -317,7 +340,9 @@ def _modulo_opzionale(
 # `--enti enti.xlsx`, `--campione 100`, `--tipo proroga`, `--dal 2026-09-01`.
 # `_leggi_opzioni` le lascia in `resto` come due token, e senza `_valore_opzione`
 # il secondo finirebbe fra le «opzioni non riconosciute».
-OPZIONI_CON_VALORE = frozenset({"--id", "--lotto", "--enti", "--campione", "--tipo", "--dal"})
+OPZIONI_CON_VALORE = frozenset({
+    "--id", "--lotto", "--enti", "--campione", "--tipo", "--dal", "--offset",
+})
 
 # Flag del resolver (§5). Sono qui e non dentro il modulo perche' `--attivo` e'
 # una decisione della riga di comando, non del codice che scrive.
@@ -363,6 +388,24 @@ def _intero_opzione(valore: str | None, nome: str, *, predefinito: int) -> int:
         raise ErroreOpzioni(f"{nome} richiede un intero (es. {nome} 100)") from None
     if numero < 1:
         raise ErroreOpzioni(f"{nome} richiede un intero >= 1 (es. {nome} 100)")
+    return numero
+
+
+def _offset_opzione(valore: str | None) -> int:
+    """`--offset 800` -> 800; assente -> 0. Non intero o negativo -> exit 2.
+
+    E' «da dove ricominciare a scorrere la selezione», e serve ai lotti che si
+    lanciano a blocchi: `--offset 0`, `800`, `1600`. Zero e' ammesso perche' e'
+    il valore normale (dall'inizio), al contrario di `--campione`.
+    """
+    if valore is None:
+        return 0
+    try:
+        numero = int(valore)
+    except ValueError:
+        raise ErroreOpzioni("--offset richiede un intero (es. --offset 800)") from None
+    if numero < 0:
+        raise ErroreOpzioni("--offset richiede un intero >= 0 (es. --offset 800)")
     return numero
 
 
@@ -501,13 +544,18 @@ def _riporta_modulo_assente(
 def _cmd_risolvi_fonte(argv: list[str]) -> int:
     def parametri(opzioni: Opzioni) -> dict:
         identificativo, resto = _valore_opzione(opzioni.resto, "--id")
-        lotto, _ = _valore_opzione(resto, "--lotto")
+        lotto, resto = _valore_opzione(resto, "--lotto")
+        offset, _ = _valore_opzione(resto, "--offset")
         return {
             "modo": _modo_selezione(opzioni.resto),
             "solo_oe": "--solo-oe" in opzioni.resto,
             "solo_in_verifica": "--solo-in-verifica" in opzioni.resto,
             "bando_id": identificativo,
             "forza": "--forza" in opzioni.resto,
+            # Con `--forza` non resta nessun predicato capace di far uscire una
+            # riga dalla selezione: `--offset` e' il solo modo di lanciare i
+            # blocchi a mano senza ripetere sempre gli id piu' bassi.
+            "offset": _offset_opzione(offset),
             "lotto": lotto,
         }
 
@@ -518,9 +566,14 @@ def _cmd_risolvi_fonte(argv: list[str]) -> int:
 
 def _cmd_oe_dettaglio(argv: list[str]) -> int:
     def parametri(opzioni: Opzioni) -> dict:
-        identificativo, _ = _valore_opzione(opzioni.resto, "--id")
+        identificativo, resto = _valore_opzione(opzioni.resto, "--id")
+        offset, _ = _valore_opzione(resto, "--offset")
         return {
             "forza": "--forza" in opzioni.resto,
+            # Con `--forza` nessuna riga e' «gia' letta», quindi lo
+            # scorrimento non scarta niente e il lotto ripartirebbe sempre
+            # dalla prima pagina: i blocchi si lanciano con `--offset`.
+            "offset": _offset_opzione(offset),
             # `--solo-oe` e' il default del comando: il flag lo rende esplicito,
             # e la sua assenza non deve allargare la selezione per sbaglio.
             "solo_oe": True,
@@ -541,8 +594,9 @@ def _cmd_oe_dettaglio(argv: list[str]) -> int:
 
 def _cmd_link_verifica(argv: list[str]) -> int:
     def parametri(opzioni: Opzioni) -> dict:
-        identificativo, _ = _valore_opzione(opzioni.resto, "--id")
-        return {"bando_id": identificativo}
+        identificativo, resto = _valore_opzione(opzioni.resto, "--id")
+        offset, _ = _valore_opzione(resto, "--offset")
+        return {"bando_id": identificativo, "offset": _offset_opzione(offset)}
 
     return _esegui_v11("link-verifica", "run_link_verifica", argv, extra=parametri)
 
@@ -716,8 +770,10 @@ def _cmd_applica_eventi(argv: list[str]) -> int:
     """
     def parametri(opzioni: Opzioni) -> dict:
         dal, resto = _valore_opzione(opzioni.resto, "--dal")
-        tipo, _ = _valore_opzione(resto, "--tipo")
-        return {"dal": _giorno_opzione(dal, "--dal"), "tipi": _tipi_opzione(tipo)}
+        tipo, resto = _valore_opzione(resto, "--tipo")
+        offset, _ = _valore_opzione(resto, "--offset")
+        return {"dal": _giorno_opzione(dal, "--dal"), "tipi": _tipi_opzione(tipo),
+                "offset": _offset_opzione(offset)}
 
     return _esegui_v11(
         "applica-eventi", "run_applica_eventi", argv, modulo="monitoraggio",
@@ -726,13 +782,19 @@ def _cmd_applica_eventi(argv: list[str]) -> int:
 
 
 def _lotto_del_backfill(opzioni: Opzioni) -> dict:
-    """`--lotto Lx` dei comandi di §6.4: nomina la riga `pipeline_run.step`.
+    """`--lotto Lx` e `--offset N` dei comandi di §6.4.
 
-    Senza, i crediti e i dollari di un backfill finirebbero nella stessa riga
-    del regime e il tetto mensile conterebbe due volte lo stesso consumo.
+    `--lotto` nomina la riga `pipeline_run.step`: senza, i crediti e i dollari
+    di un backfill finirebbero nella stessa riga del regime e il tetto mensile
+    conterebbe due volte lo stesso consumo.
+
+    `--offset` fa ripartire lo scorrimento della selezione oltre le prime N
+    righe: e' il modo di lanciare i blocchi a mano, e serve in ombra e con
+    `--dry-run`, dove nessuna scrittura lascia un marcatore.
     """
-    lotto, _ = _valore_opzione(opzioni.resto, "--lotto")
-    return {"lotto": lotto}
+    lotto, resto = _valore_opzione(opzioni.resto, "--lotto")
+    offset, _ = _valore_opzione(resto, "--offset")
+    return {"lotto": lotto, "offset": _offset_opzione(offset)}
 
 
 def _cmd_pulisci_contenuto(argv: list[str]) -> int:

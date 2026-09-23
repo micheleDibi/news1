@@ -384,6 +384,7 @@ async def run_pulisci_contenuto(
     attivo: bool | None = None,
     *,
     lotto: str | None = None,
+    offset: int = 0,
     righe: Sequence[Mapping[str, Any]] | None = None,
     link: Sequence[Mapping[str, Any]] | None = None,
     tabella_domini: Any = None,
@@ -397,6 +398,16 @@ async def run_pulisci_contenuto(
     `update_bando_completed(gia_pubblicato=True)`, che tiene congelati `slug` e
     `titolo` e non muove `stato_processing`: nessuna riga puo' uscire dalla
     pubblicazione per colpa di questo comando.
+
+    E proprio perche' non muove `pubblicato` ne' `stato_processing`, **niente**
+    fa uscire una riga dalla selezione dopo che e' stata ripulita: il `--limit`
+    contava le righe guardate e due lanci di fila ripassavano sugli stessi id
+    piu' bassi (lancio 1: cambiati 40; lancio 2: cambiati 0, che somiglia a
+    «finito» ed e' invece «ho riletto le stesse 800»). Ora la selezione si
+    scorre a pagine e il `--limit` conta le righe che hanno davvero qualcosa da
+    cambiare; le altre finiscono in `saltate`, e `attraversate` dice quante ne
+    sono state guardate. Il filtro e' puro (si legge dal `contenuto`), quindi
+    funziona anche in ombra.
     """
     avvio = time.monotonic()
     lotto = lotto or LOTTO_CONTENUTO
@@ -406,18 +417,21 @@ async def run_pulisci_contenuto(
     tetti = _tetti()
     conto = {
         "esaminati": 0, "cambiati": 0, "scritti": 0, "sostituiti": 0,
-        "declassati": 0, "cta": 0, "errori": 0, "eventi": 0,
+        "declassati": 0, "cta": 0, "attraversate": 0, "saltate": 0,
+        "errori": 0, "eventi": 0,
     }
     interrotto = False
     motivo_tetto = ""
     try:
-        elenco = _bandi(righe, limit=limit)
-        candidature = _candidature(link, [r.get("id") for r in elenco])
+        lavoro = _da_ripulire(
+            righe, link, limit=limit, offset=offset,
+            tabella_domini=tabella_domini, conto=conto,
+        )
         if scrive and scrivi is None:
             from .db import update_bando_completed
             scrivi = _scrittore(update_bando_completed)
 
-        for riga in elenco:
+        for riga, payload, dettaglio in lavoro:
             verifica = bilancio.verifica(contatori, tetti, step=step)
             if not verifica.consentito:
                 interrotto = True
@@ -425,15 +439,9 @@ async def run_pulisci_contenuto(
                 logger.warning("[ALLARME] [{}] {}", STEP_CONTENUTO, verifica.motivo)
                 break
             conto["esaminati"] += 1
-            payload, dettaglio = payload_pulizia(
-                riga, candidatura_url=candidature.get(riga.get("id")),
-                tabella=tabella_domini,
-            )
             conto["sostituiti"] += dettaglio.get("sostituiti", 0)
             conto["declassati"] += dettaglio.get("declassati", 0)
             conto["cta"] += dettaglio.get("cta", 0)
-            if not payload:
-                continue
             conto["cambiati"] += 1
             if not scrive:
                 continue
@@ -460,6 +468,7 @@ async def run_pulisci_contenuto(
         "lotto": lotto,
         "dry_run": dry_run,
         "attivo": scrive,
+        "offset": max(0, int(offset or 0)),
         "interrotto_per_tetto": interrotto,
         "motivo": motivo_tetto,
         "saltato_per_lock": False,
@@ -479,6 +488,7 @@ async def run_archivia_processed(
     attivo: bool | None = None,
     *,
     lotto: str | None = None,
+    offset: int = 0,
     righe: Sequence[Mapping[str, Any]] | None = None,
     archivia: Callable[[Any], Mapping[str, Any]] | None = None,
     oggi: date_cls | None = None,
@@ -489,6 +499,14 @@ async def run_archivia_processed(
     fonte ufficiale trovata) vengono soltanto **contate ed elencate**: le
     lavorano `risolvi-fonte`, `enrich` e `seo`, ognuno con i propri tetti. Qui
     si chiude solo il ramo terminale.
+
+    Il `--limit` conta le **archiviazioni**, non le occhiate: le righe che
+    restano `processed` per sempre (saltate e lavorabili) stanno in testa
+    all'ordinamento per `id` e prima riconsumavano il limite a ogni lancio —
+    su 558 righe con `--limit 100` l'avanzamento era di una trentina di righe
+    per giro e si fermava del tutto quando le righe appiccicose in testa
+    arrivavano a cento. Ora la selezione si scorre (`--offset N` per lanciare
+    un blocco preciso) e `attraversati` dice quante righe sono state guardate.
     """
     avvio = time.monotonic()
     lotto = lotto or LOTTO_PROCESSED
@@ -497,27 +515,21 @@ async def run_archivia_processed(
     giorno = oggi or oggi_roma()
     conto = {
         "esaminati": 0, "archiviabili": 0, "archiviati": 0,
-        "lavorabili": 0, "saltati": 0, "errori": 0,
+        "lavorabili": 0, "saltati": 0, "attraversati": 0, "errori": 0,
     }
     da_lavorare: list[Any] = []
+    degradato = ""
     try:
-        elenco = _processed(righe, limit=limit)
+        elenco = _da_archiviare(
+            righe, limit=limit, offset=offset, oggi=giorno,
+            conto=conto, da_lavorare=da_lavorare,
+        )
         if scrive and archivia is None:
             from .db import archivia_bando
             archivia = archivia_bando
 
         for riga in elenco:
             conto["esaminati"] += 1
-            scelta, motivo = destinazione(riga, oggi=giorno)
-            if scelta == DESTINAZIONE_SALTA:
-                conto["saltati"] += 1
-                logger.debug("[{}] bando {} saltato: {}",
-                             STEP_PROCESSED, riga.get("id"), motivo)
-                continue
-            if scelta == DESTINAZIONE_LAVORAZIONE:
-                conto["lavorabili"] += 1
-                da_lavorare.append(riga.get("id"))
-                continue
             conto["archiviabili"] += 1
             if not scrive:
                 continue
@@ -530,6 +542,16 @@ async def run_archivia_processed(
                 continue
             if isinstance(esito, Mapping) and not esito.get("scritto"):
                 conto["saltati"] += 1
+                if esito.get("saltato") == "colonne_assenti":
+                    # La migrazione 01 non c'e': `archiviato` non e' ancora
+                    # ammesso dal CHECK e **nessuna** riga potra' essere
+                    # scritta. Proseguire significherebbe contare 558 «saltati»
+                    # e restituire un giro verde che non ha fatto niente.
+                    degradato = "colonne_assenti"
+                    logger.warning(
+                        "[{}] migrazione 01 non applicata: giro interrotto "
+                        "invece di attraversare il corpus a vuoto", STEP_PROCESSED)
+                    break
                 continue
             conto["archiviati"] += 1
     except Exception as e:
@@ -546,12 +568,18 @@ async def run_archivia_processed(
         "lotto": lotto,
         "dry_run": dry_run,
         "attivo": scrive,
+        "offset": max(0, int(offset or 0)),
         "interrotto_per_tetto": False,
         "saltato_per_lock": False,
         **conto,
         "ids_lavorabili": da_lavorare,
         "durata_s": round(time.monotonic() - avvio, 1),
     }
+    if degradato:
+        # `colonne_assenti` resta una degradazione prevista (exit 0, §16.2):
+        # qui si dichiara nel riepilogo, cosi' chi legge `pipeline_run` vede
+        # perche' il giro si e' fermato.
+        riepilogo["saltato"] = degradato
     _scrivi_run(step, riepilogo, tempo=time.monotonic() - avvio)
     logger.info("[{}] {}", STEP_PROCESSED,
                 {k: v for k, v in riepilogo.items() if k != "ids_lavorabili"})
@@ -560,30 +588,122 @@ async def run_archivia_processed(
 
 # --- confine di I/O ---------------------------------------------------------
 
-def _bandi(
-    righe: Sequence[Mapping[str, Any]] | None, *, limit: int | None,
-) -> list[dict[str, Any]]:
-    if righe is not None:
-        return [dict(r) for r in righe]
-    try:
-        from . import db
-        return [dict(r) for r in db.select_bandi_pubblicati_contenuto(limit=limit)]
-    except Exception as e:                                # pragma: no cover - ripiego
-        logger.warning("[{}] lettura dei pubblicati fallita: {}", STEP_CONTENUTO, e)
-        return []
+#: Quante righe si chiedono per pagina mentre si cerca che cosa lavorare.
+#: Non e' il `--limit` dell'operatore: e' la finestra su cui si scorre.
+PAGINA_SELEZIONE = 500
 
 
-def _processed(
-    righe: Sequence[Mapping[str, Any]] | None, *, limit: int | None,
-) -> list[dict[str, Any]]:
+def _pagine(
+    righe: Sequence[Mapping[str, Any]] | None,
+    leggi: Callable[..., Sequence[Mapping[str, Any]]],
+    *,
+    offset: int,
+    passo: str,
+) -> Any:
+    """Le pagine della selezione, o l'unica pagina iniettata dal chiamante.
+
+    Generatore: chi scorre decide quando fermarsi, e le pagine oltre quella in
+    cui il `--limit` si riempie non vengono nemmeno chieste.
+    """
     if righe is not None:
-        return [dict(r) for r in righe]
-    try:
+        yield [dict(r) for r in righe]
+        return
+    cursore = max(0, int(offset or 0))
+    while True:
+        try:
+            blocco = list(leggi(limit=PAGINA_SELEZIONE, offset=cursore))
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[{}] lettura della selezione fallita: {}", passo, e)
+            return
+        if not blocco:
+            return
+        cursore += len(blocco)
+        yield [dict(r) for r in blocco]
+        if len(blocco) < PAGINA_SELEZIONE:
+            return
+
+
+def _da_ripulire(
+    righe: Sequence[Mapping[str, Any]] | None,
+    link: Sequence[Mapping[str, Any]] | None,
+    *,
+    limit: int | None,
+    offset: int,
+    tabella_domini: Any,
+    conto: dict[str, int],
+) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, int]]]:
+    """Le righe che hanno davvero qualcosa da cambiare, a pagine.
+
+    Ritorna `(riga, payload, dettaglio)` con il payload **gia' calcolato**: e'
+    lo stesso lavoro che farebbe il ciclo, e rifarlo raddoppierebbe il costo
+    della scansione. Le righe con payload vuoto si contano in `saltate` e non
+    consumano il `--limit`; `attraversate` dice quante ne sono state guardate.
+    """
+    def _leggi(**filtri: Any) -> Sequence[Mapping[str, Any]]:
         from . import db
-        return [dict(r) for r in db.select_processed_da_archiviare(limit=limit)]
-    except Exception as e:                                # pragma: no cover - ripiego
-        logger.warning("[{}] lettura dei processed fallita: {}", STEP_PROCESSED, e)
-        return []
+        return db.select_bandi_pubblicati_contenuto(**filtri)
+
+    raccolte: list[tuple[dict[str, Any], dict[str, Any], dict[str, int]]] = []
+    for pagina in _pagine(righe, _leggi, offset=offset, passo=STEP_CONTENUTO):
+        # I `bando_link` si chiedono una pagina alla volta: con `--limit 2000`
+        # un solo `in_()` diventava una URL PostgREST con duemila id.
+        candidature = _candidature(link, [r.get("id") for r in pagina])
+        for riga in pagina:
+            conto["attraversate"] += 1
+            payload, dettaglio = payload_pulizia(
+                riga, candidatura_url=candidature.get(riga.get("id")),
+                tabella=tabella_domini,
+            )
+            if not payload:
+                conto["saltate"] += 1
+                continue
+            raccolte.append((riga, payload, dettaglio))
+            if limit is not None and len(raccolte) >= limit:
+                return raccolte
+    return raccolte
+
+
+def _da_archiviare(
+    righe: Sequence[Mapping[str, Any]] | None,
+    *,
+    limit: int | None,
+    offset: int,
+    oggi: date_cls,
+    conto: dict[str, int],
+    da_lavorare: list[Any],
+) -> list[dict[str, Any]]:
+    """Le sole righe destinate all'archivio, a pagine.
+
+    Solo il ramo `archiviato` fa uscire una riga dalla selezione: `salta` e
+    `lavorazione` restano `processed` per sempre e, stando in testa
+    all'ordinamento per `id`, riconsumavano il `--limit` a ogni lancio. Qui
+    consumano zero: vanno nei rispettivi contatori mentre la scansione
+    prosegue, cosi' `--limit 100` significa «cento archiviazioni» e l'elenco
+    dei lavorabili copre finalmente tutto il corpus.
+    """
+    raccolte: list[dict[str, Any]] = []
+    for pagina in _pagine(righe, _leggi_processed, offset=offset, passo=STEP_PROCESSED):
+        for riga in pagina:
+            conto["attraversati"] += 1
+            scelta, motivo = destinazione(riga, oggi=oggi)
+            if scelta == DESTINAZIONE_SALTA:
+                conto["saltati"] += 1
+                logger.debug("[{}] bando {} saltato: {}",
+                             STEP_PROCESSED, riga.get("id"), motivo)
+                continue
+            if scelta == DESTINAZIONE_LAVORAZIONE:
+                conto["lavorabili"] += 1
+                da_lavorare.append(riga.get("id"))
+                continue
+            raccolte.append(riga)
+            if limit is not None and len(raccolte) >= limit:
+                return raccolte
+    return raccolte
+
+
+def _leggi_processed(**filtri: Any) -> Sequence[Mapping[str, Any]]:
+    from . import db
+    return db.select_processed_da_archiviare(**filtri)
 
 
 def _candidature(

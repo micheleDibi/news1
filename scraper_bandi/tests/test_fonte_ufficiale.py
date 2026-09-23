@@ -816,14 +816,41 @@ class TestSelezione(unittest.TestCase):
         # `contenuto` e `allegati` non sono nello schema finto: non vanno chieste.
         self.assertNotIn("contenuto", query.colonne.split(","))
 
+    #: Il filtro «senza fonte» come deve arrivare al server: due rami in OR,
+    #: perche' `neq` su NULL non e' vero e una riga con la colonna vuota
+    #: sparirebbe dalla selezione (misurato in produzione il 23/09/2026: 9
+    #: pubblicati invisibili al resolver, +11 al giorno).
+    SENZA_FONTE = ("or_", "fonte_ufficiale_stato.is.null,fonte_ufficiale_stato.neq.trovata")
+
     def test_nuovi_filtra_enriched_e_senza_fonte(self):
         filtri = self._esegui().filtri
         self.assertIn(("eq", "stato_processing", "enriched"), filtri)
-        self.assertIn(("neq", "fonte_ufficiale_stato", "trovata"), filtri)
+        self.assertIn(self.SENZA_FONTE, filtri)
+
+    def test_il_filtro_senza_fonte_accetta_anche_il_null(self):
+        """La riga con `fonte_ufficiale_stato` vuoto deve restare selezionabile.
+
+        E' il difetto chiuso dalla migrazione 09: il DEFAULT ha riempito le
+        righe, ma la selezione non deve dipendere da una migrazione. Un
+        `INSERT` con NULL esplicito, o il rollback della 09, riaprirebbero il
+        buco — e nessun contatore lo direbbe, perche' le righe non selezionate
+        non compaiono da nessuna parte.
+        """
+        filtri = self._esegui().filtri
+        self.assertNotIn(("neq", "fonte_ufficiale_stato", "trovata"), filtri)
+        rami = [f[1] for f in filtri if f[0] == "or_"]
+        self.assertTrue(rami, "nessun filtro OR: il NULL resterebbe fuori")
+        self.assertIn("fonte_ufficiale_stato.is.null", rami[0])
+        self.assertIn("fonte_ufficiale_stato.neq.trovata", rami[0])
+
+    def test_backlog_accetta_anche_il_null(self):
+        filtri = self._esegui(modo="backlog").filtri
+        self.assertIn(self.SENZA_FONTE, filtri)
 
     def test_forza_toglie_il_filtro_senza_fonte(self):
         filtri = self._esegui(forza=True).filtri
         self.assertIn(("eq", "stato_processing", "enriched"), filtri)
+        self.assertNotIn(self.SENZA_FONTE, filtri)
         self.assertNotIn(("neq", "fonte_ufficiale_stato", "trovata"), filtri)
 
     def test_backlog_guarda_i_pubblicati(self):
@@ -860,6 +887,17 @@ class TestSelezione(unittest.TestCase):
         self.assertNotIn(
             "limit", [f[0] for f in self._esegui(limit=None).filtri],
         )
+
+    def test_limit_zero_con_offset_non_diventa_un_range_alla_rovescia(self):
+        # `range(800, 799)` e' un intervallo vuoto scritto al contrario: un
+        # limite di zero righe si dice con `limit(0)`.
+        filtri = self._esegui(limit=0, offset=800).filtri
+        self.assertIn(("limit", 0), filtri)
+        self.assertFalse([f for f in filtri if f[0] == "range"])
+
+    def test_offset_usa_range_perche_postgrest_non_ha_offset(self):
+        filtri = self._esegui(limit=500, offset=1000).filtri
+        self.assertIn(("range", 1000, 1499), filtri)
 
     def test_id_singolo_ignora_gli_altri_filtri(self):
         filtri = self._esegui(bando_id=42).filtri
@@ -1121,6 +1159,60 @@ class TestRunnerAusiliari(unittest.TestCase):
         self.assertGreater(esito["esatti"], 0)
         self.assertEqual(esito["fusi"], 0)
 
+    def test_fondi_doppioni_limit_zero_non_fonde_niente(self):
+        # `limit or 5000` trasformava «non toccare niente» in «leggi tutto il
+        # corpus e applica le fusioni»: l'esatto contrario della convenzione
+        # del package («zero = nessuna riga»).
+        righe = [
+            {"id": 1, "link_bando": "https://regione.marche.it/b1", "titolo": "Bando",
+             "fonte_id": 1},
+            {"id": 2, "link_bando": "https://regione.marche.it/b1", "titolo": "Bando",
+             "fonte_id": 2},
+        ]
+        fusioni: list[Any] = []
+        with unittest.mock.patch.object(
+                fu.db, "fondi_bandi",
+                lambda master, doppione, motivo: fusioni.append((master, doppione)) or master):
+            esito = esegui(fu.run_fondi_doppioni(attivo=True, limit=0, righe=righe))
+        self.assertEqual(fusioni, [])
+        self.assertEqual(esito["fusi"], 0)
+        # Il report, che e' gratis, copre comunque tutto il corpus.
+        self.assertEqual(esito["esaminati"], 2)
+        self.assertGreater(esito["esatti"], 0)
+        self.assertGreater(esito["rimandati"], 0)
+
+    def test_fondi_doppioni_legge_il_corpus_non_la_finestra_del_limit(self):
+        # Impaginare qui sarebbe SBAGLIATO: una coppia con un id in pagina 1 e
+        # l'altro in pagina 3 non verrebbe trovata da nessuna delle due. Alla
+        # lettura si chiede sempre il corpus, e il `--limit` e' il budget
+        # delle fusioni applicate.
+        visti: list[dict[str, Any]] = []
+
+        def _selezione(**parametri):
+            visti.append(dict(parametri))
+            return []
+
+        with unittest.mock.patch.object(fu.db, "select_pubblicati_per_gemelli", _selezione):
+            esegui(fu.run_fondi_doppioni(dry_run=True, limit=3))
+        self.assertEqual(visti[0].get("limit"), fu.TETTO_GEMELLI)
+
+    def test_domini_import_limit_zero_non_importa_tutto(self):
+        # `if limit:` faceva scrivere l'intera whitelist con `--limit 0`.
+        fonti = [{"id": 10, "link": "https://regione.marche.it/bandi", "discoverable": True}]
+        scritte: list[Any] = []
+        with unittest.mock.patch.object(
+                fu.db, "upsert_domini", lambda righe: scritte.extend(righe) or len(righe)):
+            esito = esegui(fu.run_domini_import(
+                attivo=True, limit=0, fonti=fonti, indicepa=[]))
+        self.assertEqual(scritte, [])
+        self.assertEqual(esito["domini"], 0)
+        self.assertEqual(esito["scritte"], 0)
+        # Il troncamento si dichiara: una whitelist parziale che risponde «ok»
+        # e' il modo piu' rapido di far passare un aggregatore per dominio non
+        # classificato.
+        self.assertGreater(esito["troncati"], 0)
+        self.assertEqual(esito["composti"], esito["troncati"])
+
     def test_domini_import_in_ombra_conta_e_non_scrive(self):
         fonti = [{"id": 10, "link": "https://regione.marche.it/bandi", "discoverable": True}]
         esito = esegui(fu.run_domini_import(fonti=fonti, indicepa=[]))
@@ -1379,3 +1471,184 @@ class TestQueryEDomini(unittest.TestCase):
 
 if __name__ == "__main__":                              # pragma: no cover
     unittest.main()
+
+
+class TestScorrimentoDellaSelezione(unittest.TestCase):
+    """`risolvi-fonte`: due lanci di fila devono avanzare, non ripetersi.
+
+    Stesso difetto misurato su `oe-dettaglio` il 23/09/2026 (800 esaminati,
+    799 scaricate, 1866 link, due volte di fila): la selezione ordina per `id`
+    e prende i primi N, e l'unico predicato capace di far uscire una riga —
+    `fonte_ufficiale_stato = 'trovata'` — lo scrive `db.aggiorna_fonte_ufficiale`,
+    che vive dentro il ramo `if attivo:` di `scrivi_esito` e in **ombra**, che
+    e' il modo predefinito, non viene eseguito mai.
+    """
+
+    OGGI = date(2026, 9, 23)
+
+    def _giro(self, pagine, *, controlli=None, **kwargs):
+        visti: list[dict[str, Any]] = []
+        amb = kwargs.pop("ambiente", ambiente(oggi=self.OGGI))
+
+        def _selezione(**parametri):
+            visti.append(dict(parametri))
+            return list(pagine.get(parametri.get("offset"), []))
+
+        with unittest.mock.patch.object(fu.blocco, "acquisisci", return_value=_LockFinto()), \
+                unittest.mock.patch.object(fu.blocco, "rilascia", lambda _l: None), \
+                unittest.mock.patch.object(fu.db, "select_bandi_da_risolvere", _selezione), \
+                unittest.mock.patch.object(
+                    fu.db, "select_controlli",
+                    lambda ids, **k: {i: (controlli or {})[i] for i in ids
+                                      if i in (controlli or {})}), \
+                unittest.mock.patch.object(
+                    fu.db, "select_pubblicati_per_gemelli", return_value=[]), \
+                unittest.mock.patch.object(fu, "schede_gia_lette", return_value=frozenset()), \
+                unittest.mock.patch.object(fu, "_registra", lambda *_a, **_k: None), \
+                unittest.mock.patch.object(fu, "scrivi_esito", lambda *_a, **_k: {"status": "ok"}), \
+                unittest.mock.patch.object(fu, "PAGINA_SELEZIONE_RESOLVER", 5):
+            esito = esegui(fu.run(dry_run=True, ambiente=amb, **kwargs))
+        return esito, visti
+
+    def _pagine(self):
+        def _riga(i):
+            return {"id": i, "titolo": TITOLO, "ente_erogatore": ENTE,
+                    "data_scadenza": "2026-09-30", "raw_data": {}}
+        return {0: [_riga(i) for i in range(1, 6)],
+                5: [_riga(i) for i in range(6, 9)]}
+
+    def test_le_righe_gia_lavorate_non_consumano_il_limite(self):
+        # I primi cinque sono stati lavorati ieri e il loro ricontrollo e' fra
+        # due settimane: vanno saltati, e il `--limit 2` deve arrivare alla
+        # pagina dopo invece di esaurirsi su di loro.
+        controlli = {
+            i: {"ultimo_controllo_at": "2026-09-22T10:00:00+00:00",
+                "prossimo_controllo_at": "2026-10-06T10:00:00+00:00"}
+            for i in range(1, 6)
+        }
+        esito, visti = self._giro(self._pagine(), controlli=controlli, limit=2)
+        self.assertEqual(esito["saltate"], 5)
+        self.assertEqual(esito["esaminati"], 2)
+        self.assertEqual([v.get("offset") for v in visti[:2]], [0, 5])
+        # Alla query si chiede una PAGINA (qui ridotta a 5 dal patch), non il
+        # limite dell'operatore.
+        self.assertEqual(visti[0].get("limit"), 5)
+
+    def test_una_riga_mai_vista_si_lavora_anche_con_la_data_futura(self):
+        # La migrazione 03 semina `prossimo_controllo_at` su TUTTE le righe,
+        # comprese quelle che il resolver non ha mai guardato: se la cadenza
+        # valesse anche per loro, i `nuovi` aspetterebbero due settimane. Il
+        # discrimine e' `ultimo_controllo_at`, non la data del prossimo giro.
+        controlli = {
+            i: {"ultimo_controllo_at": None,
+                "prossimo_controllo_at": "2026-12-01T00:00:00+00:00"}
+            for i in range(1, 6)
+        }
+        esito, _ = self._giro(self._pagine(), controlli=controlli, limit=2)
+        self.assertEqual(esito["saltate"], 0)
+        self.assertEqual(esito["esaminati"], 2)
+
+    def test_forza_non_ripete_lo_stesso_blocco_nella_stessa_giornata(self):
+        # `--forza` vuol dire «rifai», non «rifai lo stesso blocco»: con il
+        # filtro dello stato tolto e la cadenza scavalcata non restava un solo
+        # predicato capace di far uscire una riga, e due lanci di fila
+        # davano contatori identici.
+        controlli = {
+            i: {"ultimo_controllo_at": "2026-09-23T09:00:00+00:00"}
+            for i in range(1, 6)
+        }
+        esito, visti = self._giro(
+            self._pagine(), controlli=controlli, limit=2, forza=True)
+        self.assertEqual(esito["saltate"], 5)
+        self.assertEqual([b for b in [v.get("offset") for v in visti[:2]]], [0, 5])
+        self.assertEqual(esito["esaminati"], 2)
+
+    def test_offset_fa_ripartire_lo_scorrimento(self):
+        # Il modo di lanciare i blocchi a mano quando niente puo' far uscire
+        # una riga dalla selezione: `--offset 0`, `800`, `1600`.
+        esito, visti = self._giro(self._pagine(), limit=2, offset=5)
+        self.assertEqual(visti[0].get("offset"), 5)
+        self.assertEqual(esito["offset"], 5)
+        self.assertEqual(esito["esaminati"], 2)
+
+    def test_id_singolo_non_passa_dallo_scorrimento(self):
+        # `--id X` e' una riga sola, chiesta a mano: saltarla perche' e' stata
+        # guardata stamattina renderebbe il comando inutile proprio quando
+        # serve.
+        controlli = {7: {"ultimo_controllo_at": "2026-09-23T09:00:00+00:00",
+                         "prossimo_controllo_at": "2026-10-06T00:00:00+00:00"}}
+        pagine = {None: [{"id": 7, "titolo": TITOLO, "ente_erogatore": ENTE,
+                          "data_scadenza": "2026-09-30", "raw_data": {}}]}
+        esito, visti = self._giro(pagine, controlli=controlli, bando_id=7)
+        self.assertEqual(esito["esaminati"], 1)
+        self.assertEqual(esito["saltate"], 0)
+        self.assertEqual(visti[0].get("bando_id"), 7)
+
+
+class TestScorrimentoDeiLink(unittest.TestCase):
+    """`link-verifica`: la selezione di `bando_link` non ha alcun predicato.
+
+    Niente puo' far uscire una riga dopo che e' stata verificata — nemmeno in
+    modalita' attiva — quindi due lanci ripetevano gli stessi N HEAD sugli
+    stessi id e le righe successive non diventavano mai `pubblicabile`.
+    """
+
+    def _giro(self, pagine, **kwargs):
+        visti: list[dict[str, Any]] = []
+
+        def _selezione(**parametri):
+            visti.append(dict(parametri))
+            return list(pagine.get(parametri.get("offset"), []))
+
+        def _verifica(url):
+            return {"esito_http": 200, "content_type": "text/html", "ok": True}
+
+        with unittest.mock.patch.object(fu.db, "select_link_da_verificare", _selezione), \
+                unittest.mock.patch.object(fu, "PAGINA_SELEZIONE_LINK", 5), \
+                unittest.mock.patch.object(fu, "oggi_roma", lambda: date(2026, 9, 23)):
+            esito = esegui(fu.run_link_verifica(
+                dry_run=True, verifica=_verifica, **kwargs))
+        return esito, visti
+
+    def _pagine(self, **extra):
+        def _riga(i, **campi):
+            riga = {"id": i, "bando_id": i, "url": f"https://ente.it/{i}",
+                    "tipo": "pagina_bando"}
+            riga.update(campi)
+            return riga
+        return {0: [_riga(i, **extra) for i in range(1, 6)],
+                5: [_riga(i) for i in range(6, 9)]}
+
+    def test_i_link_gia_verificati_oggi_non_consumano_il_limite(self):
+        pagine = self._pagine(esito_http=200, updated_at="2026-09-23T08:00:00+00:00")
+        esito, visti = self._giro(pagine, limit=2)
+        self.assertEqual(esito["saltate"], 5)
+        self.assertEqual(esito["esaminati"], 2)
+        self.assertEqual([v.get("offset") for v in visti[:2]], [0, 5])
+        # Alla query si chiede una pagina (ridotta a 5 dal patch), non il 2
+        # dell'operatore.
+        self.assertEqual(visti[0].get("limit"), 5)
+
+    def test_un_link_mai_verificato_si_guarda_sempre(self):
+        # Le righe che `oe-dettaglio` scrive nascono `esito_http` NULL e
+        # `pubblicabile=false`: sono esattamente quelle da verificare, anche
+        # se il loro `updated_at` e' di oggi (lo mette l'INSERT).
+        pagine = self._pagine(updated_at="2026-09-23T08:00:00+00:00")
+        esito, _ = self._giro(pagine, limit=2)
+        self.assertEqual(esito["saltate"], 0)
+        self.assertEqual(esito["esaminati"], 2)
+
+    def test_offset_fa_ripartire_lo_scorrimento(self):
+        esito, visti = self._giro(self._pagine(), limit=2, offset=5)
+        self.assertEqual(visti[0].get("offset"), 5)
+        self.assertEqual(esito["esaminati"], 2)
+
+    def test_id_singolo_guarda_i_suoi_link_anche_se_verificati_oggi(self):
+        # `--id X` e' chiesto a mano: se saltasse le righe guardate stamattina
+        # il comando non servirebbe proprio quando serve.
+        pagine = {0: [{"id": 1, "bando_id": 42, "url": "https://ente.it/1",
+                       "esito_http": 200,
+                       "updated_at": "2026-09-23T08:00:00+00:00"}]}
+        esito, _ = self._giro(pagine, bando_id=42)
+        self.assertEqual(esito["esaminati"], 1)
+        self.assertEqual(esito["saltate"], 0)

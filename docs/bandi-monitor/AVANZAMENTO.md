@@ -47,19 +47,60 @@ l'ultima riga («counters finali») e solo allora si rilancia senza `--dry-run`.
 i comandi restano in **ombra**: leggono, misurano e registrano, ma non toccano le colonne
 editoriali. Se un comando dice «lock occupato» sta girando la pipeline: si riprova dopo.
 
+### `--limit` conta il lavoro, `--offset` sposta il blocco (23/09/2026)
+
+Fino al 23/09 `--limit N` voleva dire «guarda le prime N righe della selezione», e la selezione
+ordina per `id`. Due lanci di fila davano gli stessi contatori e il lotto non finiva mai: misurato
+su `oe-dettaglio --backlog --forza --limit 800`, lanciato due volte con esito identico (800
+esaminati, 799 scaricate, 1866 link) e 799 bandi coperti su 1723.
+
+Ora, su **tutti** i comandi a lotti, il `--limit` conta le righe su cui c'è davvero del lavoro: la
+selezione si scorre a pagine e le righe già lavorate finiscono in un contatore a parte
+(`saltate` / `saltati` / `bloccati`, più `attraversate` che dice quante ne sono state guardate).
+Leggere quei contatori è il modo di capire se un lotto è finito:
+
+* `cambiati: 0, saltate: 0, attraversate: 0` → **finito**, non c'è più niente da fare;
+* `cambiati: 0, saltate: 800` → il blocco è stato attraversato e le righe erano già a posto;
+* contatori identici a due lanci di fila → **non è finito**: serve `--offset` (vedi sotto).
+
+`--offset N` fa ripartire lo scorrimento oltre le prime N righe della selezione. Serve quando
+niente può far uscire una riga dalla selezione, e cioè in tre casi:
+
+* con `--forza`, che toglie ogni filtro (è il caso del lotto L2 con `oe-dettaglio`);
+* in **ombra** e con `--dry-run`, dove nessuna scrittura lascia un marcatore;
+* quando il comando non scrive la colonna su cui la selezione filtra.
+
+I blocchi si lanciano a mano, uno dopo l'altro: `--offset 0`, `--offset 800`, `--offset 1600`.
+Lo accettano `risolvi-fonte`, `oe-dettaglio`, `link-verifica`, `applica-eventi`,
+`pulisci-contenuto`, `rigenera` e `archivia-processed`.
+
+Due comandi non lo hanno e non devono averlo:
+
+* **`fondi-doppioni`** confronta le righe fra loro: impaginare spezzerebbe le coppie con un id in
+  una pagina e l'altro in un'altra. Legge sempre il corpus intero e il `--limit` è il numero di
+  **fusioni applicate** — quindi `--limit 0` vuol dire «solo report». Se il riepilogo porta
+  l'allarme «confronto dei gemelli troncato», il corpus ha superato le 5 000 righe e il confronto
+  non è più completo;
+* **`domini --import`** ricompone ogni volta l'intera whitelist e la riversa con un upsert: va
+  lanciato **senza** `--limit`. Con `--limit N` scrive sempre gli stessi N host in testa alla
+  composizione e gli altri non arrivano mai in tabella; il riepilogo ora lo dichiara (`troncati`).
+
+Su questi due `--limit 0` significa ora davvero «non toccare niente» (prima leggeva e scriveva
+tutto: era l'esatto contrario).
+
 | # | Comando | Cosa fa | Come si capisce che è andato |
 |---|---|---|---|
 | 0 | `salute --json` | fotografia iniziale | nessun allarme |
 | 1 | `domini --import --dry-run` poi `domini --import --attivo` | riempie `dominio_ufficiale` con gli host delle fonti e il seed (misurato il 23/09: 109 domini dalle 121 fonti). Con `--enti <file.xlsx>` aggiunge anche l'elenco IndicePA, facoltativo | righe in `dominio_ufficiale` > 52 |
-| 2 | `oe-dettaglio --backlog --forza --dry-run --limit 5` poi senza `--dry-run`, a blocchi | scarica le schede dell'aggregatore e ne estrae i link all'ente. **`--backlog` è obbligatorio**: sceglie i 1702 pubblicati, mentre senza il flag si guarda solo la coda dei nuovi (una manciata). `--forza` scavalca la regola di ri-scarico, che da sola non allarga la selezione | righe nuove in `bando_link` con `origine='aggregatore'` |
-| 3 | `link-verifica --dry-run --limit 20` poi senza | verifica che quei link rispondano 2xx e li rende pubblicabili | `bando_link` con `esito_http` valorizzato |
-| 4 | `risolvi-fonte --backlog --dry-run --limit 20` poi senza, a blocchi | cerca la fonte ufficiale dei bandi già pubblicati | `bando.fonte_ufficiale_stato='trovata'` cresce |
-| 5 | `monitor --ombra --limit 50` poi a regime | primo controllo: semina le impronte delle pagine | `bando_controllo.ultimo_controllo_at` valorizzato |
+| 2 | `oe-dettaglio --backlog --dry-run --limit 5` poi senza `--dry-run`, a blocchi | scarica le schede dell'aggregatore e ne estrae i link all'ente. **`--backlog` è obbligatorio**: sceglie i 1702 pubblicati, mentre senza il flag si guarda solo la coda dei nuovi (una manciata). **Senza `--forza`**: le schede già lette vengono saltate da sole e il lotto avanza. Se serve rifarle (`--forza`), i blocchi si lanciano con `--offset 0`, `800`, `1600`, perché con `--forza` nessuna riga è «già letta» | righe nuove in `bando_link` con `origine='aggregatore'` |
+| 3 | `link-verifica --dry-run --limit 20` poi senza, a blocchi | verifica che quei link rispondano 2xx e li rende pubblicabili. Il `--limit` conta le verifiche: le righe già verificate oggi vanno in `saltate`. In ombra e con `--dry-run` non si scrive nulla, quindi i blocchi si scorrono con `--offset` | `bando_link` con `esito_http` valorizzato |
+| 4 | `risolvi-fonte --backlog --dry-run --limit 20` poi senza, a blocchi | cerca la fonte ufficiale dei bandi già pubblicati. Il `--limit` conta i bandi da risolvere: quelli il cui ricontrollo non è ancora dovuto vanno in `saltate` e non ripagano la ricerca. Con `--forza` serve `--offset` | `bando.fonte_ufficiale_stato='trovata'` cresce |
+| 5 | `monitor --ombra --limit 50` poi a regime | primo controllo: semina le impronte delle pagine. `--senza-rete` riferisce ora `controllati: 0, saltati: N, motivo_saltati: senza rete`: è una ricognizione della coda, non un giro. Senza `ANTHROPIC_API_KEY` il giro esce con `saltato: scarico_non_configurato` (exit 5) invece di dirsi riuscito | `bando_controllo.ultimo_controllo_at` valorizzato |
 | 6 | `report-ombra --campione 100` | la misura da firmare prima di attivare | precisione ≥ 95% su ≥ 100 eventi |
-| 7 | `fondi-doppioni --dry-run` | propone le fusioni; applica solo i criteri esatti | elenco coppie e master proposto |
-| 8 | `pulisci-contenuto --dry-run --lotto L7` | toglie dai testi i link all'aggregatore | conteggio dei segmenti da sostituire |
-| 9 | `rigenera --malformati --dry-run --lotto L7` | elenca le 9 schede con contenuto malformato | id da rigenerare |
-| 10 | `archivia-processed --dry-run --lotto L8` | manda allo stato terminale i chiusi mai pubblicati | conteggio archiviabili |
+| 7 | `fondi-doppioni --dry-run` | propone le fusioni; applica solo i criteri esatti. Niente `--offset`: legge il corpus intero e il `--limit` è il numero di fusioni applicate | elenco coppie e master proposto |
+| 8 | `pulisci-contenuto --dry-run --lotto L7` | toglie dai testi i link all'aggregatore. Il `--limit` conta le righe da cambiare; il comando non muove `pubblicato`, quindi fra un blocco e l'altro serve `--offset` | conteggio dei segmenti da sostituire |
+| 9 | `rigenera --malformati --dry-run --lotto L7` | elenca le 9 schede con contenuto malformato. Con `--limit 20` attraversa tutto il corpus pubblicato: le righe sane non consumano il limite | id da rigenerare |
+| 10 | `archivia-processed --dry-run --lotto L8` | manda allo stato terminale i chiusi mai pubblicati. Il `--limit` conta le **archiviazioni**: le righe da lasciare dove sono non lo consumano | conteggio archiviabili |
 
 Ordine consigliato: 0 → 1 → 2 → 3 → 4 → 5, poi si lascia girare qualche giorno e si fa il 6.
 I passi 7-10 si fanno quando serve, sono indipendenti.
@@ -72,6 +113,12 @@ Solo dopo che il passo 6 dà una precisione accettabile si attiva per tipo, un t
 
 e poi senza `--dry-run`. Le sospensioni e le revoche restano per ultime, e richiedono la
 migrazione 06, che a sua volta richiede il rilascio difensivo di BandoFit.
+
+Nel riepilogo di `applica-eventi` si leggono ora anche `rifiutati` (la RPC ha risposto «no»: una
+transizione non ammessa, una data incoerente, la migrazione mancante) e `bloccati` (eventi già
+rifiutati in un giro precedente, che lo scorrimento scavalca invece di ripresentarli). Un giro con
+`applicati: 0` e `rifiutati: N` **non** è un giro riuscito: è un blocco fermo, e dice quale
+migrazione manca.
 
 ## Regola operativa: dopo ogni migrazione, riavviare il sender
 

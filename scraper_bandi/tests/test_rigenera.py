@@ -655,6 +655,115 @@ class TestRunRigenera(unittest.IsolatedAsyncioTestCase):
         self.assertIs(finto.select_eventi.call_args.kwargs["applicato"], True)
         self.assertIs(finto.select_eventi.call_args.kwargs["verificato"], True)
 
+    async def test_non_riscrive_un_contenuto_identico(self):
+        """Il secondo giro sullo stesso evento non deve scrivere niente.
+
+        Al secondo passaggio la sostituzione non trova piu' la data vecchia
+        (zero sostituzioni), ma il gate passa lo stesso — la data nuova c'e' e
+        la vecchia no — e il payload conteneva un `contenuto` byte per byte
+        uguale a quello gia' in tabella, contato in `scritti`.
+        """
+        gia_corretto = _bando(contenuto=_contenuto(
+            "Le domande vanno presentate entro il 1 dicembre 2026.",
+            "Il bando attua il DD 12 del 6 ottobre 2026.",
+        ))
+        esito = await rigenera.rigenera(
+            {"id": 905315, "contenuto": rigenera._testo_del_contenuto(
+                gia_corretto)[0]["contenuto"]},
+            _evento(), vecchia=VECCHIA, nuova=NUOVA, attivo=True,
+            scrivi=_scrivi([]),
+        )
+        self.assertEqual(esito.payload, {})
+        self.assertFalse(esito.scritto)
+
+    async def test_il_modo_date_scorre_oltre_gli_eventi_senza_lavoro(self):
+        """Nessuna scrittura di questo comando tocca `bando_evento`.
+
+        Un evento verificato e applicato resta tale per sempre: i primi N per
+        id erano gli stessi a ogni lancio, e i bandi la cui prosa e' gia' in
+        linea riconsumavano il limite senza che niente cambiasse.
+        """
+        # Cinque eventi su bandi il cui testo dice gia' la data nuova: nessun
+        # lavoro. I tre della pagina dopo sono quelli veri.
+        gia_corretto = _contenuto("Le domande vanno presentate entro il 1 dicembre 2026.")
+        pagine = {
+            0: [_evento(id=i, bando_id=i) for i in range(1, 6)],
+            5: [_evento(id=i, bando_id=i) for i in range(6, 9)],
+        }
+        bandi = {i: _bando(id=i, contenuto=gia_corretto) for i in range(1, 6)}
+        bandi.update({i: _bando(id=i) for i in range(6, 9)})
+        visti = []
+
+        def _eventi(**parametri):
+            visti.append(dict(parametri))
+            return list(pagine.get(parametri.get("offset"), []))
+
+        def _righe(**parametri):
+            return [bandi[i] for i in parametri.get("bando_ids", ()) if i in bandi]
+
+        finto = MagicMock()
+        finto.select_eventi.side_effect = _eventi
+        finto.select_bandi_pubblicati_contenuto.side_effect = _righe
+        scritture = []
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True), \
+                patch.object(rigenera, "PAGINA_SELEZIONE", 5):
+            esito = await rigenera.run_rigenera(
+                attivo=True, limit=2, scrivi=_scrivi(scritture))
+        self.assertEqual(esito["saltati"], 5)
+        self.assertEqual(esito["attraversati"], 7)
+        self.assertEqual(esito["candidati"], 2)
+        self.assertEqual(esito["scritti"], 2)
+        self.assertEqual([v.get("offset") for v in visti[:2]], [0, 5])
+        self.assertEqual(visti[0].get("limit"), 5)
+
+    async def test_malformati_scorre_oltre_le_righe_sane(self):
+        """9 righe irrecuperabili su 2 104: il limite non lo consumano le sane.
+
+        Il filtro `contenuto_malformato` stava DOPO il `--limit`, quindi
+        `--limit 500` trovava solo le malformate che stavano nei primi 500 id
+        — per sempre, a ogni lancio.
+        """
+        pagine = {
+            0: [_bando(id=i) for i in range(1, 6)],                     # sane
+            5: [_bando(id=i, contenuto='{"sections": [') for i in (6, 7, 8)],
+        }
+        visti = []
+
+        def _righe(**parametri):
+            visti.append(dict(parametri))
+            return list(pagine.get(parametri.get("offset"), []))
+
+        finto = MagicMock()
+        finto.select_bandi_pubblicati_contenuto.side_effect = _righe
+        segnalati = []
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True), \
+                patch.object(rigenera, "PAGINA_SELEZIONE", 5):
+            esito = await rigenera.run_rigenera(
+                malformati=True, attivo=True, limit=2,
+                segnala=lambda bando_id, evento: segnalati.append(bando_id) or True)
+        self.assertEqual(esito["candidati"], 2)
+        self.assertEqual(esito["saltati"], 5)
+        self.assertEqual(esito["attraversati"], 7)
+        self.assertEqual(segnalati, [6, 7])
+        self.assertEqual([v.get("offset") for v in visti[:2]], [0, 5])
+
+    async def test_malformati_non_registra_due_volte_lo_stesso_evento(self):
+        # `db.registra_evento` e' un INSERT nudo senza deduplica: senza questa
+        # guardia ogni lancio aggiungeva un evento per riga (misurato: 4
+        # eventi per 2 righe in due lanci).
+        with patch.object(rigenera, "_bandi_gia_segnalati",
+                          lambda ids: frozenset(ids)), \
+                patch.object(rigenera, "_segnala_malformato") as segnala:
+            esito = await rigenera.run_rigenera(
+                malformati=True, attivo=True,
+                righe=[_bando(contenuto='{"sections": [')])
+        segnala.assert_not_called()
+        self.assertEqual(esito["candidati"], 1)
+        self.assertEqual(esito["doppioni"], 1)
+        self.assertEqual(esito["segnalati"], 0)
+
     async def test_lotto_nomina_la_riga_di_pipeline_run(self):
         esito = await rigenera.run_rigenera(lotto="L9", righe=[], eventi=[])
         self.assertEqual(esito["step"], "backfill:L9")

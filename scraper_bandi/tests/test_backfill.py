@@ -12,6 +12,7 @@ noterebbero subito:
 
 Nessuna rete, nessun DB: righe, link, scrittura e archiviazione sono iniettati.
 """
+import sys
 import unittest
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -19,6 +20,10 @@ from unittest.mock import MagicMock, patch
 from tests.supporto import carica_modulo
 
 backfill = carica_modulo("backfill")
+#: Il package sotto cui `carica_modulo` registra i moduli: `from . import db`
+#: legge l'attributo del package se c'e' gia', quindi va sostituito anche
+#: quello, altrimenti vince il modulo vero (e con lui la rete).
+ALIAS = backfill.__name__.rsplit(".", 1)[0]
 
 OGGI = date(2026, 9, 23)
 AGGREGATORE = "https://www.obiettivoeuropa.com/bandi/942936"
@@ -360,6 +365,71 @@ class TestRunPulisciContenuto(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(esito["status"], "errore")
 
 
+def _bando_pulito(**extra):
+    """Una riga su cui non c'e' niente da cambiare: il payload resta vuoto."""
+    return _bando(contenuto=_contenuto_con_link(UFFICIALE),
+                  link_candidatura=UFFICIALE,
+                  link_candidatura_source="fallback_source", **extra)
+
+
+class TestScorrimentoPulisciContenuto(unittest.IsolatedAsyncioTestCase):
+    """Due lanci di fila devono avanzare, non ripassare sulle stesse righe.
+
+    Nessuna scrittura di L7 muove `pubblicato` o `stato_processing`: la riga e'
+    pubblicata prima ed e' pubblicata dopo, quindi la selezione «i primi N
+    pubblicati per id» era identica a ogni lancio. Lancio 1: cambiati 40.
+    Lancio 2: cambiati 0 — che somiglia a «finito» ed e' invece «ho riletto le
+    stesse 800».
+    """
+
+    def setUp(self):
+        for bersaglio in (
+            patch.object(backfill, "_scrivi_run", MagicMock()),
+            patch.object(backfill, "_tetti", lambda: backfill.bilancio.Tetti()),
+            patch.object(backfill, "PAGINA_SELEZIONE", 5),
+        ):
+            bersaglio.start()
+            self.addCleanup(bersaglio.stop)
+
+    def _pagine(self):
+        return {
+            # Le prime cinque sono gia' a posto: non hanno niente da cambiare.
+            0: [_bando_pulito(id=i) for i in range(1, 6)],
+            5: [_bando(id=i) for i in range(6, 9)],
+        }
+
+    async def _giro(self, pagine, **kwargs):
+        visti = []
+
+        def _selezione(**parametri):
+            visti.append(dict(parametri))
+            return list(pagine.get(parametri.get("offset"), []))
+
+        finto = MagicMock()
+        finto.select_bandi_pubblicati_contenuto.side_effect = _selezione
+        finto.select_link_da_verificare.return_value = []
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True):
+            esito = await backfill.run_pulisci_contenuto(**kwargs)
+        return esito, visti
+
+    async def test_le_righe_gia_pulite_non_consumano_il_limite(self):
+        esito, visti = await self._giro(self._pagine(), limit=2)
+        self.assertEqual(esito["saltate"], 5)
+        self.assertEqual(esito["attraversate"], 7)
+        self.assertEqual(esito["cambiati"], 2)
+        self.assertEqual([v.get("offset") for v in visti[:2]], [0, 5])
+        # Alla query si chiede una pagina (ridotta a 5 dal patch), non il 2
+        # dell'operatore.
+        self.assertEqual(visti[0].get("limit"), 5)
+
+    async def test_offset_fa_ripartire_lo_scorrimento(self):
+        esito, visti = await self._giro(self._pagine(), limit=2, offset=5)
+        self.assertEqual(visti[0].get("offset"), 5)
+        self.assertEqual(esito["cambiati"], 2)
+        self.assertEqual(esito["saltate"], 0)
+
+
 # --- L8: destinazione dei `processed` ---------------------------------------
 
 def _processed(**extra):
@@ -482,6 +552,62 @@ class TestRunArchiviaProcessed(unittest.IsolatedAsyncioTestCase):
                                 "scritto": False})
         self.assertEqual(esito["archiviati"], 0)
         self.assertEqual(esito["saltati"], 1)
+
+    async def test_il_limite_conta_le_archiviazioni_non_le_occhiate(self):
+        """Le righe appiccicose in testa non devono consumare il `--limit`.
+
+        Solo `archivia_bando` fa uscire una riga dalla selezione: `salta` e
+        `lavorazione` restano `processed` per sempre, stanno in testa
+        all'ordinamento per `id` e riconsumavano il limite a ogni lancio. Su
+        558 righe con `--limit 100` l'avanzamento era di una trentina di righe
+        per giro, e si fermava del tutto quando le righe appiccicose in testa
+        arrivavano a cento.
+        """
+        pagine = {
+            # Le prime cinque non sono archiviabili: due ancora aperte, tre
+            # che valgono ancora enrich + SEO.
+            0: ([_processed(id=i, data_scadenza="2026-12-01", stato_bando="aperto")
+                 for i in (1, 2)]
+                + [_processed(id=i) for i in (3, 4, 5)]),
+            5: [_processed(id=i, data_scadenza="2026-01-10") for i in (6, 7, 8)],
+        }
+        visti = []
+
+        def _selezione(**parametri):
+            visti.append(dict(parametri))
+            return list(pagine.get(parametri.get("offset"), []))
+
+        archiviati = []
+        finto = MagicMock()
+        finto.select_processed_da_archiviare.side_effect = _selezione
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True), \
+                patch.object(backfill, "PAGINA_SELEZIONE", 5):
+            esito = await backfill.run_archivia_processed(
+                attivo=True, limit=2, oggi=OGGI,
+                archivia=lambda i: archiviati.append(i) or {"scritto": True},
+            )
+        self.assertEqual(archiviati, [6, 7])
+        self.assertEqual(esito["archiviati"], 2)
+        self.assertEqual(esito["saltati"], 2)
+        self.assertEqual(esito["lavorabili"], 3)
+        self.assertEqual(esito["ids_lavorabili"], [3, 4, 5])
+        self.assertEqual(esito["attraversati"], 7)
+        self.assertEqual([v.get("offset") for v in visti[:2]], [0, 5])
+
+    async def test_senza_la_migrazione_01_il_giro_si_ferma(self):
+        # `archivia_bando` degrada su ogni riga: proseguire significherebbe
+        # contare 558 «saltati» e restituire un giro verde che non ha fatto
+        # niente.
+        esito = await backfill.run_archivia_processed(
+            attivo=True, oggi=OGGI,
+            righe=[_processed(id=i, data_scadenza="2026-01-10") for i in (1, 2, 3)],
+            archivia=lambda i: {"status": "ok", "saltato": "colonne_assenti",
+                                "scritto": False},
+        )
+        self.assertEqual(esito["saltato"], "colonne_assenti")
+        self.assertEqual(esito["archiviati"], 0)
+        self.assertEqual(esito["saltati"], 1)          # si ferma alla prima
 
     async def test_un_errore_su_una_riga_non_ferma_le_altre(self):
         def archivia(bando_id):

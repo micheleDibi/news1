@@ -151,6 +151,14 @@ COLONNE_CONTROLLO: tuple[str, ...] = (
     "testo_norm", "impronte_sezioni", "etag", "last_modified",
 )
 
+#: Un giro senza la memoria di `bando_controllo` funziona, ma non ha un
+#: «prima»: ogni controllo va al modello e nessun fallimento si accumula. E'
+#: un allarme del giro, non un guasto.
+ALLARME_MEMORIA_ASSENTE = (
+    "memoria di bando_controllo non letta: giro senza baseline "
+    "(nessun 304, nessun diff, i fallimenti non si accumulano)"
+)
+
 # `testo_norm` e' `bytea`: PostgREST lo vuole come letterale `\x<esadecimale>`.
 PREFISSO_BYTEA = "\\x"
 LIVELLO_ZLIB = 6
@@ -531,6 +539,22 @@ def seleziona(
     return tuple(ordinati[:tetto] if tetto and tetto > 0 else ordinati)
 
 
+def _motivo_prevalente(esiti: Sequence[Any]) -> str:
+    """Il motivo piu' ricorrente fra quelli dichiarati. Stringa vuota se nessuno.
+
+    Serve al riepilogo: «saltati: 50» senza il perche' non distingue un giro
+    senza rete da un giro senza credenziali.
+    """
+    conteggio: dict[str, int] = {}
+    for esito in esiti:
+        motivo = str(getattr(esito, "motivo", "") or "")
+        if motivo:
+            conteggio[motivo] = conteggio.get(motivo, 0) + 1
+    if not conteggio:
+        return ""
+    return max(conteggio.items(), key=lambda voce: voce[1])[0]
+
+
 # --- I/O iniettabile --------------------------------------------------------
 
 @dataclass
@@ -636,7 +660,40 @@ class FonteDatiSupabase(FonteDati):
             logger.warning("[monitor] lettura di bando_controllo fallita: {}", e)
             return []
         unite = [dict(r, **dict(controlli.get(r.get("id")) or {})) for r in righe]
-        return [dict(r) for r in seleziona(unite, tetto=limite, adesso=adesso)]
+        scelte = [dict(r) for r in seleziona(unite, tetto=limite, adesso=adesso)]
+        return self._con_memoria(scelte)
+
+    def _con_memoria(self, scelte: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Aggiunge alle righe scelte le colonne CALDE di `bando_controllo`.
+
+        Si legge in due tempi apposta: la prima lettura regge la coda ed e'
+        leggera, questa porta la **memoria** del monitor (`testo_norm`, che e'
+        `bytea` e su 1 683 righe pesa decine di MB, l'impronta, l'ETag,
+        `controlli_falliti`) e si paga sulle sole righe che il giro lavorera'
+        davvero. E' lo stesso schema dello scorrimento: si filtra sul leggero e
+        si paga il peso solo su cio' che si lavora.
+
+        Senza questa seconda lettura ogni giro ripartiva da zero: nessun
+        «prima» quindi ogni controllo in variante G2', nessun 304 possibile, e
+        soprattutto `controlli_falliti` sempre 1 — la promessa «cinque
+        fallimenti e il bando esce dalla coda» non si avverava mai.
+        """
+        if not scelte:
+            return scelte
+        from . import db
+        try:
+            calde = db.select_controlli(
+                [r.get("id") for r in scelte],
+                colonne=COLONNE_CONTROLLO + ("volatilita",),
+                client=self._client, strumento=self._adattatore())
+        except Exception as e:                            # pragma: no cover - ripiego
+            # Degradare qui significa «giro senza memoria», che e' il
+            # comportamento di prima: si dice e si prosegue, non si buttano
+            # via i candidati.
+            logger.warning("[monitor] memoria di bando_controllo non letta: {}", e)
+            self.allarmi.append(ALLARME_MEMORIA_ASSENTE)
+            return scelte
+        return [dict(r, **dict(calde.get(r.get("id")) or {})) for r in scelte]
 
     def eventi_recenti(self, bando_id: Any, giorni: int = 30) -> list[dict[str, Any]]:
         """Gli eventi recenti del bando: e' la memoria su cui lavora il G8."""
@@ -1564,6 +1621,18 @@ async def run(
         classificatore = classifica
         if classificatore is None and righe and scaricatore is not None:
             classificatore = classificatore_da_impostazioni(impostazioni, contatori)
+            if classificatore is None:
+                # Senza `ANTHROPIC_API_KEY` `controlla` esce al passo 0 su
+                # OGNI riga e non salva niente: nessuna riga esce dalla coda,
+                # due giri di fila guardano gli stessi id e l'esito era
+                # `status: ok`, exit 0. E' esattamente il caso per cui esiste
+                # `EXIT_NON_CONFIGURATO`, e la chiave `saltato` e' quella che
+                # `__main__._codice_da_contatori` traduce in 5.
+                logger.error(
+                    "[monitor] nessun classificatore disponibile: {} candidati "
+                    "non controllati, giro dichiarato non configurato", len(righe))
+                return dict(base, saltato="scarico_non_configurato",
+                            candidati=len(righe), controllati=0, allarmi=allarmi)
 
         # La whitelist dei domini si costruisce UNA volta per giro, e solo se
         # c'e' davvero qualcosa da controllare. Senza, `eventi.g4_prova`
@@ -1634,12 +1703,20 @@ async def run(
             if e.slug and e.eventi and modalita == eventi_mod.MODALITA_ATTIVO
             and (not e.da_rigenerare or e.rigenerato)
         )
+        # Un giro `--senza-rete` (o senza uno scarico) accodava N esiti
+        # `saltato` e riferiva `controllati: N, non_modificati: 0` con exit 0:
+        # somigliava a un giro vero. `controllati` conta ora le righe davvero
+        # controllate, e i saltati si dichiarano con il motivo prevalente.
+        saltati = [e for e in esiti if e.esito == "saltato"]
+        motivo_saltati = _motivo_prevalente(saltati)
         riepilogo = {
             **base,
             "modalita": modalita,
             "scenario": scenario,
             "candidati": len(righe),
-            "controllati": len(esiti),
+            "controllati": len(esiti) - len(saltati),
+            "saltati": len(saltati),
+            "motivo_saltati": motivo_saltati,
             "fetch": contatori.fetch,
             "non_modificati": sum(1 for e in esiti if e.esito in ("304", "invariato")),
             "errori": contatori.errori,
@@ -2289,6 +2366,48 @@ def report_ombra(
     return tuple(righe)
 
 
+def applicabile(
+    riga: Mapping[str, Any],
+    *,
+    dal: date_cls | None = None,
+    tipo: str | None = None,
+) -> bool:
+    """C'e' davvero da applicare questo evento?
+
+    E' il filtro che `applica_eventi` faceva riga per riga dentro il ciclo, e
+    che ora serve **anche** alla scansione: solo cosi' il `--limit` conta gli
+    eventi da applicare invece delle righe lette.
+    """
+    nome = str(riga.get("tipo") or "")
+    if tipo and nome != tipo:
+        return False
+    # Gli eventi interni non hanno colonne da applicare e non sono mai
+    # leggibili (§13.5, §16.3 punto 4): `elaborazione_bloccata` e
+    # `segnale_fonte`, che lo stesso monitor registra, non sono candidati.
+    if nome in eventi_mod.TIPI_INTERNI:
+        return False
+    # Un evento che non ha superato i gate non si applica mai, nemmeno a
+    # posteriori: in ombra si raccoglie tutto, anche i respinti. Il default e'
+    # **falso**, come `Controllo.ha`: una riga senza la chiave `verificato` e'
+    # una riga di cui non si sa niente, e nel dubbio non si applica.
+    if not riga.get("verificato"):
+        return False
+    if dal is not None:
+        # Le due date si guardano **entrambe**, come fa `db.select_eventi` con
+        # `or_(data_evento.gte, rilevato_at.gte)`: un evento datato dall'ente
+        # prima dell'ombra ma rilevato dopo entra comunque. Guardare solo
+        # `data_evento` quando c'e' rendeva il filtro Python piu' stretto di
+        # quello del DB: quegli eventi consumavano il blocco da 50, venivano
+        # scartati, e poiche' la lettura riparte sempre dagli `id` piu' bassi
+        # non applicati, il comando ripresentava all'infinito lo stesso blocco
+        # applicando zero.
+        utili = [d for d in (_data(riga.get("data_evento")),
+                             _data(riga.get("rilevato_at"))) if d is not None]
+        if not utili or max(utili) < dal:
+            return False
+    return not riga.get("applicato")
+
+
 def applica_eventi(
     righe: Sequence[Mapping[str, Any]],
     *,
@@ -2315,48 +2434,28 @@ def applica_eventi(
     for riga in righe:
         esaminati += 1
         ultimo_id = riga.get("id", ultimo_id)
-        nome = str(riga.get("tipo") or "")
-        if tipo and nome != tipo:
-            continue
-        # Gli eventi interni non hanno colonne da applicare e non sono mai
-        # leggibili (§13.5, §16.3 punto 4): `elaborazione_bloccata` e
-        # `segnale_fonte`, che lo stesso monitor registra, non sono candidati.
-        if nome in eventi_mod.TIPI_INTERNI:
-            continue
-        # Un evento che non ha superato i gate non si applica mai, nemmeno a
-        # posteriori: in ombra si raccoglie tutto, anche i respinti. Il
-        # default e' **falso**, come `Controllo.ha`: una riga senza la chiave
-        # `verificato` e' una riga di cui non si sa niente, e nel dubbio non
-        # si applica. Con il default vero, una lettura fatta prima che la
-        # colonna esistesse avrebbe applicato tutto.
-        if not riga.get("verificato"):
-            continue
-        if dal is not None:
-            # Le due date si guardano **entrambe**, come fa `db.select_eventi`
-            # con `or_(data_evento.gte, rilevato_at.gte)`: un evento datato
-            # dall'ente prima dell'ombra ma rilevato dopo entra comunque.
-            # Guardare solo `data_evento` quando c'e' rendeva il filtro Python
-            # piu' stretto di quello del DB: quegli eventi consumavano il
-            # blocco da 50, venivano scartati, e poiche' la lettura riparte
-            # sempre dagli `id` piu' bassi non applicati, il comando
-            # ripresentava all'infinito lo stesso blocco applicando zero.
-            utili = [d for d in (_data(riga.get("data_evento")),
-                                 _data(riga.get("rilevato_at"))) if d is not None]
-            if not utili or max(utili) < dal:
-                continue
-        if riga.get("applicato"):
+        if not applicabile(riga, dal=dal, tipo=tipo):
             continue
         scelte.append(riga)
         if len(scelte) >= max(1, limit):
             break
 
     applicati = 0
+    rifiutati = 0
     if not dry_run and applica is not None:
         for riga in scelte:
             try:
                 if applica(riga):
                     applicati += 1
+                else:
+                    # La RPC ha risposto `false`: transizione non ammessa,
+                    # migrazione mancante, data incoerente. L'evento resta
+                    # `applicato=false` all'id piu' basso, quindi si conta —
+                    # un blocco fermo deve vedersi in `pipeline_run` invece di
+                    # somigliare a un giro riuscito.
+                    rifiutati += 1
             except Exception as e:                        # pragma: no cover - ripiego
+                rifiutati += 1
                 logger.warning("[monitor] applicazione dell'evento {} fallita: {}",
                                riga.get("id"), e)
     return {
@@ -2364,6 +2463,7 @@ def applica_eventi(
         "esaminati": esaminati,
         "candidati": len(scelte),
         "applicati": applicati,
+        "rifiutati": rifiutati,
         "ultimo_id": ultimo_id,
         "dry_run": dry_run,
         "tipo": tipo,
@@ -2387,6 +2487,15 @@ CAMPIONE_MINIMO = 100
 #: un blocco piu' grande riverserebbe in una volta sola mesi di ombra, e se una
 #: transizione fosse sbagliata non ci sarebbe un giro intermedio per accorgersene.
 BLOCCO_APPLICAZIONE = 50
+
+#: Quanti eventi si chiedono per pagina mentre si cerca che cosa applicare.
+#: Non e' il blocco dell'operatore: e' la finestra su cui si scorre.
+PAGINA_SELEZIONE_EVENTI = 200
+
+#: Quanti `elaborazione_bloccata` si leggono per sapere quali eventi la RPC ha
+#: gia' rifiutato. Sono pochi per costruzione (un rifiuto per evento, non uno
+#: per giro): il tetto e' solo una difesa.
+TETTO_RIFIUTI_NOTI = 2000
 
 STEP_APPLICA = "applica-eventi"
 
@@ -2597,6 +2706,81 @@ async def run_report_ombra(
     return riepilogo
 
 
+def eventi_gia_rifiutati() -> frozenset[Any]:
+    """Gli id degli eventi che la RPC ha gia' rifiutato, da `riferisce_a`.
+
+    `bando_applica_evento` annota il rifiuto con un `elaborazione_bloccata`
+    che punta all'evento (migrazione 04). Quei rifiuti sono **persistenti**:
+    una revoca prima della 06, una data di pubblicazione dopo la scadenza —
+    e l'evento resta `applicato=false` all'id piu' basso, in testa al blocco,
+    a ogni lancio. Senza questa lettura, dodici eventi bloccati restringono il
+    blocco da 50 a 38 per sempre.
+    """
+    try:
+        from . import db
+        righe = db.select_eventi(
+            tipi=("elaborazione_bloccata",), limit=TETTO_RIFIUTI_NOTI)
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.warning("[applica-eventi] rifiuti gia' noti non leggibili: {}", e)
+        return frozenset()
+    return frozenset(
+        r.get("riferisce_a") for r in righe if r.get("riferisce_a") is not None)
+
+
+def _da_applicare(
+    righe: Sequence[Mapping[str, Any]] | None,
+    *,
+    tipi: Sequence[str],
+    dal: date_cls | None,
+    limit: int,
+    offset: int,
+    rifiutati: frozenset[Any],
+    conto: dict[str, int],
+) -> list[Mapping[str, Any]]:
+    """Gli eventi su cui c'e' lavoro, scorrendo la selezione a pagine.
+
+    Gemello di `fonte_ufficiale._da_leggere`. Il `--limit` era il limite della
+    SELECT, cioe' contava le righe lette: gli eventi che la RPC rifiuta e
+    quelli che i filtri Python scartano occupavano una fetta del blocco a ogni
+    lancio, e con cinquanta eventi bloccati il comando riferiva
+    «letti: 50, candidati: 50, applicati: 0» per sempre, con exit 0.
+    """
+    if righe is not None:
+        return [dict(r) for r in righe]
+    from . import db
+    raccolti: list[Mapping[str, Any]] = []
+    cursore = max(0, int(offset or 0))
+    while True:
+        try:
+            pagina = db.select_eventi(
+                tipi=tuple(tipi), dal=dal, applicato=False, verificato=True,
+                limit=PAGINA_SELEZIONE_EVENTI, offset=cursore,
+            )
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[applica-eventi] lettura degli eventi fallita: {}", e)
+            break
+        if not pagina:
+            break
+        cursore += len(pagina)
+        for riga in pagina:
+            conto["attraversati"] += 1
+            if riga.get("id") in rifiutati:
+                # Gia' rifiutato da un giro precedente e l'annotazione e' in
+                # tabella: riproporlo significherebbe solo riconsumare il
+                # blocco, giro dopo giro.
+                conto["bloccati"] += 1
+                continue
+            if not applicabile(riga, dal=dal):
+                conto["saltati"] += 1
+                continue
+            raccolti.append(riga)
+            if len(raccolti) >= max(0, limit):
+                return raccolti
+        if len(pagina) < PAGINA_SELEZIONE_EVENTI:
+            break
+    return raccolti
+
+
 async def run_applica_eventi(
     dry_run: bool = False,
     limit: int | None = None,
@@ -2604,6 +2788,7 @@ async def run_applica_eventi(
     *,
     dal: date_cls | None = None,
     tipi: Sequence[str] = (),
+    offset: int = 0,
     righe: Sequence[Mapping[str, Any]] | None = None,
     applica: Callable[[Mapping[str, Any]], bool] | None = None,
     impostazioni: Any = None,
@@ -2614,6 +2799,12 @@ async def run_applica_eventi(
     Senza questo comando la baseline delle impronte li perderebbe: alla lettura
     successiva la pagina non e' piu' «cambiata», l'evento non si ripresenta e
     la proroga resterebbe fuori dalle colonne per sempre.
+
+    Il `--limit` conta gli eventi da applicare: la selezione si scorre a
+    pagine e gli eventi che la RPC ha gia' rifiutato — una revoca prima della
+    migrazione 06, una `data_pubblicazione` dopo la scadenza — non consumano
+    piu' il blocco a ogni lancio. `--offset N` fa ripartire lo scorrimento
+    oltre i primi N eventi della selezione.
 
     Tre cautele, tutte volute:
       * si lavora a blocchi di al massimo `BLOCCO_APPLICAZIONE`;
@@ -2646,14 +2837,17 @@ async def run_applica_eventi(
     preso = lock.acquisisci(NOME_LOCK, f"{STEP_APPLICA}:cli", blocco.TTL_PREDEFINITO_S)
     if not preso.proseguire:
         return lock.esito_saltato(preso)
+    conto = {"attraversati": 0, "saltati": 0, "bloccati": 0}
     try:
-        candidati = righe
-        if candidati is None:
-            from . import db
-            candidati = db.select_eventi(
-                tipi=tuple(tipi), dal=dal, applicato=False, verificato=True,
-                limit=blocco_giro,
-            )
+        # Il `--limit` conta gli eventi da applicare, non le righe lette: la
+        # selezione si scorre a pagine e gli eventi gia' rifiutati dalla RPC
+        # (che restano `applicato=false` all'id piu' basso, per sempre) non
+        # consumano il blocco.
+        candidati = _da_applicare(
+            righe, tipi=tipi, dal=dal, limit=blocco_giro, offset=offset,
+            rifiutati=eventi_gia_rifiutati() if righe is None else frozenset(),
+            conto=conto,
+        )
         if applica is None and scrive:
             from . import db
 
@@ -2668,6 +2862,7 @@ async def run_applica_eventi(
         gruppi: tuple[str | None, ...] = tuple(tipi) if tipi else (None,)
         candidati_totali = 0
         applicati = 0
+        rifiutati = 0
         rimanenti = blocco_giro
         per_tipo: dict[str, int] = {}
         for nome in gruppi:
@@ -2679,6 +2874,7 @@ async def run_applica_eventi(
             )
             candidati_totali += int(esito.get("candidati") or 0)
             applicati += int(esito.get("applicati") or 0)
+            rifiutati += int(esito.get("rifiutati") or 0)
             rimanenti -= int(esito.get("candidati") or 0)
             per_tipo[nome or "tutti"] = int(esito.get("candidati") or 0)
 
@@ -2690,9 +2886,17 @@ async def run_applica_eventi(
             "dal": dal.isoformat() if dal else None,
             "tipi": list(tipi),
             "blocco": blocco_giro,
+            "offset": max(0, int(offset or 0)),
             "letti": len(candidati),
             "candidati": candidati_totali,
             "applicati": applicati,
+            # Un blocco fermo deve vedersi: `rifiutati` sono gli eventi che la
+            # RPC non ha potuto applicare, `bloccati` quelli gia' rifiutati in
+            # un giro precedente e quindi scavalcati dallo scorrimento.
+            "rifiutati": rifiutati,
+            "attraversati": conto["attraversati"],
+            "bloccati": conto["bloccati"],
+            "saltati": conto["saltati"],
             "per_tipo": per_tipo,
             "saltato_per_lock": False,
             "interrotto_per_tetto": False,
@@ -2729,7 +2933,8 @@ def _scrivi_run(step: str, riepilogo: Mapping[str, Any], *, tempo: float) -> Non
 
 __all__ = [
     "BLOCCO_APPLICAZIONE", "CAMPIONE_MINIMO", "INTESTAZIONI_REPORT",
-    "SOGLIA_PRECISIONE", "STEP_APPLICA", "precisione", "report_ombra_da_eventi",
+    "PAGINA_SELEZIONE_EVENTI", "SOGLIA_PRECISIONE", "STEP_APPLICA",
+    "applicabile", "eventi_gia_rifiutati", "precisione", "report_ombra_da_eventi",
     "riga_report_da_evento", "run_applica_eventi", "run_report_ombra",
     "scrivi_csv",
     "BACKOFF_BASE_ORE", "BACKOFF_MASSIMO_ORE", "BONUS_EVENTO_IN_ATTESA",
