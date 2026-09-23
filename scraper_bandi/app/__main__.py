@@ -106,6 +106,17 @@ della selezione ed e' il modo di lanciare i blocchi a mano quando niente puo'
 far uscire una riga dalla selezione (con `--forza`, in ombra o con
 `--dry-run`, dove nessun marcatore viene scritto).
 
+`--offset` lo hanno i **sette** comandi che scorrono una selezione a pagine
+(`risolvi-fonte`, `oe-dettaglio`, `link-verifica`, `applica-eventi`,
+`pulisci-contenuto`, `rigenera`, `archivia-processed`). I quattro sottocomandi
+v11 che non lo scorrono (`fondi-doppioni`, `monitor`, `report-ombra`,
+`domini`) ora lo **rifiutano** con exit 2 invece di accettarlo e buttarlo via:
+un blocco che non si sposta e un comando che dice di averlo spostato danno la
+stessa riga di log, ma il secondo fa ripetere il giro. `salute` sta sul
+percorso storico (`_avvisa_ignorati`, come `discover` e gli altri quattro step):
+avvisa e prosegue, e non avendo nessuna selezione da scorrere non puo'
+illudere nessuno di aver avanzato.
+
 **Modalita' ombra per difetto** su tutti i sottocomandi v11: senza `--attivo`
 esplicito (o `RESOLVER_MODALITA=attivo` / `MONITOR_MODALITA=attivo` in `.env`)
 nessuna colonna pubblica viene toccata.
@@ -336,13 +347,26 @@ def _modulo_opzionale(
     return esecuzione, ""
 
 
-# Opzioni dei sottocomandi v11 che prendono un valore: `--id 12`, `--lotto L5`,
-# `--enti enti.xlsx`, `--campione 100`, `--tipo proroga`, `--dal 2026-09-01`.
-# `_leggi_opzioni` le lascia in `resto` come due token, e senza `_valore_opzione`
-# il secondo finirebbe fra le «opzioni non riconosciute».
+# Il catalogo delle opzioni che prendono un valore: `--id 12`, `--lotto L5`,
+# `--enti enti.xlsx`, `--campione 100`, `--tipo proroga`, `--dal 2026-09-01`,
+# `--offset 800`. `_leggi_opzioni` le lascia in `resto` come due token, e serve
+# a `_senza_valori` per togliere il SECONDO, che nessun flag riconoscerebbe.
+#
+# **Quali siano ammesse lo decide il singolo comando** (`con_valore=` di
+# `_esegui_v11`): questo insieme dice solo «dopo questo nome c'e' un valore».
+# Finche' e' stato anche l'elenco delle ammesse, `_esegui_v11` escludeva dalle
+# «opzioni non riconosciute» qualunque token vi comparisse, e i quattro
+# sottocomandi v11 che l'offset non ce l'hanno accettavano `--offset 800` in
+# silenzio, con exit 0: l'operatore credeva di aver spostato il blocco e
+# rilanciava lo stesso identico giro.
 OPZIONI_CON_VALORE = frozenset({
     "--id", "--lotto", "--enti", "--campione", "--tipo", "--dal", "--offset",
 })
+
+#: Le opzioni con valore dei tre lotti di §6.4 (`pulisci-contenuto`,
+#: `rigenera`, `archivia-processed`): `--lotto` nomina la riga
+#: `pipeline_run.step`, `--offset` sposta il blocco.
+OPZIONI_BACKFILL = frozenset({"--lotto", "--offset"})
 
 # Flag del resolver (§5). Sono qui e non dentro il modulo perche' `--attivo` e'
 # una decisione della riga di comando, non del codice che scrive.
@@ -437,18 +461,26 @@ def _tipi_opzione(valore: str | None) -> tuple[str, ...]:
 
 
 def _senza_valori(resto: tuple[str, ...]) -> tuple[str, ...]:
-    """`resto` senza le coppie `--nome VALORE`.
+    """`resto` senza i VALORI delle opzioni con valore, ma con i loro NOMI.
 
-    Serve a `_avvisa_ignorati`: il valore di `--id 42` e' un token che nessun
-    flag riconosce, e senza toglierlo ogni `--id` produrrebbe un warning
-    «opzione non riconosciuta: 42» che non significa niente.
+    Il valore di `--id 42` e' un token che nessun flag riconosce, e senza
+    toglierlo ogni `--id` produrrebbe un «opzione non riconosciuta: 42» che non
+    significa niente. Il nome invece resta, perche' e' il comando a dire quali
+    opzioni con valore accetta: togliendo anche lui, `--offset` passava
+    indisturbato su tutti i sottocomandi, compresi quelli che non sanno
+    scorrere niente.
+
+    Un nome in coda senza valore non fa saltare un indice: `_valore_opzione` lo
+    rifiutera' comunque con il suo messaggio.
     """
-    ripulito = list(resto)
-    for nome in OPZIONI_CON_VALORE:
-        while nome in ripulito:
-            posizione = ripulito.index(nome)
-            fine = posizione + 2 if posizione + 1 < len(ripulito) else posizione + 1
-            del ripulito[posizione:fine]
+    ripulito: list[str] = []
+    salta = False
+    for token in resto:
+        if salta:
+            salta = False
+            continue
+        ripulito.append(token)
+        salta = token in OPZIONI_CON_VALORE
     return tuple(ripulito)
 
 
@@ -468,6 +500,7 @@ def _esegui_v11(
     *,
     modulo: str = "fonte_ufficiale",
     ammessi: frozenset[str] = FLAG_MODALITA,
+    con_valore: frozenset[str] = frozenset(),
     extra: Callable[[Opzioni], dict] | None = None,
     ingresso_atteso: bool = True,
 ) -> int:
@@ -483,6 +516,10 @@ def _esegui_v11(
     code: e' quello che tiene insieme «ombra per difetto» (vincolo 3) e «gli
     exit code vivono solo qui» (A15) su tutti i comandi, anche quelli che
     verranno.
+
+    `ammessi` sono i flag del comando, `con_valore` le sue opzioni con valore:
+    due elenchi per comando e nessuno globale, perche' un `--offset` ammesso
+    dappertutto e' un `--offset` ignorato da chi non lo sa scorrere.
     """
     opzioni = _leggi_opzioni(argv)
     parametri = extra(opzioni) if extra is not None else {}
@@ -492,12 +529,14 @@ def _esegui_v11(
     # sempre; qui la severita' arriva sul flag che conta di piu'.
     ignorati = [
         t for t in _senza_valori(opzioni.resto)
-        if t not in (ammessi | OPZIONI_CON_VALORE)
+        if t not in (ammessi | con_valore)
     ]
     if ignorati:
         raise ErroreOpzioni(
             f"{nome}: opzioni non riconosciute: {ignorati}. "
-            "Un refuso su --dry-run farebbe partire una scrittura: il comando si ferma."
+            "Un refuso su --dry-run farebbe partire una scrittura, e un --offset "
+            "accettato da chi non lo sa scorrere farebbe rilanciare lo stesso "
+            "blocco: il comando si ferma."
         )
     if "--ombra" in opzioni.resto and "--attivo" in opzioni.resto:
         raise ErroreOpzioni(f"{nome}: --ombra e --attivo sono incompatibili")
@@ -560,7 +599,8 @@ def _cmd_risolvi_fonte(argv: list[str]) -> int:
         }
 
     return _esegui_v11(
-        "risolvi-fonte", "run", argv, ammessi=FLAG_RESOLVER, extra=parametri,
+        "risolvi-fonte", "run", argv, ammessi=FLAG_RESOLVER,
+        con_valore=frozenset({"--id", "--lotto", "--offset"}), extra=parametri,
     )
 
 
@@ -588,7 +628,7 @@ def _cmd_oe_dettaglio(argv: list[str]) -> int:
     return _esegui_v11(
         "oe-dettaglio", "run_oe_dettaglio", argv,
         ammessi=FLAG_MODALITA | frozenset({"--forza", "--solo-oe", "--backlog", "--nuovi"}),
-        extra=parametri,
+        con_valore=frozenset({"--id", "--offset"}), extra=parametri,
     )
 
 
@@ -598,7 +638,10 @@ def _cmd_link_verifica(argv: list[str]) -> int:
         offset, _ = _valore_opzione(resto, "--offset")
         return {"bando_id": identificativo, "offset": _offset_opzione(offset)}
 
-    return _esegui_v11("link-verifica", "run_link_verifica", argv, extra=parametri)
+    return _esegui_v11(
+        "link-verifica", "run_link_verifica", argv,
+        con_valore=frozenset({"--id", "--offset"}), extra=parametri,
+    )
 
 
 def _cmd_fondi_doppioni(argv: list[str]) -> int:
@@ -757,6 +800,7 @@ def _cmd_report_ombra(argv: list[str]) -> int:
     return _esegui_v11(
         "report-ombra", "run_report_ombra", argv, modulo="monitoraggio",
         ammessi=FLAG_MODALITA | frozenset({"--senza-g7"}),
+        con_valore=frozenset({"--campione", "--tipo", "--dal"}),
         extra=parametri, ingresso_atteso=False,
     )
 
@@ -767,16 +811,25 @@ def _cmd_applica_eventi(argv: list[str]) -> int:
     `--tipo` e' l'interruttore dell'attivazione progressiva di §6.2: senza,
     il comando guarderebbe tutti i tipi insieme, compresi sospensione e revoca,
     che prima di R0 non hanno una colonna dove andare.
+
+    `--riprova-rifiutati` ignora le annotazioni dei rifiuti e ripresenta anche
+    gli eventi gia' respinti. Esiste perche' quelle annotazioni non si possono
+    cancellare: `bando_evento` non concede DELETE nemmeno alla service-role key
+    e `riferisce_a` e' immutabile. E' l'unico modo di rimettere in coda un
+    evento annotato per sbaglio.
     """
     def parametri(opzioni: Opzioni) -> dict:
         dal, resto = _valore_opzione(opzioni.resto, "--dal")
         tipo, resto = _valore_opzione(resto, "--tipo")
         offset, _ = _valore_opzione(resto, "--offset")
         return {"dal": _giorno_opzione(dal, "--dal"), "tipi": _tipi_opzione(tipo),
-                "offset": _offset_opzione(offset)}
+                "offset": _offset_opzione(offset),
+                "riprova_rifiutati": "--riprova-rifiutati" in opzioni.resto}
 
     return _esegui_v11(
         "applica-eventi", "run_applica_eventi", argv, modulo="monitoraggio",
+        ammessi=FLAG_MODALITA | frozenset({"--riprova-rifiutati"}),
+        con_valore=frozenset({"--dal", "--tipo", "--offset"}),
         extra=parametri, ingresso_atteso=False,
     )
 
@@ -800,7 +853,7 @@ def _lotto_del_backfill(opzioni: Opzioni) -> dict:
 def _cmd_pulisci_contenuto(argv: list[str]) -> int:
     return _esegui_v11(
         "pulisci-contenuto", "run_pulisci_contenuto", argv, modulo="backfill",
-        extra=_lotto_del_backfill,
+        con_valore=OPZIONI_BACKFILL, extra=_lotto_del_backfill,
     )
 
 
@@ -811,14 +864,14 @@ def _cmd_rigenera(argv: list[str]) -> int:
     return _esegui_v11(
         "rigenera", "run_rigenera", argv, modulo="rigenera",
         ammessi=FLAG_MODALITA | frozenset({"--malformati"}),
-        extra=parametri, ingresso_atteso=False,
+        con_valore=OPZIONI_BACKFILL, extra=parametri, ingresso_atteso=False,
     )
 
 
 def _cmd_archivia_processed(argv: list[str]) -> int:
     return _esegui_v11(
         "archivia-processed", "run_archivia_processed", argv, modulo="backfill",
-        extra=_lotto_del_backfill,
+        con_valore=OPZIONI_BACKFILL, extra=_lotto_del_backfill,
     )
 
 
@@ -839,7 +892,7 @@ def _cmd_domini(argv: list[str]) -> int:
     return _esegui_v11(
         "domini", "run_domini_import", argv,
         ammessi=FLAG_MODALITA | frozenset({"--import"}),
-        extra=parametri,
+        con_valore=frozenset({"--enti"}), extra=parametri,
     )
 
 

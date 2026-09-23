@@ -1469,10 +1469,6 @@ class TestQueryEDomini(unittest.TestCase):
         self.assertNotIn("obiettivoeuropa.com", domini)
 
 
-if __name__ == "__main__":                              # pragma: no cover
-    unittest.main()
-
-
 class TestScorrimentoDellaSelezione(unittest.TestCase):
     """`risolvi-fonte`: due lanci di fila devono avanzare, non ripetersi.
 
@@ -1652,3 +1648,371 @@ class TestScorrimentoDeiLink(unittest.TestCase):
         esito, _ = self._giro(pagine, bando_id=42)
         self.assertEqual(esito["esaminati"], 1)
         self.assertEqual(esito["saltate"], 0)
+
+
+class TestCodaDeiLinkMorti(unittest.TestCase):
+    """`link-verifica`: una riga guardata deve uscire dalla coda, sempre.
+
+    `_da_verificare_ora` legge `esito_http` NULL come «mai verificata». Finche'
+    un fallimento riscriveva NULL — o, se il verificatore sollevava, non
+    scriveva affatto — il link morto tornava «mai verificato» al lancio
+    successivo: `link-verifica --attivo --limit 200` su una fetta con 200 link
+    morti in testa rifaceva per sempre gli stessi 200 HEAD, `saltate: 0`, e i
+    link buoni piu' in basso non venivano guardati mai.
+    """
+
+    OGGI = date(2026, 9, 23)
+    ADESSO = "2026-09-23T12:00:00+00:00"
+
+    def _magazzino(self, quanti_morti=3, quanti_vivi=2):
+        """Righe nate stamattina da `oe-dettaglio`: `esito_http` NULL,
+        `updated_at` di oggi (lo mette l'INSERT), nessun `trovato_in_fonte_at`."""
+        righe = {}
+        for i in range(1, quanti_morti + 1):
+            righe[i] = {"id": i, "bando_id": i, "url": f"https://morto.invalid/{i}",
+                        "tipo": "pagina_bando", "esito_http": None,
+                        "updated_at": "2026-09-23T08:00:00+00:00",
+                        "trovato_in_fonte_at": None}
+        for i in range(quanti_morti + 1, quanti_morti + quanti_vivi + 1):
+            righe[i] = {"id": i, "bando_id": i, "url": f"https://ente.it/{i}",
+                        "tipo": "pagina_bando", "esito_http": None,
+                        "updated_at": "2026-09-23T08:00:00+00:00",
+                        "trovato_in_fonte_at": None}
+        return righe
+
+    def _giro(self, magazzino, verifica, visti, **kwargs):
+        def _selezione(*, limit=None, offset=0, bando_id=None, **_extra):
+            ordinate = [magazzino[i] for i in sorted(magazzino)]
+            fetta = ordinate[offset: offset + (limit or len(ordinate))]
+            return [dict(r) for r in fetta]
+
+        def _aggiorna(identificativo, payload):
+            magazzino[identificativo].update(payload)
+            # Il trigger `trg_bando_link_updated_at` su ogni UPDATE.
+            magazzino[identificativo]["updated_at"] = self.ADESSO
+            return 1
+
+        visti.clear()
+        with unittest.mock.patch.object(fu.db, "select_link_da_verificare", _selezione), \
+                unittest.mock.patch.object(fu.db, "aggiorna_link", _aggiorna), \
+                unittest.mock.patch.object(fu, "oggi_roma", lambda: self.OGGI), \
+                unittest.mock.patch.object(fu, "_adesso", lambda: self.ADESSO):
+            return esegui(fu.run_link_verifica(
+                attivo=True, verifica=verifica, **kwargs))
+
+    def test_un_link_morto_non_torna_in_coda_al_lancio_dopo(self):
+        magazzino = self._magazzino()
+        head: list[str] = []
+
+        def _verifica(url):
+            head.append(url)
+            # La richiesta non arriva a destinazione: `VerificaHttp` torna None.
+            return None if "morto.invalid" in url else {"esito_http": 200}
+
+        primo = self._giro(magazzino, _verifica, head, limit=3)
+        self.assertEqual(primo["esaminati"], 3)
+        self.assertEqual(primo["saltate"], 0)
+        self.assertEqual(len(head), 3)
+
+        secondo = self._giro(magazzino, _verifica, head, limit=3)
+        # I tre morti sono stati guardati oggi: si saltano, e il limite arriva
+        # finalmente sui due link buoni piu' in basso.
+        self.assertEqual(secondo["saltate"], 3)
+        self.assertEqual(secondo["esaminati"], 2)
+        self.assertEqual(secondo["pubblicabili"], 2)
+        self.assertEqual([u for u in head], ["https://ente.it/4", "https://ente.it/5"])
+
+    def test_il_marcatore_non_e_mai_null_e_non_e_un_2xx(self):
+        magazzino = self._magazzino(quanti_morti=1, quanti_vivi=0)
+        head: list[str] = []
+        self._giro(magazzino, lambda url: head.append(url) or None, head, limit=1)
+        riga = magazzino[1]
+        # NULL vorrebbe dire «mai verificata» e la rimetterebbe in coda.
+        self.assertIsNotNone(riga["esito_http"])
+        # E non puo' essere un 2xx: il CHECK della 02 lega stato e
+        # pubblicabilita', e questo link non risponde.
+        self.assertFalse(200 <= int(riga["esito_http"]) < 300)
+        self.assertIs(riga["pubblicabile"], False)
+        self.assertFalse(fu._da_verificare_ora(riga, self.OGGI))
+
+    def test_il_verificatore_che_solleva_lascia_comunque_la_traccia(self):
+        # Prima il ramo dell'eccezione faceva `continue` senza scrivere: la
+        # riga restava identica e il lancio dopo la rifaceva.
+        magazzino = self._magazzino(quanti_morti=2, quanti_vivi=1)
+        head: list[str] = []
+
+        def _verifica(url):
+            head.append(url)
+            if "morto.invalid" in url:
+                raise ConnectionError("nome non risolto")
+            return {"esito_http": 200}
+
+        primo = self._giro(magazzino, _verifica, head, limit=2)
+        self.assertEqual(primo["errori"], 2)
+        # Un'eccezione resta un `errori`, non diventa un `ritirati`.
+        self.assertEqual(primo["ritirati"], 0)
+        self.assertEqual(primo["pubblicabili"], 0)
+
+        secondo = self._giro(magazzino, _verifica, head, limit=2)
+        self.assertEqual(secondo["saltate"], 2)
+        self.assertEqual(secondo["esaminati"], 1)
+        self.assertEqual(head, ["https://ente.it/3"])
+
+    def test_un_esito_senza_stato_non_riscrive_null(self):
+        # `Verifica.da({})` e' un esito valido con `esito_http` None: anche
+        # quello e' «guardato», non «mai guardato».
+        magazzino = self._magazzino(quanti_morti=1, quanti_vivi=0)
+        head: list[str] = []
+        self._giro(magazzino, lambda url: head.append(url) or {}, head, limit=1)
+        self.assertEqual(magazzino[1]["esito_http"], fu.ESITO_IRRAGGIUNGIBILE)
+
+    def test_in_ombra_non_si_scrive_niente(self):
+        # La correzione non deve aver aperto una scrittura fuori da `--attivo`.
+        magazzino = self._magazzino(quanti_morti=1, quanti_vivi=0)
+        head: list[str] = []
+
+        def _selezione(*, limit=None, offset=0, bando_id=None, **_extra):
+            return [dict(magazzino[1])] if offset == 0 else []
+
+        def _aggiorna(identificativo, payload):       # pragma: no cover - difesa
+            raise AssertionError("scrittura in ombra")
+
+        with unittest.mock.patch.object(fu.db, "select_link_da_verificare", _selezione), \
+                unittest.mock.patch.object(fu.db, "aggiorna_link", _aggiorna), \
+                unittest.mock.patch.object(fu, "oggi_roma", lambda: self.OGGI):
+            esito = esegui(fu.run_link_verifica(
+                limit=1, attivo=False, verifica=lambda url: head.append(url) or None))
+        self.assertEqual(esito["esaminati"], 1)
+        self.assertIsNone(magazzino[1]["esito_http"])
+
+
+class TestReteGiuNonRitiraILinkBuoni(unittest.TestCase):
+    """Un fallimento nostro non e' una prova sul link (N2).
+
+    Il marcatore `ESITO_IRRAGGIUNGIBILE` fa uscire dalla coda le righe nate da
+    `oe-dettaglio`, ed e' giusto. Ma viaggia insieme a `pubblicabile=false`,
+    perche' il CHECK della migrazione 02 vieta una riga pubblicabile senza un
+    2xx: scriverlo su un link che aveva risposto 200 lo toglie dalle schede.
+
+    Con la rete giu' un solo giro avrebbe ritirato tutti i link verificati
+    (circa 1 360) e `_da_verificare_ora` li avrebbe saltati per il resto della
+    giornata di calendario, quindi nessun giro li avrebbe rimessi prima di
+    domani. Lo scavalco era solo `--id X`, un bando alla volta.
+    """
+
+    OGGI = date(2026, 9, 23)
+    ADESSO = "2026-09-23T12:00:00+00:00"
+
+    def _pubblicabili(self, quanti=5):
+        """Righe verificate ieri: 200, pubblicabili, in pagina."""
+        return {i: {"id": i, "bando_id": i, "url": f"https://ente.it/{i}",
+                    "tipo": "pagina_bando", "esito_http": 200,
+                    "pubblicabile": True,
+                    "updated_at": "2026-09-22T08:00:00+00:00",
+                    "trovato_in_fonte_at": "2026-09-20T08:00:00+00:00"}
+                for i in range(1, quanti + 1)}
+
+    def _giro(self, magazzino, verifica, **kwargs):
+        def _selezione(*, limit=None, offset=0, bando_id=None, **_extra):
+            ordinate = [magazzino[i] for i in sorted(magazzino)]
+            return [dict(r) for r in ordinate[offset: offset + (limit or len(ordinate))]]
+
+        def _aggiorna(identificativo, payload):
+            magazzino[identificativo].update(payload)
+            magazzino[identificativo]["updated_at"] = self.ADESSO
+            return 1
+
+        with unittest.mock.patch.object(fu.db, "select_link_da_verificare", _selezione), \
+                unittest.mock.patch.object(fu.db, "aggiorna_link", _aggiorna), \
+                unittest.mock.patch.object(fu, "oggi_roma", lambda: self.OGGI), \
+                unittest.mock.patch.object(fu, "_adesso", lambda: self.ADESSO):
+            return esegui(fu.run_link_verifica(attivo=True, verifica=verifica, **kwargs))
+
+    def test_il_verificatore_che_solleva_non_ritira_niente(self):
+        magazzino = self._pubblicabili()
+
+        def _solleva(_url):
+            raise OSError("rete giu'")
+
+        esito = self._giro(magazzino, _solleva, limit=5)
+        self.assertEqual(esito["esaminati"], 5)
+        self.assertEqual(esito["errori"], 5)
+        self.assertEqual(esito["rimandati"], 5)
+        self.assertEqual(esito["ritirati"], 0)
+        for riga in magazzino.values():
+            self.assertTrue(riga["pubblicabile"],
+                            "un link buono e' stato ritirato per un guasto nostro")
+            self.assertEqual(riga["esito_http"], 200)
+            # Nessuna scrittura: `updated_at` non si muove, quindi il giro
+            # successivo (lo scheduler ne fa quattro al giorno) li riprova.
+            self.assertEqual(riga["updated_at"], "2026-09-22T08:00:00+00:00")
+
+    def test_il_giro_dopo_con_la_rete_a_posto_li_riverifica(self):
+        magazzino = self._pubblicabili(quanti=2)
+        self._giro(magazzino, lambda _url: (_ for _ in ()).throw(OSError("giu'")), limit=2)
+        esito = self._giro(magazzino, lambda _url: {"esito_http": 200}, limit=2)
+        self.assertEqual(esito["esaminati"], 2)
+        self.assertEqual(esito["pubblicabili"], 2)
+        self.assertEqual(esito["saltate"], 0)
+
+    def test_una_risposta_vera_non_2xx_ritira_comunque(self):
+        """La distinzione e' fra «non ho potuto chiedere» e «ho chiesto e non va»."""
+        magazzino = self._pubblicabili(quanti=2)
+        esito = self._giro(magazzino, lambda _url: {"esito_http": 404}, limit=2)
+        self.assertEqual(esito["ritirati"], 2)
+        self.assertEqual(esito["rimandati"], 0)
+        for riga in magazzino.values():
+            self.assertFalse(riga["pubblicabile"])
+            self.assertEqual(riga["esito_http"], 404)
+
+    def test_una_riga_non_ancora_pubblicabile_riceve_il_marcatore(self):
+        """Il caso per cui il marcatore esiste (F3) non deve regredire."""
+        magazzino = {1: {"id": 1, "bando_id": 1, "url": "https://morto.invalid/1",
+                         "tipo": "pagina_bando", "esito_http": None,
+                         "pubblicabile": False,
+                         "updated_at": "2026-09-22T08:00:00+00:00",
+                         "trovato_in_fonte_at": None}}
+        esito = self._giro(magazzino, lambda _url: None, limit=1)
+        self.assertEqual(esito["rimandati"], 0)
+        self.assertEqual(magazzino[1]["esito_http"], fu.ESITO_IRRAGGIUNGIBILE)
+        self.assertFalse(magazzino[1]["pubblicabile"])
+
+
+class TestCostoDelConfrontoGemelli(unittest.TestCase):
+    """`fondi-doppioni`: il confronto e' quadratico, non va moltiplicato.
+
+    Togliere l'impaginazione (giusto: una coppia con un id in pagina 1 e
+    l'altro in pagina 3 non si trova) ha reso ogni lancio un confronto su tutto
+    il corpus. Su 2 104 pubblicati sono ~4,4 milioni di coppie: ripassarle due
+    volte, ricostruire per ogni riga la lista degli «altri» e proseguire dopo
+    che il budget delle fusioni e' finito costava 411 s per un `--limit 10`.
+    """
+
+    # Titoli e host tutti diversi: nessun blocco, nessuna coincidenza di URL.
+    # Serve un corpus che non produca ne' gemelli ne' proposte, altrimenti non
+    # si vede se il confronto e' stato fatto una volta o due.
+    TITOLI = (
+        "Contributi per la formazione professionale",
+        "Voucher per l'internazionalizzazione delle imprese",
+        "Fondo per la transizione ecologica",
+        "Sostegno all'occupazione giovanile",
+        "Incentivi per l'efficientamento energetico",
+        "Credito d'imposta per la ricerca industriale",
+    )
+
+    def _corpus(self, quanti=6):
+        return [
+            {"id": i, "titolo": self.TITOLI[i - 1],
+             "link_bando": f"https://ente{i}.it/bando", "fonte_id": i}
+            for i in range(1, quanti + 1)
+        ]
+
+    def _conta_criteri(self):
+        """Intercetta `gemelli.criteri_esatti` sul modulo: cosi' si vedono
+        anche le chiamate che partono da dentro `possibili_doppioni`."""
+        chiamate: list[Any] = []
+        vero = fu.gemelli.criteri_esatti
+
+        def _spia(candidato, pubblicati):
+            chiamate.append((candidato, pubblicati))
+            return vero(candidato, pubblicati)
+
+        return chiamate, _spia
+
+    def test_i_criteri_esatti_si_calcolano_una_volta_per_riga(self):
+        corpus = self._corpus()
+        chiamate, spia = self._conta_criteri()
+        with unittest.mock.patch.object(fu.gemelli, "criteri_esatti", spia):
+            esito = esegui(fu.run_fondi_doppioni(dry_run=True, righe=corpus))
+        self.assertEqual(esito["esaminati"], len(corpus))
+        # Una per riga. Erano due: quella del runner piu' quella che
+        # `possibili_doppioni` rifaceva da capo.
+        self.assertEqual(len(chiamate), len(corpus))
+
+    def test_la_lista_degli_altri_non_si_ricostruisce_per_riga(self):
+        corpus = self._corpus()
+        chiamate, spia = self._conta_criteri()
+        with unittest.mock.patch.object(fu.gemelli, "criteri_esatti", spia):
+            esegui(fu.run_fondi_doppioni(dry_run=True, righe=corpus))
+        elenchi = [pubblicati for _candidato, pubblicati in chiamate]
+        # Sempre lo stesso oggetto, e completo: la riga corrente la salta
+        # `criteri_esatti`, non una copia nuova da n-1 dizionari per riga.
+        self.assertTrue(all(e is elenchi[0] for e in elenchi))
+        self.assertEqual(len(elenchi[0]), len(corpus))
+
+    def test_la_riga_corrente_resta_fuori_dalle_proprie_corrispondenze(self):
+        # Passare l'elenco intero non deve far diventare una riga gemella di
+        # se' stessa: sarebbe una fusione su se' stessa.
+        corpus = self._corpus(quanti=3)
+        esito = esegui(fu.run_fondi_doppioni(dry_run=True, righe=corpus))
+        self.assertEqual(esito["esatti"], 0)
+        self.assertEqual(esito["proposte"], 0)
+
+    def _corpus_con_gemelli(self, coppie=3):
+        righe = []
+        for c in range(coppie):
+            url = f"https://regione.marche.it/bando-{c}"
+            righe.append({"id": 2 * c + 1, "titolo": f"Bando {c}",
+                          "link_bando": url, "fonte_id": 1})
+            righe.append({"id": 2 * c + 2, "titolo": f"Bando {c}",
+                          "link_bando": url, "fonte_id": 2})
+        return righe
+
+    def test_il_budget_finito_ferma_il_confronto_quando_si_fonde(self):
+        corpus = self._corpus_con_gemelli()
+        with unittest.mock.patch.object(
+                fu.db, "fondi_bandi", lambda master, doppione, motivo: master):
+            esito = esegui(fu.run_fondi_doppioni(attivo=True, limit=1, righe=corpus))
+        self.assertEqual(esito["fusi"], 1)
+        # Il confronto non prosegue sul resto del corpus: e' quadratico, e
+        # questo lancio non sta chiedendo il report.
+        self.assertLess(esito["esaminati"], len(corpus))
+        self.assertGreater(esito["rimandati"], 0)
+        # E il troncamento si dichiara.
+        self.assertTrue(any("budget" in a for a in esito["allarmi"]))
+
+    def test_in_ombra_il_report_copre_comunque_tutto_il_corpus(self):
+        # In ombra il report **e'** il prodotto del lancio: qui fermarsi
+        # sarebbe la correzione peggiore del difetto.
+        corpus = self._corpus_con_gemelli()
+        esito = esegui(fu.run_fondi_doppioni(dry_run=True, limit=1, righe=corpus))
+        self.assertEqual(esito["esaminati"], len(corpus))
+        self.assertEqual(esito["allarmi"], [])
+
+    def test_limit_zero_resta_solo_report_su_tutto_il_corpus(self):
+        corpus = self._corpus_con_gemelli()
+        fusioni: list[Any] = []
+        with unittest.mock.patch.object(
+                fu.db, "fondi_bandi",
+                lambda master, doppione, motivo: fusioni.append(doppione) or master):
+            esito = esegui(fu.run_fondi_doppioni(attivo=True, limit=0, righe=corpus))
+        self.assertEqual(fusioni, [])
+        self.assertEqual(esito["esaminati"], len(corpus))
+        self.assertEqual(esito["allarmi"], [])
+
+    def test_i_gemelli_certi_passati_da_fuori_danno_lo_stesso_esito(self):
+        # `esatti` calcolato dentro o passato da fuori deve dare la stessa
+        # tupla: e' l'unica cosa che il parametro nuovo ha il diritto di
+        # cambiare, cioe' niente.
+        corpus = [
+            # gemello certo del primo (stesso URL): esce dal fuzzy
+            {"id": 1, "titolo": "Bando per la formazione professionale 2025",
+             "link_bando": "https://regione.marche.it/b1", "fonte_id": 1},
+            {"id": 2, "titolo": "Titolo tutto diverso",
+             "link_bando": "https://regione.marche.it/b1", "fonte_id": 2},
+            # quasi doppione (stesso host, un anno di differenza): resta una
+            # proposta, e le proposte non si fondono mai
+            {"id": 3, "titolo": "Bando per la formazione professionale 2026",
+             "link_bando": "https://regione.marche.it/b3", "fonte_id": 3},
+        ]
+        candidato = corpus[0]
+        esatti = [c.bando_id for c in fu.gemelli.criteri_esatti(candidato, corpus)]
+        self.assertEqual(esatti, [2])
+        dentro = fu.gemelli.possibili_doppioni(candidato, corpus)
+        fuori = fu.gemelli.possibili_doppioni(candidato, corpus, esatti=esatti)
+        self.assertEqual([p.bando_id for p in dentro], [3])
+        self.assertEqual(dentro, fuori)
+
+
+if __name__ == "__main__":                              # pragma: no cover
+    unittest.main()

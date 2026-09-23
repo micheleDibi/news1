@@ -654,7 +654,10 @@ async def run_rigenera(
     non tocca `bando_evento` nel modo date, non ripara il `contenuto` nel modo
     malformati — quindi senza lo scorrimento due lanci di fila ripassavano
     sulle stesse righe con gli stessi contatori. `attraversati` dice quante
-    righe (o eventi) sono state guardate per trovarle.
+    righe (o eventi) sono state guardate per trovarle, e nel modo date
+    `senza_riscrittore` quanti eventi hanno un residuo che solo il modello
+    potrebbe togliere: restano fuori dal `--limit` invece di consumarlo a
+    vuoto, ed e' la voce che dice all'operatore perche' il lotto non li chiude.
     """
     avvio = time.monotonic()
     lotto = lotto or LOTTO_PREDEFINITO
@@ -665,6 +668,10 @@ async def run_rigenera(
         "segnalati": 0, "saltati": 0, "doppioni": 0, "attraversati": 0,
         "errori": 0,
     }
+    if not malformati:
+        # Solo il modo date puo' avere eventi che aspettano il riscrittore:
+        # nel modo malformati la voce non avrebbe senso e resterebbe a zero.
+        contatori["senza_riscrittore"] = 0
     # E' l'unico dei tre lotti che puo' chiamare il modello (passo 3): senza
     # questi due il suo consumo non sarebbe attribuibile a nessuna riga di
     # `pipeline_run`, non sarebbe fermabile da `BACKFILL_TETTO_USD` e non
@@ -828,6 +835,13 @@ def _malformati_da_segnalare(
     il limite lo consumano le sole righe malformate e le sane vanno in
     `saltati`.
     """
+    # `--limit 0` e' un limite, ed e' quello che un operatore mette per non
+    # toccare niente (la convenzione e' scritta in `db._pagina`). Il
+    # controllo del limite sta DOPO l'append, quindi senza questa uscita un
+    # giro da zero righe ne lavorava una — e con `--attivo` era una
+    # scrittura vera.
+    if limit is not None and int(limit) <= 0:
+        return []
     raccolte: list[dict[str, Any]] = []
 
     def _leggi(**filtri: Any) -> Sequence[Mapping[str, Any]]:
@@ -846,13 +860,50 @@ def _malformati_da_segnalare(
     return raccolte
 
 
+#: La firma delle segnalazioni di questo comando. `tipo` **da solo non basta**:
+#: `elaborazione_bloccata` lo scrivono anche il monitor dopo cinque controlli
+#: falliti (`origine='worker'`, `monitoraggio.py`), l'allineamento dei gemelli
+#: (`origine='worker'`) e la RPC `bando_applica_evento` sui rifiuti di data
+#: (`origine='pipeline'`, `campo='date'`, migrazione 04). Solo la coppia
+#: (`origine`, `campo`) distingue le nostre righe dalle loro: senza il `campo`,
+#: `origine='pipeline'` confonderebbe le nostre con quelle della RPC.
+TIPO_SEGNALAZIONE = "elaborazione_bloccata"
+ORIGINE_SEGNALAZIONE = "pipeline"
+CAMPO_SEGNALAZIONE = "contenuto"
+
+#: Quante righe `elaborazione_bloccata` si leggono per bando per sapere se la
+#: nostra c'e' gia'. Il filtro sull'autore e' in Python perche' `select_eventi`
+#: non sa filtrare `campo`: bisogna quindi leggerne piu' di una, e su un bando
+#: bloccato anche da altre parti la nostra puo' non essere la prima per id.
+TETTO_SEGNALAZIONI_LETTE = 200
+
+
+def _e_nostra_segnalazione(evento: Mapping[str, Any]) -> bool:
+    """Questa riga di `bando_evento` l'ha scritta `rigenera --malformati`?
+
+    Se lo schema non ha (o non restituisce) `origine` e `campo`, non c'e' modo
+    di distinguere l'autore: si risponde «si'», che e' l'esito conservativo —
+    una segnalazione in meno non fa danni, un INSERT in piu' a ogni lancio si'.
+    """
+    if "origine" not in evento and "campo" not in evento:
+        return True
+    return (str(evento.get("origine") or "") == ORIGINE_SEGNALAZIONE
+            and str(evento.get("campo") or "") == CAMPO_SEGNALAZIONE)
+
+
 def _bandi_gia_segnalati(bando_ids: Sequence[Any]) -> frozenset[Any]:
-    """Gli id che hanno gia' un `elaborazione_bloccata` in `bando_evento`.
+    """Gli id che hanno gia' una segnalazione **di questo comando**.
 
     `db.registra_evento` e' un INSERT nudo senza deduplica: senza questa
     lettura ogni lancio aggiungeva un evento nuovo per ogni riga malformata
     (misurato: 4 eventi per 2 righe in due lanci). Gli id sono una manciata
     — 9 sul corpus — quindi una lettura per id non e' un problema.
+
+    Conta **chi** ha scritto l'evento, non solo il tipo: un bando col contenuto
+    malformato **e** la pagina irraggiungibile ha gia' un
+    `elaborazione_bloccata` del monitor, e prendendolo per nostro il comando
+    diceva «candidati: 9, segnalati: 0, doppioni: 9» — che si legge «gia'
+    fatto» — senza aver segnalato mai niente.
     """
     gia: set[Any] = set()
     try:
@@ -860,8 +911,10 @@ def _bandi_gia_segnalati(bando_ids: Sequence[Any]) -> frozenset[Any]:
         for bando_id in bando_ids:
             if bando_id is None:
                 continue
-            if db.select_eventi(
-                    bando_id=bando_id, tipi=("elaborazione_bloccata",), limit=1):
+            righe = db.select_eventi(
+                bando_id=bando_id, tipi=(TIPO_SEGNALAZIONE,),
+                limit=TETTO_SEGNALAZIONI_LETTE)
+            if any(_e_nostra_segnalazione(r) for r in righe):
                 gia.add(bando_id)
     except Exception as e:                                # pragma: no cover - ripiego
         logger.warning("[rigenera] eventi gia' registrati non leggibili: {}", e)
@@ -922,9 +975,11 @@ def _segnala_malformato(
     bando_id = riga.get("id")
     evento = {
         "bando_id": bando_id,
-        "tipo": "elaborazione_bloccata",
-        "origine": "pipeline",
-        "campo": "contenuto",
+        "tipo": TIPO_SEGNALAZIONE,
+        # La firma che `_e_nostra_segnalazione` riconosce: qui e li' devono
+        # restare la stessa cosa, altrimenti la deduplica non deduplica piu'.
+        "origine": ORIGINE_SEGNALAZIONE,
+        "campo": CAMPO_SEGNALAZIONE,
         "valore_dopo": {"motivo": "contenuto non e' un oggetto con sections"},
         # Interno per definizione (§13.5): mai un cursore, mai leggibile.
         "leggibile": False,
@@ -947,6 +1002,14 @@ def _segnala_malformato(
         return False
 
 
+#: I tre esiti di `_c_e_da_rigenerare`. `ESITO_RISCRITTORE` e' il terzo caso che
+#: prima non esisteva: «ci sarebbe da fare, ma non con gli strumenti di questo
+#: lancio».
+ESITO_LAVORO = "lavoro"
+ESITO_RISCRITTORE = "serve il riscrittore"
+ESITO_NIENTE = "niente"
+
+
 def _da_rigenerare(
     righe: Sequence[Mapping[str, Any]] | None,
     eventi: Sequence[Mapping[str, Any]] | None,
@@ -954,16 +1017,26 @@ def _da_rigenerare(
     limit: int | None,
     offset: int,
     contatori: dict[str, int],
+    con_riscrittore: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[Any, dict[str, Any]]]:
     """Gli eventi su cui c'e' davvero da rigenerare, e i bandi che li portano.
 
     La selezione e' sugli EVENTI e **nessuna** scrittura di questo comando
     tocca `bando_evento`: un evento verificato e applicato resta tale per
     sempre, quindi i primi N per id erano gli stessi a ogni lancio. Qui si
-    scorre a pagine e il `--limit` lo consumano soltanto gli eventi il cui
-    bando contiene ancora la data vecchia in una frase del ruolo giusto; gli
-    altri vanno in `saltati` senza consumare niente.
+    scorre a pagine e il `--limit` lo consumano soltanto gli eventi su cui una
+    scrittura partira' davvero; gli altri vanno in `saltati` senza consumare
+    niente, e quelli che solo il modello potrebbe chiudere anche in
+    `senza_riscrittore`.
     """
+    # `--limit 0` e' un limite, ed e' quello che un operatore mette per non
+    # toccare niente (la convenzione e' scritta in `db._pagina`). Il
+    # controllo del limite sta DOPO l'append, quindi senza questa uscita un
+    # giro da zero righe ne lavorava una — e con `--attivo` era una
+    # scrittura vera.
+    if limit is not None and int(limit) <= 0:
+        return [], {}
+
     def _leggi(**filtri: Any) -> Sequence[Mapping[str, Any]]:
         from . import db
         # `applicato=True` non e' un di piu': in ombra un evento nasce
@@ -991,8 +1064,16 @@ def _da_rigenerare(
         for evento in pagina:
             contatori["attraversati"] += 1
             riga = pagina_bandi.get(evento.get("bando_id"))
-            if riga is None or not _c_e_da_rigenerare(riga, evento):
+            esito = (
+                ESITO_NIENTE if riga is None
+                else _c_e_da_rigenerare(riga, evento, con_riscrittore=con_riscrittore)
+            )
+            if esito != ESITO_LAVORO:
                 contatori["saltati"] += 1
+                if esito == ESITO_RISCRITTORE:
+                    # Lo dice il riepilogo: sono gli eventi che restano aperti
+                    # per mancanza del modello, non righe gia' a posto.
+                    contatori["senza_riscrittore"] += 1
                 continue
             raccolti.append(evento)
             if limit is not None and len(raccolti) >= limit:
@@ -1000,32 +1081,53 @@ def _da_rigenerare(
     return raccolti, bandi
 
 
-def _c_e_da_rigenerare(riga: Mapping[str, Any], evento: Mapping[str, Any]) -> bool:
-    """La prosa di questo bando dice ancora la data vecchia di questo evento?
+def _c_e_da_rigenerare(
+    riga: Mapping[str, Any],
+    evento: Mapping[str, Any],
+    *,
+    con_riscrittore: bool = False,
+) -> str:
+    """Che lavoro c'e' su questo bando per questo evento: uno dei tre `ESITO_*`.
 
     E' il filtro che fa consumare il `--limit` al lavoro e non alle occhiate.
     E' puro: si legge dal `contenuto` gia' in mano, quindi vale anche in ombra.
+
+    «Lavoro» vuol dire **una scrittura che partira' davvero**, non «la data
+    vecchia compare ancora da qualche parte». La differenza sta nei residui: una
+    data vecchia in una frase senza parola di ruolo («illustrato in un incontro
+    il 6 ottobre 2026») la sostituzione deterministica non la tocca **per
+    disegno**, e finche' resta li' il gate finale di `rigenera()` respinge
+    tutto — compresa la sostituzione appena fatta nelle frasi giuste — e il
+    payload resta vuoto. Solo il riscrittore puo' togliere quel residuo, e dalla
+    riga di comando il riscrittore non c'e' (`run_rigenera` non ne costruisce
+    uno). Senza di lui quegli eventi non sono lavoro: restano `applicato=true`,
+    verrebbero riselezionati a ogni lancio e riempirebbero il `--limit` senza
+    scrivere niente, con il lotto che non dichiara mai «finito».
     """
     vecchia, nuova, ruolo = date_da_evento(evento)
     if nuova is None or vecchia is None:
-        return False
+        return ESITO_NIENTE
     if contenuto_malformato(riga.get("contenuto")):
-        return False
+        return ESITO_NIENTE
     trasformato = _testo_del_contenuto(riga)
     if trasformato is None:
-        return False
+        return ESITO_NIENTE
     testo = str(trasformato[0].get("contenuto") or "")
     if testo:
-        if sostituisci_data(testo, vecchia, nuova, ruolo)[1]:
-            return True
-        if paragrafi_con_data(testo, vecchia):
-            return True
+        sostituito, quante = sostituisci_data(testo, vecchia, nuova, ruolo)
+        if paragrafi_con_data(sostituito, vecchia):
+            # Il residuo blocca anche la `descrizione_breve`: `rigenera()` torna
+            # al box templato prima di guardarla.
+            return ESITO_LAVORO if con_riscrittore else ESITO_RISCRITTORE
+        if quante:
+            return ESITO_LAVORO
     # La `descrizione_breve` e' la meta description e il testo della card: una
     # data vecchia li' dentro e' lavoro anche quando il contenuto e' a posto.
     descrizione = riga.get("descrizione_breve")
     if isinstance(descrizione, str) and descrizione.strip():
-        return bool(sostituisci_data(descrizione, vecchia, nuova, ruolo)[1])
-    return False
+        if sostituisci_data(descrizione, vecchia, nuova, ruolo)[1]:
+            return ESITO_LAVORO
+    return ESITO_NIENTE
 
 
 async def _lotto_date(
@@ -1044,8 +1146,10 @@ async def _lotto_date(
     step: str = STEP_RIGENERA,
 ) -> dict[str, Any]:
     """Le pagine la cui prosa non dice piu' quello che dicono le colonne."""
+    contatori.setdefault("senza_riscrittore", 0)
     elenco_eventi, bandi = _da_rigenerare(
-        righe, eventi, limit=limit, offset=offset, contatori=contatori)
+        righe, eventi, limit=limit, offset=offset, contatori=contatori,
+        con_riscrittore=riscrittore is not None)
     if not elenco_eventi:
         return {"eventi": 0}
     per_bando: dict[Any, dict[str, Any]] = {}

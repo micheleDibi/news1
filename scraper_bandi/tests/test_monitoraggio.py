@@ -1045,6 +1045,93 @@ class TestMemoriaDelControllo(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(colonna, monitoraggio.COLONNE_CONTROLLO)
 
 
+# --- volatilita': una cricca a senso unico (F4) -----------------------------
+
+#: Le colonne che `bando_controllo` ha davvero (02:1138-1163). Non c'e'
+#: `controlli_senza_diff`: `aggiorna_controllo` la scarta via
+#: `colonne_mancanti`, quindi alla rilettura vale sempre 0.
+COLONNE_CONTROLLO_A_DB = frozenset({
+    "bando_id", "ultimo_controllo_at", "prossimo_controllo_at", "priorita_controllo",
+    "volatilita", "controlli_falliti", "tentativi_resolver", "tentativi_pipeline",
+    "candidato_prioritario", "impronta_contenuto", "impronte_sezioni", "testo_norm",
+    "impronta_raw", "ultimo_visto_in_fonte_at", "rigenerazioni_fallite",
+    "richiede_js", "etag", "last_modified", "created_at", "updated_at",
+})
+
+
+class TestVolatilitaAttraversoIGiri(unittest.TestCase):
+    """La volatilita' letta a DB puo' solo scendere, quindi non si rilegge.
+
+    `moltiplicatore_volatilita` ha due direzioni: un evento verificato
+    abbassa `m` (x0,7), tre controlli senza diff lo rialzano (x1,3). La
+    seconda non funziona, perche' `controlli_senza_diff` **non esiste** in
+    `bando_controllo`: `aggiorna_controllo` la scarta in silenzio e alla
+    rilettura vale 0, sotto la soglia di `CONTROLLI_PER_CALMA`. Rileggere la
+    sola volatilita' la fa comporre giro dopo giro fino a `VOLATILITA_MIN`,
+    e nulla puo' piu' riportarla su: ogni bando cambiato due volte resterebbe
+    controllato al doppio della frequenza per sempre — piu' fetch e piu'
+    classificazioni sul tetto giornaliero in dollari.
+    """
+
+    BANDO_ID = 1                                   # l'id di `_bando()`
+
+    def setUp(self):
+        self.db = carica_modulo("db")
+        self.tabella = {self.BANDO_ID: {"bando_id": self.BANDO_ID, "volatilita": 1.0}}
+        self.chieste: list[tuple] = []
+
+    def _controlli(self, ids, **kwargs):
+        colonne = tuple(kwargs.get("colonne") or ())
+        self.chieste.append(colonne)
+        return {i: {k: v for k, v in self.tabella[i].items()
+                    if not colonne or k in colonne or k == "bando_id"}
+                for i in ids if i in self.tabella}
+
+    def _giro(self, *, cambiato):
+        """Un giro completo: lettura della memoria, controllo, scrittura."""
+        bando = _bando(data_scadenza="2027-06-30")
+        with patch.object(self.db, "select_controlli", self._controlli):
+            riga = monitoraggio.FonteDatiSupabase(
+                controllo=object())._con_memoria([bando])[0]
+        colonne = monitoraggio._colonne_invariato(
+            riga, None, ADESSO, cambiato=cambiato)
+        # Cio' che arriva davvero a DB: `aggiorna_controllo` scarta le colonne
+        # che lo schema non espone, e non lo dice a chi ha chiamato.
+        self.tabella[self.BANDO_ID].update(
+            {k: v for k, v in colonne.items() if k in COLONNE_CONTROLLO_A_DB})
+        return riga, colonne
+
+    def test_la_seconda_lettura_non_chiede_la_volatilita(self):
+        self._giro(cambiato=False)
+        self.assertNotIn("volatilita", self.chieste[-1])
+        # La memoria vera, invece, si chiede tutta.
+        for colonna in monitoraggio.COLONNE_CONTROLLO:
+            self.assertIn(colonna, self.chieste[-1])
+
+    def test_due_giri_cambiati_non_dimezzano_la_cadenza_per_sempre(self):
+        # Due giri con un evento verificato, poi cinque senza. Con la
+        # volatilita' riletta: 1,0 -> 0,7 -> 0,5 e li' resta, cioe' meta'
+        # cadenza per sempre. Senza: al massimo 0,7, e il giro dopo si
+        # riparte da 1,0.
+        scritte = []
+        for giro in range(1, 8):
+            _, colonne = self._giro(cambiato=giro <= 2)
+            scritte.append(colonne["volatilita"])
+        self.assertNotIn(monitoraggio.VOLATILITA_MIN, scritte)
+        self.assertGreaterEqual(min(scritte), monitoraggio.VOLATILITA_EVENTO)
+        # I giri senza cambiamenti tornano alla cadenza piena.
+        self.assertEqual(scritte[2:], [1.0] * 5)
+
+    def test_il_fattore_calma_resterebbe_inerte_anche_dopo_dieci_giri(self):
+        # `controlli_senza_diff` non arriva mai a DB: la prova che la calma
+        # non puo' compensare la discesa, ed e' il motivo per cui la discesa
+        # non deve accumularsi.
+        for _ in range(10):
+            riga, _ = self._giro(cambiato=False)
+            self.assertEqual(int(riga.get("controlli_senza_diff") or 0), 0)
+        self.assertNotIn("controlli_senza_diff", self.tabella[self.BANDO_ID])
+
+
 # --- tabella dei domini: G4 non puo' vivere di seed -------------------------
 
 class TestCostruzioneTabellaDomini(unittest.TestCase):
@@ -1707,6 +1794,500 @@ class TestApplicaEventi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(esito["status"], "errore")
         self.assertEqual(esito["applicati"], 0)
         esplosivo.rilascia.assert_called_once()
+
+
+# --- i rifiuti che la RPC non annota (F1) -----------------------------------
+
+class _DbEventi:
+    """Il minimo di `app.db` che `applica-eventi` usa, con `bando_evento` in
+    memoria. Nessuna rete e nessun DB: la RPC e' una funzione che dice `False`,
+    com'e' `bando_applica_evento` prima della migrazione 06."""
+
+    TABELLA_EVENTO = "bando_evento"
+
+    #: I tre esiti, come in `db`. Il finto li espone perche' la differenza fra
+    #: «la RPC ha detto no» e «la RPC non c'era» decide se il rifiuto viene
+    #: annotato — e l'annotazione non si puo' disfare.
+    ESITO_APPLICATO = "applicato"
+    ESITO_RIFIUTATO = "rifiutato"
+    ESITO_NON_TENTATO = "non_tentato"
+
+    def __init__(self, eventi, *, esito_rpc="rifiutato", ha_riferisce_a=True):
+        self.eventi = [dict(e) for e in eventi]
+        self.esito_rpc = esito_rpc
+        self.inseriti: list[dict] = []
+        self.colonne_chieste: list[tuple] = []
+        # `db.controllo`: lo schema com'e' oggi, senza rete.
+        self.controllo = SimpleNamespace(
+            ha=lambda _tabella, colonna: colonna != "riferisce_a" or ha_riferisce_a)
+
+    def select_eventi(self, *, tipi=(), dal=None, applicato=None, verificato=None,
+                      bando_id=None, con_riferimento=None, limit=None, offset=0,
+                      colonne=None, **_):
+        self.colonne_chieste.append(tuple(colonne or ()))
+        righe = list(self.eventi)
+        if tipi:
+            righe = [r for r in righe if r.get("tipo") in tuple(tipi)]
+        if con_riferimento is not None:
+            righe = [r for r in righe
+                     if (r.get("riferisce_a") is not None) is con_riferimento]
+        if applicato is not None:
+            righe = [r for r in righe if bool(r.get("applicato")) is applicato]
+        if verificato is not None:
+            righe = [r for r in righe if bool(r.get("verificato")) is verificato]
+        if bando_id is not None:
+            righe = [r for r in righe if r.get("bando_id") == bando_id]
+        righe.sort(key=lambda r: r.get("id"))
+        righe = righe[max(0, int(offset or 0)):]
+        if limit is not None:
+            righe = righe[:int(limit)]
+        return [dict(r) for r in righe]
+
+    def applica_evento_esito(self, evento_id, **_):
+        return self.esito_rpc
+
+    def applica_evento(self, evento_id, **_):
+        return self.esito_rpc == self.ESITO_APPLICATO
+
+    def registra_evento(self, evento, **_):
+        nuovo = dict(evento, id=10_000 + len(self.inseriti))
+        self.inseriti.append(nuovo)
+        self.eventi.append(nuovo)
+        return True
+
+
+class TestRifiutiAnnotati(unittest.IsolatedAsyncioTestCase):
+    """Un rifiuto che la RPC non annota deve annotarselo Python (§6.2).
+
+    `bando_applica_evento` scrive l'`elaborazione_bloccata` con `riferisce_a`
+    **solo** sul ramo `data_pubblicazione > data_scadenza` (04:468-487). Gli
+    altri tre esiti che lasciano `applicato=false` — transizione non ammessa
+    (23514, che `db.applica_evento` trasforma in `False`), `sospeso`/`revocato`
+    prima della 06 (`RETURN false` con la sola `RAISE NOTICE`), RPC assente —
+    non scrivono niente. Senza marcatore quegli eventi restano agli id piu'
+    bassi, passano `applicabile()` e riconsumano il blocco a ogni lancio.
+    """
+
+    def setUp(self):
+        zitto = patch.object(monitoraggio, "_scrivi_run", MagicMock())
+        zitto.start()
+        self.addCleanup(zitto.stop)
+
+    #: Il tipo dei casi: `proroga`, non `revoca`. Il rifiuto di una revoca
+    #: prima della migrazione 06 e' un'attesa, non un giudizio, e non va
+    #: annotato (vedi `TestRifiutiNonDefinitivi`); quello di una proroga che la
+    #: tabella delle transizioni non ammette e' definitivo.
+    @staticmethod
+    def _eventi(quanti=50, tipo="proroga"):
+        return [{"id": i, "bando_id": 500 + i, "tipo": tipo, "campo": "stato",
+                 "verificato": True, "applicato": False,
+                 "rilevato_at": "2026-09-01T06:00:00+00:00"}
+                for i in range(1, quanti + 1)]
+
+    async def _lancia(self, finto, **kwargs):
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True):
+            kwargs.setdefault("lock", _lock_libero())
+            kwargs.setdefault("impostazioni", _impostazioni())
+            return await monitoraggio.run_applica_eventi(**kwargs)
+
+    async def test_due_lanci_di_fila_non_ripetono_lo_stesso_blocco(self):
+        """`applica-eventi --tipo proroga --attivo --limit 50`, due volte.
+
+        Prima: «letti: 50, candidati: 50, applicati: 0, rifiutati: 50,
+        bloccati: 0» **identico** al primo lancio, per sempre. Il marcatore
+        deve sopravvivere al processo, e per questo e' una riga in tabella e
+        non un cursore in memoria.
+        """
+        finto = _DbEventi(self._eventi())
+        primo = await self._lancia(
+            finto, attivo=True, limit=50, tipi=("proroga",))
+        secondo = await self._lancia(
+            finto, attivo=True, limit=50, tipi=("proroga",))
+
+        # Il primo lancio non applica niente e li rifiuta tutti: e' la RPC che
+        # risponde `false`, cioe' un rifiuto vero.
+        self.assertEqual(
+            (primo["candidati"], primo["applicati"], primo["rifiutati"]),
+            (50, 0, 50))
+        # Il secondo non ripropone niente: gli stessi cinquanta eventi sono
+        # ora riconosciuti come gia' rifiutati e scavalcati.
+        self.assertEqual(
+            (secondo["candidati"], secondo["rifiutati"], secondo["bloccati"]),
+            (0, 0, 50),
+            "il secondo lancio ripete il primo: il blocco da 50 resta "
+            "consumato dagli stessi eventi a ogni lancio")
+        # L'annotazione e' cio' che sopravvive al processo, e non si
+        # moltiplica: una per evento, non una per giro.
+        self.assertEqual(primo["segnalati"], 50)
+        self.assertEqual(secondo["segnalati"], 0)
+        self.assertEqual(len(finto.inseriti), 50)
+
+    async def test_l_annotazione_punta_all_evento_ed_e_interna(self):
+        finto = _DbEventi(self._eventi(quanti=1))
+        await self._lancia(finto, attivo=True, limit=1, tipi=("proroga",))
+        annotazione = finto.inseriti[0]
+        self.assertEqual(annotazione["tipo"], "elaborazione_bloccata")
+        # `riferisce_a` e' la forma che usa gia' la RPC: `eventi_gia_rifiutati`
+        # ne legge una sola, non due.
+        self.assertEqual(annotazione["riferisce_a"], 1)
+        self.assertEqual(annotazione["bando_id"], 501)
+        self.assertEqual(annotazione["valore_dopo"]["evento_id"], 1)
+        # Interno per definizione (§13.5): mai leggibile, mai verificato — il
+        # CHECK `bando_evento_verificato_prova_check` vorrebbe prova e citazione.
+        self.assertFalse(annotazione["leggibile"])
+        self.assertFalse(annotazione["verificato"])
+        self.assertFalse(annotazione["in_aggiornamenti"])
+        self.assertIn(annotazione["origine"], ("pipeline", "worker", "cron"))
+
+    async def test_non_si_annota_due_volte_lo_stesso_rifiuto(self):
+        # Il ramo delle date annota da se' (04:468-487): Python non deve
+        # aggiungere una seconda riga. `elaborazione_bloccata` sta fuori dal
+        # dedup parziale della 02, quindi il DB non lo impedirebbe.
+        finto = _DbEventi(self._eventi(quanti=1))
+        finto.eventi.append({
+            "id": 900, "bando_id": 501, "tipo": "elaborazione_bloccata",
+            "riferisce_a": 1, "applicato": False, "verificato": False,
+        })
+        esito = await self._lancia(finto, attivo=True, limit=1, tipi=("proroga",))
+        # Gia' noto: non si riprova nemmeno ad applicarlo.
+        self.assertEqual(esito["bloccati"], 1)
+        self.assertEqual(finto.inseriti, [])
+
+    async def test_in_dry_run_non_si_scrive_e_il_lancio_dopo_ripete(self):
+        """In `--dry-run` non si applica niente, quindi non c'e' niente da
+        annotare: il lancio successivo ripresenta gli stessi candidati, ed e'
+        giusto cosi'."""
+        finto = _DbEventi(self._eventi(quanti=3))
+        primo = await self._lancia(
+            finto, attivo=True, dry_run=True, limit=50, tipi=("proroga",))
+        secondo = await self._lancia(
+            finto, attivo=True, dry_run=True, limit=50, tipi=("proroga",))
+        self.assertEqual(primo["candidati"], 3)
+        self.assertEqual(primo["segnalati"], 0)
+        self.assertEqual(finto.inseriti, [])
+        self.assertEqual(secondo["candidati"], 3)
+        self.assertEqual(secondo["bloccati"], 0)
+
+    async def test_chi_inietta_applica_non_scrive_niente_da_solo(self):
+        # I test e la pipeline che passano il proprio `applica` portano anche
+        # la propria annotazione: `run_applica_eventi` non scrive per loro.
+        finto = _DbEventi(self._eventi(quanti=2))
+        esito = await self._lancia(
+            finto, attivo=True, limit=2, tipi=("proroga",),
+            applica=lambda riga: False)
+        self.assertEqual(esito["rifiutati"], 2)
+        self.assertEqual(esito["segnalati"], 0)
+        self.assertEqual(finto.inseriti, [])
+
+    async def test_un_segnala_iniettato_viene_chiamato_una_volta_per_rifiuto(self):
+        visti = []
+        finto = _DbEventi(self._eventi(quanti=2))
+        esito = await self._lancia(
+            finto, attivo=True, limit=2, tipi=("proroga",),
+            applica=lambda riga: False,
+            segnala=lambda riga: visti.append(riga.get("id")) or True)
+        self.assertEqual(visti, [1, 2])
+        self.assertEqual(esito["segnalati"], 2)
+
+    async def test_un_annotazione_che_fallisce_non_ferma_il_giro(self):
+        finto = _DbEventi(self._eventi(quanti=2))
+        esito = await self._lancia(
+            finto, attivo=True, limit=2, tipi=("proroga",),
+            applica=lambda riga: False,
+            segnala=MagicMock(side_effect=RuntimeError("PostgREST giu'")))
+        self.assertEqual(esito["status"], "ok")
+        self.assertEqual(esito["rifiutati"], 2)
+        self.assertEqual(esito["segnalati"], 0)
+
+    async def test_gli_applicati_non_vengono_annotati(self):
+        finto = _DbEventi(self._eventi(quanti=2), esito_rpc=True)
+        esito = await self._lancia(finto, attivo=True, limit=2, tipi=("proroga",))
+        self.assertEqual(esito["applicati"], 2)
+        self.assertEqual(finto.inseriti, [])
+
+    async def test_senza_la_colonna_riferisce_a_non_si_scrive_niente(self):
+        # `db.registra_evento` scarta le chiavi che lo schema non espone: un
+        # marcatore senza `riferisce_a` sarebbe invisibile a
+        # `eventi_gia_rifiutati`, e `bando_evento` crescerebbe di una riga per
+        # evento a ogni lancio senza sbloccare niente.
+        finto = _DbEventi(self._eventi(quanti=2), ha_riferisce_a=False)
+        esito = await self._lancia(finto, attivo=True, limit=2, tipi=("proroga",))
+        self.assertEqual(esito["rifiutati"], 2)
+        self.assertEqual(esito["segnalati"], 0)
+        self.assertEqual(finto.inseriti, [])
+
+    def test_l_annotazione_si_costruisce_anche_senza_bando(self):
+        # Un evento senza `bando_id` non puo' essere annotato (`NOT NULL` e
+        # chiave esterna): si dice `False`, non si solleva.
+        self.assertFalse(monitoraggio._segnala_rifiuto({"id": 1}))
+        self.assertFalse(monitoraggio._segnala_rifiuto({"bando_id": 7}))
+
+
+# --- rifiuti gia' noti: una colonna sola, e oltre le mille righe (F10) -------
+
+class _ClientPostgrest:
+    """Un client finto con il tetto del server: `max-rows` = 1 000.
+
+    E' il punto del difetto: una `.limit(2000)` non solleva e non avvisa,
+    restituisce mille righe come se fossero tutte.
+    """
+
+    TETTO = 1000
+
+    def __init__(self, righe):
+        self.righe = [dict(r) for r in righe]
+        self.pagine: list[tuple] = []
+        self.colonne = ""
+        self.filtri: list[tuple] = []
+        self._quanto = None
+        self._salto = 0
+        self._negato = False
+
+    def table(self, _nome):
+        self._quanto, self._salto = None, 0
+        self.filtri = []
+        self._negato = False
+        return self
+
+    def select(self, colonne):
+        self.colonne = colonne
+        return self
+
+    def in_(self, _colonna, _valori):
+        return self
+
+    def eq(self, _colonna, _valore):
+        return self
+
+    def is_(self, colonna, valore):
+        """`is null`. Con la negazione davanti diventa «ha un valore»."""
+        self.filtri.append(("is" if not self._negato else "not_is", colonna, valore))
+        self._negato = False
+        return self
+
+    @property
+    def not_(self):
+        """`query.not_.is_(...)`: in postgrest la negazione e' un attributo."""
+        self._negato = True
+        return self
+
+    def order(self, _colonna):
+        return self
+
+    def limit(self, quanto):
+        self._quanto = int(quanto)
+        return self
+
+    def range(self, inizio, fine):
+        self._salto = int(inizio)
+        self._quanto = int(fine) - int(inizio) + 1
+        return self
+
+    def execute(self):
+        righe = list(self.righe)
+        for genere, colonna, _valore in self.filtri:
+            if genere == "not_is":
+                righe = [r for r in righe if r.get(colonna) is not None]
+            elif genere == "is":
+                righe = [r for r in righe if r.get(colonna) is None]
+        quanto = min(self._quanto or self.TETTO, self.TETTO)
+        fetta = righe[self._salto:self._salto + quanto]
+        self.pagine.append((self._salto, quanto, len(fetta)))
+        return SimpleNamespace(data=[dict(r) for r in fetta])
+
+
+SCHEMA_EVENTI = {
+    "definitions": {"bando_evento": {"properties": {nome: {} for nome in (
+        "id", "bando_id", "tipo", "campo", "valore_prima", "valore_dopo",
+        "data_evento", "rilevato_at", "applicato", "verificato", "leggibile",
+        "url_prova", "citazione", "confidenza", "gate", "riferisce_a")}}},
+    "paths": {"/bando_evento": {}, "/rpc/bando_applica_evento": {}},
+}
+
+
+class TestRifiutiNonDefinitivi(unittest.IsolatedAsyncioTestCase):
+    """Un rifiuto che non e' un giudizio non va annotato: l'annotazione e' per sempre.
+
+    `bando_evento` non concede DELETE nemmeno a `service_role` (migrazione 02,
+    `REVOKE DELETE, TRUNCATE`) e il trigger di immutabilita' vieta di cambiare
+    `riferisce_a`: una volta scritta, l'annotazione non si disfa e
+    `eventi_gia_rifiutati` scavalca quell'evento per sempre. Quindi si annota
+    solo cio' che nessuna migrazione futura potrebbe sbloccare.
+
+    Due casi che sembrano rifiuti e non lo sono:
+
+    * **RPC assente** (migrazione 04 non applicata). `db.applica_evento` tornava
+      `False` con un semplice log, indistinguibile da un rifiuto vero: un solo
+      `applica-eventi --attivo` lanciato prima della 04 avrebbe annotato tutto
+      l'arretrato dell'ombra, e la 04 non l'avrebbe piu' recuperato.
+    * **`sospensione`/`revoca` prima della migrazione 06**. La 04 li respinge
+      per costruzione (`RETURN false` con la sola `RAISE NOTICE`) finche' il
+      CHECK di `stato_bando` non ammette cinque valori. Sono esattamente gli
+      eventi che la 06 serve ad applicare.
+    """
+
+    def setUp(self):
+        zitto = patch.object(monitoraggio, "_scrivi_run", MagicMock())
+        zitto.start()
+        self.addCleanup(zitto.stop)
+
+    @staticmethod
+    def _eventi(quanti=5, tipo="revoca"):
+        return [{"id": i, "bando_id": 500 + i, "tipo": tipo, "campo": "stato",
+                 "verificato": True, "applicato": False,
+                 "rilevato_at": "2026-09-01T06:00:00+00:00"}
+                for i in range(1, quanti + 1)]
+
+    async def _lancia(self, finto, **kwargs):
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True):
+            kwargs.setdefault("lock", _lock_libero())
+            kwargs.setdefault("impostazioni", _impostazioni())
+            return await monitoraggio.run_applica_eventi(**kwargs)
+
+    async def test_rpc_assente_non_e_un_rifiuto_e_la_04_recupera_tutto(self):
+        """Primo lancio senza la 04, secondo con la 04: gli eventi si applicano.
+
+        Prima della correzione il primo lancio annotava cinque rifiuti e il
+        secondo trovava cinque `bloccati` e zero applicati — in modo
+        irreversibile, perche' le annotazioni non si cancellano.
+        """
+        finto = _DbEventi(self._eventi(tipo="proroga"),
+                          esito_rpc=_DbEventi.ESITO_NON_TENTATO)
+        primo = await self._lancia(finto, attivo=True, limit=5, tipi=("proroga",))
+        self.assertEqual(primo["applicati"], 0)
+        self.assertEqual(primo["rifiutati"], 0)
+        self.assertEqual(primo["non_tentati"], 5)
+        self.assertEqual(primo["segnalati"], 0)
+        self.assertEqual(finto.inseriti, [], "un non-tentativo e' stato annotato "
+                                             "come rifiuto: e' irreversibile")
+
+        finto.esito_rpc = _DbEventi.ESITO_APPLICATO
+        secondo = await self._lancia(finto, attivo=True, limit=5, tipi=("proroga",))
+        self.assertEqual(secondo["candidati"], 5)
+        self.assertEqual(secondo["applicati"], 5)
+        self.assertEqual(secondo["bloccati"], 0)
+
+    async def test_un_eccezione_non_e_un_rifiuto(self):
+        def _solleva(_riga):
+            raise RuntimeError("rete giu'")
+
+        finto = _DbEventi(self._eventi(quanti=2, tipo="proroga"))
+        esito = await self._lancia(
+            finto, attivo=True, limit=2, tipi=("proroga",),
+            applica=_solleva, segnala=lambda riga: True)
+        self.assertEqual(esito["non_tentati"], 2)
+        self.assertEqual(esito["rifiutati"], 0)
+        self.assertEqual(esito["segnalati"], 0)
+
+    async def test_revoca_prima_della_06_non_viene_annotata(self):
+        """Il rifiuto di una revoca e' un calendario, non un giudizio."""
+        finto = _DbEventi(self._eventi(tipo="revoca"))
+        primo = await self._lancia(finto, attivo=True, limit=5, tipi=("revoca",))
+        self.assertEqual(primo["rifiutati"], 5)
+        self.assertEqual(primo["segnalati"], 0)
+        self.assertEqual(finto.inseriti, [])
+        # E il lancio successivo li ripresenta: e' il comportamento giusto,
+        # perche' dopo la 06 dovranno essere applicati.
+        secondo = await self._lancia(finto, attivo=True, limit=5, tipi=("revoca",))
+        self.assertEqual(secondo["candidati"], 5)
+        self.assertEqual(secondo["bloccati"], 0)
+
+    async def test_dopo_la_06_la_revoca_rifiutata_si_annota(self):
+        finto = _DbEventi(self._eventi(tipo="revoca"))
+        esito = await self._lancia(
+            finto, attivo=True, limit=5, tipi=("revoca",),
+            impostazioni=_impostazioni(monitor_stati_estesi=True))
+        self.assertEqual(esito["rifiutati"], 5)
+        self.assertEqual(esito["segnalati"], 5)
+
+    async def test_la_rettifica_che_propone_uno_stato_nuovo_aspetta_la_06(self):
+        righe = self._eventi(quanti=1, tipo="rettifica")
+        righe[0]["valore_dopo"] = {"stato_proposto": "sospeso"}
+        finto = _DbEventi(righe)
+        esito = await self._lancia(finto, attivo=True, limit=1, tipi=("rettifica",))
+        self.assertEqual(esito["rifiutati"], 1)
+        self.assertEqual(esito["segnalati"], 0)
+
+    async def test_riprova_rifiutati_rimette_in_coda_le_annotazioni(self):
+        """La via di rientro: le annotazioni non si possono cancellare."""
+        finto = _DbEventi(self._eventi(quanti=3, tipo="proroga"))
+        await self._lancia(finto, attivo=True, limit=3, tipi=("proroga",))
+        self.assertEqual(len(finto.inseriti), 3)
+        bloccato = await self._lancia(finto, attivo=True, limit=3, tipi=("proroga",))
+        self.assertEqual(bloccato["candidati"], 0)
+        ripescato = await self._lancia(
+            finto, attivo=True, limit=3, tipi=("proroga",), riprova_rifiutati=True)
+        self.assertEqual(ripescato["candidati"], 3)
+        self.assertTrue(ripescato["riprova_rifiutati"])
+
+    def test_gli_esiti_coincidono_con_quelli_di_db(self):
+        """Le tre stringhe sono ricopiate: se divergono, un non-tentativo
+        tornerebbe a passare per rifiuto."""
+        db = carica_modulo("db")
+        self.assertEqual(monitoraggio.ESITO_APPLICATO, db.ESITO_APPLICATO)
+        self.assertEqual(monitoraggio.ESITO_RIFIUTATO, db.ESITO_RIFIUTATO)
+        self.assertEqual(monitoraggio.ESITO_NON_TENTATO, db.ESITO_NON_TENTATO)
+
+    def test_il_booleano_dei_chiamanti_storici_resta_un_rifiuto(self):
+        self.assertEqual(monitoraggio._esito_applicazione(False),
+                         monitoraggio.ESITO_RIFIUTATO)
+        self.assertEqual(monitoraggio._esito_applicazione(True),
+                         monitoraggio.ESITO_APPLICATO)
+
+
+class TestRifiutiNoti(unittest.TestCase):
+    """`eventi_gia_rifiutati`: legge poco, e legge tutto (§6.2)."""
+
+    def _leggi(self, righe):
+        """`eventi_gia_rifiutati` con il `db` vero ma client e schema finti."""
+        db = carica_modulo("db")
+        client = _ClientPostgrest(righe)
+        vero = db.select_eventi
+        strumento = db.Controllo(fornitore_schema=lambda: SCHEMA_EVENTI)
+
+        def _select(**parametri):
+            return vero(client=client, strumento=strumento, **parametri)
+
+        with patch.object(db, "select_eventi", _select):
+            return monitoraggio.eventi_gia_rifiutati(), client
+
+    def test_si_chiede_una_colonna_sola(self):
+        # La lettura parte a ogni lancio, anche in `--dry-run`: portarsi
+        # dietro `valore_dopo`, `citazione` e il `gate` jsonb di duemila righe
+        # per estrarre un intero era la parte piu' cara del comando.
+        _, client = self._leggi([{"id": 1, "riferisce_a": 7}])
+        self.assertEqual(sorted(client.colonne.split(",")), ["id", "riferisce_a"])
+        self.assertNotIn("valore_dopo", client.colonne)
+        self.assertNotIn("citazione", client.colonne)
+        self.assertNotIn("gate", client.colonne)
+
+    def test_oltre_le_mille_righe_la_lista_resta_completa(self):
+        # `TETTO_RIFIUTI_NOTI` e' 2 000 e il tetto del server e' 1 000: con una
+        # `.limit(2000)` gli eventi bloccati dal 1 001esimo in poi sparivano
+        # dalla lista e tornavano a riconsumare il blocco a ogni lancio.
+        righe = [{"id": i, "riferisce_a": 100_000 + i} for i in range(1, 1501)]
+        noti, client = self._leggi(righe)
+        self.assertEqual(len(noti), 1500)
+        self.assertIn(100_000 + 1500, noti)
+        # Due pagine, la seconda con il salto: i builder di postgrest
+        # accumulano i parametri, quindi ogni pagina e' una query nuova.
+        self.assertEqual([p[0] for p in client.pagine], [0, 1000])
+
+    def test_il_troncamento_al_tetto_si_dichiara(self):
+        # Il tetto e' l'unico limite dichiarato: se morde, la lista e' una
+        # FETTA e gli eventi che ne restano fuori tornano in coda per sempre.
+        # Non poterlo sapere e' peggio del troncamento.
+        righe = [{"id": i, "riferisce_a": 100_000 + i}
+                 for i in range(1, monitoraggio.TETTO_RIFIUTI_NOTI + 200)]
+        registro = MagicMock()
+        with patch.object(monitoraggio, "logger", registro):
+            noti, _ = self._leggi(righe)
+        self.assertEqual(len(noti), monitoraggio.TETTO_RIFIUTI_NOTI)
+        detti = [a for chiamata in registro.warning.call_args_list
+                 for a in chiamata.args]
+        self.assertIn(monitoraggio.ALLARME_RIFIUTI_TRONCATI, detti)
 
 
 # --- contatori del giro e allarmi nel riepilogo ------------------------------

@@ -580,9 +580,15 @@ async def run_archivia_processed(
         # qui si dichiara nel riepilogo, cosi' chi legge `pipeline_run` vede
         # perche' il giro si e' fermato.
         riepilogo["saltato"] = degradato
-    _scrivi_run(step, riepilogo, tempo=time.monotonic() - avvio)
-    logger.info("[{}] {}", STEP_PROCESSED,
-                {k: v for k, v in riepilogo.items() if k != "ids_lavorabili"})
+    # `ids_lavorabili` resta nel riepilogo di ritorno e nella riga di log che li
+    # elenca qui sopra («da lavorare»), ma **non** in `pipeline_run.contatori`:
+    # il `--limit` non lo tocca (le righe lavorabili non consumano
+    # un'archiviazione), quindi e' un elenco che cresce con il corpus e che ogni
+    # giro ricopierebbe dentro il jsonb della telemetria. A chi legge
+    # `pipeline_run` serve `lavorabili`, che e' il loro numero, e quello resta.
+    senza_ids = {k: v for k, v in riepilogo.items() if k != "ids_lavorabili"}
+    _scrivi_run(step, senza_ids, tempo=time.monotonic() - avvio)
+    logger.info("[{}] {}", STEP_PROCESSED, senza_ids)
     return riepilogo
 
 
@@ -639,6 +645,13 @@ def _da_ripulire(
     della scansione. Le righe con payload vuoto si contano in `saltate` e non
     consumano il `--limit`; `attraversate` dice quante ne sono state guardate.
     """
+    # `--limit 0` e' un limite, ed e' quello che un operatore mette per non
+    # toccare niente (la convenzione e' scritta in `db._pagina`). Il
+    # controllo del limite sta DOPO l'append, quindi senza questa uscita un
+    # giro da zero righe ne lavorava una — e con `--attivo` era una
+    # scrittura vera.
+    if limit is not None and int(limit) <= 0:
+        return []
     def _leggi(**filtri: Any) -> Sequence[Mapping[str, Any]]:
         from . import db
         return db.select_bandi_pubblicati_contenuto(**filtri)
@@ -681,6 +694,13 @@ def _da_archiviare(
     prosegue, cosi' `--limit 100` significa «cento archiviazioni» e l'elenco
     dei lavorabili copre finalmente tutto il corpus.
     """
+    # `--limit 0` e' un limite, ed e' quello che un operatore mette per non
+    # toccare niente (la convenzione e' scritta in `db._pagina`). Il
+    # controllo del limite sta DOPO l'append, quindi senza questa uscita un
+    # giro da zero righe ne lavorava una — e con `--attivo` era una
+    # scrittura vera.
+    if limit is not None and int(limit) <= 0:
+        return []
     raccolte: list[dict[str, Any]] = []
     for pagina in _pagine(righe, _leggi_processed, offset=offset, passo=STEP_PROCESSED):
         for riga in pagina:

@@ -764,6 +764,141 @@ class TestRunRigenera(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(esito["doppioni"], 1)
         self.assertEqual(esito["segnalati"], 0)
 
+    async def test_un_residuo_senza_riscrittore_non_consuma_il_limite(self):
+        """L'evento che nessuno strumento di questo lancio puo' chiudere.
+
+        La data vecchia resta in una frase **senza parola di ruolo**: la
+        sostituzione deterministica non la tocca per disegno e il gate finale
+        respinge tutto, payload vuoto. Solo il riscrittore potrebbe togliere
+        quel residuo, e dalla riga di comando il riscrittore non c'e'.
+
+        Prima, l'evento era «lavoro»: si prendeva un posto del `--limit`,
+        rigenerava a vuoto (`candidati: 1, rigenerati: 1, scritti: 0`) e — non
+        essendo `bando_evento` mai toccata da questo comando — tornava in testa
+        alla selezione a ogni lancio, per sempre.
+        """
+        bando = _bando(contenuto=_contenuto(
+            "Le domande vanno presentate entro il 1 dicembre 2026.",
+            "Il bando e' stato illustrato in un incontro il 6 ottobre 2026.",
+        ))
+        scritture = []
+        esito = await rigenera.run_rigenera(
+            attivo=True, limit=1, righe=[bando], eventi=[_evento()],
+            scrivi=_scrivi(scritture))
+        self.assertEqual(scritture, [])
+        self.assertEqual(esito["candidati"], 0)
+        self.assertEqual(esito["rigenerati"], 0)
+        self.assertEqual(esito["saltati"], 1)
+        # Il riepilogo lo dice: non e' una riga gia' a posto, e' una riga che
+        # aspetta il modello.
+        self.assertEqual(esito["senza_riscrittore"], 1)
+
+    async def test_sostituzione_e_residuo_insieme_restano_fuori_dal_limite(self):
+        # Il caso misto: una frase di ruolo (sostituibile) e una di contesto
+        # (residuo). Il gate finale respinge **anche** la sostituzione buona,
+        # quindi non si scrive niente nemmeno qui: se consumasse il limite
+        # sarebbe lo stesso giro a vuoto.
+        bando = _bando(contenuto=_contenuto(
+            "Le domande vanno presentate entro il 6 ottobre 2026.",
+            "Il bando e' stato illustrato in un incontro il 6 ottobre 2026.",
+        ))
+        scritture = []
+        esito = await rigenera.run_rigenera(
+            attivo=True, limit=1, righe=[bando], eventi=[_evento()],
+            scrivi=_scrivi(scritture))
+        self.assertEqual(scritture, [])
+        self.assertEqual(esito["candidati"], 0)
+        self.assertEqual(esito["senza_riscrittore"], 1)
+
+    async def test_gli_irrisolvibili_non_rubano_il_limite_ai_risolvibili(self):
+        """L'effetto composto: due eventi irrisolvibili davanti a uno risolvibile.
+
+        Gli eventi si scorrono per id e nessuna scrittura di questo comando li
+        fa uscire dalla selezione: con `--limit 1` i due davanti riempivano il
+        limite a ogni lancio e il terzo non veniva mai raggiunto.
+        """
+        fermo = _contenuto(
+            "Le domande vanno presentate entro il 1 dicembre 2026.",
+            "Il bando e' stato illustrato in un incontro il 6 ottobre 2026.",
+        )
+        righe = [_bando(id=1, contenuto=fermo), _bando(id=2, contenuto=fermo),
+                 _bando(id=3)]
+        eventi = [_evento(id=1, bando_id=1), _evento(id=2, bando_id=2),
+                  _evento(id=3, bando_id=3)]
+        scritture = []
+        esito = await rigenera.run_rigenera(
+            attivo=True, limit=1, righe=righe, eventi=eventi,
+            scrivi=_scrivi(scritture))
+        self.assertEqual([b for b, _ in scritture], [3])
+        self.assertEqual(esito["scritti"], 1)
+        self.assertEqual(esito["candidati"], 1)
+        self.assertEqual(esito["senza_riscrittore"], 2)
+
+    async def test_con_il_riscrittore_il_residuo_e_lavoro(self):
+        # L'altra faccia: quando il riscrittore c'e' davvero, il residuo torna
+        # a essere lavoro e il passo 3 di §6.2 parte.
+        bando = _bando(contenuto=_contenuto(
+            "Le domande vanno presentate entro il 1 dicembre 2026.",
+            "Il bando e' stato illustrato in un incontro il 6 ottobre 2026.",
+        ))
+
+        async def riscrittore(paragrafo, vecchia, nuova):
+            return paragrafo.replace("6 ottobre 2026", "1 dicembre 2026")
+
+        scritture = []
+        esito = await rigenera.run_rigenera(
+            attivo=True, limit=1, righe=[bando], eventi=[_evento()],
+            riscrittore=riscrittore, scrivi=_scrivi(scritture))
+        self.assertEqual(esito["senza_riscrittore"], 0)
+        self.assertEqual(esito["candidati"], 1)
+        self.assertEqual(esito["scritti"], 1)
+        testo = _testo(scritture[0][1]["contenuto"])
+        self.assertNotIn("6 ottobre 2026", testo)
+
+    async def test_un_blocco_di_un_altro_autore_non_e_un_doppione(self):
+        """`elaborazione_bloccata` non e' firmata solo da questo comando.
+
+        Lo scrivono anche il monitor dopo cinque controlli falliti
+        (`origine='worker'`) e la RPC `bando_applica_evento` sui rifiuti di data
+        (`origine='pipeline'`, `campo='date'`). Prendendoli per nostri, un bando
+        col contenuto malformato **e** la pagina irraggiungibile non veniva
+        segnalato mai: «candidati: 9, segnalati: 0, doppioni: 9», che si legge
+        «gia' fatto».
+        """
+        eventi_per_bando = {
+            # Solo il monitor: la nostra segnalazione non c'e' ancora.
+            6: [{"id": 11, "bando_id": 6, "tipo": "elaborazione_bloccata",
+                 "origine": "worker", "campo": None,
+                 "valore_dopo": {"motivo": "5 controlli falliti"}}],
+            # La nostra, in mezzo a una del monitor: e' un doppione vero.
+            7: [{"id": 12, "bando_id": 7, "tipo": "elaborazione_bloccata",
+                 "origine": "worker", "campo": "allegati", "valore_dopo": {}},
+                {"id": 13, "bando_id": 7, "tipo": "elaborazione_bloccata",
+                 "origine": "pipeline", "campo": "contenuto", "valore_dopo": {}}],
+            # Solo il rifiuto della RPC (migrazione 04): non e' nostro.
+            8: [{"id": 14, "bando_id": 8, "tipo": "elaborazione_bloccata",
+                 "origine": "pipeline", "campo": "date", "riferisce_a": 99,
+                 "valore_dopo": {"motivo": "data_pubblicazione > data_scadenza"}}],
+        }
+
+        def _eventi(**parametri):
+            return list(eventi_per_bando.get(parametri.get("bando_id"), ()))
+
+        finto = MagicMock()
+        finto.select_eventi.side_effect = _eventi
+        finto.registra_evento.return_value = True
+        rotte = [_bando(id=i, contenuto='{"sections": [') for i in (6, 7, 8)]
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True):
+            esito = await rigenera.run_rigenera(
+                malformati=True, attivo=True, righe=rotte)
+        self.assertEqual(esito["candidati"], 3)
+        self.assertEqual(esito["segnalati"], 2)
+        self.assertEqual(esito["doppioni"], 1)
+        segnalati = [c.args[0].get("bando_id")
+                     for c in finto.registra_evento.call_args_list]
+        self.assertEqual(segnalati, [6, 8])
+
     async def test_lotto_nomina_la_riga_di_pipeline_run(self):
         esito = await rigenera.run_rigenera(lotto="L9", righe=[], eventi=[])
         self.assertEqual(esito["step"], "backfill:L9")

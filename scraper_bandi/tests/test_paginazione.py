@@ -27,9 +27,13 @@ un difetto che nessun conteggio scoprirebbe: i builder di postgrest accumulano
 i parametri con `add`, quindi riusare lo stesso builder per due pagine
 produrrebbe `?limit=1000&limit=1000&offset=1000&offset=2000`.
 """
+import sys
 import unittest
+import unittest.mock
+from datetime import date
+from types import SimpleNamespace
 
-from tests.supporto import carica_modulo
+from tests.supporto import ALIAS, carica_modulo
 
 db = carica_modulo("db")
 
@@ -283,3 +287,100 @@ class TestABlocchi(unittest.TestCase):
 
 if __name__ == "__main__":    # pragma: no cover
     unittest.main()
+
+
+class TestLimiteZero(unittest.TestCase):
+    """`--limit 0` deve essere un no-op, in tutti i comandi che scorrono.
+
+    La convenzione e' scritta in `db._pagina`: «uno zero e' un limite, ed e'
+    quello che un operatore mette per non toccare niente». Sette selezioni la
+    contraddicevano, perche' controllavano il limite **dopo** l'append: con
+    `--limit 0 --attivo` il giro lavorava una riga e la scriveva davvero.
+
+    Misurato prima della correzione: `link-verifica --limit 0 --attivo` faceva
+    una HEAD e una scrittura su `bando_link`; `rigenera --malformati --limit 0
+    --attivo` scriveva una riga in `bando_evento`.
+    """
+
+    SELEZIONI = (
+        ("backfill", "_da_ripulire"),
+        ("backfill", "_da_archiviare"),
+        ("rigenera", "_malformati_da_segnalare"),
+        ("rigenera", "_da_rigenerare"),
+        ("fonte_ufficiale", "_da_risolvere"),
+        ("fonte_ufficiale", "_da_leggere"),
+        ("fonte_ufficiale", "_da_verificare"),
+    )
+
+    def test_ogni_selezione_esce_prima_di_leggere(self):
+        """Con `limit=0` non si legge nulla: nemmeno la prima pagina.
+
+        Si contano le letture invece di far sollevare il `db` finto: gli
+        scorrimenti catturano `Exception` intorno alla lettura (e' il ripiego
+        che tiene in piedi il giro su un DB non migrato), quindi un finto che
+        solleva verrebbe zittito e il test passerebbe anche senza la guardia.
+        """
+        letture: list[tuple] = []
+
+        def _registra(*argomenti, **parametri):
+            letture.append((argomenti, parametri))
+            return []
+
+        for modulo_nome, funzione in self.SELEZIONI:
+            with self.subTest(selezione=f"{modulo_nome}.{funzione}"):
+                letture.clear()
+                modulo = carica_modulo(modulo_nome)
+                bersaglio = getattr(modulo, funzione)
+                finto = SimpleNamespace(
+                    select_bandi_pubblicati_contenuto=_registra,
+                    select_processed_da_archiviare=_registra,
+                    select_bandi_da_risolvere=_registra,
+                    select_link_da_verificare=_registra,
+                    select_eventi=_registra,
+                    select_controlli=_registra,
+                    controllo=SimpleNamespace(ha=lambda *_: True,
+                                              tabella_esiste=lambda *_: True),
+                )
+                # Tre innesti, non uno: chi fa `from . import db` dentro la
+                # funzione non vede l'attributo del modulo, e chi lo importa in
+                # testa non vede `sys.modules`. Senza tutti e tre, il test
+                # passerebbe anche senza la guardia — perche' il `db` vero
+                # fallirebbe da solo sull'URL finto e tornerebbe zero righe.
+                with unittest.mock.patch.dict(
+                        sys.modules, {f"{ALIAS}.db": finto}), \
+                        unittest.mock.patch.object(
+                            sys.modules[ALIAS], "db", finto, create=True), \
+                        unittest.mock.patch.object(modulo, "db", finto, create=True):
+                    esito = self._chiama(bersaglio, funzione)
+                righe = esito[0] if isinstance(esito, tuple) else esito
+                self.assertEqual(list(righe), [])
+                self.assertEqual(letture, [],
+                                 "con --limit 0 la selezione ha letto dal DB")
+
+    @staticmethod
+    def _chiama(bersaglio, nome):
+        """Ogni selezione ha parametri suoi: qui solo quelli obbligatori."""
+        if nome == "_da_ripulire":
+            return bersaglio(None, None, limit=0, offset=0, tabella_domini=None,
+                             conto={"saltate": 0, "attraversate": 0})
+        if nome == "_da_archiviare":
+            return bersaglio(None, limit=0, offset=0, oggi=date(2026, 9, 23),
+                             conto={"saltate": 0, "attraversate": 0}, da_lavorare=[])
+        if nome == "_malformati_da_segnalare":
+            return bersaglio(None, limit=0, offset=0,
+                             contatori={"attraversati": 0, "saltati": 0})
+        if nome == "_da_rigenerare":
+            return bersaglio(None, None, limit=0, offset=0,
+                             contatori={"attraversati": 0, "saltati": 0,
+                                        "senza_riscrittore": 0})
+        if nome == "_da_risolvere":
+            return bersaglio(limit=0, offset=0, modo="nuovi", solo_oe=False,
+                             solo_in_verifica=False, forza=False,
+                             oggi=date(2026, 9, 23),
+                             contatori=SimpleNamespace(saltate=0))
+        if nome == "_da_leggere":
+            return bersaglio(limit=0, offset=0, modo="nuovi", solo_oe=False,
+                             bando_id=None, forza=False,
+                             contatori={"saltate": 0, "da_scaricare": 0})
+        return bersaglio(limit=0, offset=0, bando_id=None, oggi=date(2026, 9, 23),
+                         contatori={"saltate": 0})

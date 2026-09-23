@@ -1972,8 +1972,10 @@ def select_eventi(
     applicato: bool | None = None,
     verificato: bool | None = None,
     bando_id: Any = None,
+    con_riferimento: bool | None = None,
     limit: int | None = None,
     offset: int = 0,
+    colonne: Sequence[str] | None = None,
     client: Any | None = None,
     strumento: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -1990,6 +1992,25 @@ def select_eventi(
     Serve a chi deve superare le righe su cui non c'e' lavoro da fare: un
     evento che la RPC rifiuta resta `applicato=false` all'id piu' basso e
     riconsumerebbe il blocco a ogni lancio.
+
+    `con_riferimento` filtra su `riferisce_a`: `True` restituisce solo le righe
+    che ne hanno uno. Serve a chi legge gli `elaborazione_bloccata` cercando le
+    **annotazioni di rifiuto**, che sono le sole a portarlo: quel tipo lo
+    scrivono anche il monitor dopo cinque fallimenti, i gemelli e
+    `rigenera --malformati`, tutti con `riferisce_a` NULL, e senza il filtro
+    consumerebbero il tetto della lettura. Con l'ordine per `id` crescente
+    cadrebbero fuori le annotazioni **piu' recenti**, cioe' proprio quelle che
+    servono.
+
+    `colonne` sostituisce l'elenco predefinito, come in `select_controlli`: chi
+    cerca una sola colonna non deve portarsi dietro `valore_dopo`, `citazione`
+    e il `gate` jsonb dell'intera tabella. `eventi_gia_rifiutati` legge cosi'
+    i soli `riferisce_a`, e lo fa a ogni lancio di `applica-eventi`.
+
+    Oltre le mille righe si **scorre**: il tetto di PostgREST taglia in
+    silenzio (`PAGINA_POSTGREST`), quindi una `limit(2000)` restituiva 1 000
+    righe come se fossero tutte — e una lista di «eventi gia' rifiutati»
+    incompleta rimette in coda proprio gli eventi che non si possono applicare.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste(TABELLA_EVENTO):
@@ -2002,9 +2023,12 @@ def select_eventi(
         logger.warning(
             "[db] {} senza colonna `verificato`: nessun evento restituito", TABELLA_EVENTO)
         return []
-    colonne = _colonne_disponibili(TABELLA_EVENTO, COLONNE_EVENTO, strumento)
-    try:
-        query = _client(client).table(TABELLA_EVENTO).select(colonne)
+    scelte = _colonne_disponibili(
+        TABELLA_EVENTO, tuple(colonne) if colonne else COLONNE_EVENTO, strumento)
+
+    def _costruisci() -> Any:
+        """Una query **nuova** a ogni pagina: i builder accumulano con `add`."""
+        query = _client(client).table(TABELLA_EVENTO).select(scelte)
         if bando_id is not None:
             query = query.eq("bando_id", bando_id)
         if tipi:
@@ -2013,6 +2037,9 @@ def select_eventi(
             query = query.eq("applicato", applicato)
         if verificato is not None:
             query = query.eq("verificato", verificato)
+        if con_riferimento is not None and strumento.ha(TABELLA_EVENTO, "riferisce_a"):
+            query = (query.not_.is_("riferisce_a", "null") if con_riferimento
+                     else query.is_("riferisce_a", "null"))
         if dal is not None:
             giorno = dal.isoformat() if hasattr(dal, "isoformat") else str(dal)
             if hasattr(query, "or_"):
@@ -2020,8 +2047,20 @@ def select_eventi(
                     f"data_evento.gte.{giorno},rilevato_at.gte.{giorno}")
             else:                                        # pragma: no cover - client datato
                 query = query.gte("rilevato_at", giorno)
-        query = query.order("id")
-        return list(_pagina(query, limit, offset).execute().data or [])
+        return query.order("id")
+
+    salto = max(0, int(offset or 0))
+    try:
+        if limit is not None and int(limit) <= PAGINA_POSTGREST:
+            # Una pagina sola e niente scorrimento: e' il caso di gran lunga
+            # piu' frequente (`--limit`, le pagine di `_da_applicare`) e
+            # l'unico in cui `offset` significa «salta le prime N e basta».
+            return list(_pagina(_costruisci(), limit, salto).execute().data or [])
+        return _scorri(
+            lambda quanto, avanzamento: _pagina(
+                _costruisci(), quanto, salto + avanzamento),
+            tetto=int(limit) if limit is not None else None,
+        )
     except Exception as e:
         logger.warning("[db] select_eventi fallita: {}", e)
         return []
@@ -2229,34 +2268,67 @@ def select_processed_da_archiviare(
         return []
 
 
-def applica_evento(
+#: I tre esiti di un'applicazione. Vanno distinti perche' da fuori si
+#: assomigliano — l'evento resta `applicato=false` in tutti e tre i casi — ma
+#: **solo uno e' un rifiuto**. «La RPC non c'era» e «la chiamata e' fallita»
+#: sono un non-tentativo, e annotarli come rifiuto li renderebbe definitivi:
+#: `bando_evento` non concede DELETE nemmeno a `service_role` (migrazione 02) e
+#: il trigger di immutabilita' vieta di cambiare `riferisce_a`. Un solo
+#: `applica-eventi --attivo` lanciato prima della 04 brucerebbe cosi' tutto
+#: l'arretrato dell'ombra, senza modo di recuperarlo.
+ESITO_APPLICATO = "applicato"
+ESITO_RIFIUTATO = "rifiutato"
+ESITO_NON_TENTATO = "non_tentato"
+
+
+def applica_evento_esito(
     evento_id: Any,
     *,
     client: Any | None = None,
     strumento: Any | None = None,
-) -> bool:
-    """RPC `bando_applica_evento`: l'unico punto che riversa un evento nelle colonne.
+) -> str:
+    """RPC `bando_applica_evento`, con l'esito distinto fra rifiuto e non-tentativo.
 
-    Falso — con un log, mai un'eccezione — se la RPC non c'e' ancora (04 non
-    applicata), se l'evento era gia' applicato o se la transizione non e'
-    ammessa. `applica-eventi` conta i falsi e prosegue con il blocco.
+    `ESITO_RIFIUTATO` solo quando la RPC ha risposto `false`, cioe' ha davvero
+    guardato l'evento: transizione non ammessa, date incoerenti, stato che il
+    CHECK non ammette ancora, evento gia' applicato. `ESITO_NON_TENTATO` se la
+    RPC non c'e' (04 non applicata) o se la chiamata e' fallita: nessuno ha
+    giudicato l'evento, e il lancio successivo deve poterlo riprovare.
     """
     strumento = _controllo(strumento)
     if not strumento.rpc_disponibile(RPC_APPLICA_EVENTO):
-        logger.info("[db] RPC {} assente: evento {} non applicato",
+        logger.info("[db] RPC {} assente: evento {} non tentato",
                     RPC_APPLICA_EVENTO, evento_id)
-        return False
+        return ESITO_NON_TENTATO
     try:
         risposta = _client(client).rpc(
             RPC_APPLICA_EVENTO, {"p_evento_id": evento_id}).execute()
     except Exception as e:
         logger.warning("[db] {} sull'evento {} fallita: {}",
                        RPC_APPLICA_EVENTO, evento_id, e)
-        return False
+        return ESITO_NON_TENTATO
     dati = getattr(risposta, "data", None)
     # La funzione ritorna `false` sugli eventi gia' applicati: e' un esito, non
     # un errore, ma non va contato come applicazione.
-    return dati if isinstance(dati, bool) else True
+    if isinstance(dati, bool):
+        return ESITO_APPLICATO if dati else ESITO_RIFIUTATO
+    return ESITO_APPLICATO
+
+
+def applica_evento(
+    evento_id: Any,
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> bool:
+    """Come `applica_evento_esito`, ridotta a un booleano per i chiamanti storici.
+
+    Chi deve decidere se annotare il rifiuto usa la versione con l'esito: qui
+    un non-tentativo e un rifiuto sono indistinguibili, ed e' esattamente la
+    confusione da cui nasce il danno irreversibile descritto sopra.
+    """
+    return applica_evento_esito(
+        evento_id, client=client, strumento=strumento) == ESITO_APPLICATO
 
 
 def archivia_bando(

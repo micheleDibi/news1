@@ -10,6 +10,9 @@ Cosa si verifica:
   - i flag storici `--rerun-enriched`/`--rerun-completed` restano;
   - **ogni sottocomando che scrive** accetta `--dry-run` e `--limit N` (M20);
   - i sottocomandi v11 non ancora implementati non partono in silenzio;
+  - ogni opzione con valore (`--offset`, `--lotto`, `--id`, …) vale **solo sui
+    comandi che la sanno usare**: sugli altri il comando si ferma con exit 2 e
+    un messaggio che la nomina, invece di accettarla e buttarla via;
   - gli exit code 3 (lock occupato) e 4 (tetto raggiunto) nascono solo qui;
   - errori di parsing -> messaggio su stderr ed exit 2, nessun runner chiamato.
 
@@ -390,14 +393,21 @@ class TestComandiV11(_ConRunnerFinti):
             ])
         log.warning.assert_not_called()
 
-    def test_senza_valori_toglie_solo_le_coppie(self):
+    def test_senza_valori_toglie_i_valori_e_tiene_i_nomi(self):
+        # Il VALORE se ne va (nessun flag riconoscerebbe «42»), il NOME resta:
+        # e' il comando a dire quali opzioni con valore accetta, e togliendo
+        # anche il nome `--offset` passava indisturbato su tutti i comandi.
         self.assertEqual(
             cli._senza_valori(("--backlog", "--id", "42", "--forza")),
-            ("--backlog", "--forza"),
+            ("--backlog", "--id", "--forza"),
         )
         # Opzione in coda senza valore: il parsing la rifiutera' comunque, ma
         # qui non deve far saltare un indice.
-        self.assertEqual(cli._senza_valori(("--forza", "--id")), ("--forza",))
+        self.assertEqual(cli._senza_valori(("--forza", "--id")), ("--forza", "--id"))
+        # Il token dopo il nome se ne va anche quando sembra un'opzione: senza,
+        # `--id --attivo` finirebbe due volte sotto gli occhi della guardia,
+        # mentre a rifiutarlo e' gia' `_valore_opzione` con il suo messaggio.
+        self.assertEqual(cli._senza_valori(("--id", "--attivo")), ("--id",))
 
     def test_oe_dettaglio_passa_forza_e_resta_in_ombra(self):
         finto = _modulo_finto("fonte_ufficiale", ingressi=_INGRESSI_FONTE)
@@ -772,6 +782,7 @@ class TestMonitorEOmbra(_ConRunnerFinti):
         finto.run_applica_eventi.assert_awaited_once_with(
             dry_run=True, limit=50, attivo=None,
             dal=date(2026, 9, 1), tipi=("proroga", "rettifica"), offset=0,
+            riprova_rifiutati=False,
         )
         log.warning.assert_not_called()
 
@@ -779,7 +790,23 @@ class TestMonitorEOmbra(_ConRunnerFinti):
         _, finto, _ = self._monitor(["applica-eventi"])
         finto.run_applica_eventi.assert_awaited_once_with(
             dry_run=False, limit=None, attivo=None, dal=None, tipi=(), offset=0,
+            riprova_rifiutati=False,
         )
+
+    def test_riprova_rifiutati_arriva_al_comando(self):
+        """La via di rientro: le annotazioni dei rifiuti non si cancellano.
+
+        `bando_evento` non concede DELETE nemmeno alla service-role key
+        (migrazione 02) e `riferisce_a` e' immutabile: senza questo flag un
+        evento annotato per sbaglio resterebbe fuori dalla coda per sempre.
+        """
+        _, finto, log = self._monitor([
+            "applica-eventi", "--riprova-rifiutati", "--limit", "10"])
+        finto.run_applica_eventi.assert_awaited_once_with(
+            dry_run=False, limit=10, attivo=None, dal=None, tipi=(), offset=0,
+            riprova_rifiutati=True,
+        )
+        log.warning.assert_not_called()
 
     def test_dal_malformata_exit_2(self):
         # Una data illeggibile passata avanti come stringa diventerebbe
@@ -900,6 +927,156 @@ class TestBackfill(_ConRunnerFinti):
         log.error.assert_not_called()
 
 
+#: Un valore valido per ogni opzione con valore del catalogo: serve a provarle
+#: tutte su tutti i comandi senza inciampare nella validazione del valore
+#: (`--campione 0` e `--dal 01/09/2026` sono rifiutati per conto loro).
+_VALORE_VALIDO = {
+    "--id": "42", "--lotto": "L7", "--enti": "enti.xlsx", "--campione": "100",
+    "--tipo": "proroga", "--dal": "2026-09-01", "--offset": "800",
+}
+
+#: Quali opzioni con valore accetta ogni sottocomando v11. `--offset` ce l'hanno
+#: i **sette** che scorrono una selezione a pagine; sugli altri era accettato e
+#: buttato via in silenzio, con exit 0 e stderr vuoto, perche' la guardia delle
+#: «opzioni non riconosciute» escludeva l'intero catalogo invece delle sole
+#: opzioni del comando.
+_OPZIONI_AMMESSE_DI = {
+    "risolvi-fonte": {"--id", "--lotto", "--offset"},
+    "oe-dettaglio": {"--id", "--offset"},
+    "link-verifica": {"--id", "--offset"},
+    "fondi-doppioni": set(),
+    "monitor": set(),
+    "report-ombra": {"--campione", "--tipo", "--dal"},
+    "applica-eventi": {"--dal", "--tipo", "--offset"},
+    "pulisci-contenuto": {"--lotto", "--offset"},
+    "rigenera": {"--lotto", "--offset"},
+    "archivia-processed": {"--lotto", "--offset"},
+    "domini": {"--enti"},
+}
+
+#: comando -> (modulo finto, funzione di ingresso) dei sottocomandi v11.
+_INGRESSO_DI = {
+    "risolvi-fonte": ("fonte_ufficiale", "run"),
+    "oe-dettaglio": ("fonte_ufficiale", "run_oe_dettaglio"),
+    "link-verifica": ("fonte_ufficiale", "run_link_verifica"),
+    "fondi-doppioni": ("fonte_ufficiale", "run_fondi_doppioni"),
+    "domini": ("fonte_ufficiale", "run_domini_import"),
+    "monitor": ("monitoraggio", "run"),
+    "report-ombra": ("monitoraggio", "run_report_ombra"),
+    "applica-eventi": ("monitoraggio", "run_applica_eventi"),
+    "rigenera": ("rigenera", "run_rigenera"),
+    "pulisci-contenuto": ("backfill", "run_pulisci_contenuto"),
+    "archivia-processed": ("backfill", "run_archivia_processed"),
+}
+
+#: I sette che scorrono la selezione a pagine, e che l'offset lo usano davvero.
+_CON_OFFSET = tuple(
+    cmd for cmd, ammesse in _OPZIONI_AMMESSE_DI.items() if "--offset" in ammesse
+)
+
+
+def _argv_con(cmd: str, opzione: str) -> list[str]:
+    """`cmd --dry-run [--import] <opzione> <valore valido>`."""
+    argv = [cmd, "--dry-run"]
+    if cmd == "domini":
+        # `--import` e' l'unica modalita' prevista: senza, il comando si ferma
+        # per un altro motivo e la prova non misurerebbe piu' niente.
+        argv.append("--import")
+    return argv + [opzione, _VALORE_VALIDO[opzione]]
+
+
+class TestOpzioniConValorePerComando(_ConRunnerFinti):
+    """`--offset` (e le altre opzioni con valore) valgono solo dove servono.
+
+    `OPZIONI_CON_VALORE` era un insieme unico e globale e `_esegui_v11` toglieva
+    dagli «ignorati» qualunque token vi comparisse: `fondi-doppioni --dry-run
+    --offset 800` usciva 0 con stderr vuoto e con `{"dry_run": True, "limit":
+    None, "attivo": None}`, cioe' senza offset. Un operatore che lancia i
+    blocchi (`--offset 0`, `800`, `1600`) credeva di avanzare e ripeteva lo
+    stesso giro.
+    """
+
+    def _lancia(self, argv: list[str]):
+        """main(argv) con i moduli v11 finti. Ritorna (codice, stderr, ingresso)."""
+        finti = {
+            nome: _modulo_finto(nome, ingressi=ingressi)
+            for nome, ingressi in _MODULI_V11.items()
+        }
+        registro = {f"{ALIAS}.{nome}": modulo for nome, modulo in finti.items()}
+        stderr = io.StringIO()
+        with patch.dict(sys.modules, registro), patch.object(cli, "logger", MagicMock()):
+            with contextlib.redirect_stderr(stderr):
+                codice = cli.main(argv)
+        modulo, funzione = _INGRESSO_DI[argv[0]]
+        return codice, stderr.getvalue(), getattr(finti[modulo], funzione)
+
+    def _rifiuta_offset(self, cmd: str):
+        """Il comando si ferma su `--offset` e il suo runner non parte."""
+        codice, stderr, ingresso = self._lancia(_argv_con(cmd, "--offset"))
+        self.assertEqual(codice, cli.EXIT_OPZIONI)
+        # Il messaggio dice QUALE opzione non conosce: «opzioni non
+        # riconosciute» da solo non basta a chi ha appena scritto tre blocchi.
+        self.assertIn("--offset", stderr)
+        self.assertIn("opzioni non riconosciute", stderr)
+        # E il valore non diventa un secondo token ignoto: 800 non compare.
+        self.assertNotIn("800", stderr)
+        ingresso.assert_not_awaited()
+
+    def test_fondi_doppioni_rifiuta_offset(self):
+        # Legge il corpus intero e confronta le righe fra loro: impaginare
+        # spezzerebbe le coppie. Il runbook lo dice gia' («non lo ha e non deve
+        # averlo»), la riga di comando no.
+        self._rifiuta_offset("fondi-doppioni")
+
+    def test_monitor_rifiuta_offset(self):
+        # La coda del monitor la ordina la cadenza, non un cursore dell'operatore.
+        self._rifiuta_offset("monitor")
+
+    def test_report_ombra_rifiuta_offset(self):
+        # Il blocco lo sposta `--dal`, che e' un'altra cosa: con `--offset`
+        # accettato e ignorato la misura restava sugli stessi eventi.
+        self._rifiuta_offset("report-ombra")
+
+    def test_domini_rifiuta_offset(self):
+        # Ricompone ogni volta l'intera whitelist: non c'e' niente da scorrere.
+        self._rifiuta_offset("domini")
+
+    def test_i_sette_comandi_a_blocchi_continuano_ad_accettare_offset(self):
+        self.assertEqual(len(_CON_OFFSET), 7)
+        for cmd in _CON_OFFSET:
+            with self.subTest(cmd=cmd):
+                codice, stderr, ingresso = self._lancia(_argv_con(cmd, "--offset"))
+                self.assertEqual(codice, cli.EXIT_OK, stderr)
+                self.assertEqual(ingresso.await_args.kwargs["offset"], 800)
+
+    def test_ogni_opzione_con_valore_vale_solo_dove_serve(self):
+        # La matrice intera: 11 comandi x 7 opzioni. E' la difesa contro il
+        # ritorno dell'insieme globale, e prende anche i casi minori dello
+        # stesso difetto (`oe-dettaglio --lotto L2`, che il comando non
+        # conosce e che manderebbe la riga di telemetria nel passo sbagliato).
+        for cmd, ammesse in _OPZIONI_AMMESSE_DI.items():
+            for opzione in sorted(cli.OPZIONI_CON_VALORE):
+                with self.subTest(cmd=cmd, opzione=opzione):
+                    codice, stderr, _ = self._lancia(_argv_con(cmd, opzione))
+                    if opzione in ammesse:
+                        self.assertEqual(codice, cli.EXIT_OK, stderr)
+                    else:
+                        self.assertEqual(codice, cli.EXIT_OPZIONI, stderr)
+                        self.assertIn(opzione, stderr)
+
+    def test_la_matrice_copre_i_comandi_v11_e_sta_nel_catalogo(self):
+        # `salute` non passa da `_esegui_v11` (vedi TestSalute); tutti gli
+        # altri sottocomandi v11 devono stare nella matrice, altrimenti un
+        # comando nuovo potrebbe rinascere con l'insieme globale.
+        self.assertEqual(set(_OPZIONI_AMMESSE_DI), _COMANDI_V11 - {"salute"})
+        dichiarate: set[str] = set()
+        for ammesse in _OPZIONI_AMMESSE_DI.values():
+            dichiarate |= ammesse
+        # Nessun refuso nei sette insiemi per comando, e nessuna opzione del
+        # catalogo che non sia ammessa da nessuno: sarebbe ignorata ovunque.
+        self.assertEqual(dichiarate, set(cli.OPZIONI_CON_VALORE))
+
+
 class TestSalute(_ConRunnerFinti):
     def _stato(self, **kwargs):
         telemetria = carica_modulo("telemetria")
@@ -930,6 +1107,22 @@ class TestSalute(_ConRunnerFinti):
         self.assertEqual(codice, 1)
         self.assertEqual(dati["exit_code"], 1)
         self.assertEqual(len(dati["allarmi"]), 1)
+
+    def test_offset_su_salute_e_avvisato_non_silenzioso(self):
+        # `salute` non passa da `_esegui_v11`: sta sul percorso storico di
+        # `discover` e degli altri quattro step, che avvisano e proseguono. Non
+        # scorre nessuna selezione, quindi un `--offset` non puo' fargli
+        # credere di aver avanzato un blocco; ma non deve nemmeno sparire in
+        # silenzio, ed e' questo che il test tiene fermo (il warning finisce su
+        # stderr: `logger.py` manda li' tutto da INFO in su).
+        stdout = io.StringIO()
+        with patch.object(cli, "_stato_salute", return_value=self._stato()), \
+                contextlib.redirect_stdout(stdout):
+            codice, _, _, log = self.esegui(["salute", "--offset", "800"])
+        self.assertEqual(codice, 0)
+        avvisi = [c.args for c in log.warning.call_args_list]
+        self.assertEqual(len(avvisi), 1)
+        self.assertIn("--offset", avvisi[0][-1])
 
     def test_salute_non_tocca_ne_db_ne_rete(self):
         # `_stato_salute` legge solo le impostazioni: se toccasse il DB, questo

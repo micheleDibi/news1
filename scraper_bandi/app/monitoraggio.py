@@ -677,6 +677,22 @@ class FonteDatiSupabase(FonteDati):
         «prima» quindi ogni controllo in variante G2', nessun 304 possibile, e
         soprattutto `controlli_falliti` sempre 1 — la promessa «cinque
         fallimenti e il bando esce dalla coda» non si avverava mai.
+
+        **`volatilita` non si rilegge**, e non e' una dimenticanza. Il
+        moltiplicatore ha due direzioni: un evento verificato lo abbassa
+        (`VOLATILITA_EVENTO`), tre controlli senza diff lo rialzano
+        (`VOLATILITA_CALMA`). La seconda non funziona: `controlli_senza_diff`
+        **non esiste** in `bando_controllo` (02:1138-1163), `aggiorna_controllo`
+        la scarta in silenzio e alla rilettura vale sempre 0, cioe' sotto la
+        soglia di `CONTROLLI_PER_CALMA`. Rileggere la sola volatilita' fa
+        comporre `m *= 0,7` giro dopo giro fino al pavimento `VOLATILITA_MIN`,
+        e nulla puo' piu' riportarla su: ogni bando cambiato due volte
+        resterebbe controllato al doppio della frequenza **per sempre**, cioe'
+        piu' fetch e piu' classificazioni sul tetto giornaliero in dollari.
+        Senza la rilettura si riparte da 1,0 a ogni giro e il peggio e' 0,7.
+        Il giorno in cui `controlli_senza_diff` sara' in tabella (una
+        migrazione che qui non si scrive), la colonna torna in questo elenco e
+        la memoria della volatilita' ridiventa corretta.
         """
         if not scelte:
             return scelte
@@ -684,7 +700,7 @@ class FonteDatiSupabase(FonteDati):
         try:
             calde = db.select_controlli(
                 [r.get("id") for r in scelte],
-                colonne=COLONNE_CONTROLLO + ("volatilita",),
+                colonne=COLONNE_CONTROLLO,
                 client=self._client, strumento=self._adattatore())
         except Exception as e:                            # pragma: no cover - ripiego
             # Degradare qui significa «giro senza memoria», che e' il
@@ -1343,6 +1359,13 @@ def _colonne_invariato(
     e' cio' che permette di dire *quale* pezzo di pagina e' cambiato. A DB e
     non in memoria, perche' devono sopravvivere al redeploy (§6.2).
     """
+    # ATTENZIONE: `controlli_senza_diff` **non esiste** in `bando_controllo`
+    # (02:1138-1163). `aggiorna_controllo` la scarta in silenzio, quindi alla
+    # rilettura vale 0 e il fattore calma (`CONTROLLI_PER_CALMA` = 3) non si
+    # applica mai. Si scrive lo stesso, cosi' il giorno in cui la colonna
+    # arrivera' il conteggio sara' gia' giusto — ma finche' non arriva la
+    # volatilita' puo' solo scendere, ed e' il motivo per cui `_con_memoria`
+    # NON la rilegge: vedi li'.
     senza_diff = 0 if cambiato else int(riga.get("controlli_senza_diff") or 0) + 1
     colonne: dict[str, Any] = {
         "ultimo_controllo_at": adesso.isoformat(),
@@ -1358,8 +1381,18 @@ def _colonne_invariato(
         colonne["prossimo_controllo_at"] = prossimo.isoformat()
     if impronta:
         colonne["impronta_contenuto"] = impronta
-    if cambiato:
-        colonne["ultimo_cambiamento_at"] = adesso.isoformat()
+    # `ultimo_cambiamento_at` NON si scrive da qui, e non per dimenticanza:
+    # quella colonna sta su `bando`, non su `bando_controllo`, ed e' il
+    # `lastmod` della sitemap piu' l'`updated_since` dell'API. Finiva in questo
+    # payload e `aggiorna_controllo` la scartava in silenzio (la scarta insieme
+    # a ogni colonna che lo schema non espone), quindi il codice sembrava
+    # mantenerla e non la toccava.
+    # La mantiene il DB: `trg_bando_cambiamento_pubblico` (migrazione 01) la
+    # muove a ogni UPDATE che cambia una colonna pubblica, cioe' quando un
+    # evento viene davvero applicato. Ed e' la semantica giusta: «la pagina
+    # dell'ente e' cambiata» non e' «la nostra scheda e' cambiata», e scriverla
+    # su ogni diff avrebbe messo nella sitemap un `lastmod` nuovo per schede
+    # identiche a prima.
 
     # Le due testate della GET condizionale. Si scrivono anche quando sono
     # diventate NULL: una pagina che smette di mandare l'ETag deve smettere di
@@ -2408,6 +2441,63 @@ def applicabile(
     return not riga.get("applicato")
 
 
+#: Gli esiti di `db.applica_evento_esito`, ricopiati qui perche' questo modulo
+#: importa `db` solo dentro le funzioni (il package non regge un import in
+#: testa). `test_monitoraggio` verifica che le tre stringhe coincidano: se
+#: divergessero, un non-tentativo tornerebbe a passare per rifiuto.
+ESITO_APPLICATO = "applicato"
+ESITO_RIFIUTATO = "rifiutato"
+ESITO_NON_TENTATO = "non_tentato"
+
+#: I tipi che `bando_applica_evento` respinge **per costruzione** finche' la
+#: migrazione 06 non estende il CHECK di `stato_bando` a cinque valori. Il loro
+#: rifiuto e' un calendario, non un giudizio: annotarlo li toglierebbe per
+#: sempre dalla coda, e sono proprio gli eventi che la 06 serve ad applicare.
+TIPI_IN_ATTESA_DI_MIGRAZIONE: tuple[str, ...] = (
+    "sospensione", "revoca", "annullamento_revoca",
+)
+
+
+def _esito_applicazione(valore: Any) -> str:
+    """Normalizza cio' che `applica` ha restituito.
+
+    Il default di produzione torna uno dei tre esiti; i chiamanti storici e i
+    test tornano un booleano, e per loro «falso» resta un rifiuto. Vale la pena
+    ricordare perche' il booleano non basta: `False` copre sia «la RPC ha detto
+    no» sia «la RPC non c'era», e annotare il secondo e' irreversibile.
+    """
+    if isinstance(valore, str):
+        return valore
+    return ESITO_APPLICATO if valore else ESITO_RIFIUTATO
+
+
+def rifiuto_definitivo(
+    riga: Mapping[str, Any],
+    *,
+    stati_estesi: bool = False,
+) -> bool:
+    """Vero se questo rifiuto va annotato, cioe' se non e' un'attesa.
+
+    Un rifiuto annotato non si disfa: `bando_evento` non concede DELETE
+    nemmeno a `service_role` (migrazione 02) e il trigger di immutabilita'
+    vieta di cambiare `riferisce_a`. Quindi si annota solo cio' che nessuna
+    migrazione futura potrebbe sbloccare.
+    """
+    if stati_estesi:
+        return True
+    tipo = str(riga.get("tipo") or "")
+    if tipo in TIPI_IN_ATTESA_DI_MIGRAZIONE:
+        return False
+    # Anche una `rettifica` che propone uno dei due stati nuovi (§6.2, A30:
+    # `valore_dopo = {"stato_proposto": ...}`) aspetta la 06.
+    dopo = riga.get("valore_dopo")
+    if isinstance(dopo, Mapping):
+        proposto = str(dopo.get("stato_proposto") or "")
+        if proposto in ("sospeso", "revocato"):
+            return False
+    return True
+
+
 def applica_eventi(
     righe: Sequence[Mapping[str, Any]],
     *,
@@ -2415,7 +2505,9 @@ def applica_eventi(
     tipo: str | None = None,
     limit: int = 50,
     dry_run: bool = True,
-    applica: Callable[[Mapping[str, Any]], bool] | None = None,
+    applica: Callable[[Mapping[str, Any]], Any] | None = None,
+    segnala: Callable[[Mapping[str, Any]], bool] | None = None,
+    stati_estesi: bool = False,
 ) -> dict[str, Any]:
     """Applica a posteriori gli eventi raccolti in ombra (§6.2).
 
@@ -2424,6 +2516,27 @@ def applica_eventi(
     Si lavora a blocchi di 50 per giro, e i tipi si attivano uno alla volta
     (prima proroga e rettifiche di data, poi chiusura, poi sospensione e revoca
     dopo R0).
+
+    `segnala` annota il rifiuto in modo che sopravviva al processo (di norma
+    `_segnala_rifiuto`): senza, un evento che la RPC non puo' applicare torna
+    in testa al blocco al lancio successivo, e a quello dopo. Si chiama solo
+    quando il giro scrive davvero: in `--dry-run` non si applica niente, quindi
+    non c'e' niente da annotare.
+
+    **E si chiama solo sui rifiuti definitivi.** L'annotazione non si puo'
+    togliere (`bando_evento` non concede DELETE nemmeno a `service_role`, e
+    `riferisce_a` e' immutabile), quindi annotare un evento che nessuno ha
+    giudicato lo escluderebbe per sempre. Due casi vanno esclusi:
+
+    * `db.ESITO_NON_TENTATO` — la RPC non c'e' (migrazione 04 non applicata) o
+      la chiamata e' fallita. Senza questa distinzione un solo
+      `applica-eventi --attivo` lanciato prima della 04 avrebbe bruciato tutto
+      l'arretrato dell'ombra;
+    * i tipi di `TIPI_IN_ATTESA_DI_MIGRAZIONE` quando `stati_estesi` e' falso:
+      la 04 li respinge **per costruzione** finche' la 06 non estende il CHECK
+      a cinque stati. Il loro rifiuto non e' un giudizio sull'evento, e' un
+      calendario — e annotarlo toglierebbe dalla coda proprio gli eventi che la
+      06 serve ad applicare.
     """
     scelte: list[Mapping[str, Any]] = []
     # `esaminati` e `ultimo_id` sono diagnostica: dicono quanto del blocco
@@ -2442,28 +2555,50 @@ def applica_eventi(
 
     applicati = 0
     rifiutati = 0
+    non_tentati = 0
+    segnalati = 0
     if not dry_run and applica is not None:
         for riga in scelte:
             try:
-                if applica(riga):
-                    applicati += 1
-                else:
-                    # La RPC ha risposto `false`: transizione non ammessa,
-                    # migrazione mancante, data incoerente. L'evento resta
-                    # `applicato=false` all'id piu' basso, quindi si conta —
-                    # un blocco fermo deve vedersi in `pipeline_run` invece di
-                    # somigliare a un giro riuscito.
-                    rifiutati += 1
+                esito = _esito_applicazione(applica(riga))
             except Exception as e:                        # pragma: no cover - ripiego
-                rifiutati += 1
+                # Un'eccezione non e' un rifiuto: nessuno ha giudicato
+                # l'evento, e il lancio successivo deve poterlo riprovare.
+                esito = ESITO_NON_TENTATO
                 logger.warning("[monitor] applicazione dell'evento {} fallita: {}",
                                riga.get("id"), e)
+            if esito == ESITO_APPLICATO:
+                applicati += 1
+                continue
+            if esito == ESITO_NON_TENTATO:
+                non_tentati += 1
+                continue
+            # La RPC ha risposto `false`: transizione non ammessa, stato che il
+            # CHECK non ammette, data incoerente. L'evento resta
+            # `applicato=false` all'id piu' basso, quindi si conta — un blocco
+            # fermo deve vedersi in `pipeline_run` invece di somigliare a un
+            # giro riuscito.
+            rifiutati += 1
+            if segnala is None or not rifiuto_definitivo(riga, stati_estesi=stati_estesi):
+                continue
+            # L'annotazione e' l'unica cosa che impedisce al lancio successivo
+            # di ripresentare lo stesso evento: la RPC la scrive solo sul ramo
+            # delle date, quindi qui la scrive Python.
+            try:
+                if segnala(riga):
+                    segnalati += 1
+            except Exception as e:                        # pragma: no cover - ripiego
+                logger.warning(
+                    "[monitor] rifiuto dell'evento {} non annotato: {}",
+                    riga.get("id"), e)
     return {
         "status": "ok",
         "esaminati": esaminati,
         "candidati": len(scelte),
         "applicati": applicati,
         "rifiutati": rifiutati,
+        "non_tentati": non_tentati,
+        "segnalati": segnalati,
         "ultimo_id": ultimo_id,
         "dry_run": dry_run,
         "tipo": tipo,
@@ -2494,8 +2629,23 @@ PAGINA_SELEZIONE_EVENTI = 200
 
 #: Quanti `elaborazione_bloccata` si leggono per sapere quali eventi la RPC ha
 #: gia' rifiutato. Sono pochi per costruzione (un rifiuto per evento, non uno
-#: per giro): il tetto e' solo una difesa.
+#: per giro): il tetto e' solo una difesa. Supera le 1 000 righe di
+#: `PAGINA_POSTGREST`, quindi la lettura va **scorsa**: con una `.limit(2000)`
+#: il server ne restituiva 1 000 senza dirlo e la lista dei rifiuti noti
+#: diventava incompleta proprio quando serviva.
 TETTO_RIFIUTI_NOTI = 2000
+
+#: Le sole due colonne che servono a riconoscere un rifiuto. `riferisce_a` e'
+#: il dato, `id` c'e' perche' `_colonne_disponibili` non restituisca una
+#: select vuota su uno schema che non ha ancora la colonna.
+COLONNE_RIFIUTO: tuple[str, ...] = ("id", "riferisce_a")
+
+#: I rifiuti noti non entrano tutti nel tetto: da qui in giu' la lista e' una
+#: FETTA, e gli eventi che ne restano fuori tornano in coda a ogni lancio.
+ALLARME_RIFIUTI_TRONCATI = (
+    f"rifiuti gia' noti troncati a {TETTO_RIFIUTI_NOTI} righe: gli eventi "
+    "bloccati oltre il tetto riconsumeranno il blocco a ogni lancio"
+)
 
 STEP_APPLICA = "applica-eventi"
 
@@ -2707,24 +2857,114 @@ async def run_report_ombra(
 
 
 def eventi_gia_rifiutati() -> frozenset[Any]:
-    """Gli id degli eventi che la RPC ha gia' rifiutato, da `riferisce_a`.
+    """Gli id degli eventi gia' rifiutati, da `riferisce_a`.
 
-    `bando_applica_evento` annota il rifiuto con un `elaborazione_bloccata`
-    che punta all'evento (migrazione 04). Quei rifiuti sono **persistenti**:
-    una revoca prima della 06, una data di pubblicazione dopo la scadenza —
+    Il rifiuto e' annotato con un `elaborazione_bloccata` che punta
+    all'evento: lo fa `bando_applica_evento` sul ramo delle date incoerenti
+    (migrazione 04) e lo fa `_segnala_rifiuto` su tutti gli altri esiti, che in
+    SQL non scrivono niente. Quei rifiuti sono **persistenti**: una revoca
+    prima della 06, una transizione non ammessa, la RPC che non c'e' ancora —
     e l'evento resta `applicato=false` all'id piu' basso, in testa al blocco,
     a ogni lancio. Senza questa lettura, dodici eventi bloccati restringono il
     blocco da 50 a 38 per sempre.
+
+    Si legge **una sola colonna**: la lettura parte a ogni lancio, anche in
+    `--dry-run`, e portarsi dietro `valore_dopo`, `citazione` e il `gate`
+    jsonb di duemila righe per estrarre un intero era la parte piu' cara del
+    comando. Oltre `TETTO_RIFIUTI_NOTI` il troncamento si **dichiara**: una
+    lista incompleta rimette in coda proprio gli eventi che non si possono
+    applicare, ed e' il difetto che questa funzione esiste per evitare.
     """
     try:
         from . import db
         righe = db.select_eventi(
-            tipi=("elaborazione_bloccata",), limit=TETTO_RIFIUTI_NOTI)
+            tipi=("elaborazione_bloccata",), limit=TETTO_RIFIUTI_NOTI,
+            # Solo le annotazioni di rifiuto: lo stesso tipo lo scrivono anche
+            # il monitor dopo cinque fallimenti, i gemelli e
+            # `rigenera --malformati`, tutti senza `riferisce_a`. Senza il
+            # filtro consumerebbero il tetto e, con l'ordine per `id`
+            # crescente, cadrebbero fuori le annotazioni piu' recenti.
+            con_riferimento=True,
+            colonne=COLONNE_RIFIUTO)
     except Exception as e:                                # pragma: no cover - ripiego
         logger.warning("[applica-eventi] rifiuti gia' noti non leggibili: {}", e)
         return frozenset()
+    if len(righe) >= TETTO_RIFIUTI_NOTI:
+        logger.warning("[ALLARME] [applica-eventi] {}", ALLARME_RIFIUTI_TRONCATI)
     return frozenset(
         r.get("riferisce_a") for r in righe if r.get("riferisce_a") is not None)
+
+
+#: Motivo scritto nel `valore_dopo` dell'annotazione di rifiuto. Generico
+#: apposta: la RPC risponde `false` (o solleva) senza dire quale dei suoi rami
+#: ha preso, e inventare un motivo preciso sarebbe peggio che non darne uno.
+MOTIVO_RIFIUTO = "bando_applica_evento non ha applicato l'evento"
+
+
+def _segnala_rifiuto(riga: Mapping[str, Any]) -> bool:
+    """Annota con un `elaborazione_bloccata` l'evento che la RPC non ha applicato.
+
+    `bando_applica_evento` annota il rifiuto **solo** sul ramo delle date
+    incoerenti (04:468-487). Gli altri tre esiti che lasciano `applicato=false`
+    non scrivono niente: la transizione non ammessa solleva 23514 (che
+    `db.applica_evento` cattura e trasforma in `False`), `sospeso`/`revocato`
+    prima della migrazione 06 fanno `RETURN false` con la sola `RAISE NOTICE`,
+    e se la 04 non e' applicata la RPC non viene nemmeno chiamata. Quegli
+    eventi restano `applicato=false, verificato=true` agli id piu' bassi,
+    passano `applicabile()` e riconsumano il blocco a **ogni** lancio: due
+    `applica-eventi --tipo revoca --attivo --limit 50` di fila riferivano
+    «letti: 50, candidati: 50, applicati: 0, rifiutati: 50, bloccati: 0»,
+    identici.
+
+    Fra le due strade possibili — tenere in memoria gli id del giro e
+    ripartire da `ultimo_id`, oppure scrivere un marcatore — serve la seconda:
+    il caso da rompere e' «due lanci di fila», cioe' due processi diversi, e
+    un cursore in memoria muore col processo. `riferisce_a` e' anche la forma
+    che la RPC usa gia', quindi `eventi_gia_rifiutati` ne legge una sola.
+
+    La guardia di esistenza e' quella della RPC (`bando_id` + tipo +
+    `riferisce_a`): senza, un evento respinto sul ramo delle date riceverebbe
+    una seconda annotazione, perche' `elaborazione_bloccata` sta fuori dal
+    dedup parziale della 02 e `db.registra_evento` e' un INSERT nudo.
+    """
+    evento_id = riga.get("id")
+    bando_id = riga.get("bando_id")
+    if evento_id is None or bando_id is None:
+        return False
+    from . import db
+    try:
+        if not db.controllo.ha(db.TABELLA_EVENTO, "riferisce_a"):
+            # `db.registra_evento` scarta le chiavi che lo schema non espone:
+            # un marcatore senza `riferisce_a` sarebbe invisibile a
+            # `eventi_gia_rifiutati`, quindi `bando_evento` crescerebbe di una
+            # riga per evento a **ogni** lancio senza sbloccare niente.
+            logger.info(
+                "[applica-eventi] {} senza colonna `riferisce_a`: rifiuto non annotato",
+                db.TABELLA_EVENTO)
+            return False
+        gia = db.select_eventi(
+            bando_id=bando_id, tipi=("elaborazione_bloccata",),
+            colonne=COLONNE_RIFIUTO)
+        if any(r.get("riferisce_a") == evento_id for r in gia):
+            return False
+        return bool(db.registra_evento({
+            "bando_id": bando_id,
+            "tipo": "elaborazione_bloccata",
+            "origine": "pipeline",
+            "campo": riga.get("campo"),
+            "valore_dopo": {"evento_id": evento_id, "motivo": MOTIVO_RIFIUTO},
+            "riferisce_a": evento_id,
+            # Interno per definizione (§13.5): mai un cursore, mai leggibile,
+            # mai verificato (il CHECK della 02 vorrebbe prova e citazione).
+            "leggibile": False,
+            "in_aggiornamenti": False,
+            "verificato": False,
+            "applicato": False,
+        }))
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.warning(
+            "[applica-eventi] rifiuto dell'evento {} non annotato: {}", evento_id, e)
+        return False
 
 
 def _da_applicare(
@@ -2789,8 +3029,10 @@ async def run_applica_eventi(
     dal: date_cls | None = None,
     tipi: Sequence[str] = (),
     offset: int = 0,
+    riprova_rifiutati: bool = False,
     righe: Sequence[Mapping[str, Any]] | None = None,
-    applica: Callable[[Mapping[str, Any]], bool] | None = None,
+    applica: Callable[[Mapping[str, Any]], Any] | None = None,
+    segnala: Callable[[Mapping[str, Any]], bool] | None = None,
     impostazioni: Any = None,
     lock: Any = blocco,
 ) -> dict[str, Any]:
@@ -2805,6 +3047,12 @@ async def run_applica_eventi(
     migrazione 06, una `data_pubblicazione` dopo la scadenza — non consumano
     piu' il blocco a ogni lancio. `--offset N` fa ripartire lo scorrimento
     oltre i primi N eventi della selezione.
+
+    Un rifiuto **nuovo** viene annotato (`segnalati` nel riepilogo): e' cosi'
+    che il lancio successivo lo riconosce come `bloccati` invece di
+    riproporlo. In `--dry-run` niente viene applicato e quindi niente viene
+    annotato: il lancio dopo ripresenta gli stessi candidati, ed e' giusto,
+    perche' nulla e' stato tentato.
 
     Tre cautele, tutte volute:
       * si lavora a blocchi di al massimo `BLOCCO_APPLICAZIONE`;
@@ -2845,36 +3093,61 @@ async def run_applica_eventi(
         # consumano il blocco.
         candidati = _da_applicare(
             righe, tipi=tipi, dal=dal, limit=blocco_giro, offset=offset,
-            rifiutati=eventi_gia_rifiutati() if righe is None else frozenset(),
+            # Con `--limit 0` non si applica niente per costruzione (il ciclo
+            # piu' sotto esce al primo giro): leggere i rifiuti noti sarebbe
+            # una richiesta in piu' per un comando che e' un no-op.
+            # `--riprova-rifiutati` e' la via di rientro, e serve perche'
+            # l'annotazione non si puo' togliere: `bando_evento` non concede
+            # DELETE nemmeno a `service_role` e `riferisce_a` e' immutabile.
+            # Senza, un rifiuto annotato per sbaglio resterebbe tale per sempre.
+            rifiutati=(eventi_gia_rifiutati()
+                       if righe is None and blocco_giro > 0
+                       and not riprova_rifiutati else frozenset()),
             conto=conto,
         )
         if applica is None and scrive:
             from . import db
 
-            def applica(riga: Mapping[str, Any]) -> bool:
+            def applica(riga: Mapping[str, Any]) -> str:
                 """L'unico scrittore: la RPC `bando_applica_evento` (§6.2).
 
                 Si costruisce solo quando il giro scrive davvero, cosi' in
-                ombra la RPC non e' nemmeno raggiungibile.
+                ombra la RPC non e' nemmeno raggiungibile. Restituisce l'esito
+                e non un booleano: chi annota il rifiuto deve poter distinguere
+                «la RPC ha detto no» da «la RPC non c'era».
                 """
-                return db.applica_evento(riga.get("id"))
+                return db.applica_evento_esito(riga.get("id"))
+
+            if segnala is None:
+                # Chi inietta il proprio `applica` (i test, la pipeline) porta
+                # anche la propria annotazione: qui non si scrive per lui.
+                segnala = _segnala_rifiuto
 
         gruppi: tuple[str | None, ...] = tuple(tipi) if tipi else (None,)
         candidati_totali = 0
         applicati = 0
         rifiutati = 0
+        non_tentati = 0
+        segnalati = 0
         rimanenti = blocco_giro
+        # Prima della 06 i due stati nuovi non hanno una colonna dove andare:
+        # la RPC li respinge, e quel rifiuto non va annotato (vedi
+        # `rifiuto_definitivo`).
+        stati_estesi = bool(getattr(impostazioni, "monitor_stati_estesi", False))
         per_tipo: dict[str, int] = {}
         for nome in gruppi:
             if rimanenti <= 0:
                 break
             esito = applica_eventi(
                 candidati, dal=dal, tipo=nome, limit=rimanenti,
-                dry_run=not scrive, applica=applica,
+                dry_run=not scrive, applica=applica, segnala=segnala,
+                stati_estesi=stati_estesi,
             )
             candidati_totali += int(esito.get("candidati") or 0)
             applicati += int(esito.get("applicati") or 0)
             rifiutati += int(esito.get("rifiutati") or 0)
+            non_tentati += int(esito.get("non_tentati") or 0)
+            segnalati += int(esito.get("segnalati") or 0)
             rimanenti -= int(esito.get("candidati") or 0)
             per_tipo[nome or "tutti"] = int(esito.get("candidati") or 0)
 
@@ -2887,13 +3160,21 @@ async def run_applica_eventi(
             "tipi": list(tipi),
             "blocco": blocco_giro,
             "offset": max(0, int(offset or 0)),
+            "riprova_rifiutati": bool(riprova_rifiutati),
             "letti": len(candidati),
             "candidati": candidati_totali,
             "applicati": applicati,
             # Un blocco fermo deve vedersi: `rifiutati` sono gli eventi che la
-            # RPC non ha potuto applicare, `bloccati` quelli gia' rifiutati in
-            # un giro precedente e quindi scavalcati dallo scorrimento.
+            # RPC non ha potuto applicare, `segnalati` quelli di cui il rifiuto
+            # e' stato annotato adesso (e che al lancio successivo saranno
+            # `bloccati`), `bloccati` quelli gia' rifiutati in un giro
+            # precedente e quindi scavalcati dallo scorrimento.
             "rifiutati": rifiutati,
+            # `non_tentati` sono gli eventi che nessuno ha giudicato: RPC
+            # assente o chiamata fallita. Non vengono annotati e il lancio
+            # successivo li ripresenta — se sono tanti, manca una migrazione.
+            "non_tentati": non_tentati,
+            "segnalati": segnalati,
             "attraversati": conto["attraversati"],
             "bloccati": conto["bloccati"],
             "saltati": conto["saltati"],
@@ -2932,7 +3213,9 @@ def _scrivi_run(step: str, riepilogo: Mapping[str, Any], *, tempo: float) -> Non
 
 
 __all__ = [
-    "BLOCCO_APPLICAZIONE", "CAMPIONE_MINIMO", "INTESTAZIONI_REPORT",
+    "ALLARME_RIFIUTI_TRONCATI", "BLOCCO_APPLICAZIONE", "CAMPIONE_MINIMO",
+    "COLONNE_RIFIUTO", "INTESTAZIONI_REPORT", "MOTIVO_RIFIUTO",
+    "TETTO_RIFIUTI_NOTI",
     "PAGINA_SELEZIONE_EVENTI", "SOGLIA_PRECISIONE", "STEP_APPLICA",
     "applicabile", "eventi_gia_rifiutati", "precisione", "report_ombra_da_eventi",
     "riga_report_da_evento", "run_applica_eventi", "run_report_ombra",

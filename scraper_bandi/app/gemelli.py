@@ -32,6 +32,7 @@ from __future__ import annotations
 import difflib
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -40,6 +41,37 @@ from .impronte import normalizza_url
 from .normalize import normalize_for_canonical
 
 SOGLIA_FUZZY = 0.92
+
+
+# --- memoizzazione delle normalizzazioni ------------------------------------
+#
+# Il confronto fra gemelli e' quadratico per costruzione: `fondi-doppioni`
+# guarda ogni riga contro tutte le altre, e su 2 104 pubblicati sono ~4,4
+# milioni di coppie. Titolo, ente, host e URL della riga «altra» venivano
+# normalizzati una volta **per coppia**, cioe' 2 104 volte ciascuno, invece che
+# una volta per riga.
+#
+# Le tre funzioni normalizzatrici sono pure (stringa -> stringa, nessuno stato,
+# nessun I/O): memoizzarle non cambia un solo risultato, e le stringhe distinte
+# restano quante sono le righe, quindi la cache costa quanto il corpus.
+
+@lru_cache(maxsize=16384)
+def _canonico(testo: str) -> str:
+    """`normalize_for_canonical` memoizzata."""
+    return normalize_for_canonical(testo)
+
+
+@lru_cache(maxsize=32768)
+def _url_normalizzato(url: str | None) -> str | None:
+    """`impronte.normalizza_url` memoizzata."""
+    return normalizza_url(url)
+
+
+@lru_cache(maxsize=16384)
+def _host(url: str) -> str:
+    """`dominio_ufficiale.dominio_di` memoizzata, senza il `None`."""
+    return dominio_di(url) or ""
+
 
 # Le famiglie di fonte che sanno dire un identificativo stabile (§14).
 FAMIGLIA_OE = "obiettivo_europa"
@@ -126,7 +158,7 @@ def url_del_bando(riga: Mapping[str, Any]) -> tuple[str, ...]:
         _testo(riga, "link_bando"),
         _testo(riga, "fonte_ufficiale_url"),
     )
-    normalizzati = [normalizza_url(u) for u in grezzi if u]
+    normalizzati = [_url_normalizzato(u) for u in grezzi if u]
     return tuple(dict.fromkeys(u for u in normalizzati if u))
 
 
@@ -134,7 +166,7 @@ def link_del_bando(riga: Mapping[str, Any]) -> str | None:
     """Il solo `link_bando` normalizzato: e' l'URL della riga presso la sua
     fonte, l'unico che identifica *quella* riga e non la pagina d'ente a cui
     puo' puntare insieme a molte altre."""
-    return normalizza_url(_testo(riga, "link_bando"))
+    return _url_normalizzato(_testo(riga, "link_bando"))
 
 
 def coincidenze_url(
@@ -163,7 +195,7 @@ def coincidenze_url(
 
 
 def titolo_normalizzato(riga: Mapping[str, Any]) -> str:
-    return normalize_for_canonical(_testo(riga, "titolo", "titolo_raw"))
+    return _canonico(_testo(riga, "titolo", "titolo_raw"))
 
 
 # --- chiave esterna ---------------------------------------------------------
@@ -313,17 +345,31 @@ def criteri_esatti(
       2. `chiave_esterna` — stessa fonte e stessa chiave: e' la stessa riga
          presso la fonte, con l'URL cambiato;
       3. `atto` — stesso atto numerato sullo stesso dominio ufficiale.
+
+    Il candidato viene «preparato» una volta sola prima del ciclo: chiave,
+    atto, dominio e i suoi URL normalizzati non dipendono dalla riga con cui lo
+    si confronta, e ricalcolarli a ogni coppia costava un fattore n su un
+    confronto gia' quadratico (`coincidenze_url` normalizzava i due URL del
+    candidato 2 104 volte su un corpus di 2 104 righe).
+
+    `riga is candidato` sta nella guardia accanto al confronto sugli id: cosi'
+    il chiamante puo' passare l'elenco intero invece di ricostruirne una copia
+    senza il candidato.
     """
     chiave = chiave_esterna(candidato)
     atto = numero_atto(candidato)
     dominio = dominio_ufficiale_riga(candidato)
     identificativo = candidato.get("id")
+    urls_candidato = frozenset(url_del_bando(candidato))
+    link_candidato = link_del_bando(candidato)
 
     trovate: list[Corrispondenza] = []
     for riga in pubblicati:
+        if riga is candidato:
+            continue
         if identificativo is not None and riga.get("id") == identificativo:
             continue
-        comuni = coincidenze_url(candidato, riga)
+        comuni = _coincidenze(urls_candidato, link_candidato, riga)
         if comuni:
             trovate.append(Corrispondenza(riga.get("id"), "url", comuni[0]))
             continue
@@ -335,6 +381,26 @@ def criteri_esatti(
     return tuple(trovate)
 
 
+def _coincidenze(
+    urls_candidato: frozenset[str],
+    link_candidato: str | None,
+    riga: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """`coincidenze_url` con il lato candidato gia' normalizzato.
+
+    Stessa regola, stesso risultato: serve solo a non rinormalizzare gli URL
+    del candidato una volta per ogni riga del corpus.
+    """
+    tutti_riga = set(url_del_bando(riga))
+    trovati: set[str] = set()
+    if link_candidato and link_candidato in tutti_riga:
+        trovati.add(link_candidato)
+    link_riga = link_del_bando(riga)
+    if link_riga and link_riga in urls_candidato:
+        trovati.add(link_riga)
+    return tuple(sorted(trovati))
+
+
 def _stessa_fonte(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     """La chiave esterna e' unica **per fonte** (UNIQUE (fonte_id, chiave_esterna)):
     fuori da quella coppia non dimostra niente."""
@@ -343,18 +409,30 @@ def _stessa_fonte(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
 
 # --- fuzzy: solo proposte ---------------------------------------------------
 
-def _blocco(candidato: Mapping[str, Any], riga: Mapping[str, Any]) -> str:
-    regione_a = normalize_for_canonical(_testo(candidato, "regione", "area_geografica"))
-    regione_b = normalize_for_canonical(_testo(riga, "regione", "area_geografica"))
-    if regione_a and regione_a == regione_b:
+def _chiavi_blocco(riga: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Regione, ente e host normalizzati: le tre chiavi del blocking."""
+    return (
+        _canonico(_testo(riga, "regione", "area_geografica")),
+        _canonico(_testo(riga, "ente_erogatore", "ente")),
+        _host(_testo(riga, "link_bando")),
+    )
+
+
+def _blocco_con(chiavi: tuple[str, str, str], riga: Mapping[str, Any]) -> str:
+    """Il blocco fra un candidato gia' preparato e una riga.
+
+    Le chiavi della riga si calcolano **una alla volta e solo se servono**: se
+    il candidato non ha regione — e le colonne che `select_pubblicati_per_gemelli`
+    legge non comprendono `regione` ne' `ente_erogatore` — quel confronto non
+    puo' riuscire e normalizzare la regione della riga e' lavoro buttato,
+    moltiplicato per il numero di coppie.
+    """
+    regione_a, ente_a, host_a = chiavi
+    if regione_a and regione_a == _canonico(_testo(riga, "regione", "area_geografica")):
         return "regione"
-    ente_a = normalize_for_canonical(_testo(candidato, "ente_erogatore", "ente"))
-    ente_b = normalize_for_canonical(_testo(riga, "ente_erogatore", "ente"))
-    if ente_a and ente_a == ente_b:
+    if ente_a and ente_a == _canonico(_testo(riga, "ente_erogatore", "ente")):
         return "ente"
-    host_a = dominio_di(_testo(candidato, "link_bando"))
-    host_b = dominio_di(_testo(riga, "link_bando"))
-    if host_a and host_a == host_b:
+    if host_a and host_a == _host(_testo(riga, "link_bando")):
         return "host"
     return ""
 
@@ -378,6 +456,7 @@ def possibili_doppioni(
     pubblicati: Iterable[Mapping[str, Any]],
     *,
     soglia: float = SOGLIA_FUZZY,
+    esatti: Iterable[Any] | None = None,
 ) -> tuple[Proposta, ...]:
     """Proposte `possibile_doppione`, mai applicate (§5 passo 2, §14).
 
@@ -385,27 +464,48 @@ def possibili_doppioni(
     2 100 titoli con 2 100 titoli) e `difflib.SequenceMatcher` ≥ 0,92 sui titoli
     normalizzati. I gemelli certi sono esclusi: li ha gia' detti `criteri_esatti`
     e qui farebbero solo rumore nel report.
+
+    `esatti` sono gli id dei gemelli certi, se il chiamante li ha gia'. Senza,
+    si chiama `criteri_esatti`: e' cio' che faceva sempre, e in
+    `run_fondi_doppioni` — che li aveva appena calcolati — voleva dire
+    ripassare l'intero corpus una seconda volta per ogni riga.
+
+    `real_quick_ratio`/`quick_ratio` sono i **maggioranti** documentati di
+    `ratio()` (li usa `difflib.get_close_matches`): scartare con loro una
+    coppia sotto soglia non puo' cambiare l'esito, e risparmia la parte cara
+    dell'algoritmo sulle coppie che non c'entrano niente.
     """
     titolo = titolo_normalizzato(candidato)
     if not titolo:
         return ()
     righe = list(pubblicati)
-    esatti = {c.bando_id for c in criteri_esatti(candidato, righe)}
+    if esatti is None:
+        esatti = {c.bando_id for c in criteri_esatti(candidato, righe)}
+    else:
+        esatti = set(esatti)
     identificativo = candidato.get("id")
+    chiavi = _chiavi_blocco(candidato)
+    confronto = difflib.SequenceMatcher(None)
+    confronto.set_seq1(titolo)
 
     proposte: list[Proposta] = []
     for riga in righe:
+        if riga is candidato:
+            continue
         if riga.get("id") in esatti:
             continue
         if identificativo is not None and riga.get("id") == identificativo:
             continue
-        blocco = _blocco(candidato, riga)
+        blocco = _blocco_con(chiavi, riga)
         if not blocco:
             continue
         altro = titolo_normalizzato(riga)
         if not altro:
             continue
-        similarita = difflib.SequenceMatcher(None, titolo, altro).ratio()
+        confronto.set_seq2(altro)
+        if confronto.real_quick_ratio() < soglia or confronto.quick_ratio() < soglia:
+            continue
+        similarita = confronto.ratio()
         if similarita < soglia:
             continue
         proposte.append(Proposta(

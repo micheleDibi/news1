@@ -1590,6 +1590,13 @@ def _da_risolvere(
     difetto: `select_bandi_da_risolvere` ordina per `id` e prende i primi N,
     e il `--limit` contava le righe GUARDATE, non quelle da lavorare.
     """
+    # `--limit 0` e' un limite, ed e' quello che un operatore mette per non
+    # toccare niente (la convenzione e' scritta in `db._pagina`). Il
+    # controllo del limite sta DOPO l'append, quindi senza questa uscita un
+    # giro da zero righe ne lavorava una — e con `--attivo` era una
+    # scrittura vera.
+    if limit is not None and int(limit) <= 0:
+        return [], {}
     raccolte: list[Mapping[str, Any]] = []
     controlli: dict[Any, Mapping[str, Any]] = {}
     cursore = max(0, int(offset or 0))
@@ -1985,6 +1992,13 @@ def _da_leggere(
     pagine che non puo' degenerare (la selezione e' al massimo l'intero corpus
     pubblicato).
     """
+    # `--limit 0` e' un limite, ed e' quello che un operatore mette per non
+    # toccare niente (la convenzione e' scritta in `db._pagina`). Il
+    # controllo del limite sta DOPO l'append, quindi senza questa uscita un
+    # giro da zero righe ne lavorava una — e con `--attivo` era una
+    # scrittura vera.
+    if limit is not None and int(limit) <= 0:
+        return [], frozenset()
     raccolte: list[Mapping[str, Any]] = []
     lette_viste: set[Any] = set()
     offset = max(0, int(offset or 0))
@@ -2142,13 +2156,33 @@ async def run_oe_dettaglio(
 #: cosa verificare. Non e' il `--limit` dell'operatore.
 PAGINA_SELEZIONE_LINK = 500
 
+#: `esito_http` scritto quando la richiesta non arriva a destinazione (DNS che
+#: non risolve, TLS rifiutato, timeout, connessione chiusa) o quando il
+#: verificatore solleva. Non e' un codice HTTP: e' il marcatore che dice
+#: «guardato, non risponde».
+#:
+#: Serve perche' `_da_verificare_ora` legge `esito_http` NULL come «mai
+#: verificato». Riscrivere NULL su un link morto lo rimetteva in coda a ogni
+#: lancio: `link-verifica --attivo --limit 200` su una fetta con 200 link morti
+#: in testa rifaceva gli stessi 200 HEAD, `saltate: 0`, e le righe successive
+#: non venivano guardate mai. Con il marcatore la riga esce dalla coda per la
+#: giornata e torna domani, quando `updated_at` sara' di ieri.
+#:
+#: Zero e' il valore che `VerificaHttp._testa` gia' usa per «risposta senza
+#: stato», sta in uno `smallint` e non e' un 2xx: il CHECK
+#: `bando_link_pubblicabile_http_check` resta soddisfatto perche' la riga viene
+#: scritta `pubblicabile=false` insieme al marcatore.
+ESITO_IRRAGGIUNGIBILE = 0
+
 
 def _da_verificare_ora(riga: Mapping[str, Any], oggi: date_cls) -> bool:
     """Su questa riga di `bando_link` c'e' da fare una verifica, adesso?
 
     Mai verificata (`esito_http` NULL) -> si', sempre: sono le righe che
     `oe-dettaglio` scrive, che nascono `pubblicabile=false` e che senza questo
-    giro non diventerebbero pubblicabili mai.
+    giro non diventerebbero pubblicabili mai. Perche' questo ramo resti
+    «mai verificata» e non diventi «sempre da verificare», ogni tentativo deve
+    lasciare un `esito_http`: se ne occupa `ESITO_IRRAGGIUNGIBILE`.
 
     Gia' verificata: si salta se il suo `updated_at` e' di oggi. E' l'unico
     marcatore che la tabella porta (il trigger `trg_bando_link_updated_at` lo
@@ -2181,6 +2215,13 @@ def _da_verificare(
     `saltate` e non consumano il `--limit`, che torna a significare «verificane
     N» invece di «guardane N».
     """
+    # `--limit 0` e' un limite, ed e' quello che un operatore mette per non
+    # toccare niente (la convenzione e' scritta in `db._pagina`). Il
+    # controllo del limite sta DOPO l'append, quindi senza questa uscita un
+    # giro da zero righe ne lavorava una — e con `--attivo` era una
+    # scrittura vera.
+    if limit is not None and int(limit) <= 0:
+        return []
     raccolte: list[Mapping[str, Any]] = []
     cursore = max(0, int(offset or 0))
     while True:
@@ -2238,8 +2279,11 @@ async def run_link_verifica(
     quando `--dry-run` o l'ombra non scrivono il marcatore.
     """
     attivo = _modalita_attiva(attivo)
+    # `rimandati` sono le righe gia' pubblicabili su cui il verificatore non ha
+    # avuto risposta: si lasciano come sono (vedi `_verifica_link`) e tornano al
+    # giro dopo. Se e' un numero alto, il problema e' la nostra rete.
     contatori = {"esaminati": 0, "pubblicabili": 0, "ritirati": 0,
-                 "saltate": 0, "errori": 0}
+                 "rimandati": 0, "saltate": 0, "errori": 0}
     if righe is None:
         elenco = _da_verificare(
             limit=limit, offset=offset, bando_id=bando_id,
@@ -2269,24 +2313,65 @@ async def _verifica_link(
     attivo: bool,
 ) -> dict[str, Any]:
     """Il ciclo di `run_link_verifica`, separato per tenere la chiusura del
-    client fuori dal corpo e il corpo leggibile."""
+    client fuori dal corpo e il corpo leggibile.
+
+    Regola del ciclo: **ogni riga guardata deve uscirne con un `esito_http`**.
+    Prima il fallimento non lasciava traccia — il verificatore che solleva
+    faceva `continue` senza scrivere, e quello che torna `None` riscriveva
+    `esito_http` NULL — quindi la riga tornava «mai verificata» al lancio
+    successivo e il comando rifaceva per sempre gli stessi HEAD sulla stessa
+    testa della tabella. Vedi `ESITO_IRRAGGIUNGIBILE`.
+
+    Con un'eccezione, e pesa: **un link gia' pubblicabile non si ritira quando
+    il fallimento e' nostro.** «Non ho ricevuto risposta» non e' una prova sul
+    link, e' una notizia sulla nostra rete; e il CHECK della 02 vieta una riga
+    pubblicabile senza un 2xx, quindi scrivere il marcatore vorrebbe dire
+    scrivere anche `pubblicabile=false`. Con la rete giu' un solo giro avrebbe
+    tolto dalle schede tutti i link verificati — circa 1 360 — per il resto
+    della giornata di calendario, e nessuno li avrebbe rimessi prima di domani.
+    Su quelle righe non si scrive niente e si conta `errori`: tornano al giro
+    successivo (lo scheduler ne fa quattro al giorno). Il marcatore resta dove
+    serviva davvero, cioe' sulle righe nate da `oe-dettaglio`, che sono gia'
+    `pubblicabile=false` e che senza di esso si ripresentavano per sempre.
+    """
     for riga in elenco:
         contatori["esaminati"] += 1
         url = str(riga.get("url") or "")
         if not url:
             continue
+        errore = False
         try:
             esito = allegati_mod.Verifica.da(verifica(url))
         except Exception as e:
+            # Si continua fino alla scrittura invece di saltare: e' l'unico
+            # modo di far avanzare la coda. I contatori pero' restano quelli di
+            # prima — un'eccezione e' un `errori`, non un `ritirati`.
+            errore = True
+            esito = None
             contatori["errori"] += 1
             logger.info("[link-verifica] {} non verificato: {}", url, e)
-            continue
         pubblicabile = bool(esito and esito.ok) and not e_aggregatore(url)
-        contatori["pubblicabili" if pubblicabile else "ritirati"] += 1
+        stato = esito.esito_http if esito is not None else None
+        # «Non ho ricevuto risposta»: l'eccezione, oppure un verificatore che
+        # torna `None` o senza codice. Non e' un giudizio sul link.
+        senza_risposta = errore or stato is None
+        if not errore:
+            contatori["pubblicabili" if pubblicabile else "ritirati"] += 1
         if dry_run or not attivo:
             continue
+        if senza_risposta and riga.get("pubblicabile"):
+            # Si lascia stare: ritirarla vorrebbe dire togliere dalle schede un
+            # link che ha risposto 2xx l'ultima volta che qualcuno ha potuto
+            # chiedere. Torna al giro successivo.
+            contatori["rimandati"] = contatori.get("rimandati", 0) + 1
+            continue
         payload = {
-            "esito_http": esito.esito_http if esito else None,
+            # Mai NULL: NULL vuol dire «mai verificata» e rimetterebbe in coda
+            # un link morto a ogni lancio. `pubblicabile` viaggia insieme allo
+            # stato perche' il CHECK della 02 rifiuta una riga pubblicabile
+            # senza un 2xx: le due colonne non possono divergere nemmeno per
+            # un istante.
+            "esito_http": stato if stato is not None else ESITO_IRRAGGIUNGIBILE,
             "content_type": esito.content_type if esito else None,
             "pubblicabile": pubblicabile,
         }
@@ -2311,6 +2396,11 @@ ALLARME_GEMELLI_TRONCATO = (
     "che hanno un id oltre il taglio non possono essere trovate"
 )
 
+ALLARME_GEMELLI_BUDGET = (
+    "confronto fermato dal budget delle fusioni: il report copre solo le righe "
+    "guardate prima del taglio, rilanciare per il resto"
+)
+
 
 async def run_fondi_doppioni(
     dry_run: bool = False,
@@ -2332,28 +2422,76 @@ async def run_fondi_doppioni(
     «solo report», che e' cio' che un operatore intende scrivendolo. Prima
     valeva `limit or 5000`, cioe' l'esatto contrario: `--limit 0 --attivo`
     leggeva l'intero corpus e applicava tutte le fusioni.
+
+    La lettura e' l'intero corpus, il **confronto** no: e' quadratico, e a
+    forza di ricalcolare per ogni coppia cio' che dipende da una riga sola
+    costava 411 s su un corpus finto di 2 104 pubblicati, ora 87 s con gli
+    stessi contatori (misura alternata sulla stessa macchina: 577 s -> 90 s).
+    Qui i criteri esatti si calcolano una volta per riga e il loro esito viaggia
+    dentro `possibili_doppioni`, che prima li rifaceva da capo; l'elenco si
+    passa per intero invece di ricostruirne una copia senza la riga corrente
+    (2 104 liste da 2 103 dizionari). Il resto del guadagno sta in `gemelli.py`.
+
+    Quando il budget delle fusioni e' esaurito **e le fusioni sono il prodotto
+    del lancio** (`--attivo`, senza `--dry-run`, con un budget maggiore di
+    zero) il giro si ferma: continuare voleva dire pagare per intero il
+    confronto quadratico per un report che quel lancio non stava chiedendo. Il
+    troncamento non e' silenzioso, sta negli `allarmi`. Con `--limit 0` o in
+    ombra il report **e'** il prodotto e il corpus si guarda tutto.
     """
     attivo = _modalita_attiva(attivo)
     elenco = list(righe) if righe is not None else db.select_pubblicati_per_gemelli(
         limit=TETTO_GEMELLI,
     )
-    contatori = {"esaminati": 0, "esatti": 0, "proposte": 0, "fusi": 0, "rimandati": 0}
+    # `rimandati` sono le righe con gemelli trovate a budget esaurito. In modo
+    # report (`--dry-run`, ombra, `--limit 0`) il corpus si guarda tutto e il
+    # numero e' quello vero; quando il lancio fonde davvero il confronto si
+    # ferma al budget, quindi `rimandati` vale 1 e la misura di cio' che resta
+    # fuori e' `non_esaminati`.
+    contatori = {"esaminati": 0, "esatti": 0, "proposte": 0, "fusi": 0,
+                 "rimandati": 0, "non_esaminati": 0}
     allarmi: list[str] = []
     if righe is None and len(elenco) >= TETTO_GEMELLI:
         allarmi.append(ALLARME_GEMELLI_TRONCATO)
         logger.warning("[ALLARME] [resolver] {}", ALLARME_GEMELLI_TRONCATO)
+    # Il lancio fonde davvero? Solo allora il report smette di essere il
+    # prodotto e il budget puo' fermare il confronto. `--limit 0` e' «solo
+    # report» per definizione e non entra qui.
+    fonde = bool(attivo) and not dry_run and limit is not None and limit > 0
     for riga in elenco:
         contatori["esaminati"] += 1
-        altri = [r for r in elenco if r.get("id") != riga.get("id")]
+        # L'elenco si passa per intero: `criteri_esatti` e `possibili_doppioni`
+        # saltano da soli la riga corrente (per identita' e per id), e
+        # ricostruire la copia senza di lei costava 2 104 liste da 2 103
+        # elementi. Le righe **senza** `id` sono l'eccezione: la copia filtrata
+        # le escludeva tutte insieme, e questa correzione non cambia cio' che
+        # facevano.
+        altri = elenco if riga.get("id") is not None else [
+            r for r in elenco if r.get("id") is not None
+        ]
         corrispondenze = gemelli.criteri_esatti(riga, altri)
         contatori["esatti"] += len(corrispondenze)
-        contatori["proposte"] += len(gemelli.possibili_doppioni(riga, altri))
+        # I gemelli certi si passano gia' fatti: `possibili_doppioni` li
+        # ricalcolava, cioe' ripassava il corpus una seconda volta per riga.
+        contatori["proposte"] += len(gemelli.possibili_doppioni(
+            riga, altri, esatti=[c.bando_id for c in corrispondenze],
+        ))
         if corrispondenze and limit is not None and contatori["fusi"] >= limit:
-            # Budget finito: il report prosegue sull'intero corpus (e' gratis e
-            # serve a chi pianifica il lotto), le fusioni riprendono al lancio
-            # dopo. Contarle e' l'unico modo di distinguere «finito» da
-            # «fermato dal budget».
+            # Budget finito.
             contatori["rimandati"] += 1
+            if fonde:
+                # Il confronto e' quadratico: proseguirlo per un report che
+                # questo lancio non sta chiedendo costa quanto tutto il resto
+                # del comando (misurato: 176 s contro 19 s su 1 200 righe).
+                # Quindi si esce, e da qui in poi `rimandati` non e' piu' «le
+                # righe che restano da fondere» — vale 1 e basta. Il numero che
+                # dice quanto e' rimasto fuori e' `non_esaminati`, e il fatto
+                # che il report sia parziale lo dice l'allarme: senza uscire, a
+                # dire «finito» o «fermato» bastava il contatore.
+                contatori["non_esaminati"] = len(elenco) - contatori["esaminati"]
+                allarmi.append(ALLARME_GEMELLI_BUDGET)
+                logger.warning("[ALLARME] [resolver] {}", ALLARME_GEMELLI_BUDGET)
+                break
             continue
         if not corrispondenze or dry_run or not attivo:
             continue
