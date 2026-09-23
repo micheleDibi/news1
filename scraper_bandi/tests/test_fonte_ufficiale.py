@@ -948,6 +948,53 @@ class TestRunnerAusiliari(unittest.TestCase):
         self.assertEqual(chiamate, [])
         self.assertEqual(esito["saltate"], 1)
 
+    def test_oe_dettaglio_backlog_arriva_alla_selezione(self):
+        """Il modo scelto sulla riga di comando deve arrivare alla query.
+
+        Il comando cablava `modo="nuovi"`: con 1 702 schede gia' pubblicate da
+        leggere ne selezionava una manciata (la coda degli `enriched`), e
+        `--forza` non cambiava nulla perche' scavalca la regola di ri-scarico,
+        non la selezione. Misurato in produzione il 23/09/2026:
+        `oe-dettaglio --dry-run --limit 5` esaminava 1 riga.
+        """
+        visti = {}
+
+        class _Scarico:
+            fermato = ""
+
+            async def scheda(self, url, archiviato=False):
+                return None
+
+        def _finta(**kwargs):
+            visti.update(kwargs)
+            return []
+
+        with unittest.mock.patch.object(fu.db, "select_bandi_da_risolvere", _finta):
+            esegui(fu.run_oe_dettaglio(
+                dry_run=True, limit=7, modo="backlog", forza=True, scarico=_Scarico(),
+            ))
+        self.assertEqual(visti.get("modo"), "backlog")
+        self.assertTrue(visti.get("forza"))
+        self.assertEqual(visti.get("limit"), 7)
+        self.assertTrue(visti.get("solo_oe"))
+
+    def test_oe_dettaglio_modo_predefinito_nuovi(self):
+        class _Scarico:
+            fermato = ""
+
+            async def scheda(self, url, archiviato=False):
+                return None
+
+        visti = {}
+
+        def _finta(**kwargs):
+            visti.update(kwargs)
+            return []
+
+        with unittest.mock.patch.object(fu.db, "select_bandi_da_risolvere", _finta):
+            esegui(fu.run_oe_dettaglio(dry_run=True, scarico=_Scarico()))
+        self.assertEqual(visti.get("modo"), "nuovi")
+
     def test_oe_dettaglio_con_forza_riscarica(self):
         chiamate = []
 

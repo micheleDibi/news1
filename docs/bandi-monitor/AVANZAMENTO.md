@@ -33,6 +33,68 @@ Questo registro sopravvive al cambio di macchina e lo vede chi fa commit. Le dat
 
 `scarico` della cache Firecrawl, troncamento a 4 000, adapter OE/Italia Domani/CSV/hybrid, login OE senza ripiego anonimo + validazione sessione + redazione dei log, `_do_one` a 4 elementi, `asyncio` in `db.py` e `DEDUP_CANONICAL` spento, refine senza «aperto» di ripiego, date con ruolo (`estrai_date_con_ruolo`, `norm_cit`) e `validate_date_candidate` sugli intervalli, `oggi_roma`, prompt senza date cablate, `--dry-run`/`--limit` su discover e scrape-bandi, `hash_senza_link`, IndexNow fail-closed.
 
+## Runbook dei lotti di riallineamento (fase C, in ombra)
+
+Tutti i comandi si lanciano sul server, dalla cartella del progetto, con l'interprete del venv:
+
+```bash
+cd /root/projects/news1/scraper_bandi
+.venv/bin/python -m app <comando>
+```
+
+Regole valide per tutti: si prova sempre prima con `--dry-run` e un `--limit` piccolo, si legge
+l'ultima riga («counters finali») e solo allora si rilancia senza `--dry-run`. Senza `--attivo`
+i comandi restano in **ombra**: leggono, misurano e registrano, ma non toccano le colonne
+editoriali. Se un comando dice «lock occupato» sta girando la pipeline: si riprova dopo.
+
+| # | Comando | Cosa fa | Come si capisce che è andato |
+|---|---|---|---|
+| 0 | `salute --json` | fotografia iniziale | nessun allarme |
+| 1 | `domini --import --dry-run` poi `domini --import --attivo` | riempie `dominio_ufficiale` con gli host delle fonti e il seed (misurato il 23/09: 109 domini dalle 121 fonti). Con `--enti <file.xlsx>` aggiunge anche l'elenco IndicePA, facoltativo | righe in `dominio_ufficiale` > 52 |
+| 2 | `oe-dettaglio --backlog --forza --dry-run --limit 5` poi senza `--dry-run`, a blocchi | scarica le schede dell'aggregatore e ne estrae i link all'ente. **`--backlog` è obbligatorio**: sceglie i 1702 pubblicati, mentre senza il flag si guarda solo la coda dei nuovi (una manciata). `--forza` scavalca la regola di ri-scarico, che da sola non allarga la selezione | righe nuove in `bando_link` con `origine='aggregatore'` |
+| 3 | `link-verifica --dry-run --limit 20` poi senza | verifica che quei link rispondano 2xx e li rende pubblicabili | `bando_link` con `esito_http` valorizzato |
+| 4 | `risolvi-fonte --backlog --dry-run --limit 20` poi senza, a blocchi | cerca la fonte ufficiale dei bandi già pubblicati | `bando.fonte_ufficiale_stato='trovata'` cresce |
+| 5 | `monitor --ombra --limit 50` poi a regime | primo controllo: semina le impronte delle pagine | `bando_controllo.ultimo_controllo_at` valorizzato |
+| 6 | `report-ombra --campione 100` | la misura da firmare prima di attivare | precisione ≥ 95% su ≥ 100 eventi |
+| 7 | `fondi-doppioni --dry-run` | propone le fusioni; applica solo i criteri esatti | elenco coppie e master proposto |
+| 8 | `pulisci-contenuto --dry-run --lotto L7` | toglie dai testi i link all'aggregatore | conteggio dei segmenti da sostituire |
+| 9 | `rigenera --malformati --dry-run --lotto L7` | elenca le 9 schede con contenuto malformato | id da rigenerare |
+| 10 | `archivia-processed --dry-run --lotto L8` | manda allo stato terminale i chiusi mai pubblicati | conteggio archiviabili |
+
+Ordine consigliato: 0 → 1 → 2 → 3 → 4 → 5, poi si lascia girare qualche giorno e si fa il 6.
+I passi 7-10 si fanno quando serve, sono indipendenti.
+
+Solo dopo che il passo 6 dà una precisione accettabile si attiva per tipo, un tipo alla volta:
+
+```bash
+.venv/bin/python -m app applica-eventi --dal <data> --tipo proroga,rettifica --limit 50 --dry-run
+```
+
+e poi senza `--dry-run`. Le sospensioni e le revoche restano per ultime, e richiedono la
+migrazione 06, che a sua volta richiede il rilascio difensivo di BandoFit.
+
+## Regola operativa: dopo ogni migrazione, riavviare il sender
+
+Il codice legge lo schema del database **una sola volta all'avvio del processo**
+(`db.controllo.schema()`) e lo tiene per tutta la vita del processo: è quello che gli
+permette di degradare senza fallire quando una colonna non c'è ancora. Il rovescio è che
+un sender avviato **prima** di una migrazione continua a comportarsi come se quella
+migrazione non esistesse, anche per ore.
+
+È già successo il 23/09/2026: sender riavviato alle 16:08:50, migrazioni applicate alle
+16:14:28. Il giro delle 16:08 ha pubblicato dieci bandi comportandosi come la pipeline
+vecchia e ha scritto a log `[telemetria] pipeline_run non esiste ancora: riga non scritta`.
+
+Quindi: **ogni volta che applichi una migrazione (01-08), riavvia il sender subito dopo.**
+Verifica che abbia preso lo schema nuovo con una riga in `pipeline_run` al termine del
+primo giro:
+
+```sql
+select id, step, esito, avviato_at, terminato_at from public.pipeline_run order by id desc limit 5;
+```
+
+Se resta vuota dopo un giro completo, il processo ha ancora la fotografia vecchia.
+
 ## SQL: ordine di applicazione (fase b)
 
 **01 → 02 → seed → 03 → 04 → 05**, tutte nella stessa seduta e fuori dai giri delle 00/06/12/18.

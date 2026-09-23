@@ -381,8 +381,28 @@ class TestComandiV11(_ConRunnerFinti):
             cli.main(["oe-dettaglio", "--dry-run", "--forza"])
         finto.run_oe_dettaglio.assert_awaited_once_with(
             dry_run=True, limit=None, attivo=None, forza=True,
-            solo_oe=True, bando_id=None,
+            solo_oe=True, modo="nuovi", bando_id=None,
         )
+
+    def test_oe_dettaglio_backlog_cambia_la_selezione(self):
+        # Il lotto L2 (le 1 702 schede gia' pubblicate) non e' la coda dei
+        # nuovi: senza `--backlog` il comando ne vedeva una manciata, e
+        # `--forza` da solo non bastava perche' scavalca la regola di
+        # ri-scarico, non la selezione.
+        finto = _modulo_finto("fonte_ufficiale", ingressi=_INGRESSI_FONTE)
+        with patch.dict(sys.modules, {f"{ALIAS}.fonte_ufficiale": finto}), \
+                patch.object(cli, "logger", MagicMock()):
+            cli.main(["oe-dettaglio", "--dry-run", "--backlog", "--forza"])
+        kwargs = finto.run_oe_dettaglio.await_args.kwargs
+        self.assertEqual(kwargs["modo"], "backlog")
+        self.assertTrue(kwargs["forza"])
+
+    def test_oe_dettaglio_senza_backlog_resta_sui_nuovi(self):
+        finto = _modulo_finto("fonte_ufficiale", ingressi=_INGRESSI_FONTE)
+        with patch.dict(sys.modules, {f"{ALIAS}.fonte_ufficiale": finto}), \
+                patch.object(cli, "logger", MagicMock()):
+            cli.main(["oe-dettaglio", "--dry-run", "--nuovi"])
+        self.assertEqual(finto.run_oe_dettaglio.await_args.kwargs["modo"], "nuovi")
 
     def test_oe_dettaglio_restringe_a_un_bando(self):
         # `--id` era documentato e ignorato: il comando lavorava sull'intero

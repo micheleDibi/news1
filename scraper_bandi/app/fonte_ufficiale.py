@@ -1843,6 +1843,7 @@ async def run_oe_dettaglio(
     *,
     forza: bool = False,
     solo_oe: bool = True,
+    modo: str = "nuovi",
     bando_id: Any = None,
     scarico: oe_scheda.ScaricoSchede | None = None,
     bandi: Sequence[Mapping[str, Any]] | None = None,
@@ -1854,8 +1855,12 @@ async def run_oe_dettaglio(
     scheda»: un bando ha sempre un `raw_data` (viene dal listing), quindi
     dedurre la scoperta da quello direbbe «gia' letta» anche la prima volta.
     Senza `--forza` e senza un cambio di `status`/`deadline_label` non si
-    riscarica: il backfill L2 delle 1 702 schede e' una deroga una tantum e si
-    chiede con `--forza`.
+    riscarica. Il backfill L2 delle 1 702 schede e' una deroga una tantum e si
+    chiede con `--backlog --forza`: `--forza` scavalca la regola di ri-scarico,
+    `--backlog` cambia la SELEZIONE (i pubblicati senza fonte, non la coda dei
+    `enriched`). Senza `--backlog` il comando vede solo i bandi nuovi del giro,
+    che in regime sono una manciata: e' il comportamento giusto tutti i giorni
+    e quello sbagliato per il lotto.
 
     Senza uno scarico configurato (credenziali assenti) il comando **non**
     risponde «ok» a vuoto: restituisce `saltato='scarico_non_configurato'`, che
@@ -1880,7 +1885,8 @@ async def run_oe_dettaglio(
 
     tabella = _tabella_corrente() if bandi is None else TABELLA_SEED
     righe = list(bandi) if bandi is not None else db.select_bandi_da_risolvere(
-        limit=limit, modo="nuovi", solo_oe=solo_oe, bando_id=bando_id, fonti_oe=FONTI_OE,
+        limit=limit, modo=modo, solo_oe=solo_oe, bando_id=bando_id,
+        forza=forza, fonti_oe=FONTI_OE,
     )
     if limit is not None:
         righe = righe[:limit]

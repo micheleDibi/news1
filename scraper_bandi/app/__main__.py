@@ -524,12 +524,17 @@ def _cmd_oe_dettaglio(argv: list[str]) -> int:
             # `--solo-oe` e' il default del comando: il flag lo rende esplicito,
             # e la sua assenza non deve allargare la selezione per sbaglio.
             "solo_oe": True,
+            # `--backlog` sceglie i PUBBLICATI senza fonte (il lotto L2 delle
+            # 1 702 schede); senza il flag si guarda la coda dei nuovi, che in
+            # regime sono una manciata. Il modo lo conosceva gia'
+            # `db.select_bandi_da_risolvere`: il comando lo cablava su "nuovi".
+            "modo": "backlog" if "--backlog" in opzioni.resto else "nuovi",
             "bando_id": identificativo,
         }
 
     return _esegui_v11(
         "oe-dettaglio", "run_oe_dettaglio", argv,
-        ammessi=FLAG_MODALITA | frozenset({"--forza", "--solo-oe"}),
+        ammessi=FLAG_MODALITA | frozenset({"--forza", "--solo-oe", "--backlog", "--nuovi"}),
         extra=parametri,
     )
 
