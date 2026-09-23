@@ -95,3 +95,37 @@ export interface LinkBando {
   /** Solo le righe pubblicabili escono da `bando_link` ad anon: cintura, non guardia. */
   readonly pubblicabile?: boolean | null;
 }
+
+// ---------------------------------------------------------------------------
+// Eventi di un bando (tabella `bando_evento`, disponibile solo da F2)
+// ---------------------------------------------------------------------------
+
+/**
+ * I tipi che possono comparire nel box «Aggiornamenti». Non sono tutti quelli
+ * della tabella: le transizioni automatiche del cron e gli eventi interni
+ * hanno `in_aggiornamenti=false` e non arrivano nemmeno qui.
+ */
+export const TIPI_EVENTO_PUBBLICI = [
+  'proroga', 'apertura', 'riapertura', 'chiusura', 'rettifica',
+  'sospensione', 'revoca', 'annullamento_revoca',
+  'graduatoria', 'esito', 'faq', 'nuovo_allegato',
+] as const;
+export type TipoEventoPubblico = typeof TIPI_EVENTO_PUBBLICI[number];
+
+export interface EventoBando {
+  readonly id: number | string;
+  readonly tipo: TipoEventoPubblico | string;
+  readonly campo?: string | null;
+  readonly valore_dopo?: unknown;
+  /** Il giorno dichiarato dalla fonte (YYYY-MM-DD), non quello del rilevamento. */
+  readonly data_evento?: string | null;
+  readonly rilevato_at?: string | null;
+  /** `true` solo con la prova su un dominio ufficiale: lo decide un trigger. */
+  readonly verificato?: boolean | null;
+  /** La pagina scaricata che contiene la citazione. Mai un aggregatore. */
+  readonly url_prova?: string | null;
+  /** `true` = da mostrare a chi legge; `false` = transizione tecnica. */
+  readonly in_aggiornamenti?: boolean | null;
+  /** `false` = verificato ma non ancora riversato nella colonna (pre-06). */
+  readonly applicato?: boolean | null;
+}

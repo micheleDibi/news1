@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { fonteBandiDa } from './bandi/pubblicazione';
 import type { StatoBando } from './stato-bando';
 import type { FonteBandi } from './bandi/pubblicazione';
-import type { Allegato, ContenutoBando } from './bandi/tipi';
+import type { Allegato, ContenutoBando, EventoBando, LinkBando } from './bandi/tipi';
 
 const url = import.meta.env.PUBLIC_SUPABASE_BANDI_URL;
 const key = import.meta.env.PUBLIC_SUPABASE_BANDI_ANON_KEY;
@@ -310,3 +310,132 @@ export const BANDO_SELECT_DETTAGLIO = [
   FONTE_BANDI.selectFreschezza,
   ...(FONTE_BANDI.tabella === 'bando_pubblico' ? COLONNE_DETTAGLIO_VISTA : []),
 ].join(', ');
+
+// =========================================================================
+// Letture di F2: i link, gli eventi e la mappa degli slug
+// =========================================================================
+
+/**
+ * Se la fonte corrente ha le tabelle di F2. Le tre letture qui sotto esistono
+ * solo dopo le migrazioni 02 e 03, e chiamarle prima costerebbe tre richieste
+ * per scheda che tornano tutte errore. La scheda le salta e resta quella di F1.
+ */
+export const F2_DISPONIBILE: boolean = FONTE_BANDI.tabella === 'bando_pubblico';
+
+/**
+ * I link pubblicabili e gli eventi visibili di un bando: due letture, non un
+ * embed.
+ *
+ * L'embed non si puo' usare per due ragioni indipendenti: `bando_link` e
+ * `bando_evento` concedono ad anon **colonne** e non la tabella, quindi un
+ * `select=*` dentro un embed risponde 42501; e la vista non ha una relazione
+ * dichiarata verso quelle tabelle, perche' le chiavi esterne stanno su `bando`.
+ *
+ * Non solleva mai: una scheda deve rendersi anche se queste due letture
+ * fallissero. Il prezzo di un guasto e' una scheda senza il box degli
+ * aggiornamenti, non una scheda che non c'e'.
+ */
+export async function caricaLinkEEventi(bandoId: number | string): Promise<{
+  link: LinkBando[];
+  eventi: EventoBando[];
+}> {
+  if (!F2_DISPONIBILE) return { link: [], eventi: [] };
+  const [risposteLink, risposteEventi] = await Promise.all([
+    supabaseBandi
+      .from('bando_link')
+      // Le colonne del contratto (§13.4), una per una: `*` risponde 42501.
+      .select('id, bando_id, url, dominio, tipo, etichetta, content_type, ultimo_visto_at')
+      .eq('bando_id', bandoId),
+    supabaseBandi
+      .from('bando_evento')
+      // Come sopra (§13.5). `cursore` non serve al render ma e' il gate della
+      // RLS: chiederlo rende esplicito che si leggono solo gli eventi visibili.
+      .select('id, tipo, campo, valore_dopo, data_evento, rilevato_at, verificato, '
+        + 'url_prova, in_aggiornamenti, applicato, cursore')
+      .eq('bando_id', bandoId)
+      .eq('in_aggiornamenti', true)
+      .order('data_evento', { ascending: false, nullsFirst: false })
+      .order('id', { ascending: false })
+      .limit(20),
+  ]);
+
+  if (risposteLink.error) {
+    console.warn('[bandi] link del bando non letti:', risposteLink.error.message);
+  }
+  if (risposteEventi.error) {
+    console.warn('[bandi] eventi del bando non letti:', risposteEventi.error.message);
+  }
+  return {
+    // Solo le righe pubblicabili escono ad anon per effetto della RLS: qui non
+    // si filtra di nuovo, ma i moduli puri a valle ricontrollano il dominio.
+    link: (risposteLink.data ?? []) as unknown as LinkBando[],
+    eventi: (risposteEventi.data ?? []) as unknown as EventoBando[],
+  };
+}
+
+/**
+ * Lo slug richiesto e' uno slug storico o il doppione di una fusione?
+ *
+ * Due tabelle e una sola risposta, nella forma che `esitoSlug` aspetta.
+ * `bando_slug_storico` porta l'esito dichiarato (301, 410, annullato);
+ * `bando_fusione` porta lo slug del master. Si guarda prima lo storico, perche'
+ * un ritiro (410) deve vincere su una fusione.
+ *
+ * Lo slug di destinazione si verifica **sulla fonte corrente**: un master non
+ * piu' pubblicato non e' una destinazione valida, e un 301 verso una pagina
+ * che risponde 404 e' peggio di un 404 diretto.
+ */
+export async function risolviSlugStorico(
+  slug: string,
+): Promise<{ stato: 'ok'; riga: { esito: string | null; slugMaster: string | null } | null }
+  | { stato: 'errore' }
+  | { stato: 'non_eseguita' }> {
+  if (!F2_DISPONIBILE) return { stato: 'non_eseguita' };
+  const [storico, fusione] = await Promise.all([
+    supabaseBandi.from('bando_slug_storico')
+      .select('slug, bando_id, esito, motivo, created_at')
+      .eq('slug', slug).limit(1),
+    supabaseBandi.from('bando_fusione')
+      .select('bando_id, slug_originale, master_id, master_slug, motivo, fuso_at')
+      .eq('slug_originale', slug).limit(1),
+  ]);
+  if (storico.error || fusione.error) {
+    console.warn('[bandi] mappa degli slug non letta:',
+      storico.error?.message ?? fusione.error?.message);
+    return { stato: 'errore' };
+  }
+
+  const rigaStorico = (storico.data ?? [])[0] as { esito?: string | null; bando_id?: number } | undefined;
+  const rigaFusione = (fusione.data ?? [])[0] as { master_slug?: string | null } | undefined;
+  if (!rigaStorico && !rigaFusione) return { stato: 'ok', riga: null };
+
+  const esito = rigaStorico?.esito ?? '301';
+  // Un 410 e' un ritiro: non ha ne' bisogno ne' diritto di una destinazione.
+  if (esito === '410') return { stato: 'ok', riga: { esito, slugMaster: null } };
+
+  const slugCandidato = rigaFusione?.master_slug ?? null;
+  const master = await slugVisibile(slugCandidato, rigaStorico?.bando_id ?? null);
+  if (master === 'errore') return { stato: 'errore' };
+  return { stato: 'ok', riga: { esito, slugMaster: master } };
+}
+
+/** Lo slug del master, ma solo se quel bando e' ancora visibile sulla fonte. */
+async function slugVisibile(
+  slugCandidato: string | null,
+  bandoId: number | null,
+): Promise<string | null | 'errore'> {
+  if (slugCandidato === null && bandoId === null) return null;
+  let query = supabaseBandi.from(FONTE_BANDI.tabella).select('slug').limit(1);
+  for (const [colonna, operatore, valore] of FONTE_BANDI.operazioni) {
+    query = query.filter(colonna, operatore, valore);
+  }
+  const { data, error } = slugCandidato !== null
+    ? await query.eq('slug', slugCandidato)
+    : await query.eq('id', bandoId as number);
+  if (error) {
+    console.warn('[bandi] verifica del master non riuscita:', error.message);
+    return 'errore';
+  }
+  const riga = (data ?? [])[0] as { slug?: string | null } | undefined;
+  return riga?.slug ?? null;
+}

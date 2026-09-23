@@ -27,6 +27,7 @@ const foglie = [
   new URL('../../src/lib/bandi/jsonld.ts', import.meta.url),
   new URL('../../src/lib/bandi/pubblicazione.ts', import.meta.url),
   new URL('../../src/lib/bandi/slug-storico.ts', import.meta.url),
+  new URL('../../src/lib/bandi/aggiornamenti.ts', import.meta.url),
 ];
 
 function sorgente(url: URL): string {
