@@ -38,9 +38,10 @@ from .preprocessor import (
     _truncate,
 )
 from .settings import get_settings
+from .stato_bando import data_italiana, oggi_roma
 
 
-RESOLVER_SYSTEM_PROMPT = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027 \
+RESOLVER_SYSTEM_PROMPT_TEMPLATE = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027 \
 (FESR, FSE+, JTF, INTERREG). Stai analizzando un bando per il quale NON è disponibile la \
 pagina di dettaglio (link_bando assente o non raggiungibile via Firecrawl).
 
@@ -68,10 +69,10 @@ programma che lista questo bando insieme ad altri). Dovrai usare RAGIONAMENTO ES
    sono comunque concreti? -> is_valid_bando=true.
    Se invece il titolo è generico tipo "Tutti i bandi", "Avvisi" -> false.
 
-2. **Stato (data attuale: giugno 2026)**:
+2. **Stato (data attuale: {oggi})**:
    - Tipo fonte 'Preavviso' + nessuna data passata -> probabilmente 'in apertura prossimamente'
-   - "edizione 2024" / "Bando 2025" + giugno 2026 -> probabilmente 'chiuso'
-   - "Bando 2026" / "anno 2026" o sezione "bandi aperti" -> probabilmente 'aperto'
+   - "edizione {anno_prec2}" / "Bando {anno_prec}" + {oggi} -> probabilmente 'chiuso'
+   - "Bando {anno}" / "anno {anno}" o sezione "bandi aperti" -> probabilmente 'aperto'
    - raw_data ha data_scadenza nel passato -> 'chiuso'
    - raw_data ha data_apertura nel futuro -> 'in apertura prossimamente'
    - Se la pagina fonte è un "calendario degli inviti" / "preavvisi" -> 'in apertura prossimamente'
@@ -92,6 +93,19 @@ programma che lista questo bando insieme ad altri). Dovrai usare RAGIONAMENTO ES
 
 Chiama save_bando_analysis con tutti i campi. Lo stato_bando sarà poi riconciliato
 automaticamente con le date estratte (data_scadenza < oggi -> forzato 'chiuso')."""
+
+
+def resolver_system_prompt(oggi=None) -> str:
+    """System prompt del resolver con data e anni correnti in Europe/Rome
+    (fix 8.a.4: niente mese+anno cablati). `oggi` sovrascrivibile nei test."""
+    giorno = oggi or oggi_roma()
+    return (
+        RESOLVER_SYSTEM_PROMPT_TEMPLATE
+        .replace("{oggi}", data_italiana(giorno))
+        .replace("{anno_prec2}", str(giorno.year - 2))
+        .replace("{anno_prec}", str(giorno.year - 1))
+        .replace("{anno}", str(giorno.year))
+    )
 
 
 def _build_resolver_prompt(
@@ -339,7 +353,7 @@ async def resolve_bando(
             client,
             model=settings.resolver_model,
             max_tokens=settings.resolver_max_tokens,
-            system=RESOLVER_SYSTEM_PROMPT,
+            system=resolver_system_prompt(),
             user_prompt=user_prompt,
         )
     except Exception as e:

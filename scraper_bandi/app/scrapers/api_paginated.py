@@ -19,6 +19,11 @@ Parametri:
   - duplicate_threshold: stop dopo N record consecutivi gia' in DB (early-stop).
     Default 20. Disabilita con None.
   - extra_params: dict di query string params aggiuntivi (opzionale).
+  - min_risultati_prima_pagina: se impostato e la prima pagina restituisce
+    meno record, scrape() solleva RisultatiInsufficientiError (o l'eccezione
+    scelta da `_errore_prima_pagina`) invece di proseguire: serve a smascherare
+    una sessione anonima (OE: 5 record invece di 50). Default None = nessun
+    controllo.
 """
 from __future__ import annotations
 
@@ -27,7 +32,11 @@ import time
 from typing import Any
 
 from ..logger import logger
-from .base import BandoItem, BandoScraper
+from .base import BandoItem, BandoScraper, esito, esito_iniziale
+
+
+class RisultatiInsufficientiError(RuntimeError):
+    """La prima pagina dell'API ha meno record di `min_risultati_prima_pagina`."""
 
 
 def _get_nested(obj: Any, path: str) -> Any:
@@ -66,6 +75,7 @@ class JsonApiPaginatedScraper(BandoScraper):
         max_pages: int = 100,
         duplicate_threshold: int | None = 20,
         extra_params: dict[str, Any] | None = None,
+        min_risultati_prima_pagina: int | None = None,
         **kw: Any,
     ):
         self.api_url_template = api_url_template
@@ -80,6 +90,7 @@ class JsonApiPaginatedScraper(BandoScraper):
         self.max_pages = max_pages
         self.duplicate_threshold = duplicate_threshold
         self.extra_params = extra_params or {}
+        self.min_risultati_prima_pagina = min_risultati_prima_pagina
         # Per default pagination_type=page parte da 1; solr_start/offset da 0.
         if pagination_type in ("solr_start", "offset") and page_start == 1:
             self.page_start = 0
@@ -114,16 +125,37 @@ class JsonApiPaginatedScraper(BandoScraper):
         })
         return s
 
+    def _errore_prima_pagina(self, n_risultati: int) -> Exception:
+        """Override-able: eccezione da sollevare se la prima pagina e' corta."""
+        return RisultatiInsufficientiError(
+            f"prima pagina con {n_risultati} risultati "
+            f"(attesi >= {self.min_risultati_prima_pagina})"
+        )
+
     async def scrape(self, fonte: dict[str, Any]) -> list[BandoItem]:
-        """Itera le pagine via API e ritorna BandoItem aggregati."""
+        """Itera le pagine via API e ritorna BandoItem aggregati.
+
+        Raises:
+            l'eccezione di `_errore_prima_pagina` se `min_risultati_prima_pagina`
+            e' impostato e la prima pagina restituisce meno record.
+        """
         from .adapters import get_adapter
         adapter_fn = get_adapter(self.adapter_name)
         fonte_id = int(fonte["id"])
+
+        # Esito di copertura (§6.1). Si riparte da «troncato» e si dichiara la
+        # copertura piena solo sull'unica uscita che la garantisce: la pagina
+        # vuota, o il totale raggiunto. Ogni `break` anticipato (errore HTTP,
+        # JSON illeggibile, early-stop sui duplicati, `max_pages`) lascia il
+        # valore di partenza, cioe' «non ho visto tutto».
+        self.ultimo_esito = esito_iniziale()
+        totale_dichiarato = 0
 
         items: list[BandoItem] = []
         seen_links: set[str] = set()
         consecutive_dup = 0
         page_count = 0
+        completo = False
 
         session = self._make_session()
 
@@ -170,9 +202,28 @@ class JsonApiPaginatedScraper(BandoScraper):
                 break
 
             records = _get_nested(data, self.response_path) or []
+            # Guardia sulla prima pagina: un dataset ridotto (es. OE anonimo)
+            # e' un errore della fonte, non un elenco corto.
+            if (
+                page_count == 1
+                and self.min_risultati_prima_pagina is not None
+                and len(records) < self.min_risultati_prima_pagina
+            ):
+                logger.warning(
+                    "[{}] fonte_id={} page=1 records={} < min_risultati_prima_pagina={}",
+                    self.name, fonte_id, len(records), self.min_risultati_prima_pagina,
+                )
+                raise self._errore_prima_pagina(len(records))
+            totale = _get_nested(data, self.total_field) if self.total_field else None
+            if isinstance(totale, int) and totale > totale_dichiarato:
+                totale_dichiarato = totale
+
             if not records:
+                # Pagina vuota: la fonte e' finita. E' l'unico «stop» che prova
+                # di aver visto tutto.
                 logger.info("[{}] fonte_id={} page={} no records, stop",
                             self.name, fonte_id, page_count)
+                completo = True
                 break
 
             page_new = 0
@@ -213,6 +264,8 @@ class JsonApiPaginatedScraper(BandoScraper):
             if self.pagination_type == "cursor":
                 next_url = _get_nested(data, self.next_field or "next") if self.next_field else None
                 if not next_url:
+                    # Cursore esaurito: e' la fine del listing (OE).
+                    completo = True
                     break
             elif self.pagination_type == "page":
                 counter += 1
@@ -224,14 +277,18 @@ class JsonApiPaginatedScraper(BandoScraper):
                 if self.total_field:
                     total = _get_nested(data, self.total_field)
                     if isinstance(total, int) and counter >= total:
+                        # `counter >= numFound`: la condizione di §6.1 per
+                        # incentivi.gov.it, cioe' copertura piena.
+                        completo = True
                         break
 
             # Rate limit
             if self.rate_limit_s > 0:
                 await asyncio.sleep(self.rate_limit_s)
 
+        self.ultimo_esito = esito(page_count, troncato=not completo, count=totale_dichiarato)
         logger.info(
-            "[{}] fonte_id={} DONE | pages={} items={}",
-            self.name, fonte_id, page_count, len(items),
+            "[{}] fonte_id={} DONE | pages={} items={} esito={}",
+            self.name, fonte_id, page_count, len(items), self.ultimo_esito,
         )
         return items

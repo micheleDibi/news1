@@ -19,6 +19,14 @@ from urllib.parse import urlsplit, unquote
 
 from .logger import logger
 from .settings import get_settings
+from .stato_bando import data_italiana, oggi_roma
+
+
+# Budget del testo di pagina nel prompt di preprocess (fix 8.a.2). Il valore e'
+# quello che il prompt usava gia': cambiarlo cambierebbe il costo di ogni giro,
+# e la selezione per sezioni (`impronte.seleziona_sezioni`, budget 6 000)
+# arrivera' insieme al modulo che la implementa.
+BUDGET_PROMPT_CHAR = 4000
 
 
 # URL slug pattern: identifica gli URL che sembrano indici di sezione
@@ -167,7 +175,7 @@ ANALYZE_TOOL = {
 }
 
 
-SYSTEM_PROMPT = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027 \
+SYSTEM_PROMPT_TEMPLATE = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027 \
 (FESR, FSE+, JTF, INTERREG). Il tuo compito è validare ogni record candidato a "bando" \
 estratto da portali istituzionali (regioni, ministeri, programmi CTE), eliminando i falsi positivi.
 
@@ -234,7 +242,7 @@ INDIZI utili per lo stato:
 - <0.5: incerto (usa per casi dubbi: meglio rifiutare con questa confidence)
 
 == ESTRAZIONE DATE (CRITICO) ==
-Data attuale: giugno 2026. Formato italiano DD/MM/YYYY. Output sempre ISO YYYY-MM-DD.
+Data attuale: {oggi}. Formato italiano DD/MM/YYYY. Output sempre ISO YYYY-MM-DD.
 
 Devi estrarre 3 date dal CONTENUTO PAGINA (markdown Firecrawl) — non dal titolo o raw_data:
 - **data_pubblicazione**: data di PUBBLICAZIONE del bando sulla fonte ufficiale (BUR, GU, sito ente).
@@ -265,12 +273,19 @@ REGOLE:
 
 == STATO_BANDO DATA-DRIVEN ==
 Lo stato_bando emesso dal LLM sarà RICONCILIATO automaticamente con le date:
-- Se data_scadenza < giugno 2026 (oggi) -> stato forzato a 'chiuso' (ignoro tua scelta)
-- Se data_apertura > giugno 2026 (oggi) -> stato forzato a 'in apertura prossimamente'
+- Se data_scadenza < {oggi} (oggi) -> stato forzato a 'chiuso' (ignoro tua scelta)
+- Se data_apertura > {oggi} (oggi) -> stato forzato a 'in apertura prossimamente'
 - Altrimenti rispetta la tua decisione (aperto/chiuso/in apertura)
 
 Quindi: emetti lo stato che pensi corretto, ma SAI che le date hanno priorità.
 """
+
+
+def system_prompt(oggi=None) -> str:
+    """System prompt con la data corrente in Europe/Rome (fix 8.a.4: niente
+    mese+anno cablati). Sostituzione testuale, non .format(): il template
+    contiene graffe letterali negli esempi di URL. `oggi` sovrascrivibile nei test."""
+    return SYSTEM_PROMPT_TEMPLATE.replace("{oggi}", data_italiana(oggi or oggi_roma()))
 
 
 def _truncate(text: str | None, max_chars: int) -> str:
@@ -333,7 +348,9 @@ def _build_user_prompt(
         )
     hints_block = ("\nANALISI URL:\n- " + "\n- ".join(url_hints)) if url_hints else ""
 
-    md_block = _truncate(markdown, 4000) if markdown else "(non disponibile)"
+    # Budget del prompt (fix 8.a.2): il testo arriva intero da `scarico.py` e
+    # si taglia QUI, dove entra nel prompt, non alla sorgente.
+    md_block = _truncate(markdown, BUDGET_PROMPT_CHAR) if markdown else "(non disponibile)"
 
     return f"""Analizza questo record candidato a bando.
 
@@ -528,7 +545,8 @@ async def analyze_bando(
     """Analizza un singolo bando via Claude Haiku 4.5 con Firecrawl markdown.
 
     1. Pre-filter auto-reject.
-    2. Firecrawl markdown del link_bando (cache LRU condivisa con enricher).
+    2. Markdown del link_bando via `scarico.py` (cache per giro, ripiego
+       Firecrawl solo se la pagina httpx non basta).
     3. Se markdown vuoto/troppo corto -> sentinel _needs_fallback=True per
        triggerare bando_resolver lato runner.
     4. LLM Haiku 4.5 con tool use esteso (validità + stato + 3 date).
@@ -559,7 +577,8 @@ async def analyze_bando(
         }
         return auto
 
-    # 2. Firecrawl markdown del link_bando (se disponibile)
+    # 2. Markdown del link_bando (se disponibile). Il wrapper storico ora
+    # chiama `scarico.py`: cache per giro, nessun fallimento memorizzato.
     link = bando.get("link_bando") or ""
     markdown = ""
     if link:
@@ -567,7 +586,7 @@ async def analyze_bando(
         try:
             markdown = await _firecrawl_scrape_markdown(link)
         except Exception as e:
-            logger.debug("[preprocess/{}] Firecrawl fail: {}", bando_id, e)
+            logger.debug("[preprocess/{}] scarico fallito: {}", bando_id, e)
 
     # 3. Markdown vuoto/troppo corto -> richiede fallback bando_resolver
     if not markdown or len(markdown) < 200:
@@ -596,7 +615,7 @@ async def analyze_bando(
         model=settings.preprocess_model,
         # max_tokens esteso per ospitare 3 date * 300 char quote + overhead JSON
         max_tokens=max(settings.preprocess_max_tokens, 800),
-        system=SYSTEM_PROMPT,
+        system=system_prompt(),
         user_prompt=user_prompt,
     )
 

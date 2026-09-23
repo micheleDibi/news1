@@ -12,7 +12,8 @@
     "preview": "astro preview",
     "astro": "astro",
     "test": "TZ=Asia/Kathmandu node --experimental-strip-types --disable-warning=ExperimentalWarning --import ./tests/supporto/registra-risolutore.mjs --test \"tests/**/*.test.ts\"",
-    "test:py": "cd backend && python3 -m unittest discover -s tests -t ."
+    "test:py": "cd backend && python3 -m unittest discover -s tests -t .",
+    "test:py:bandi": "cd scraper_bandi && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -t ."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

@@ -1,10 +1,10 @@
-"""Enrichment dei bandi via Claude Haiku 4.5 + Firecrawl.
+"""Enrichment dei bandi via Claude Haiku 4.5 + `scarico.py`.
 
 Due famiglie di funzioni:
 
 A) refine_stato_bando(): determinazione obbligatoria dello stato per i bandi
-   con stato_bando=NULL. Usa Firecrawl per scaricare la pagina (se presente)
-   + LLM per analisi.
+   con stato_bando=NULL. Scarica la pagina (se presente) tramite `scarico.py`
+   — httpx, ripiego Firecrawl solo se serve — + LLM per analisi.
 
 B) extract_* (7 funzioni): classificazione FK + junction per i bandi
    aperti/in apertura. Una LLM call per categoria, eseguite in PARALLELO
@@ -24,6 +24,7 @@ from typing import Any
 from .logger import logger
 from .preprocessor import _get_anthropic_client
 from .settings import get_settings
+from .stato_bando import data_italiana, oggi_roma
 
 
 # Riusiamo il helper del preprocessor per costanza
@@ -35,67 +36,68 @@ def _truncate(text: str | None, max_chars: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Firecrawl fetch (con cache LRU per evitare duplicate scrape)
+# Scarico: due wrapper sottili su `scarico.py` (fix 8.a.1 e 8.a.2)
 # ---------------------------------------------------------------------------
+#
+# I nomi restano questi perche' quattro chiamanti li importano gia'
+# (`bando_enrich_runner`, `bando_resolver`, `bando_seo_runner`, `preprocessor`)
+# e i test li sostituiscono con dei mock; ma la cache, il client, il throttle,
+# i ritentativi e il contatore dei crediti stanno tutti in `scarico.py`.
+#
+# Due differenze di comportamento volute rispetto alla vecchia
+# `_FIRECRAWL_CACHE`:
+#   1. un fallimento non entra piu' in cache (prima un 500 passeggero
+#      condannava quell'URL per tutta la vita del processo);
+#   2. il testo NON viene troncato qui. Il budget appartiene al prompt che
+#      consuma il testo: `_build_classify_prompt` (2 500), `refine_stato_bando`
+#      (3 000), `preprocessor._build_user_prompt` (4 000),
+#      `bando_resolver._build_resolver_prompt` (6 000), e il ritaglio esplicito
+#      in `bando_seo_runner`. Troncare alla sorgente buttava via testo che a
+#      valle serviva (fix 8.a.2).
+#
+# La firma resta compatibile: `come_fonte` e' un keyword-only con default
+# falso, quindi i quattro chiamanti non cambiano. Chi prende la pagina come
+# FONTE UFFICIALE (oggi `bando_resolver._resolve_fonte`, che scarica
+# `fonte['link']`) deve passare `come_fonte=True` per avere la denylist degli
+# aggregatori del fix 8.a.12.
 
-_FIRECRAWL_CACHE: dict[str, str] = {}
 
+async def _firecrawl_scrape_markdown(url: str, *, come_fonte: bool = False) -> str:
+    """Markdown della pagina principale del bando (Firecrawl solo se serve).
 
-async def _firecrawl_scrape_markdown(url: str) -> str:
-    """Scrape via Firecrawl SDK, ritorna markdown. Cache in-process per URL."""
-    if url in _FIRECRAWL_CACHE:
-        return _FIRECRAWL_CACHE[url]
-
-    def _scrape() -> str:
-        from firecrawl import FirecrawlApp
-        from firecrawl.v2.types import JsonFormat  # noqa: F401 (import per sicurezza)
-        settings = get_settings()
-        if not settings.firecrawl_api_key:
-            raise RuntimeError("FIRECRAWL_API_KEY mancante")
-        app = FirecrawlApp(api_key=settings.firecrawl_api_key)
-        result = app.scrape_url(url, formats=["markdown"])
-        # firecrawl-py v4: result e' un Document con .markdown
-        if hasattr(result, "markdown") and result.markdown:
-            return result.markdown
-        if isinstance(result, dict):
-            data = result.get("data", result)
-            md = data.get("markdown") or ""
-            return md
+    `come_fonte=True` solo quando l'URL viene preso come **fonte ufficiale**:
+    allora vale la denylist degli aggregatori (fix 8.a.12) e un host vietato
+    ritorna "" con un warning invece di un testo plausibile. Il default e'
+    falso perche' la scheda di un bando su un aggregatore e' spesso l'unica
+    pagina esistente (`link_bando` di migliaia di righe punta a
+    obiettivoeuropa.com): vietarla a tappeto manderebbe in `rejected` ogni
+    bando nuovo di quella fonte.
+    """
+    from .scarico import ScaricoVietatoError, scarica_markdown
+    try:
+        return await scarica_markdown(url, come_fonte=come_fonte)
+    except ScaricoVietatoError as e:
+        logger.warning("[enricher] scarico vietato per {}: {}", url, e)
+        return ""
+    except Exception as e:
+        logger.warning("[enricher] scarico fallito per {}: {}", url, e)
         return ""
 
+
+async def _httpx_fetch_text(url: str, *, come_fonte: bool = False) -> str:
+    """Testo visibile via httpx, senza ripiego Firecrawl (nessun credito).
+
+    Per `come_fonte` vale quanto scritto sopra.
+    """
+    from .scarico import ScaricoVietatoError, scarica_testo
     try:
-        md = await asyncio.to_thread(_scrape)
-    except Exception as e:
-        logger.warning("[enricher] Firecrawl fail per {}: {}", url, e)
-        md = ""
-
-    md = _truncate(md, 4000)
-    _FIRECRAWL_CACHE[url] = md
-    return md
-
-
-async def _httpx_fetch_text(url: str) -> str:
-    """Fetch HTML semplice via httpx (fallback senza Firecrawl). Cache."""
-    if url in _FIRECRAWL_CACHE:
-        return _FIRECRAWL_CACHE[url]
-    from .http import fetch_html
-    try:
-        html = await fetch_html(url, timeout_s=15.0)
+        return await scarica_testo(url, come_fonte=come_fonte)
+    except ScaricoVietatoError as e:
+        logger.debug("[enricher] scarico vietato per {}: {}", url, e)
+        return ""
     except Exception as e:
         logger.debug("[enricher] httpx fetch fail per {}: {}", url, e)
-        html = ""
-    # Strip tags semplice
-    from bs4 import BeautifulSoup
-    if html:
-        try:
-            text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
-        except Exception:
-            text = html
-    else:
-        text = ""
-    text = _truncate(text, 4000)
-    _FIRECRAWL_CACHE[url] = text
-    return text
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +183,7 @@ def _multi_select_tool(name: str, catalog: list[dict[str, Any]], item_descr: str
 # Prompts
 # ---------------------------------------------------------------------------
 
-REFINE_SYSTEM = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027. \
+REFINE_SYSTEM_TEMPLATE = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027. \
 Determina lo STATO ATTUALE del bando in modo obbligatorio.
 
 SEGNALI per determinare lo stato:
@@ -205,7 +207,13 @@ IN APERTURA PROSSIMAMENTE (preavviso, non ancora aperto):
 - "Calendario inviti", "Inviti programmati"
 
 Se senti dubbi: ragiona dal tipo di fonte (Preavviso vs Opportunità) e dal contenuto raw_data.
-La data attuale è giugno 2026."""
+La data attuale è {oggi}."""
+
+
+def refine_system(oggi=None) -> str:
+    """System prompt del refinement con la data corrente in Europe/Rome
+    (fix 8.a.4: niente mese+anno cablati). `oggi` sovrascrivibile nei test."""
+    return REFINE_SYSTEM_TEMPLATE.replace("{oggi}", data_italiana(oggi or oggi_roma()))
 
 
 CLASSIFY_SYSTEM_TEMPLATE = """Sei un esperto di bandi pubblici italiani per finanziamenti UE 2021-2027. \
@@ -314,9 +322,13 @@ async def _call_anthropic_tool(
 async def refine_stato_bando(
     bando: dict[str, Any],
     fonte_ctx: dict[str, Any],
-) -> tuple[str, float, str]:
+) -> tuple[str | None, float, str]:
     """Determina lo stato del bando via Firecrawl + LLM. Ritorna
-    (stato_bando, confidence, reason)."""
+    (stato_bando, confidence, reason).
+
+    Fix 8.a.11: se il LLM fallisce o risponde fuori enum lo stato e' None
+    con confidenza 0.0 (mai 'aperto' di ripiego): il bando resta
+    'processed' e viene ritentato al giro successivo."""
     settings = get_settings()
     client = _get_anthropic_client()
 
@@ -335,7 +347,8 @@ async def refine_stato_bando(
     tipo_link = bando.get("tipo_link") or fonte_ctx.get("tipo_link") or ""
     fonte_url = fonte_ctx.get("link") or ""
 
-    user_prompt = f"""Determina lo STATO ATTUALE del bando seguente (data: giugno 2026).
+    oggi_testo = data_italiana(oggi_roma())
+    user_prompt = f"""Determina lo STATO ATTUALE del bando seguente (data: {oggi_testo}).
 
 CONTESTO FONTE
 - URL fonte: {fonte_url}
@@ -356,20 +369,30 @@ Chiama save_refinement con la tua determinazione."""
         client,
         model=settings.enrich_model,
         max_tokens=settings.enrich_max_tokens,
-        system=REFINE_SYSTEM,
+        system=refine_system(),
         user_prompt=user_prompt,
         tool=REFINE_STATO_TOOL,
     )
     if not result:
-        # Fallback: euristica grezza dal tipo_link fonte
-        fallback = "in apertura prossimamente" if tipo_link == "Preavviso" else "aperto"
-        logger.warning("[enricher/refine] bando_id={} LLM fail, fallback={}", bando.get("id"), fallback)
-        return (fallback, 0.3, "fallback heuristic (LLM fail)")
+        # Nessun ripiego euristico: senza determinazione lo stato resta NULL.
+        logger.warning(
+            "[enricher/refine] bando_id={} LLM fallito: nessuno stato (resta 'processed')",
+            bando.get("id"),
+        )
+        return (None, 0.0, "LLM fallito: nessuna determinazione")
 
-    stato = result.get("stato_bando", "aperto")
+    stato = result.get("stato_bando")
     if stato not in ("aperto", "chiuso", "in apertura prossimamente"):
-        stato = "aperto"
-    conf = float(result.get("confidence", 0.5))
+        logger.warning(
+            "[enricher/refine] bando_id={} stato fuori enum: {!r} (resta 'processed')",
+            bando.get("id"), stato,
+        )
+        return (None, 0.0, f"stato fuori enum: {stato!r}")
+    try:
+        conf = float(result.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        conf = 0.0
+    conf = max(0.0, min(1.0, conf))
     reason = str(result.get("reason", ""))[:200]
     return (stato, conf, reason)
 

@@ -9,7 +9,7 @@ Pattern observat dal repo esterno (srapingbandiitaliadomani/scraper.py):
     div.col-lg-3 column p.text  → amministrazione_titolare
     div.col-lg-2 column p.text  → data_chiusura (data_scadenza)
     div.col-lg-2 column div.status-item.loading → stato
-    a[href]                     → link
+    a[href]                     → link (preferito «Vai al bando completo»)
     div.col-12 column accordion
       div.col-lg-5
         div.info-time
@@ -36,6 +36,45 @@ def _text(el) -> str:
     return el.get_text(strip=True) if el else ""
 
 
+# Prefissi di href che non portano a nessuna pagina (toggle dell'accordion,
+# handler JS, posta): vanno scartati prima di scegliere il link del bando.
+_HREF_SCARTATI = ("#", "javascript:", "mailto:")
+
+# Testo del bottone che, nel frammento indice di Italia Domani, punta alla
+# pagina istituzionale del bando (gazzettaufficiale.it, invitalia.it, ...).
+_ANCHOR_BANDO_COMPLETO = "vai al bando completo"
+
+
+def _href_utile(a) -> str | None:
+    """Ritorna l'href ripulito del tag <a>, o None se vuoto o non navigabile."""
+    href = (a.get("href") or "").strip()
+    if not href or href.lower().startswith(_HREF_SCARTATI):
+        return None
+    return href
+
+
+def _scegli_link(row) -> str | None:
+    """Sceglie il link del bando tra gli <a href> della card.
+
+    Preferisce l'anchor «Vai al bando completo» (case-insensitive); altrimenti
+    il primo href navigabile in ordine DOM. Gli href relativi vengono
+    risolti su _BASE_URL.
+    """
+    scelto: str | None = None
+    for a in row.find_all("a", href=True):
+        href = _href_utile(a)
+        if href is None:
+            continue
+        if _ANCHOR_BANDO_COMPLETO in _text(a).casefold():
+            scelto = href
+            break
+        if scelto is None:
+            scelto = href
+    if scelto is None:
+        return None
+    return scelto if scelto.startswith("http") else f"{_BASE_URL}{scelto}"
+
+
 def to_bando_item(row, fonte_id: int) -> BandoItem | None:
     """Converte un nodo HTML <div.item-wrapper> in BandoItem.
 
@@ -47,13 +86,9 @@ def to_bando_item(row, fonte_id: int) -> BandoItem | None:
     if not titolo:
         return None
 
-    # Link
-    link = None
-    link_tag = row.find("a", href=True)
-    if link_tag:
-        href = (link_tag.get("href") or "").strip()
-        if href:
-            link = href if href.startswith("http") else f"{_BASE_URL}{href}"
+    # Link: «Vai al bando completo» se presente, altrimenti il primo href
+    # navigabile (mai '#', 'javascript:', 'mailto:' o vuoti).
+    link = _scegli_link(row)
 
     # ID dal markup
     row_id = row.get("id") or row.get("data-id")

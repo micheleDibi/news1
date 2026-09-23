@@ -1,8 +1,15 @@
-"""Client Supabase DB B + helper per upsert e mark-deprecated della tabella `fonte`."""
+"""Client Supabase DB B + helper per upsert e mark-deprecated della tabella `fonte`.
+
+In coda al modulo vive `controllo` (classe `Controllo`): l'adattatore che sa
+quali colonne e quali RPC il DB espone davvero, perche' le migrazioni v11 le
+applica il committente e il codice deve girare anche prima (§16.2 M12).
+"""
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime as datetime_cls
 from functools import lru_cache
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from supabase import Client, create_client
 
@@ -309,7 +316,6 @@ async def update_bandi_postanalysis(
     Concorrenza ridotta da 20 a 10 di default per ridurre la pressione
     sulla connessione HTTP/2 persistente di postgrest.
     """
-    import asyncio
     import random
 
     if not updates:
@@ -549,13 +555,20 @@ def _is_transient_error_local(exc: Exception) -> bool:
     return _is_transient_error(exc)
 
 
-async def update_bando_refinement(bando_id: int, stato_bando: str) -> bool:
-    """UPDATE solo stato_bando per la fase A (refinement). NON cambia
-    stato_processing (resta 'processed')."""
-    import asyncio
+async def update_bando_refinement(
+    bando_id: int,
+    stato_bando: str,
+    confidence: float | None = None,
+) -> bool:
+    """UPDATE stato_bando (e, se passata, confidence_score) per la fase A
+    (refinement). NON cambia stato_processing (resta 'processed').
 
+    Fix 8.a.11: il chiamante la invoca SOLO con stato non nullo e
+    confidenza >= 0.6; la confidenza viene persistita per l'audit."""
     sb = get_supabase()
-    payload = {"stato_bando": stato_bando}
+    payload: dict[str, Any] = {"stato_bando": stato_bando}
+    if confidence is not None:
+        payload["confidence_score"] = float(confidence)
     try:
         await asyncio.to_thread(
             lambda: sb.table("bando").update(payload).eq("id", bando_id).execute()
@@ -599,8 +612,6 @@ async def update_bando_enriched(
     a 'enriched' viene fatta SOLO se tutti gli UPDATE/INSERT sono OK).
     Idempotente: re-run sostituisce le junction esistenti.
     """
-    import asyncio
-
     sb = get_supabase()
 
     # Step 1: DELETE junction esistenti
@@ -669,9 +680,45 @@ async def update_bando_enriched(
 # Step v8: skill SEO (enriched -> completed)
 # ---------------------------------------------------------------------------
 
+#: Colonne che lo step SEO legge sempre: esistono tutte sul DB vivo, `allegati`
+#: compresa (e' gia' in `_SEO_PAYLOAD_COLUMNS`).
+COLONNE_SEO_BASE: tuple[str, ...] = (
+    "id", "fonte_id", "titolo_raw", "descrizione_raw", "link_bando", "raw_data",
+    "tipo_link", "stato_bando", "stato_processing",
+    "data_pubblicazione", "data_apertura", "data_scadenza",
+    "tipologia_bando_id", "modalita_erogazione_id", "programma_id",
+    "allegati",
+)
+
+#: Colonne della migrazione 01: senza di loro `bando_seo_runner.scegli_fonte`
+#: ricadrebbe sempre su `link_bando` — per i 1 702 OE, l'aggregatore — e
+#: l'intestazione «PAGINA UFFICIALE: <url>» non nascerebbe mai. Si chiedono
+#: solo se lo schema le espone davvero: su un DB non ancora migrato sarebbero
+#: un 42703 che ferma lo step SEO su tutte le righe.
+COLONNE_SEO_RESOLVER: tuple[str, ...] = (
+    "fonte_ufficiale_url", "fonte_ufficiale_stato",
+)
+
+
+def _colonne_con_opzionali(
+    tabella: str, base: Sequence[str], opzionali: Sequence[str], strumento: Any,
+) -> str:
+    """`select=` con le colonne base piu' le opzionali che lo schema espone.
+
+    Diverso da `_colonne_disponibili`: li' uno schema illeggibile significa
+    «chiedile tutte», perche' le desiderate esistono gia' sul DB vivo. Qui le
+    opzionali sono colonne nuove, e nel dubbio non si chiedono.
+    """
+    presenti = strumento.colonne(tabella)
+    scelte = list(base) + [c for c in opzionali if c in presenti]
+    return ",".join(dict.fromkeys(scelte))
+
+
 def select_bandi_to_complete(
     limit: int | None = None,
     include_completed: bool = False,
+    *,
+    strumento: Any | None = None,
 ) -> list[dict[str, Any]]:
     """SELECT bandi candidati alla skill SEO.
 
@@ -680,9 +727,14 @@ def select_bandi_to_complete(
     Paginato 1000 per superare il cap default Supabase.
 
     Colonne selezionate: tutto quanto serve a build_bando_input_context (raw
-    scraper + FK + date estratte dall'enricher).
+    scraper + FK + date estratte dall'enricher), piu' `allegati` e — quando la
+    migrazione 01 e' applicata — `fonte_ufficiale_url`/`fonte_ufficiale_stato`,
+    che sono cio' con cui §5 alimenta la SEO e il gate degli URL.
     """
     sb = get_supabase()
+    colonne = _colonne_con_opzionali(
+        "bando", COLONNE_SEO_BASE, COLONNE_SEO_RESOLVER, _controllo(strumento),
+    )
     PAGE = 1000
     all_rows: list[dict[str, Any]] = []
     offset = 0
@@ -700,12 +752,7 @@ def select_bandi_to_complete(
         try:
             res = (
                 sb.table("bando")
-                .select(
-                    "id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, "
-                    "tipo_link, stato_bando, "
-                    "data_pubblicazione, data_apertura, data_scadenza, "
-                    "tipologia_bando_id, modalita_erogazione_id, programma_id"
-                )
+                .select(colonne)
                 .in_("stato_processing", stato_values)
                 .order("id")
                 .range(offset, offset + page_size - 1)
@@ -968,24 +1015,48 @@ async def reconcile_canonical_key(
     return {"action": "failed", "reason": "unexpected_state"}
 
 
+def _payload_completed(
+    payload: dict[str, Any],
+    mark_completed: bool = True,
+    gia_pubblicato: bool = False,
+) -> dict[str, Any]:
+    """Filtro puro del payload SEO prima dell'UPDATE (testabile senza DB).
+
+    - solo le colonne di _SEO_PAYLOAD_COLUMNS;
+    - gia_pubblicato=True (riga gia' 'completed', quindi letta da BandoFit e
+      dal frontend): `slug` e `titolo` restano congelati (lo slug e' l'URL
+      pubblico, il titolo e' snapshot in saved_bandi/consultation_requests di
+      BandoFit) e stato_processing NON viene toccato;
+    - altrimenti mark_completed aggiunge stato_processing='completed'.
+    """
+    update_dict: dict[str, Any] = {
+        col: payload[col] for col in _SEO_PAYLOAD_COLUMNS if col in payload
+    }
+    if gia_pubblicato:
+        update_dict.pop("slug", None)
+        update_dict.pop("titolo", None)
+    elif mark_completed:
+        update_dict["stato_processing"] = "completed"
+    return update_dict
+
+
 async def update_bando_completed(
     bando_id: int,
     payload: dict[str, Any],
     mark_completed: bool = True,
+    gia_pubblicato: bool = False,
 ) -> bool:
     """UPDATE bando con i 14 campi del payload skill + stato_processing='completed'.
 
     payload deve contenere SOLO i 14 campi consentiti (filtrati comunque per
     sicurezza). Idempotente: re-run sostituisce i valori esistenti.
+    Con gia_pubblicato=True (re-run su una riga gia' 'completed') slug e
+    titolo non vengono riscritti e stato_processing resta com'e'.
     """
-    import asyncio
-
     sb = get_supabase()
-    update_dict: dict[str, Any] = {
-        col: payload[col] for col in _SEO_PAYLOAD_COLUMNS if col in payload
-    }
-    if mark_completed:
-        update_dict["stato_processing"] = "completed"
+    update_dict = _payload_completed(
+        payload, mark_completed=mark_completed, gia_pubblicato=gia_pubblicato,
+    )
 
     try:
         await asyncio.to_thread(
@@ -995,3 +1066,1047 @@ async def update_bando_completed(
     except Exception as e:
         logger.exception("[db] update_bando_completed id={} fallito: {}", bando_id, e)
         return False
+
+
+# ---------------------------------------------------------------------------
+# db.controllo — adattatore sullo schema reale (piano §16.2 M12, A21)
+# ---------------------------------------------------------------------------
+#
+# Le migrazioni 01-07 le applica il committente nel SQL Editor, quando vuole.
+# Nel frattempo il DB ha 36 colonne su `bando` e nessuna delle RPC nuove.
+# Senza un adattatore, al primo rilascio un `.lt('tentativi_seo', 3)`
+# risponderebbe 42703 («column does not exist») e fermerebbe l'intero step SEO
+# su tutte le righe: un errore di configurazione diventerebbe un blocco totale.
+#
+# Regola: ogni filtro, ogni scrittura e ogni `.rpc(...)` su un oggetto nuovo
+# passa da `controllo.ha(...)` / `controllo.rpc_disponibile(...)`; chi non trova
+# l'oggetto degrada (lo step ritorna `{'status':'ok','saltato':'colonne_assenti'}`)
+# invece di sollevare.
+#
+# Lo schema si legge UNA volta per processo dall'endpoint OpenAPI di PostgREST
+# (`GET /rest/v1/`), che elenca tabelle, colonne e funzioni esposte. Un errore
+# di rete non e' un'eccezione: e' un insieme vuoto, cioe' «non so, degrada».
+
+
+class Controllo:
+    """Conoscenza dello schema realmente esposto. Un'istanza per processo."""
+
+    def __init__(
+        self,
+        fornitore_schema: Callable[[], dict[str, Any]] | None = None,
+        *,
+        client_factory: Callable[[], Client] | None = None,
+    ) -> None:
+        # `fornitore_schema` e' il punto di iniezione dei test: nessuna rete.
+        self._fornitore = fornitore_schema
+        self._client_factory = client_factory or get_supabase
+        self._schema: dict[str, Any] | None = None
+        self._letto = False
+
+    # --- schema ------------------------------------------------------------
+
+    def azzera(self) -> None:
+        """Dimentica lo schema letto (test, e dopo una migrazione applicata)."""
+        self._schema = None
+        self._letto = False
+
+    def schema(self) -> dict[str, Any]:
+        """Il documento OpenAPI, letto una sola volta. `{}` se non leggibile."""
+        if self._letto:
+            return self._schema or {}
+        self._letto = True
+        fornitore = self._fornitore or _schema_openapi
+        try:
+            self._schema = fornitore() or {}
+        except Exception as e:
+            # Degradare e' il comportamento voluto: senza schema il codice non
+            # filtra sulle colonne nuove e non scrive, ma continua a girare.
+            logger.warning("[db.controllo] schema non leggibile, degrado: {}", e)
+            self._schema = {}
+        return self._schema
+
+    # --- interrogazioni ----------------------------------------------------
+
+    def colonne(self, tabella: str) -> frozenset[str]:
+        """Colonne esposte per `tabella`; insieme vuoto = «non so»."""
+        schema = self.schema()
+        definizioni = schema.get("definitions")
+        if not isinstance(definizioni, dict):
+            # PostgREST >= 12 / OpenAPI 3: components.schemas
+            componenti = schema.get("components")
+            definizioni = componenti.get("schemas") if isinstance(componenti, dict) else None
+        if not isinstance(definizioni, dict):
+            return frozenset()
+        voce = definizioni.get(tabella)
+        proprieta = voce.get("properties") if isinstance(voce, dict) else None
+        if not isinstance(proprieta, dict):
+            return frozenset()
+        return frozenset(proprieta)
+
+    def ha(self, tabella: str, colonna: str) -> bool:
+        """Vero solo se la colonna esiste davvero: nel dubbio, falso."""
+        return colonna in self.colonne(tabella)
+
+    def ha_tutte(self, tabella: str, colonne: Iterable[str]) -> bool:
+        presenti = self.colonne(tabella)
+        return bool(presenti) and all(c in presenti for c in colonne)
+
+    def tabella_esiste(self, tabella: str) -> bool:
+        return bool(self.colonne(tabella))
+
+    def rpc_disponibile(self, nome: str) -> bool:
+        """Vero se PostgREST espone `/rpc/<nome>`."""
+        percorsi = self.schema().get("paths")
+        return isinstance(percorsi, dict) and f"/rpc/{nome}" in percorsi
+
+    def colonne_mancanti(self, tabella: str, payload: Iterable[str]) -> tuple[str, ...]:
+        presenti = self.colonne(tabella)
+        if not presenti:
+            return tuple(payload)
+        return tuple(c for c in payload if c not in presenti)
+
+    # --- scrittura ---------------------------------------------------------
+
+    def aggiorna(
+        self,
+        tabella: str,
+        id_riga: Any,
+        payload: dict[str, Any],
+        *,
+        colonna_id: str = "id",
+    ) -> dict[str, Any]:
+        """UPDATE che diventa un no-op se le colonne non esistono ancora.
+
+        Le chiavi assenti dallo schema vengono scartate (con log); se non resta
+        niente, non parte nessuna richiesta. Scartare invece di sollevare e'
+        cio' che rende il codice di oggi installabile prima delle migrazioni.
+        Ritorna `{scritto, ignorate, motivo}`.
+        """
+        if not payload:
+            return {"scritto": False, "ignorate": (), "motivo": "payload vuoto"}
+
+        mancanti = self.colonne_mancanti(tabella, payload)
+        da_scrivere = {k: v for k, v in payload.items() if k not in mancanti}
+        if mancanti:
+            logger.info(
+                "[db.controllo] {}: colonne assenti, ignorate {} (id={})",
+                tabella, list(mancanti), id_riga,
+            )
+        if not da_scrivere:
+            return {"scritto": False, "ignorate": mancanti, "motivo": "colonne_assenti"}
+
+        try:
+            client = self._client_factory()
+            client.table(tabella).update(da_scrivere).eq(colonna_id, id_riga).execute()
+        except Exception as e:
+            logger.warning("[db.controllo] update {} id={} fallito: {}", tabella, id_riga, e)
+            return {"scritto": False, "ignorate": mancanti, "motivo": str(e)}
+        return {"scritto": True, "ignorate": mancanti, "motivo": ""}
+
+
+def _schema_openapi() -> dict[str, Any]:
+    """Una sola GET all'endpoint OpenAPI di PostgREST.
+
+    La chiave sta solo nelle intestazioni e non compare mai nei log: in caso di
+    errore si registra lo stato HTTP, non l'URL con i parametri.
+    """
+    import httpx
+
+    impostazioni = get_settings()
+    radice = impostazioni.supabase_url.rstrip("/") + "/rest/v1/"
+    intestazioni = {
+        "apikey": impostazioni.supabase_service_key,
+        "Authorization": f"Bearer {impostazioni.supabase_service_key}",
+        "Accept": "application/openapi+json",
+    }
+    risposta = httpx.get(radice, headers=intestazioni, timeout=10.0)
+    risposta.raise_for_status()
+    return risposta.json()
+
+
+# Istanza di processo: `from .db import controllo`.
+controllo = Controllo()
+
+
+# ---------------------------------------------------------------------------
+# Resolver della fonte ufficiale (piano §5) — letture e scritture nuove
+# ---------------------------------------------------------------------------
+#
+# Regola di questa sezione, senza eccezioni: **ogni** oggetto nuovo passa da
+# `controllo`. Le migrazioni v11 non sono applicate sul DB vivo, quindi una
+# `select` su `bando_controllo` o un filtro su `fonte_ufficiale_stato`
+# risponderebbero PGRST205/42703 e fermerebbero lo step su tutte le righe.
+# Qui una colonna assente non e' un errore: e' un `{'saltato': 'colonne_assenti'}`
+# con un log, e il giro prosegue.
+#
+# Nessuna funzione di questa sezione solleva: il resolver e' uno step di una
+# pipeline che deve arrivare in fondo anche quando il DB e' a meta' strada.
+
+TABELLA_CONTROLLO = "bando_controllo"
+TABELLA_LINK = "bando_link"
+TABELLA_EVENTO = "bando_evento"
+TABELLA_DOMINIO = "dominio_ufficiale"
+TABELLA_RUN = "pipeline_run"
+RPC_FONDI = "bando_fondi"
+
+#: I parametri di `bando_fondi`, **nell'ordine della firma** (04:795-799):
+#: prima il doppione, poi il master. PostgREST risolve per nome, ma l'ordine
+#: e' scritto qui apposta: chi rileggesse la chiamata dovendola riparare a
+#: mano non deve poter dedurre l'ordine sbagliato e fondere il master dentro
+#: il doppione.
+PARAMETRI_FONDI: tuple[str, ...] = ("p_dup", "p_master", "p_motivo")
+
+#: Le otto colonne che il resolver scrive su `bando`. Nient'altro: mai
+#: `stato_processing`, `slug`, `contenuto`, `data_pubblicazione`, `updated_at`.
+#:
+#: `fonte_ufficiale_e_atto` NON e' qui: non e' una colonna di `bando` ma un
+#: `EXISTS` calcolato dalla vista `bando_pubblico` su
+#: `bando_link.tipo = 'atto'` (migrazione 05). Il resolver lo esprime scrivendo
+#: il tipo giusto sulla riga di `bando_link`; provare a scriverlo qui darebbe
+#: una colonna inesistente, silenziosamente ignorata, e un flag sempre falso.
+COLONNE_FONTE_UFFICIALE: tuple[str, ...] = (
+    "fonte_ufficiale_url",
+    "fonte_ufficiale_host",
+    "fonte_ufficiale_tipo",
+    "fonte_ufficiale_stato",
+    "fonte_ufficiale_confidenza",
+    "fonte_ufficiale_metodo",
+    "fonte_ufficiale_verificata_at",
+    "fonte_ufficiale_link_id",
+)
+
+#: Colonne che il resolver non deve **mai** toccare su `bando` (§5). Le prime
+#: tre sono la garanzia che l'HTML della scheda OE non finisca in tabella; le
+#: altre sono il contratto con BandoFit su slug e pubblicazione.
+CHIAVI_VIETATE_BANDO: tuple[str, ...] = (
+    "testo_norm", "oe_html", "html", "slug", "contenuto",
+    "stato_processing", "data_pubblicazione", "updated_at",
+)
+PREFISSI_VIETATI_BANDO: tuple[str, ...] = ("impronta_", "impronte_")
+
+
+class PayloadBandoVietato(AssertionError):
+    """Un payload verso `bando` contiene una chiave che il resolver non scrive.
+
+    E' un `AssertionError` di proposito: non e' una condizione da gestire, e'
+    un errore di programmazione. Il piano (§5) chiede un assert nel chokepoint
+    di scrittura proprio perche' l'unica difesa contro «l'HTML della scheda
+    finisce in una colonna» e' che il programma si fermi prima.
+    """
+
+
+def assicura_payload_bando(payload: Mapping[str, Any]) -> None:
+    """Chokepoint: nessun testo, nessuna impronta, nessuno slug verso `bando`."""
+    colpevoli = sorted(
+        chiave for chiave in payload
+        if chiave in CHIAVI_VIETATE_BANDO or chiave.startswith(PREFISSI_VIETATI_BANDO)
+    )
+    if colpevoli:
+        raise PayloadBandoVietato(
+            f"payload verso `bando` con chiavi vietate dal resolver: {colpevoli}"
+        )
+
+
+def _client(client: Any | None = None) -> Any:
+    return client if client is not None else get_supabase()
+
+
+def _controllo(strumento: Any | None = None) -> Any:
+    return strumento if strumento is not None else controllo
+
+
+def _saltato(motivo: str, **extra: Any) -> dict[str, Any]:
+    return {"status": "ok", "saltato": motivo, **extra}
+
+
+# --- letture ---------------------------------------------------------------
+
+#: Colonne lette dal resolver. Esplicite (mai `*`): su `bando` un `select=*`
+#: porterebbe dentro `raw_data` di tutte le righe, e dopo la 07 alcune colonne
+#: non esistono piu'.
+COLONNE_RESOLVER: tuple[str, ...] = (
+    "id", "titolo", "titolo_raw", "link_bando", "ente_erogatore", "area_geografica",
+    "data_scadenza", "data_apertura", "importo_totale_eur", "stato_processing",
+    "stato_bando", "fonte_id", "raw_data", "contenuto", "allegati",
+)
+
+
+def _colonne_disponibili(tabella: str, desiderate: Sequence[str], strumento: Any) -> str:
+    """`select=` con le sole colonne che lo schema espone davvero.
+
+    Se lo schema non e' leggibile (`colonne()` vuoto) si chiedono tutte le
+    desiderate: e' il comportamento di oggi, che su un DB non ancora migrato
+    funziona perche' quelle colonne esistono gia'.
+    """
+    presenti = strumento.colonne(tabella)
+    if not presenti:
+        return ",".join(desiderate)
+    scelte = [c for c in desiderate if c in presenti]
+    return ",".join(scelte or ["id"])
+
+
+def select_bandi_da_risolvere(
+    *,
+    limit: int | None = None,
+    modo: str = "nuovi",
+    solo_oe: bool = False,
+    solo_in_verifica: bool = False,
+    bando_id: Any = None,
+    forza: bool = False,
+    fonti_oe: Sequence[int] = (),
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I bandi candidati al resolver, secondo la selezione di §5.
+
+    `modo`: `nuovi` (enriched senza fonte), `backlog` (pubblicati senza fonte),
+    `ricontrolli` (`in_verifica`/`non_trovata` con `prossimo_controllo_at`
+    scaduto — e li ricontrolla **solo** il resolver).
+
+    `forza` toglie il filtro «senza fonte»: e' l'unico modo di rifare una riga
+    gia' `trovata`, e per questo si chiede a mano.
+
+    Ogni filtro su una colonna nuova passa da `ha()`: senza la migrazione 01 la
+    colonna `fonte_ufficiale_stato` non esiste e il filtro risponderebbe 42703.
+    La scadenza del ricontrollo NON si filtra qui: `prossimo_controllo_at` sta
+    in `bando_controllo`, e mescolare le due tabelle in una sola richiesta
+    PostgREST costringerebbe a un embed che la RLS di `bando_controllo` non
+    concede. La selezione per data la fa il chiamante, su `select_controlli`.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_disponibili("bando", COLONNE_RESOLVER, strumento)
+    try:
+        query = _client(client).table("bando").select(colonne)
+        if bando_id is not None:
+            query = query.eq("id", bando_id)
+        else:
+            query = _filtra_selezione(
+                query, strumento,
+                modo=modo, solo_oe=solo_oe, solo_in_verifica=solo_in_verifica,
+                forza=forza, fonti_oe=fonti_oe,
+            )
+        # Tiebreak obbligatorio: `data_pubblicazione` e' NULL sul 92% delle
+        # righe e senza `id` due pagine si sovrappongono (trappola nota).
+        query = query.order("id")
+        # `limit is not None` e non `if limit`: uno zero e' un limite, ed e'
+        # quello che un operatore mette per non toccare niente. Trattarlo come
+        # «nessun limite» farebbe girare `risolvi-fonte --limit 0 --attivo`
+        # sull'intero corpus: l'esatto contrario di cio' che ha chiesto.
+        if limit is not None:
+            query = query.limit(int(limit))
+        return list(query.execute().data or [])
+    except Exception as e:
+        logger.warning("[db] select_bandi_da_risolvere fallita, nessun candidato: {}", e)
+        return []
+
+
+def _filtra_selezione(
+    query: Any,
+    strumento: Any,
+    *,
+    modo: str,
+    solo_oe: bool,
+    solo_in_verifica: bool,
+    forza: bool,
+    fonti_oe: Sequence[int],
+) -> Any:
+    ha_stato = strumento.ha("bando", "fonte_ufficiale_stato")
+    ha_pubblicato = strumento.ha("bando", "pubblicato")
+    senza_fonte = ha_stato and not forza
+    if modo == "backlog":
+        query = query.eq("pubblicato", True) if ha_pubblicato else query.eq(
+            "stato_processing", "completed")
+        if senza_fonte:
+            query = query.neq("fonte_ufficiale_stato", "trovata")
+    elif modo == "ricontrolli":
+        if ha_stato:
+            query = query.in_("fonte_ufficiale_stato", ["in_verifica", "non_trovata"])
+    else:                                              # nuovi
+        query = query.eq("stato_processing", "enriched")
+        if senza_fonte:
+            query = query.neq("fonte_ufficiale_stato", "trovata")
+    if solo_in_verifica and ha_stato:
+        query = query.eq("fonte_ufficiale_stato", "in_verifica")
+    if solo_oe and fonti_oe:
+        query = query.in_("fonte_id", list(fonti_oe))
+    return query
+
+
+def select_controlli(
+    bando_ids: Sequence[Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[Any, dict[str, Any]]:
+    """Righe di `bando_controllo` per id. `{}` se la tabella non c'e' ancora."""
+    strumento = _controllo(strumento)
+    if not bando_ids or not strumento.tabella_esiste(TABELLA_CONTROLLO):
+        return {}
+    colonne = _colonne_disponibili(
+        TABELLA_CONTROLLO,
+        ("bando_id", "prossimo_controllo_at", "ultimo_controllo_at", "priorita_controllo",
+         "tentativi_resolver", "candidato_prioritario"),
+        strumento,
+    )
+    try:
+        righe = (
+            _client(client).table(TABELLA_CONTROLLO)
+            .select(colonne).in_("bando_id", list(bando_ids)).execute().data or []
+        )
+    except Exception as e:
+        logger.warning("[db] select_controlli fallita: {}", e)
+        return {}
+    return {r.get("bando_id"): r for r in righe if r.get("bando_id") is not None}
+
+
+def select_pubblicati_per_gemelli(
+    *,
+    limit: int = 5000,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I pubblicati su cui `gemelli.py` cerca le corrispondenze esatte.
+
+    Colonne minime: id, la chiave della fonte, i due URL confrontabili e cio'
+    che serve a `scegli_master`. Mai `contenuto`, mai `raw_data` completo.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_disponibili(
+        "bando",
+        ("id", "titolo", "titolo_raw", "link_bando", "fonte_id", "fonte_ufficiale_url",
+         "fonte_ufficiale_host", "fonte_ufficiale_tipo", "fonte_ufficiale_stato",
+         "chiave_esterna", "data_scadenza", "pubblicato_at", "slug"),
+        strumento,
+    )
+    try:
+        query = _client(client).table("bando").select(colonne)
+        if strumento.ha("bando", "pubblicato"):
+            query = query.eq("pubblicato", True)
+        else:
+            query = query.eq("stato_processing", "completed").not_.is_("slug", "null")
+        return list(query.order("id").limit(int(limit)).execute().data or [])
+    except Exception as e:
+        logger.warning("[db] select_pubblicati_per_gemelli fallita: {}", e)
+        return []
+
+
+def select_link_da_verificare(
+    *,
+    limit: int | None = None,
+    bando_id: Any = None,
+    bando_ids: Sequence[Any] = (),
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Righe di `bando_link`, per una riga o per un lotto di id.
+
+    `bando_ids` serve a chi deve sapere, per un intero lotto, quali bandi hanno
+    gia' un link con la prova della scheda: una richiesta invece di una per
+    bando.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_LINK):
+        return []
+    colonne = _colonne_disponibili(
+        TABELLA_LINK,
+        ("id", "bando_id", "url", "tipo", "origine", "etichetta", "esito_http",
+         "pubblicabile", "ultimo_visto_at", "trovato_in_fonte_at", "content_type",
+         "url_prova", "impronta_pagina"),
+        strumento,
+    )
+    try:
+        query = _client(client).table(TABELLA_LINK).select(colonne)
+        if bando_id is not None:
+            query = query.eq("bando_id", bando_id)
+        elif bando_ids:
+            query = query.in_("bando_id", list(bando_ids))
+        query = query.order("id")
+        if limit is not None:                            # zero = nessuna riga
+            query = query.limit(int(limit))
+        return list(query.execute().data or [])
+    except Exception as e:
+        logger.warning("[db] select_link_da_verificare fallita: {}", e)
+        return []
+
+
+def select_fonti_per_domini(
+    *, client: Any | None = None, strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Righe di `fonte` da cui `dominio_ufficiale.da_fonti` ricava gli host."""
+    strumento = _controllo(strumento)
+    colonne = _colonne_disponibili("fonte", ("id", "link", "discoverable"), strumento)
+    try:
+        return list(
+            _client(client).table("fonte").select(colonne).order("id").execute().data or []
+        )
+    except Exception as e:
+        logger.warning("[db] select_fonti_per_domini fallita: {}", e)
+        return []
+
+
+# --- scritture -------------------------------------------------------------
+
+def aggiorna_fonte_ufficiale(
+    bando_id: Any,
+    payload: Mapping[str, Any],
+    *,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """Le colonne `fonte_ufficiale_*` di una riga. Degrada se non esistono."""
+    dati = dict(payload)
+    assicura_payload_bando(dati)
+    estranee = sorted(k for k in dati if k not in COLONNE_FONTE_UFFICIALE)
+    if estranee:
+        raise PayloadBandoVietato(
+            f"il resolver scrive solo le colonne fonte_ufficiale_*: {estranee}"
+        )
+    return _controllo(strumento).aggiorna("bando", bando_id, dati)
+
+
+def aggiorna_controllo(
+    bando_id: Any,
+    payload: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """UPSERT su `bando_controllo` (chiave primaria `bando_id`).
+
+    Nessun ripiego sulle colonne di `bando` se la tabella manca (§5): le
+    colonne calde stanno li' proprio per non toccare la tabella che BandoFit
+    seq-scanna, e scriverle altrove annullerebbe il motivo della tabella.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_CONTROLLO):
+        logger.info("[db] bando_controllo assente: niente scrittura (id={})", bando_id)
+        return _saltato("colonne_assenti", scritto=False)
+    mancanti = strumento.colonne_mancanti(TABELLA_CONTROLLO, payload)
+    riga = {k: v for k, v in payload.items() if k not in mancanti}
+    if not riga:
+        return _saltato("colonne_assenti", scritto=False)
+    riga["bando_id"] = bando_id
+    try:
+        (_client(client).table(TABELLA_CONTROLLO)
+         .upsert(riga, on_conflict="bando_id").execute())
+    except Exception as e:
+        logger.warning("[db] upsert bando_controllo id={} fallito: {}", bando_id, e)
+        return {"status": "ok", "scritto": False, "motivo": str(e)}
+    return {"status": "ok", "scritto": True, "ignorate": mancanti}
+
+
+def upsert_bando_link(
+    righe: Sequence[Mapping[str, Any]],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> int:
+    """UPSERT su `bando_link` per `(bando_id, url_normalizzato)` (§16.3.3).
+
+    `ignore_duplicates=True` perche' `url` e' immutabile: una riga che esiste
+    gia' non va riscritta con un URL diverso che normalizza allo stesso valore.
+    Ritorna quante righe sono state inviate (0 = tabella assente o errore).
+    """
+    strumento = _controllo(strumento)
+    if not righe or not strumento.tabella_esiste(TABELLA_LINK):
+        return 0
+    presenti = strumento.colonne(TABELLA_LINK)
+    pulite = [
+        {k: v for k, v in senza_generate(riga).items() if not presenti or k in presenti}
+        for riga in righe
+    ]
+    pulite = [r for r in pulite if r.get("bando_id") is not None and r.get("url")]
+    if not pulite:
+        return 0
+    try:
+        (_client(client).table(TABELLA_LINK)
+         .upsert(pulite, on_conflict="bando_id,url_normalizzato", ignore_duplicates=True)
+         .execute())
+    except Exception as e:
+        logger.warning("[db] upsert bando_link fallito ({} righe): {}", len(pulite), e)
+        return 0
+    return len(pulite)
+
+
+def aggiorna_link(
+    link_id: Any,
+    payload: Mapping[str, Any],
+    *,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """UPDATE di una riga di `bando_link` (esito HTTP, pubblicabilita')."""
+    return _controllo(strumento).aggiorna(TABELLA_LINK, link_id, dict(payload))
+
+
+#: Colonne `GENERATED ALWAYS AS (...) STORED` delle tabelle di servizio: un
+#: INSERT o un UPDATE che le valorizzi risponde 428C9 e fa fallire l'intera
+#: riga. Si tolgono dal payload prima di scrivere; in **lettura** restano
+#: colonne normali, ed e' per questo che `COLONNE_EVENTO` le tiene.
+COLONNE_GENERATE: frozenset[str] = frozenset({
+    "dominio_prova", "url_normalizzato", "dominio", "ricerca",
+})
+
+
+def senza_generate(riga: Mapping[str, Any]) -> dict[str, Any]:
+    """La riga senza le colonne che Postgres calcola da solo."""
+    return {k: v for k, v in riga.items() if k not in COLONNE_GENERATE}
+
+
+def registra_evento(
+    evento: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> bool:
+    """INSERT in `bando_evento`. Falso se la tabella non c'e' o l'insert fallisce.
+
+    Gli eventi del resolver in modalita' ombra arrivano qui con
+    `leggibile=false` e `applicato=false`: il cursore non viene assegnato e
+    nessun consumatore li vede finche' il committente non attiva il tipo.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_EVENTO):
+        return False
+    presenti = strumento.colonne(TABELLA_EVENTO)
+    riga = {k: v for k, v in senza_generate(evento).items()
+            if not presenti or k in presenti}
+    if not riga.get("bando_id") or not riga.get("tipo"):
+        return False
+    try:
+        _client(client).table(TABELLA_EVENTO).insert(riga).execute()
+    except Exception as e:
+        logger.warning("[db] insert bando_evento ({}) fallito: {}", riga.get("tipo"), e)
+        return False
+    return True
+
+
+def upsert_domini(
+    righe: Sequence[Mapping[str, Any]],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> int:
+    """UPSERT della whitelist in `dominio_ufficiale` (`python -m app domini --import`)."""
+    strumento = _controllo(strumento)
+    if not righe or not strumento.tabella_esiste(TABELLA_DOMINIO):
+        logger.info("[db] dominio_ufficiale assente: import saltato")
+        return 0
+    presenti = strumento.colonne(TABELLA_DOMINIO)
+    pulite = [
+        {k: v for k, v in riga.items() if not presenti or k in presenti} for riga in righe
+    ]
+    pulite = [r for r in pulite if r.get("host")]
+    if not pulite:
+        return 0
+    try:
+        (_client(client).table(TABELLA_DOMINIO)
+         .upsert(pulite, on_conflict="host").execute())
+    except Exception as e:
+        logger.warning("[db] upsert dominio_ufficiale fallito ({} righe): {}", len(pulite), e)
+        return 0
+    return len(pulite)
+
+
+def fondi_bandi(
+    master_id: Any,
+    doppione_id: Any,
+    motivo: str,
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> Any:
+    """RPC `bando_fondi`. Solo criteri esatti, solo fuori ombra (§5, §14).
+
+    ATTENZIONE ai nomi: la firma in tabella e'
+    `bando_fondi(p_dup integer, p_master integer, p_motivo text)` (04:795-799),
+    cioe' il **doppione per primo**. Chi la chiamasse posizionalmente, o
+    ricopiando l'ordine di questa funzione Python, fonderebbe il master dentro
+    il doppione. Qui si passa sempre per nome.
+
+    Ritorna l'id del master **effettivo** (la RPC appiattisce le catene e puo'
+    scegliere un master diverso da quello proposto), oppure `None` se la RPC
+    non c'e' o la chiamata e' fallita: il chiamante deve poter distinguere
+    «fuso sul master che avevo scelto» da «fuso su un altro».
+    """
+    strumento = _controllo(strumento)
+    if not strumento.rpc_disponibile(RPC_FONDI):
+        logger.info("[db] RPC {} assente: nessuna fusione applicata", RPC_FONDI)
+        return None
+    try:
+        risposta = _client(client).rpc(
+            RPC_FONDI, dict(zip(PARAMETRI_FONDI, (doppione_id, master_id, motivo)))
+        ).execute()
+    except Exception as e:
+        logger.warning("[db] {} ({} <- {}) fallita: {}", RPC_FONDI, master_id, doppione_id, e)
+        return None
+    dati = getattr(risposta, "data", None)
+    if isinstance(dati, int):
+        return dati
+    if isinstance(dati, list) and dati and isinstance(dati[0], int):
+        return dati[0]
+    # La RPC non ha detto quale master ha scelto: si assume quello proposto,
+    # perche' la chiamata e' comunque andata a buon fine.
+    return master_id
+
+
+# ---------------------------------------------------------------------------
+# Ombra e lotti di backfill (piano §6.2, §6.4) — letture e scritture
+# ---------------------------------------------------------------------------
+#
+# Stessa regola della sezione precedente, senza eccezioni: ogni oggetto nuovo
+# passa da `controllo`, niente sollevamenti, una colonna assente e' un
+# `{'saltato': 'colonne_assenti'}` con un log.
+#
+# Qui vivono le quattro letture e le due scritture che servono ai cinque
+# comandi di §6.2/§6.4 (`report-ombra`, `applica-eventi`, `rigenera`,
+# `pulisci-contenuto`, `archivia-processed`). Nessuna di esse scrive `slug`,
+# `titolo`, `pubblicato` o `data_pubblicazione`.
+
+RPC_APPLICA_EVENTO = "bando_applica_evento"
+
+#: Ramo terminale dei `processed` chiusi che nessuno lavorera' piu' (L8).
+#: Lo ammette il CHECK riscritto dalla migrazione 01: prima di quella un
+#: UPDATE con questo valore risponde 23514 e va evitato, non tentato.
+STATO_ARCHIVIATO = "archiviato"
+
+#: Colonne di `bando_evento` lette dai comandi dell'ombra. Esplicite: `select=*`
+#: su questa tabella risponde 42501 (grant di colonna, §16.3 punto 3).
+COLONNE_EVENTO: tuple[str, ...] = (
+    "id", "bando_id", "tipo", "origine", "campo", "valore_prima", "valore_dopo",
+    "data_evento", "rilevato_at", "applicato", "applicato_at", "leggibile",
+    "verificato", "in_aggiornamenti", "url_prova", "dominio_prova",
+    "citazione", "impronta_pagina", "confidenza", "gate", "metodo",
+)
+
+#: Colonne dei pubblicati su cui lavorano `pulisci-contenuto` e `rigenera`.
+COLONNE_BACKFILL_CONTENUTO: tuple[str, ...] = (
+    "id", "slug", "titolo", "contenuto", "descrizione_breve", "link_bando",
+    "link_candidatura", "link_candidatura_source", "stato_processing",
+    "stato_bando", "data_apertura", "data_scadenza", "pubblicato",
+    "fonte_ufficiale_url", "fonte_ufficiale_stato",
+)
+
+#: Colonne dei `processed` che `archivia-processed` deve poter giudicare.
+COLONNE_BACKFILL_PROCESSED: tuple[str, ...] = (
+    "id", "titolo", "slug", "stato_processing", "stato_bando", "data_apertura",
+    "data_scadenza", "pubblicato", "fonte_ufficiale_stato", "fonte_ufficiale_url",
+    "created_at", "updated_at",
+)
+
+
+def _pubblicati(query: Any, strumento: Any) -> Any:
+    """Filtro «pubblicato» com'e' scritto oggi e come sara' dopo la 01.
+
+    Prima della migrazione la colonna non esiste e il predicato vero e'
+    `completed AND slug IS NOT NULL` (la stessa RLS pubblica di oggi).
+    """
+    if strumento.ha("bando", "pubblicato"):
+        return query.eq("pubblicato", True)
+    return query.eq("stato_processing", "completed").not_.is_("slug", "null")
+
+
+def select_eventi(
+    *,
+    tipi: Sequence[str] = (),
+    dal: Any = None,
+    applicato: bool | None = None,
+    verificato: bool | None = None,
+    bando_id: Any = None,
+    limit: int | None = None,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Righe di `bando_evento` per i comandi dell'ombra. `[]` se la tabella manca.
+
+    `dal` filtra su `data_evento` **oppure** `rilevato_at`: un evento datato
+    dall'ente prima dell'inizio dell'ombra ma rilevato dopo (e viceversa) deve
+    entrare comunque, altrimenti `applica-eventi --dal` ne perderebbe una parte
+    e la baseline delle impronte non li ripresenterebbe mai piu' (§6.2).
+
+    L'ordine e' `id` crescente: e' l'ordine in cui gli eventi sono stati
+    raccolti, ed e' l'unico stabile (`data_evento` e' NULL su molte righe).
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_EVENTO):
+        logger.info("[db] {} assente: nessun evento da leggere", TABELLA_EVENTO)
+        return []
+    if verificato is not None and not strumento.ha(TABELLA_EVENTO, "verificato"):
+        # Senza la colonna il filtro cadrebbe in silenzio e il chiamante si
+        # ritroverebbe in mano anche i respinti, credendo di aver chiesto i
+        # soli verificati. Meglio nessuna riga che righe sbagliate.
+        logger.warning(
+            "[db] {} senza colonna `verificato`: nessun evento restituito", TABELLA_EVENTO)
+        return []
+    colonne = _colonne_disponibili(TABELLA_EVENTO, COLONNE_EVENTO, strumento)
+    try:
+        query = _client(client).table(TABELLA_EVENTO).select(colonne)
+        if bando_id is not None:
+            query = query.eq("bando_id", bando_id)
+        if tipi:
+            query = query.in_("tipo", list(tipi))
+        if applicato is not None and strumento.ha(TABELLA_EVENTO, "applicato"):
+            query = query.eq("applicato", applicato)
+        if verificato is not None:
+            query = query.eq("verificato", verificato)
+        if dal is not None:
+            giorno = dal.isoformat() if hasattr(dal, "isoformat") else str(dal)
+            if hasattr(query, "or_"):
+                query = query.or_(
+                    f"data_evento.gte.{giorno},rilevato_at.gte.{giorno}")
+            else:                                        # pragma: no cover - client datato
+                query = query.gte("rilevato_at", giorno)
+        query = query.order("id")
+        if limit is not None:                            # zero = nessuna riga
+            query = query.limit(int(limit))
+        return list(query.execute().data or [])
+    except Exception as e:
+        logger.warning("[db] select_eventi fallita: {}", e)
+        return []
+
+
+#: Colonne di `bando` che la coda del monitor legge (§6.2). Le colonne calde
+#: — `prossimo_controllo_at`, la priorita', le impronte, l'ETag — stanno su
+#: `bando_controllo` e arrivano da `select_controlli`.
+COLONNE_MONITOR: tuple[str, ...] = (
+    "id", "slug", "titolo", "pubblicato", "stato_processing", "stato_bando",
+    "bando_master_id", "fonte_ufficiale_stato", "fonte_ufficiale_url",
+    "data_pubblicazione", "data_apertura", "ora_apertura",
+    "data_scadenza", "ora_scadenza", "data_apertura_verificata",
+)
+
+#: Quante righe di `bando` la coda legge al massimo in un giro. La selezione
+#: vera (`monitoraggio.seleziona`) ordina per priorita' e taglia al tetto del
+#: giro, ma per ordinare bisogna prima leggere, e il filtro «ricontrollo
+#: scaduto» sta su `bando_controllo`: incrociarlo in una sola richiesta
+#: PostgREST vorrebbe un embed che la RLS di quella tabella non concede.
+#:
+#: Il numero non e' scelto a occhio: il piano misura **2 104 pubblicati** (di
+#: cui 1 683 con fonte ufficiale trovata, gli unici che entrano nel fetch).
+#: 5 000 e' quindi poco piu' del doppio del corpus di oggi — margine per la
+#: crescita, ma non tanto da nascondere il giorno in cui il corpus lo supera.
+#: Quel giorno la selezione per priorita' ordinerebbe una FETTA del corpus
+#: senza che nessuno se ne accorga: per questo il superamento non e' solo una
+#: riga di log ma un allarme del giro (`monitoraggio.FonteDatiSupabase`
+#: lo raccoglie e `run` lo porta nel riepilogo, cioe' in `pipeline_run`).
+TETTO_CODA_MONITOR = 5000
+
+#: Il testo dell'allarme, qui e non nel chiamante: chi legge `pipeline_run` e
+#: chi legge i log devono trovare la stessa frase.
+ALLARME_CODA_TRONCATA = (
+    f"coda del monitor troncata a {TETTO_CODA_MONITOR} righe: la selezione "
+    "per priorita' non vede il resto del corpus"
+)
+
+
+def select_bandi_da_monitorare(
+    *,
+    limit: int | None = None,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I pubblicati che il monitor puo' controllare. `[]` se `bando` non c'e'.
+
+    Tre filtri, gli stessi di `monitoraggio.selezionabile`, fatti qui perche'
+    sono quelli che tolgono righe davvero: pubblicato, non doppione, fonte
+    ufficiale `trovata` (senza, l'unico URL che abbiamo e' l'aggregatore, e
+    quei bandi li ripassa il resolver). La scadenza del ricontrollo no: sta su
+    `bando_controllo`, e la applica il chiamante dopo la `select_controlli`.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_disponibili("bando", COLONNE_MONITOR, strumento)
+    try:
+        query = _pubblicati(_client(client).table("bando").select(colonne), strumento)
+        if strumento.ha("bando", "fonte_ufficiale_stato"):
+            query = query.eq("fonte_ufficiale_stato", "trovata")
+        if strumento.ha("bando", "bando_master_id"):
+            query = query.is_("bando_master_id", "null")
+        # Tiebreak obbligatorio: `data_pubblicazione` e' NULL sul 92 % delle
+        # righe (trappola nota), e senza `id` due pagine si sovrappongono.
+        query = query.order("id")
+        query = query.limit(int(limit) if limit is not None else TETTO_CODA_MONITOR)
+        righe = list(query.execute().data or [])
+    except Exception as e:
+        logger.warning("[db] select_bandi_da_monitorare fallita: {}", e)
+        return []
+    if limit is None and len(righe) >= TETTO_CODA_MONITOR:
+        logger.warning("[ALLARME] [db] {}", ALLARME_CODA_TRONCATA)
+    return righe
+
+
+#: Le voci di `pipeline_run.contatori` che alimentano i tetti giornalieri di
+#: `bilancio.verifica_giornalieri`. Stanno dentro il jsonb e non in colonne
+#: proprie: `pipeline_run` ha `(id, step, giro, avviato_at, concluso_at,
+#: esito, interrotto_per_tetto, motivo, contatori, note)` e nient'altro.
+VOCI_CONSUMO: tuple[str, ...] = ("ricerche", "crediti", "classificazioni", "usd")
+
+
+def consumo_oggi(
+    *,
+    adesso: Any = None,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, float]:
+    """Quanto hanno gia' consumato oggi i giri precedenti (§6.2).
+
+    Senza questa somma, con quattro giri al giorno il tetto giornaliero
+    varrebbe quattro volte tanto. `{}` se `pipeline_run` non c'e' ancora: il
+    tetto resta quello del singolo giro, che e' la degradazione giusta.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_RUN):
+        return {}
+    # La giornata e' quella del **calendario di Roma**, come ovunque nel
+    # package (`oggi_roma`). Con la data UTC i giri delle 00:00 italiane
+    # cadevano nel giorno precedente per un'ora (due in estate): il tetto
+    # giornaliero ripartiva da zero a mezzanotte di Londra, non di Roma, e
+    # nella finestra fra i due mezzanotti valeva il doppio. Si filtra
+    # sull'ISTANTE di mezzanotte romana, non sulla sola data: `avviato_at` e'
+    # un `timestamptz`, e una data nuda verrebbe letta come mezzanotte UTC.
+    from .stato_bando import adesso_roma
+    momento = adesso_roma(adesso if isinstance(adesso, datetime_cls) else None)
+    inizio = momento.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    try:
+        righe = list((
+            _client(client).table(TABELLA_RUN).select("id,step,contatori")
+            .gte("avviato_at", inizio).order("id").execute()
+        ).data or [])
+    except Exception as e:
+        logger.warning("[db] consumo_oggi fallita: {}", e)
+        return {}
+    somma = {voce: 0.0 for voce in VOCI_CONSUMO}
+    for riga in righe:
+        contatori = riga.get("contatori")
+        if not isinstance(contatori, Mapping):
+            continue
+        for voce in VOCI_CONSUMO:
+            try:
+                somma[voce] += float(contatori.get(voce) or 0)
+            except (TypeError, ValueError):
+                continue
+    return somma
+
+
+def select_bandi_pubblicati_contenuto(
+    *,
+    limit: int | None = None,
+    bando_ids: Sequence[Any] = (),
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I pubblicati con il `contenuto` da ripulire o rigenerare (L7).
+
+    Il filtro «quali contengono davvero un link all'aggregatore» non e'
+    esprimibile in PostgREST su una colonna jsonb: si legge il lotto e si
+    sceglie in Python. E' il motivo per cui questi comandi hanno `--limit`.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_disponibili("bando", COLONNE_BACKFILL_CONTENUTO, strumento)
+    try:
+        query = _client(client).table("bando").select(colonne)
+        if bando_ids:
+            query = query.in_("id", list(bando_ids))
+        else:
+            query = _pubblicati(query, strumento)
+        query = query.order("id")
+        if limit is not None:
+            query = query.limit(int(limit))
+        return list(query.execute().data or [])
+    except Exception as e:
+        logger.warning("[db] select_bandi_pubblicati_contenuto fallita: {}", e)
+        return []
+
+
+def select_processed_da_archiviare(
+    *,
+    limit: int | None = None,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I `processed` candidati a L8. Mai una riga pubblicata.
+
+    Il filtro `pubblicato=false` si aggiunge solo quando la colonna esiste:
+    prima della 01 un `processed` non e' pubblicato per definizione (la RLS
+    pubblica chiede `completed`), quindi non serve e non si puo' chiedere.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_disponibili("bando", COLONNE_BACKFILL_PROCESSED, strumento)
+    try:
+        query = (
+            _client(client).table("bando").select(colonne)
+            .eq("stato_processing", "processed")
+        )
+        if strumento.ha("bando", "pubblicato"):
+            query = query.eq("pubblicato", False)
+        query = query.order("id")
+        if limit is not None:
+            query = query.limit(int(limit))
+        return list(query.execute().data or [])
+    except Exception as e:
+        logger.warning("[db] select_processed_da_archiviare fallita: {}", e)
+        return []
+
+
+def applica_evento(
+    evento_id: Any,
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> bool:
+    """RPC `bando_applica_evento`: l'unico punto che riversa un evento nelle colonne.
+
+    Falso — con un log, mai un'eccezione — se la RPC non c'e' ancora (04 non
+    applicata), se l'evento era gia' applicato o se la transizione non e'
+    ammessa. `applica-eventi` conta i falsi e prosegue con il blocco.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.rpc_disponibile(RPC_APPLICA_EVENTO):
+        logger.info("[db] RPC {} assente: evento {} non applicato",
+                    RPC_APPLICA_EVENTO, evento_id)
+        return False
+    try:
+        risposta = _client(client).rpc(
+            RPC_APPLICA_EVENTO, {"p_evento_id": evento_id}).execute()
+    except Exception as e:
+        logger.warning("[db] {} sull'evento {} fallita: {}",
+                       RPC_APPLICA_EVENTO, evento_id, e)
+        return False
+    dati = getattr(risposta, "data", None)
+    # La funzione ritorna `false` sugli eventi gia' applicati: e' un esito, non
+    # un errore, ma non va contato come applicazione.
+    return dati if isinstance(dati, bool) else True
+
+
+def archivia_bando(
+    bando_id: Any,
+    *,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """Porta un `processed` chiuso allo stato terminale `archiviato` (L8).
+
+    E' l'unico scrittore di `stato_processing` fuori dagli step della pipeline,
+    e scrive **solo** questo valore: mai `pubblicato`, mai `slug`, mai una riga
+    gia' pubblicata (la selezione le esclude, questo e' il secondo controllo).
+
+    Degrada se la migrazione 01 non e' applicata: il CHECK in tabella ammette
+    ancora cinque valori e l'UPDATE risponderebbe 23514 su ogni riga del lotto.
+    `pubblicato` e `archiviato` arrivano con la stessa migrazione, quindi la
+    presenza della colonna e' la prova che il valore e' scrivibile.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.ha("bando", "pubblicato"):
+        logger.info(
+            "[db] migrazione 01 non applicata: `{}` non ancora ammesso (id={})",
+            STATO_ARCHIVIATO, bando_id,
+        )
+        return _saltato("colonne_assenti", scritto=False)
+    return strumento.aggiorna(
+        "bando", bando_id, {"stato_processing": STATO_ARCHIVIATO})

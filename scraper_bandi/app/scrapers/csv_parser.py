@@ -14,6 +14,13 @@ Parametri (registry):
   - encoding: encoding del file (default 'utf-8' con fallback 'latin-1').
   - delimiter: separatore CSV (default sniff).
   - sheet_name: per XLSX, il nome o indice foglio (default 0).
+
+Colonne LINK/URL: se il file ha una colonna `link` o `url` (case-insensitive,
+con strip) e il valore della riga e' un URL http(s) valido, il valore va in
+`link_bando`. L'hash del record NON cambia rispetto alle righe gia' a DB:
+il BandoItem porta `raw_data['hash_senza_link']=True` e il runner deve
+continuare a calcolare l'hash con i discriminatori senza link
+(source_url|row_index|titolo), altrimenti ogni riga diventerebbe un doppione.
 """
 from __future__ import annotations
 
@@ -32,6 +39,31 @@ DEFAULT_TITOLO_COLUMNS = (
     "denominazione", "nome", "descrizione", "avviso", "bando",
     "azione", "intervento", "titolo intervento",
 )
+
+
+# Nomi colonna (case-insensitive, con strip) che contengono il link del bando
+LINK_COLUMNS = ("link", "url")
+
+
+def _url_http_valido(val: Any) -> str | None:
+    """Ritorna il valore ripulito se e' un URL http(s) con host, altrimenti None."""
+    if val is None or isinstance(val, (int, float, bool)):
+        return None
+    testo = str(val).strip()
+    if not testo:
+        return None
+    parti = urlsplit(testo)
+    if parti.scheme.lower() not in ("http", "https") or not parti.netloc:
+        return None
+    return testo
+
+
+def _pick_link_columns(df) -> list[str]:
+    """Colonne candidate al link del bando, nell'ordine del file."""
+    return [
+        c for c in df.columns
+        if isinstance(c, str) and c.strip().lower() in LINK_COLUMNS
+    ]
 
 
 def _is_xlsx(url: str) -> bool:
@@ -222,6 +254,13 @@ class CsvParserScraper(BandoScraper):
             fonte.get("id"), len(df), list(df.columns), titolo_col,
         )
 
+        link_cols = _pick_link_columns(df)
+        if link_cols:
+            logger.info(
+                "[csv] fonte_id={} colonne link={!r} -> link_bando con hash_senza_link",
+                fonte.get("id"), link_cols,
+            )
+
         items: list[BandoItem] = []
         # Uso enumerate per ottenere SEMPRE un int come row_index (l'indice
         # nativo del df potrebbe essere una tupla per MultiIndex).
@@ -243,10 +282,20 @@ class CsvParserScraper(BandoScraper):
                 key = str(col).strip() or f"col_{row_position}"
                 raw[key] = str(val).strip() if not isinstance(val, (int, float, bool)) else val
 
+            # Link del bando dalla prima colonna LINK/URL con un URL valido.
+            # `hash_senza_link` dice al runner di NON usare il link nell'hash:
+            # le righe gia' a DB restano le stesse (niente doppioni).
+            link_bando: str | None = None
+            for col in link_cols:
+                link_bando = _url_http_valido(row.get(col))
+                if link_bando:
+                    raw["hash_senza_link"] = True
+                    break
+
             items.append(BandoItem(
                 fonte_id=fonte["id"],
                 tipo_link=fonte["tipo_link"],
-                link_bando=None,
+                link_bando=link_bando,
                 titolo_raw=titolo_str,
                 descrizione_raw=None,
                 raw_data=raw,

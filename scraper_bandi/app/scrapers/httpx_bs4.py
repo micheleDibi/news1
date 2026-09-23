@@ -23,7 +23,7 @@ from bs4 import BeautifulSoup
 
 from ..http import fetch_html
 from ..logger import logger
-from .base import BandoItem, BandoScraper
+from .base import BandoItem, BandoScraper, esito, esito_iniziale
 
 
 class HttpxBs4Scraper(BandoScraper):
@@ -78,6 +78,13 @@ class HttpxBs4Scraper(BandoScraper):
 
         items: list[BandoItem] = []
         seen_links: set[str] = set()
+        # §6.1: per una fonte HTML la copertura e' piena solo se TUTTE le
+        # pagine previste sono state lette. Una GET fallita a meta' elenco
+        # farebbe sparire dal listing i bandi delle pagine successive, e senza
+        # questo contatore sembrerebbero ritirati dall'ente.
+        self.ultimo_esito = esito_iniziale()
+        pagine_lette = 0
+        pagine_fallite = 0
 
         for page_url in pages:
             try:
@@ -87,10 +94,12 @@ class HttpxBs4Scraper(BandoScraper):
                     "[httpx_bs4] fonte_id={} page={} GET fallita: {}",
                     fonte.get("id"), page_url, e,
                 )
+                pagine_fallite += 1
                 # Sulla prima pagina interrompo, sulle successive vado avanti
                 if page_url == base_url:
                     break
                 continue
+            pagine_lette += 1
 
             soup = BeautifulSoup(html, "lxml")
             anchors = soup.select(self.link_selector)
@@ -126,8 +135,14 @@ class HttpxBs4Scraper(BandoScraper):
                 fonte.get("id"), page_url, page_count,
             )
 
+        # `pagine < max_pages` di §6.1: se la paginazione ha consumato tutto il
+        # cap, dietro l'ultima pagina puo' esserci ancora dell'altro.
+        self.ultimo_esito = esito(
+            pagine_lette,
+            troncato=bool(pagine_fallite) or pagine_lette >= self.max_pages,
+        )
         logger.info(
-            "[httpx_bs4] fonte_id={} estratti {} bandi distinti",
-            fonte.get("id"), len(items),
+            "[httpx_bs4] fonte_id={} estratti {} bandi distinti (esito={})",
+            fonte.get("id"), len(items), self.ultimo_esito,
         )
         return items

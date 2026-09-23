@@ -33,9 +33,15 @@ from .db import (
     update_bando_enriched,
     update_bando_refinement,
 )
+from .date_validation import parse_iso, reconcile_stato_bando
 from .enricher import enrich_bando, refine_stato_bando
 from .logger import logger
 from .settings import get_settings
+from .stato_bando import oggi_roma
+
+# Confidenza minima perche' lo stato deciso dal refinement venga scritto e il
+# bando promosso alla fase B (fix 8.a.11).
+REFINE_CONFIDENZA_MINIMA = 0.6
 
 
 async def run(
@@ -109,7 +115,10 @@ async def run(
         logger.info("[enrich] === PHASE A: refinement di {} bandi ===", len(refine_targets))
         sem_refine = asyncio.Semaphore(max(1, settings.enrich_concurrency_refine))
 
-        async def _do_refine(b: dict[str, Any]) -> tuple[int, str, float, str]:
+        async def _do_refine(b: dict[str, Any]) -> tuple[int, str | None, float, str]:
+            """Ritorna (bando_id, stato_o_None, confidenza, motivo). Lo stato e'
+            None (nessuna scrittura, nessuna promozione) se il LLM fallisce, se
+            risponde fuori enum o se la confidenza e' sotto la soglia."""
             bando_id = b["id"]
             fonte_ctx = fonti_by_id.get(b.get("fonte_id"), {})
             async with sem_refine:
@@ -117,13 +126,20 @@ async def run(
                     stato, conf, reason = await refine_stato_bando(b, fonte_ctx)
                 except Exception as e:
                     logger.exception("[enrich/refine] bando_id={} fallito: {}", bando_id, e)
-                    return (bando_id, "aperto", 0.0, f"error: {e}")
+                    return (bando_id, None, 0.0, f"error: {e}")
                 logger.debug(
                     "[enrich/refine] bando_id={} -> stato={} conf={:.2f} reason={!r}",
                     bando_id, stato, conf, reason,
                 )
+                if stato is None or conf < REFINE_CONFIDENZA_MINIMA:
+                    logger.info(
+                        "[enrich/refine] bando_id={} non determinato (stato={} conf={:.2f}): "
+                        "resta 'processed', nessuna scrittura",
+                        bando_id, stato, conf,
+                    )
+                    return (bando_id, None, conf, reason)
                 if not dry_run:
-                    await update_bando_refinement(bando_id, stato)
+                    await update_bando_refinement(bando_id, stato, confidence=conf)
                 return (bando_id, stato, conf, reason)
 
         refine_results = await asyncio.gather(*[_do_refine(b) for b in refine_targets])
@@ -131,7 +147,7 @@ async def run(
         # Promuovi a Phase B i nuovi aperti/in_apertura
         refine_by_id = {bid: (stato, conf, reason) for bid, stato, conf, reason in refine_results}
         for b in refine_targets:
-            stato, _conf, _reason = refine_by_id.get(b["id"], ("aperto", 0.0, ""))
+            stato, _conf, _reason = refine_by_id.get(b["id"], (None, 0.0, ""))
             refined_counter[stato] += 1
             if stato in ("aperto", "in apertura prossimamente"):
                 # Aggiorno il valore stato_bando locale prima di passare alla Phase B
@@ -139,11 +155,12 @@ async def run(
                 promoted_to_enrich.append(b)
 
         logger.info(
-            "[enrich] PHASE A done: {} refinati ({} aperto, {} in_apertura, {} chiuso)",
+            "[enrich] PHASE A done: {} refinati ({} aperto, {} in_apertura, {} chiuso, {} non determinati)",
             len(refine_targets),
             refined_counter.get("aperto", 0),
             refined_counter.get("in apertura prossimamente", 0),
             refined_counter.get("chiuso", 0),
+            refined_counter.get(None, 0),
         )
 
     # ----------------------------------------------------------------------
@@ -163,6 +180,7 @@ async def run(
         "sum_settori": 0,
         "safety_net_forced_chiuso": 0,
         "safety_net_forced_in_apertura": 0,
+        "skipped_senza_stato": 0,
     }
 
     if enrich_targets:
@@ -223,41 +241,38 @@ async def run(
                 bando_record = next((b for b in enrich_targets if b["id"] == bid), None)
                 if not bando_record:
                     continue
-                stato_bando = bando_record.get("stato_bando") or "aperto"
+                stato_bando = bando_record.get("stato_bando")
+                if not stato_bando:
+                    # Nessun 'aperto' di ripiego (fix 8.a.11): senza stato la riga
+                    # resta 'processed' e viene ritentata al giro successivo.
+                    logger.warning(
+                        "[enrich] bando_id={} senza stato_bando: resta 'processed', nessuna scrittura",
+                        bid,
+                    )
+                    enrich_counter["skipped_senza_stato"] += 1
+                    continue
 
-                # Safety net guard (v9): controllo coerenza date vs stato_bando.
-                # In teoria il preprocess v2 ha gia' fatto reconciliation, ma se
-                # per qualche motivo (es. bando aggiornato lato fonte fra preprocess
-                # ed enrich) la data_scadenza e' nel passato e stato='aperto',
-                # forza 'chiuso'. Stessa logica per data_apertura futura.
-                from datetime import date as _date_cls
-                today = _date_cls.today()
-                data_scad_str = bando_record.get("data_scadenza")
-                data_apt_str = bando_record.get("data_apertura")
-                if data_scad_str and stato_bando != "chiuso":
-                    try:
-                        scad = _date_cls.fromisoformat(str(data_scad_str)[:10])
-                        if scad < today:
-                            logger.warning(
-                                "[enrich/safety] bando_id={} stato_bando={} ma data_scadenza={} passata -> forzo 'chiuso'",
-                                bid, stato_bando, scad,
-                            )
-                            stato_bando = "chiuso"
-                            enrich_counter["safety_net_forced_chiuso"] += 1
-                    except (ValueError, TypeError):
-                        pass
-                if data_apt_str and stato_bando == "aperto":
-                    try:
-                        apt = _date_cls.fromisoformat(str(data_apt_str)[:10])
-                        if apt > today:
-                            logger.warning(
-                                "[enrich/safety] bando_id={} stato_bando=aperto ma data_apertura={} futura -> forzo 'in apertura prossimamente'",
-                                bid, apt,
-                            )
-                            stato_bando = "in apertura prossimamente"
-                            enrich_counter["safety_net_forced_in_apertura"] += 1
-                    except (ValueError, TypeError):
-                        pass
+                # Safety net guard (v9): coerenza date vs stato_bando con la
+                # funzione unica di stato (`reconcile_stato_bando`, wrapper di
+                # `stato_bando.stato_effettivo`, piano §4) e lo stesso «oggi»
+                # (`oggi_roma`, fix 8.a.15): se fra preprocess ed enrich la
+                # data_scadenza e' passata forza 'chiuso'; data_apertura futura
+                # forza 'in apertura prossimamente'. Nessuna copia inline della
+                # regola: una divergenza qui non sarebbe vista da nessun test.
+                today = oggi_roma()
+                scad = parse_iso(str(bando_record.get("data_scadenza") or "")[:10])
+                apt = parse_iso(str(bando_record.get("data_apertura") or "")[:10])
+                stato_ricalcolato = reconcile_stato_bando(stato_bando, apt, scad, today=today)
+                if stato_ricalcolato is not None and stato_ricalcolato != stato_bando:
+                    logger.warning(
+                        "[enrich/safety] bando_id={} stato_bando={} ma date (apt={} scad={}, oggi={}) -> forzo {!r}",
+                        bid, stato_bando, apt, scad, today, stato_ricalcolato,
+                    )
+                    if stato_ricalcolato == "chiuso":
+                        enrich_counter["safety_net_forced_chiuso"] += 1
+                    elif stato_ricalcolato == "in apertura prossimamente":
+                        enrich_counter["safety_net_forced_in_apertura"] += 1
+                    stato_bando = stato_ricalcolato
 
                 ok = await update_bando_enriched(
                     bid,
@@ -294,6 +309,8 @@ async def run(
         "avg_settori": round(enrich_counter["sum_settori"] / n_e, 2),
         "safety_net_forced_chiuso": enrich_counter["safety_net_forced_chiuso"],
         "safety_net_forced_in_apertura": enrich_counter["safety_net_forced_in_apertura"],
+        "refined_undetermined": refined_counter.get(None, 0),
+        "skipped_senza_stato": enrich_counter["skipped_senza_stato"],
         "dry_run": dry_run,
         "elapsed_s": round(elapsed, 1),
     }

@@ -41,10 +41,24 @@ def _records_from_results(
     return records
 
 
-async def run() -> dict[str, int]:
-    """Esegue il discover completo. Ritorna counters per il log finale."""
+async def run(dry_run: bool = False, limit: int | None = None) -> dict[str, int]:
+    """Esegue il discover completo. Ritorna counters per il log finale.
+
+    Args:
+        dry_run: nessuna scrittura (ne' upsert_fonti ne' mark_deprecated):
+            logga cosa farebbe e i contatori. Le letture restano.
+        limit: considera solo le prime N fonti scoperte (smoke test). Con
+            limit il mark deprecated e' SEMPRE saltato: l'elenco delle fonti
+            attive e' parziale e marcherebbe deprecate fonti ancora vive.
+
+    I default riproducono il comportamento storico: `run()` senza argomenti
+    resta la firma usata da backend/app/bandi_pipeline.py.
+    """
     started = time.monotonic()
-    logger.info("[orchestrator] === START discover fonti ===")
+    logger.info(
+        "[orchestrator] === START discover fonti{} ===",
+        " (DRY-RUN: nessuna scrittura)" if dry_run else "",
+    )
 
     # 1. Fetch + parse
     html = await fetch_page()
@@ -58,6 +72,15 @@ async def run() -> dict[str, int]:
             "discovered": 0, "new": 0, "updated": 0,
             "deprecated": 0, "connection_error": 0,
         }
+
+    # 1-bis. --limit: tronca PRIMA della reachability (meno rete nello smoke test).
+    if limit is not None:
+        n_scoperte = len(candidates)
+        candidates = candidates[:max(limit, 0)]
+        logger.info(
+            "[orchestrator] --limit {}: considero {} fonti su {} scoperte",
+            limit, len(candidates), n_scoperte,
+        )
 
     # 2. Reachability
     urls = [c.link for c in candidates]
@@ -79,12 +102,37 @@ async def run() -> dict[str, int]:
     new_links = {r["link"] for r in records} - known_links_before
     updated_links = {r["link"] for r in records} & known_links_before
 
-    # 5. UPSERT
-    upsert_fonti(records)
-
-    # 6. Mark deprecated (link in DB ma non piu' nella pagina sorgente)
     active_links = {r["link"] for r in records}
-    n_deprecated = mark_deprecated(active_links)
+
+    if dry_run:
+        # 5-6. DRY-RUN: nessuna scrittura, solo il resoconto di cosa farebbe
+        # il giro reale. Il conteggio dei deprecati e' una stima per eccesso:
+        # mark_deprecated esclude anche discoverable=false e le gia' deprecate.
+        logger.info(
+            "[orchestrator] DRY-RUN: upsert_fonti saltato per {} record "
+            "({} nuovi, {} aggiornati)",
+            len(records), len(new_links), len(updated_links),
+        )
+        logger.info(
+            "[orchestrator] DRY-RUN: mark_deprecated saltato; link in DB ma non "
+            "nella pagina: {} (stima per eccesso)",
+            len(known_links_before - active_links),
+        )
+        n_deprecated = 0
+    else:
+        # 5. UPSERT
+        upsert_fonti(records)
+
+        # 6. Mark deprecated (link in DB ma non piu' nella pagina sorgente).
+        # Con --limit l'elenco e' parziale: marcare i mancanti spegnerebbe
+        # fonti vive, quindi si salta sempre.
+        if limit is not None:
+            logger.warning(
+                "[orchestrator] --limit attivo: mark_deprecated saltato (elenco parziale)"
+            )
+            n_deprecated = 0
+        else:
+            n_deprecated = mark_deprecated(active_links)
 
     elapsed = time.monotonic() - started
 

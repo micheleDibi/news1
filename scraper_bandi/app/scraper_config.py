@@ -12,6 +12,33 @@ Strategie:
 - pdf_extract_tables_pdfplumber: tabelle PDF
 - pdf_extract_text: testo PDF
 - skip_no_bandi: pagine senza bandi (hub, 404, ecc.)
+
+Chiavi opzionali lette FUORI dallo scraping (v11):
+- richiede_js (bool): l'host serve una app-shell renderizzata dal browser.
+  `registro.host_richiede_js()` la raccoglie e `scarico.py` la usa per
+  autorizzare subito il ripiego Firecrawl sulla pagina principale del bando,
+  invece di scoprirlo con una GET sprecata. Va messa solo su host verificati:
+  ogni ripiego costa 1 credito.
+- news_url (str): endpoint da cui il monitor pesca le **pagine collegate** di
+  un bando (piano §6.2). Una proroga viene spesso annunciata in una notizia,
+  non nella scheda: il post 21558 del 18/09 su lazioeuropa e' il caso reale da
+  cui nasce la regola. Costa **1 GET per host per giro**, non per bando, e le
+  notizie si associano al bando con Jaccard >= 0,5 sul titolo. Va messa solo
+  dove l'endpoint esiste ed e' pubblico: un `news_url` sbagliato e' un fetch
+  buttato a ogni giro.
+- auth_required (bool): la fonte richiede una sessione autenticata. La
+  strategia lo dice gia' (`json_api_paginated_login`), ma `salute` e il monitor
+  devono poterlo sapere **senza** istanziare lo scraper, per distinguere «la
+  fonte non risponde» da «il login e' scaduto» (allarme «login OE fallito»).
+- fl (documentato, non letto dal codice): l'elenco dei campi Solr chiesti da
+  incentivi.gov.it vive dentro `api_url_template`. `ds_last_update` e' stato
+  aggiunto perche' e' il **segnale macchina** della fonte: senza, il monitor
+  non puo' sapere a costo zero quali schede l'ente ha toccato (§6.1, §6.2).
+
+Le voci si cercano con `registro.trova(url)` (chiave normalizzata), mai con
+`SCRAPER_CONFIG.get(url)`: le chiavi qui sotto e i `link` della tabella `fonte`
+differiscono per slash finale, percent-encoding, ordine dei parametri e
+frammento (fix 8.a.8).
 """
 from __future__ import annotations
 
@@ -160,6 +187,10 @@ SCRAPER_CONFIG: dict[str, dict] = {
             "param": 'page',
             "range": [0, 5],
         },
+        # v11 (§6.2, pagine collegate): su questo host le proroghe si
+        # annunciano in una notizia prima che nella scheda. L'endpoint e' la
+        # REST API di WordPress, pubblica e senza chiave.
+        "news_url": "https://www.lazioeuropa.it/wp-json/wp/v2/posts",
     },
     'https://www.lazioeuropa.it/app/uploads/2022/05/A5-Lazio-Presente-WEB.pdf': {
         "strategy": 'skip_no_bandi',
@@ -174,6 +205,9 @@ SCRAPER_CONFIG: dict[str, dict] = {
             "param": 'page',
             "range": [0, 5],
         },
+        # Stesso host della voce FESR: il `news_url` e' per host, e una GET per
+        # giro lo copre tutto (§6.2).
+        "news_url": "https://www.lazioeuropa.it/wp-json/wp/v2/posts",
     },
     'https://www.lazioeuropa.it/fse-calendario-delle-opportunita-di-finanziamento/': {
         "strategy": 'hybrid_httpx_firecrawl',
@@ -817,11 +851,19 @@ SCRAPER_CONFIG: dict[str, dict] = {
     'https://www.obiettivoeuropa.com/api/call/': {
         "strategy": 'json_api_paginated_login',
         "auth_provider": "obiettivo_europa",
+        # v11: la fonte ha un login, e `salute` deve poterlo sapere senza
+        # istanziare lo scraper (allarme «login Obiettivo Europa fallito»).
+        "auth_required": True,
         "api_url_template": "https://www.obiettivoeuropa.com/api/call/?page=1&ordering=-published",
         "pagination_type": "cursor",
         "page_size": None,
         "response_path": "results",
         "next_field": "next",
+        # v11: `count` e' il totale che l'API dichiara. Serve alla regola di
+        # copertura di §6.1 («pagine x 50 >= count»): con il cursore esaurito
+        # ma meno record del dichiarato la lettura resta «troncata», e nessun
+        # «sparito dalla fonte» nasce da una pagina persa.
+        "total_field": "count",
         "adapter": "obiettivo_europa",
         "rate_limit_s": 0.5,
         "max_pages": 100,
@@ -845,7 +887,11 @@ SCRAPER_CONFIG: dict[str, dict] = {
     # start/rows pagination, response.docs + response.numFound.
     'https://www.incentivi.gov.it/solr/coredrupal/select': {
         "strategy": 'json_api_paginated',
-        "api_url_template": "https://www.incentivi.gov.it/solr/coredrupal/select?q=*:*&start={start}&rows=100&wt=json&fl=zs_title,zs_url,zs_body,zs_nid,zs_field_open_date,zs_field_close_date,zm_field_regions_value,zm_field_scopes_value,zm_field_activity_sector_value,zs_field_ateco,zs_field_budget_allocation,zs_field_cost_min,zs_field_cost_max,zs_field_support_grant_type_min,zs_field_support_grant_type_max,zm_field_dimensions_value,zm_field_subject_type_value,zm_field_granted_costs_value,zm_field_support_form_value,zs_field_subject_grant,zs_field_primary_ruleset,zs_field_implementation_ruleset,zs_field_link",
+        # `ds_last_update` in coda al `fl` (v11, §6.1): e' l'ultima modifica
+        # che Drupal dichiara per la scheda. Costa zero (e' gia' nell'indice
+        # Solr) ed e' il segnale macchina con cui il monitor sceglie quali
+        # schede riguardare senza scaricare niente.
+        "api_url_template": "https://www.incentivi.gov.it/solr/coredrupal/select?q=*:*&start={start}&rows=100&wt=json&fl=zs_title,zs_url,zs_body,zs_nid,zs_field_open_date,zs_field_close_date,zm_field_regions_value,zm_field_scopes_value,zm_field_activity_sector_value,zs_field_ateco,zs_field_budget_allocation,zs_field_cost_min,zs_field_cost_max,zs_field_support_grant_type_min,zs_field_support_grant_type_max,zm_field_dimensions_value,zm_field_subject_type_value,zm_field_granted_costs_value,zm_field_support_form_value,zs_field_subject_grant,zs_field_primary_ruleset,zs_field_implementation_ruleset,zs_field_link,ds_last_update",
         "pagination_type": "solr_start",
         "page_size": 100,
         "response_path": "response.docs",
