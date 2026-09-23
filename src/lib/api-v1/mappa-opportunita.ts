@@ -21,10 +21,14 @@ import {
 } from './tempo';
 import { pulisciElenco, pulisciTesto } from './testo';
 import { urlScheda } from './url';
+// Le tre guardie del dominio (host, aggregatori, schema dell'URL) vengono dai
+// moduli puri dei bandi: sono le stesse che usano la scheda e le liste, e
+// riscriverle qui vorrebbe dire avere due denylist da tenere allineate.
+import { eAggregatore, hostDi, urlPubblicabile } from '../bandi/domini';
 import type { StatoBando } from '../stato-bando';
 import type {
-  BandoDto, CodiceAtecoDto, InterpelloDto, RegioneDto, RigaBando, RigaInterpello, RigaSelezione, SelezioneDto,
-  SezioneOpportunita, StatoOpportunita,
+  BandoDto, CodiceAtecoDto, FonteUfficialeDto, InterpelloDto, RegioneDto, RigaBando, RigaInterpello,
+  RigaSelezione, SelezioneDto, SezioneOpportunita, StatoOpportunita,
 } from './contratto';
 
 const COLLATORE_IT = new Intl.Collator('it');
@@ -332,6 +336,50 @@ function regioniBando(giunzione: unknown): RegioneDto[] {
  * data della fonte sta in `details.source_published_on`. Lo stato e' quello del
  * sito (effectiveStatoBando): la scadenza passata chiude, il giorno stesso e' aperto.
  */
+/**
+ * `official_source` dal contratto (§13.2 e 2.c.2), o `null`.
+ *
+ * Tre condizioni, tutte necessarie: lo stato deve essere `trovata`, l'URL deve
+ * essere assoluto e http(s), e l'host non deve essere un aggregatore. La terza
+ * e' una cintura: a DB c'e' un trigger che rifiuta un host in denylist, e la
+ * promessa pubblica dell'API e' che nessun campo URL punti a un aggregatore.
+ *
+ * L'host esce minuscolo e senza `www.`, perche' lo schema lo dichiara
+ * `format: hostname` e la guardia degli URL esterni dei test lo pretende.
+ */
+function fonteUfficialeDto(riga: RigaBando): FonteUfficialeDto | null {
+  if (pulisciTesto(riga.fonte_ufficiale_stato) !== 'trovata') return null;
+  // **Non** `pulisciTesto`: quella funzione toglie gli URL esterni dai campi di
+  // testo, ed e' giusto che lo faccia — una stringa che e' soltanto un URL
+  // esterno diventa `null`. Qui l'URL esterno e' il valore, ed e' l'unica
+  // eccezione dichiarata nella promessa in testa a questo modulo. La
+  // validazione la fa `urlPubblicabile`: schema http(s), niente altro.
+  const grezzo = typeof riga.fonte_ufficiale_url === 'string' ? riga.fonte_ufficiale_url.trim() : '';
+  const url = grezzo === '' ? null : grezzo;
+  if (url === null || !urlPubblicabile(url)) return null;
+  const host = hostDi(url);
+  if (host === null || eAggregatore(host)) return null;
+  const tipo = pulisciTesto(riga.fonte_ufficiale_tipo);
+  return {
+    url,
+    host,
+    // L'atto e' un sotto-tipo dell'ente (A32): fuori restano due valori.
+    type: riga.fonte_ufficiale_e_atto === true || tipo === 'ente'
+      ? 'institution'
+      : (tipo === 'portale_pubblico' ? 'public_portal' : null),
+    verified_on: giornoValido(
+      typeof riga.fonte_ufficiale_verificata_at === 'string'
+        ? riga.fonte_ufficiale_verificata_at.slice(0, 10)
+        : riga.fonte_ufficiale_verificata_at,
+    ),
+  };
+}
+
+/** Un booleano che sappiamo, o `null` quando la fonte non lo dice. */
+function booleanoONull(valore: unknown): boolean | null {
+  return typeof valore === 'boolean' ? valore : null;
+}
+
 export function mappaBando(riga: RigaBando, oggi: string): BandoDto | null {
   const id = idValido(riga.id);
   if (id === null) return null;
@@ -389,10 +437,15 @@ export function mappaBando(riga: RigaBando, oggi: string): BandoDto | null {
       // 42703 e fa fallire l'intera richiesta, non il singolo campo). Il
       // contratto pubblico e' pero' gia' quello definitivo, cosi' i client si
       // preparano a leggerli senza aspettare un'altra versione.
-      official_source: null,
-      opens_on_verified: null,
-      deadline_verified: null,
-      last_checked_at: null,
+      // v1.1. Restano `null` quando si legge dalla tabella `bando`: quelle
+      // colonne le da' solo la vista, e chiederle altrove farebbe rispondere
+      // 42703 a PostgREST — cioe' 500 sull'intera risorsa, non un campo vuoto.
+      // Il contratto e' additivo proprio per questo: un client legge `null` e
+      // non si rompe.
+      official_source: fonteUfficialeDto(riga),
+      opens_on_verified: booleanoONull(riga.data_apertura_verificata),
+      deadline_verified: booleanoONull(riga.data_scadenza_verificata),
+      last_checked_at: istanteOppureNull(istanteTimestamptz(riga.ultimo_controllo_at)),
     },
   };
 }

@@ -343,8 +343,9 @@ test('bando: fixture completa', () => {
       max_amount_per_project_eur: 50000,
       opens_on: '2026-09-15',
       source_published_on: '2026-09-10',
-      // v1.1: presenti e null. Le colonne che li alimentano nascono con le
-      // migrazioni 01-02; chiederle prima darebbe 42703 sull'intera richiesta.
+      // v1.1: null quando si legge dalla tabella `bando`, che quelle colonne
+      // non le ha. La fixture e' una riga della tabella; il caso della vista
+      // sta nei test qui sotto, «fonte ufficiale».
       official_source: null,
       opens_on_verified: null,
       deadline_verified: null,
@@ -357,6 +358,78 @@ test('bando: fixture completa', () => {
     'official_source', 'opens_on_verified', 'deadline_verified', 'last_checked_at',
   ]);
   for (const a of dto.details.ateco_codes) assert.deepEqual(Object.keys(a), ['code', 'description']);
+});
+
+test('fonte ufficiale: esce solo quando è trovata e il dominio è ammesso', () => {
+  const trovata = {
+    fonte_ufficiale_stato: 'trovata',
+    fonte_ufficiale_url: 'https://www.Regione.Marche.it/Bandi/Avviso-2026',
+    fonte_ufficiale_tipo: 'ente',
+    fonte_ufficiale_verificata_at: '2026-09-20T08:30:00+00:00',
+  };
+  assert.deepEqual(bando(trovata).details.official_source, {
+    url: 'https://www.Regione.Marche.it/Bandi/Avviso-2026',
+    // Minuscolo e senza `www.`: lo schema lo dichiara `format: hostname` e la
+    // guardia degli URL esterni di contratto.test.ts lo pretende.
+    host: 'regione.marche.it',
+    type: 'institution',
+    verified_on: '2026-09-20',
+  });
+
+  // Uno stato diverso da `trovata` non è una fonte: `in_verifica` vuol dire
+  // «non lo sappiamo ancora», e pubblicarlo sarebbe una promessa falsa.
+  for (const stato of ['in_verifica', 'non_trovata', null, undefined]) {
+    assert.equal(bando({ ...trovata, fonte_ufficiale_stato: stato }).details.official_source, null,
+      String(stato));
+  }
+
+  // La cintura sul dominio: a DB c'è un trigger che rifiuta un aggregatore, e
+  // qui si ricontrolla perché la promessa pubblica dell'API è che nessun campo
+  // URL punti a un aggregatore.
+  assert.equal(
+    bando({ ...trovata, fonte_ufficiale_url: 'https://www.obiettivoeuropa.com/bandi/x' })
+      .details.official_source,
+    null,
+  );
+  // E lo schema: un URL relativo o non http(s) non esce.
+  for (const url of ['/bandi/avviso', 'javascript:alert(1)', 'ftp://ente.it/a', '']) {
+    assert.equal(bando({ ...trovata, fonte_ufficiale_url: url }).details.official_source, null, url);
+  }
+});
+
+test('fonte ufficiale: l\'atto è un sotto-tipo dell\'ente, il portale è un tipo suo', () => {
+  const base = {
+    fonte_ufficiale_stato: 'trovata',
+    fonte_ufficiale_url: 'https://regione.marche.it/atto.pdf',
+  };
+  assert.equal(bando({ ...base, fonte_ufficiale_tipo: 'ente' }).details.official_source?.type, 'institution');
+  assert.equal(
+    bando({ ...base, fonte_ufficiale_tipo: null, fonte_ufficiale_e_atto: true }).details.official_source?.type,
+    'institution', 'il PDF dell\'atto resta una fonte dell\'ente');
+  assert.equal(
+    bando({ ...base, fonte_ufficiale_tipo: 'portale_pubblico' }).details.official_source?.type,
+    'public_portal');
+  // Un tipo che non conosciamo non si inventa.
+  assert.equal(bando({ ...base, fonte_ufficiale_tipo: 'calendario' }).details.official_source?.type, null);
+});
+
+test('i flag di verifica e l\'ultimo controllo passano solo se li sappiamo', () => {
+  const dto = bando({
+    data_apertura_verificata: true,
+    data_scadenza_verificata: false,
+    ultimo_controllo_at: '2026-09-22T06:15:00+00:00',
+  });
+  assert.equal(dto.details.opens_on_verified, true);
+  assert.equal(dto.details.deadline_verified, false, 'false non è come non sapere');
+  assert.equal(dto.details.last_checked_at, '2026-09-22T08:15:00+02:00');
+
+  // Colonna assente (si legge dalla tabella): `null`, non `false`. La
+  // differenza è il contratto: `false` dice «verificato e non confermato»,
+  // `null` dice «non lo sappiamo».
+  const senza = bando({});
+  assert.equal(senza.details.opens_on_verified, null);
+  assert.equal(senza.details.deadline_verified, null);
+  assert.equal(senza.details.last_checked_at, null);
 });
 
 test('regola B: stato del sito (cinque valori) e scadenza passata', () => {

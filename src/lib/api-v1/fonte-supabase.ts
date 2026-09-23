@@ -15,9 +15,13 @@ async function leggi<S extends NomeSelect>(piano: PianoQuery<S>, segnale: AbortS
   const client = piano.db === 'bandi' ? supabaseBandi : supabase;
   const select = SELECT_PER_NOME.get(piano.select);
   if (!select) throw new ErroreDati('programmazione', null, `select sconosciuta: ${piano.select}`);
+  // Le colonne che dipendono dalla fonte e non dalla risorsa: la freschezza,
+  // che ha un nome per fonte, e le colonne v11 che solo la vista sa dare. Il
+  // piano le porta gia' pronte (`filtri.ts`), qui si appendono e basta.
+  const colonne = piano.colonneExtra ? `${select}, ${piano.colonneExtra}` : select;
 
   // Adattatore: il builder di postgrest-js restituisce `this` a ogni chiamata.
-  let query = client.from(piano.tabella).select(select);
+  let query = client.from(piano.tabella).select(colonne);
   const adattatore: CostruttoreQuery = {
     filter(colonna, operatore, valore) { query = query.filter(colonna, operatore, valore); return adattatore; },
     or(espressione) { query = query.or(espressione); return adattatore; },

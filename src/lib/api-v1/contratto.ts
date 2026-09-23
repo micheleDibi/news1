@@ -274,6 +274,22 @@ export interface RigaBando {
   stato_bando: unknown;
   created_at: unknown;
   updated_at: unknown;
+  /**
+   * Colonne v11, presenti solo quando si legge dalla vista `bando_pubblico`:
+   * il piano le appende con `colonneExtra` e sulla tabella non ci sono. Sono
+   * `unknown` come tutte le altre, quindi una chiave assente vale `undefined`
+   * e i campi del DTO escono `null` senza nessun ramo in piu'.
+   */
+  fonte_ufficiale_url?: unknown;
+  fonte_ufficiale_host?: unknown;
+  fonte_ufficiale_tipo?: unknown;
+  fonte_ufficiale_stato?: unknown;
+  fonte_ufficiale_e_atto?: unknown;
+  fonte_ufficiale_verificata_at?: unknown;
+  data_apertura_verificata?: unknown;
+  data_scadenza_verificata?: unknown;
+  ora_scadenza?: unknown;
+  ultimo_controllo_at?: unknown;
   /** Embed PostgREST: oggetto, array o null a seconda della cardinalita'. */
   tipologia: unknown;
   programma: unknown;

@@ -4,6 +4,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   pianoQuery, pianoRiferimento, applicaPiano, listaInPg, letteraleArrayPg, condizioneKeyset,
   type ContestoPiano, type CostruttoreQuery,
@@ -155,23 +156,53 @@ test('bandi: il predicato viene da FONTI_BANDI, tabella compresa', () => {
   assert.equal(pianoQuery('articles', contesto({ modo: 'dettaglio', id: 1, fonteBandi: 'bando_pubblico' })).tabella, 'articles');
 });
 
-test('la freschezza arriva dal piano, con il nome giusto per la fonte', () => {
-  // `colonne.ts` e' puro e non puo' leggere il flag, quindi la colonna della
-  // freschezza non sta nella costante `SELECT_BANDO`: la mette il piano. Se
-  // sparisse, il DTO perderebbe `updated_at` e l'API risponderebbe `null` su
-  // ogni `updated_at` senza che nessun test lo noti.
+test('le colonne che dipendono dalla fonte arrivano dal piano', () => {
+  // `colonne.ts` e' puro e non puo' leggere il flag, quindi due gruppi di
+  // colonne non stanno nella costante `SELECT_BANDO`: la freschezza, che ha un
+  // nome per fonte, e le colonne v11 che solo la vista sa dare. Se sparissero,
+  // il DTO perderebbe `updated_at` e i quattro campi della 1.1 resterebbero
+  // `null` per sempre senza che nessun test lo noti.
   const tabella = pianoQuery('bandi', contesto({ modo: 'dettaglio', id: 1 }));
-  assert.equal(tabella.colonneExtra, 'updated_at');
+  assert.equal(tabella.colonneExtra, 'updated_at',
+    'sulla tabella non si chiede nessuna colonna v11: darebbe 42703');
 
   const vista = pianoQuery('bandi', contesto({ modo: 'dettaglio', id: 1, fonteBandi: 'bando_pubblico' }));
-  assert.equal(vista.colonneExtra, 'updated_at:ultimo_cambiamento_at',
+  const chieste = (vista.colonneExtra ?? '').split(',').map((c) => c.trim());
+  assert.equal(chieste[0], 'updated_at:ultimo_cambiamento_at',
     'sulla vista serve l\'alias: `updated_at` non esiste e darebbe 42703');
+  for (const colonna of [
+    'fonte_ufficiale_url', 'fonte_ufficiale_host', 'fonte_ufficiale_stato',
+    'data_apertura_verificata', 'data_scadenza_verificata', 'ultimo_controllo_at',
+  ]) {
+    assert.ok(chieste.includes(colonna), `manca ${colonna}: il campo 1.1 resterebbe null`);
+  }
 
   // Le altre risorse leggono da una tabella sola e la colonna ce l'hanno nella
   // select: appendere qualcosa sarebbe una colonna chiesta due volte.
   for (const risorsa of ['articles', 'interpelli', 'selezione-personale'] as const) {
     assert.equal(pianoQuery(risorsa, contesto({ modo: 'dettaglio', id: 1 })).colonneExtra, undefined, risorsa);
   }
+});
+
+test('chi esegue il piano appende davvero `colonneExtra`', () => {
+  // Il difetto che questo test esiste per impedire, trovato in corsa il
+  // 23/09/2026: il piano dichiarava `colonneExtra` e l'adattatore che lo
+  // esegue non lo leggeva. Niente falliva — ne' i tipi ne' i test ne' la
+  // richiesta — e l'API rispondeva `updated_at: null` su ogni bando piu' i
+  // quattro campi della 1.1 sempre vuoti. Una dichiarazione che nessuno
+  // consuma e' peggio di una che non c'e': sembra fatta.
+  //
+  // `fonte-supabase.ts` e' l'unico esecutore e non e' istanziabile in un test
+  // (importa i due client Supabase veri), quindi qui si legge il sorgente. E'
+  // la stessa tecnica di `colonne-anon.test.ts`.
+  const sorgente = readFileSync(
+    new URL('../../src/lib/api-v1/fonte-supabase.ts', import.meta.url), 'utf8',
+  );
+  assert.match(sorgente, /piano\.colonneExtra/,
+    '`fonte-supabase.ts` non legge `piano.colonneExtra`: le colonne dichiarate dal piano non arrivano alla select');
+  // E ci deve essere una `select` che usa la stringa composta, non la costante.
+  assert.match(sorgente, /\.select\(colonne\)/,
+    'la select non usa la stringa composta: `colonneExtra` viene calcolato e buttato');
 });
 
 test('updated_since filtra sulla colonna nuda, non sull\'alias', () => {

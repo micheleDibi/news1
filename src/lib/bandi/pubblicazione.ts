@@ -59,6 +59,17 @@ export interface FonteBandi {
   readonly selectFreschezza: string;
   /** Il nome nudo della colonna, per filtri e `order`. */
   readonly colonnaFreschezza: string;
+  /**
+   * Le colonne del lavoro v11 che **solo la vista** sa dare: la fonte
+   * ufficiale, i flag di verifica delle date, l'ora di scadenza, l'ultimo
+   * controllo. Sulla tabella `bando` alcune esistono e altre no
+   * (`ultimo_controllo_at` vive in `bando_controllo`, `stato_effettivo` e' un
+   * calcolo della vista), e una sola colonna assente fa rispondere 42703 a
+   * PostgREST, cioe' fa fallire l'intera richiesta. Per questo l'elenco e'
+   * vuoto sulla tabella: meglio campi `null` in un contratto additivo che una
+   * risorsa che risponde 500.
+   */
+  readonly colonneV11: readonly string[];
 }
 
 export const FONTI_BANDI = {
@@ -70,12 +81,19 @@ export const FONTI_BANDI = {
     ],
     selectFreschezza: 'updated_at',
     colonnaFreschezza: 'updated_at',
+    colonneV11: [],
   },
   bando_pubblico: {
     tabella: 'bando_pubblico',
     operazioni: [],
     selectFreschezza: 'updated_at:ultimo_cambiamento_at',
     colonnaFreschezza: 'ultimo_cambiamento_at',
+    colonneV11: [
+      'fonte_ufficiale_url', 'fonte_ufficiale_host', 'fonte_ufficiale_tipo',
+      'fonte_ufficiale_stato', 'fonte_ufficiale_e_atto', 'fonte_ufficiale_verificata_at',
+      'data_apertura_verificata', 'data_scadenza_verificata',
+      'ora_scadenza', 'ultimo_controllo_at',
+    ],
   },
 } as const satisfies Record<string, FonteBandi>;
 

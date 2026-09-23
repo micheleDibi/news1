@@ -239,6 +239,16 @@ function selectDi(risorsa: Risorsa, contesto: ContestoPiano): NomeSelect {
   }
 }
 
+/**
+ * Le colonne che il piano dei bandi appende alla select: la freschezza, che ha
+ * un nome per fonte, e le colonne v11 che solo la vista sa dare. Stanno qui e
+ * non in `colonne.ts` perche' quel modulo e' puro e non conosce la fonte.
+ */
+function colonneExtraBandi(contesto: ContestoPiano): string {
+  const fonte = fontePerNome(contesto.fonteBandi ?? FONTE_BANDI_PREDEFINITA);
+  return [fonte.selectFreschezza, ...fonte.colonneV11].join(', ');
+}
+
 export function pianoQuery(risorsa: Risorsa, contesto: ContestoPiano): PianoQuery {
   let operazioni: Operazione[];
   switch (risorsa) {
@@ -256,7 +266,7 @@ export function pianoQuery(risorsa: Risorsa, contesto: ContestoPiano): PianoQuer
     // piano. Vale solo per i bandi; le altre risorse hanno `updated_at` nella
     // loro select, perche' leggono da una tabella sola.
     colonneExtra: risorsa === 'bandi'
-      ? fontePerNome(contesto.fonteBandi ?? FONTE_BANDI_PREDEFINITA).selectFreschezza
+      ? colonneExtraBandi(contesto)
       : undefined,
     operazioni,
   };
