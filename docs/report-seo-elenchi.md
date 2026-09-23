@@ -238,8 +238,10 @@ entrambe.
 - ~121 URL della sitemap interpelli hanno slug `visualizza-interpelli-…`: sono record legittimi il
   cui `interpello_name` vale letteralmente "VISUALIZZA INTERPELLI". È un difetto dello scraper a
   monte; cambiare gli slug significherebbe 301 su URL già indicizzati.
-- `src/components/bandi/` è codice morto (nessun import da `src/pages/`) e diverge dal markup vivo.
-  `BandoCard.astro` non ha nemmeno la classe hook `bando-item`. L'ho lasciato dov'è.
+- `src/components/bandi/` era codice morto (nessun import da `src/pages/`) e divergeva dal markup
+  vivo: `BandoCard.astro` non aveva nemmeno la classe hook `bando-item`. In questo intervento l'ho
+  lasciato dov'era; **la cartella è stata rimossa il 23/09/2026** con l'intervento «fonti ufficiali
+  e bandi attivi». Le card dei bandi vivono in `src/components/liste/CardBando.astro`.
 - `src/pages/api/interpelli/refresh.ts` importa `../../../types/interpelli`, file che non esiste.
 - `src/pages/api/sitemap.ts` è orfano e dichiara `/terms`, `/about`, `/contact`, rotte inesistenti.
 

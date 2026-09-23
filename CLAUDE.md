@@ -142,7 +142,6 @@ condizione della RLS pubblica (`completed AND slug IS NOT NULL`).
   ricalcolato da `data_scadenza` (90% del corpus è scaduto).
 - `bando.data_pubblicazione` è NULL sul 92% delle righe: ogni query paginata **deve** avere un
   tiebreak `.order('id')`, altrimenti le pagine si sovrappongono.
-- `src/components/bandi/` è **codice morto** (nessun import da `src/pages/`) e diverge dal markup vivo.
 - `src/pages/api/interpelli/refresh.ts` importa file inesistenti: endpoint scollegato.
 - Il `README.md` è disallineato su `scraper_bandi/` (descritto "in costruzione", in realtà completo),
   sui nomi delle junction (al plurale nel DB), sulla RLS e su alcuni comandi che non esistono più.
@@ -154,6 +153,7 @@ Non c'è un test runner installato e non se ne aggiungono: si usano quelli della
 ```bash
 npm test        # node --test, gemello TypeScript
 npm run test:py # unittest della stdlib, gemello Python
+npm run test:py:bandi # unittest di scraper_bandi (richiede scraper_bandi/.venv)
 ```
 
 Entrambi leggono `tests/ortografia/casi.json`, che contiene i casi di `correggi()` e quelli di
@@ -180,3 +180,29 @@ scritture su Supabase dal frontend, niente operazioni git.
 > (`src/components/ArticleForm.tsx`, `src/pages/admin.astro`, `src/pages/admin/articles/index.astro`,
 > `src/pages/api/articles/**`). La deroga vale per quell'intervento: fuori da lì la regola sopra
 > resta in vigore.
+
+> **Deroga registrata (intervento "fonti ufficiali e bandi attivi", 22-23/09/2026).** Su richiesta
+> esplicita dell'utente, e limitatamente a questo intervento, sono stati modificati: tutto
+> `scraper_bandi/` (moduli nuovi `stato_bando, scarico, bilancio, blocco, registro, telemetria,
+> dominio_ufficiale, impronte, allegati, gemelli, sedia, oe_scheda, fonte_ufficiale, segnali, eventi,
+> monitoraggio, rigenera`; bug fix su adapter, login OE, logger, date, runner, CLI, db, seo;
+> `scraper_bandi/tests/` creata; `README.md` bonificato dalle credenziali), `backend/app/{bandi_pipeline,bandi_sender}.py`,
+> `backend/sql/bando_v11_01..07_*.sql` + rollback + seed (**scritti e mai eseguiti**: li applica
+> l'utente nel SQL Editor), la parte bandi di `src/` (`src/lib/bandi/**`,
+> `src/config/domini-aggregatori.ts`, `stato-bando.ts`, `supabase-bandi.ts`, `liste/bandi.ts`,
+> `corpus.ts`, scheda e card, sitemap dei bandi, `api-v1/**` per la v1.1,
+> `src/pages/api/indexnow-notify.ts`), le rimozioni di `/eu-funding` (compresi i due file dell'area
+> admin e `backend/app/ScrapingBandiEuropeiFinal/`), `package.json` (script `test:py:bandi`),
+> `tests/**` e `docs/{contratto-db-bandi.md,bandi-monitor/AVANZAMENTO.md,api-v1.md}`.
+> `backend/app/indexnow.py` e `src/lib/indexnow.ts` **non** sono stati toccati. Fuori da questo
+> elenco la regola sopra resta in vigore.
+>
+> Conseguenze operative: lo stato di un bando si calcola in un solo posto per linguaggio a partire da
+> `tests/stato-bando/casi.json` (`src/lib/stato-bando.ts`, `scraper_bandi/app/stato_bando.py`, blocco
+> CASI della migrazione 04): cambiare la regola in un solo linguaggio fa fallire i test. Le migrazioni
+> `backend/sql/bando_v11_*` vanno applicate in ordine (01 → 02 → seed → 03 → 04 → 05 — è l'ordine
+> scritto nelle intestazioni dei file SQL, e il seed fallisce con un `RAISE EXCEPTION` se la 02 non
+> c'è; poi 06 solo dopo
+> il rilascio difensivo di BandoFit e 07 solo dopo la sua migrazione al contratto
+> `docs/contratto-db-bandi.md`). Finché non sono applicate, il codice nuovo degrada da solo
+> (`db.controllo` rileva le colonne assenti) e monitor e resolver restano in modalità ombra.

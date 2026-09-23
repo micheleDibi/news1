@@ -146,10 +146,11 @@ Mapping JSON/HTML → `BandoItem` via adapter dedicato per fonte (`scrapers/adap
 
 **Credenziali Obiettivo Europa** (richieste in `.env`):
 ```
-OBIETTIVO_EUROPA_USERNAME="mic.monaco78@icloud.com"
-OBIETTIVO_EUROPA_PASSWORD="Bevante78!"
+OBIETTIVO_EUROPA_USERNAME="<email dell'account>"
+OBIETTIVO_EUROPA_PASSWORD="<password dell'account>"
 ```
 Senza login l'API ritorna max 5 bandi/pagina; con login si accede a ~1133 bandi totali.
+> **Le credenziali non si scrivono mai in questo file né in altri file tracciati**: vivono solo in `scraper_bandi/.env` (ignorato da git). Quelle che comparivano qui fino al 23/09/2026 sono nella history di `origin/main` e vanno considerate compromesse: vanno ruotate sul portale, aggiornate in `.env` e verificate con `python -m app salute` (login OK e 50 record per pagina).
 
 **Dedup cross-source via `canonical_key`**: lo stesso bando pubblicato su 2 portali diversi (es. Obiettivo Europa + Incentivi Gov IT) genera 2 record nel DB con hash diversi (perché il hash_bando attuale include `fonte_id`). La skill SEO al termine calcola `canonical_key = SHA256(norm_titolo|norm_ente|data_scadenza|importo)`. Se collide con un master esistente: il master raccoglie la fonte aggiuntiva in `fonti_aggiuntive INT[]`, il nuovo record passa a `stato_processing='completed_duplicate'` (nascosto dal frontend tramite RLS). Coverage attesa: ~70% (titolo+ente+data sono molto specifici).
 
@@ -158,10 +159,10 @@ Senza login l'API ritorna max 5 bandi/pagina; con login si accede a ~1133 bandi 
 # 1. Login + 1 pagina API Obiettivo Europa (50 bandi/pagina con login)
 .venv/bin/python -c "
 import os, asyncio
-os.environ['OBIETTIVO_EUROPA_USERNAME']='mic.monaco78@icloud.com'
-os.environ['OBIETTIVO_EUROPA_PASSWORD']='Bevante78!'
+from app.settings import get_settings
 from app.scrapers.auth.obiettivo_europa import obtain_session
-s = obtain_session('mic.monaco78@icloud.com', 'Bevante78!')
+cfg = get_settings()  # le credenziali arrivano da scraper_bandi/.env
+s = obtain_session(cfg.obiettivo_europa_username, cfg.obiettivo_europa_password)
 r = s.get('https://www.obiettivoeuropa.com/api/call/?page=1&ordering=-published', timeout=20)
 print(r.json().get('count'))
 "
