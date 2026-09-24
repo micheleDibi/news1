@@ -186,11 +186,12 @@ class _ConPipeline(unittest.TestCase):
 
 
 class TestOrdineDegliStep(_ConPipeline):
-    def test_sette_step_nell_ordine_del_piano(self):
+    def test_gli_step_nell_ordine_del_piano(self):
         stato = self.esegui(monitor=_monitoraggio(), resolver=_fonte_ufficiale())
         self.assertEqual(
             list(stato["steps"]),
-            ["discover", "scrape", "preprocess", "enrich", "resolver", "seo", "monitor"],
+            ["discover", "scrape", "preprocess", "enrich", "resolver",
+             "ricontrolli", "seo", "monitor"],
         )
         self.assertEqual(stato["status"], "completed")
 
@@ -199,11 +200,16 @@ class TestOrdineDegliStep(_ConPipeline):
         # secondo non deve ne' sostituire ne' ereditare i parametri del primo.
         monitor, resolver = _monitoraggio(), _fonte_ufficiale()
         self.esegui(monitor=monitor, resolver=resolver)
-        resolver.run.assert_awaited_once_with(giro="06:00")
+        # Due chiamate allo stesso modulo: i nuovi (step 5) e gli arretrati
+        # (step 5-bis). La prima non porta `modo`, cioe' vale il default.
+        self.assertEqual(resolver.run.await_count, 2)
+        primo = resolver.run.await_args_list[0].kwargs
+        self.assertEqual(primo, {"giro": "06:00"})
         monitor.run.assert_awaited_once()
         self.assertEqual(monitor.run.await_args.kwargs["giro"], "06:00")
         # `rigenerazione` e' del solo monitor: il resolver non la conosce.
-        self.assertNotIn("rigenerazione", resolver.run.await_args.kwargs)
+        for chiamata in resolver.run.await_args_list:
+            self.assertNotIn("rigenerazione", chiamata.kwargs)
 
     def test_il_monitor_viene_dopo_la_seo(self):
         # Il monitor semina l'impronta della pagina: prima della SEO
@@ -231,6 +237,66 @@ class TestOrdineDegliStep(_ConPipeline):
                          {"status": "ok", "saltato": "giro_non_previsto"})
         monitor.run.assert_not_awaited()
         self.assertEqual(stato["status"], "completed")
+
+
+class TestRicontrolli(_ConPipeline):
+    """Step 5-bis: la cadenza di A33 deve avere qualcuno che la legge.
+
+    Difetto misurato il 24/09/2026 sui log di produzione: lo step 5 gira in
+    modo `nuovi`, e `prossimo_controllo_at` di 1 141 righe `in_verifica` e
+    507 `non_trovata` non veniva letto da nessuno. Una fonte non trovata oggi
+    non si sarebbe trovata mai piu', nemmeno dopo un `domini --import` che
+    rende riconoscibili centinaia di host.
+    """
+
+    def test_i_ricontrolli_partono_nei_giri_del_monitor(self):
+        resolver = _fonte_ufficiale()
+        stato = self.esegui(giro="06:00", resolver=resolver, monitor=_monitoraggio())
+        self.assertEqual(resolver.run.await_count, 2)
+        secondo = resolver.run.await_args_list[1].kwargs
+        self.assertEqual(secondo["modo"], "ricontrolli")
+        self.assertEqual(secondo["limit"], pipeline.RICONTROLLI_PER_GIRO)
+        self.assertEqual(secondo["giro"], "06:00")
+        self.assertEqual(stato["status"], "completed")
+
+    def test_negli_altri_giri_non_partono(self):
+        # Manutenzione due volte al giorno, non quattro: il traffico verso gli
+        # enti e' lo stesso che il monitor sta gia' facendo in quelle ore.
+        resolver = _fonte_ufficiale()
+        stato = self.esegui(giro="12:00", resolver=resolver)
+        self.assertEqual(resolver.run.await_count, 1,
+                         "fuori dai giri del monitor gira solo lo step 5")
+        self.assertEqual(stato["steps"]["ricontrolli"],
+                         {"status": "ok", "saltato": "giro_non_previsto"})
+
+    def test_i_nuovi_vengono_prima_degli_arretrati(self):
+        # Se la manutenzione rubasse la finestra ai nuovi, i bandi del giorno
+        # uscirebbero senza fonte: e' l'unico ordine accettabile.
+        ordine: list[str] = []
+        resolver = _fonte_ufficiale()
+
+        async def segna(**kwargs):
+            ordine.append(kwargs.get("modo", "nuovi"))
+            return {"status": "ok"}
+
+        resolver.run = AsyncMock(side_effect=segna)
+        self.esegui(giro="06:00", resolver=resolver, monitor=_monitoraggio())
+        self.assertEqual(ordine, ["nuovi", "ricontrolli"])
+
+    def test_un_ricontrollo_che_esplode_non_ferma_il_giro(self):
+        resolver = _fonte_ufficiale()
+        chiamate = {"n": 0}
+
+        async def a_volte(**_kwargs):
+            chiamate["n"] += 1
+            if chiamate["n"] == 2:
+                raise RuntimeError("rete giu'")
+            return {"status": "ok"}
+
+        resolver.run = AsyncMock(side_effect=a_volte)
+        stato = self.esegui(giro="06:00", resolver=resolver, monitor=_monitoraggio())
+        self.assertEqual(stato["steps"]["ricontrolli"]["status"], "error")
+        self.assertIn("monitor", stato["steps"], "il giro deve proseguire")
 
     def test_giro_none_vale_sempre(self):
         monitor = _monitoraggio()
@@ -420,14 +486,18 @@ class TestEsitiCheRestanoDati(_ConPipeline):
         self.assertTrue(riga.interrotto_per_tetto)
         self.assertEqual(riga.esito, telemetria.ESITO_INTERROTTO)
 
-    def test_crediti_e_dollari_sommati_sui_due_step(self):
+    def test_crediti_e_dollari_sommati_su_tutti_gli_step(self):
+        # Il resolver gira due volte (nuovi e ricontrolli) e il monitor una.
+        # La spesa degli arretrati e' spesa come le altre: se non entrasse nel
+        # totale, `salute` misurerebbe un consumo piu' basso del vero e i tetti
+        # mensili scatterebbero tardi.
         stato = self.esegui(
             resolver=_fonte_ufficiale({"status": "ok", "crediti": 12, "costo_usd": 0.25}),
             monitor=_monitoraggio({"status": "ok", "crediti": 30, "costo_usd": 1.5}),
         )
         riga = self.righe[-1]
-        self.assertEqual(riga.crediti, 42)
-        self.assertAlmostEqual(riga.costo_usd, 1.75)
+        self.assertEqual(riga.crediti, 12 + 12 + 30)
+        self.assertAlmostEqual(riga.costo_usd, 0.25 + 0.25 + 1.5)
         self.assertEqual(stato["status"], "completed")
 
     def test_slug_modificati_finiscono_anche_nella_riga(self):

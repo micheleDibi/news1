@@ -104,6 +104,14 @@ PERCORSO_BANDO = "/bandi"
 
 MODULO_ASSENTE = "modulo_assente"
 
+#: Quante righe arretrate il resolver ricontrolla per giro (step 5-bis).
+#: Con la cadenza di A33 i ricontrolli che maturano sono ~90 al giorno su
+#: 1 648 righe da seguire; con due giri al posto di quattro, 60 per giro li
+#: coprono con margine. Il numero sta qui e non nell'ambiente perche' non e'
+#: una scelta di esercizio: e' il tetto che impedisce alla manutenzione di
+#: rubare la finestra ai bandi nuovi, che senza lo step 5 escono senza fonte.
+RICONTROLLI_PER_GIRO = 60
+
 
 def _passo_opzionale(modulo: str, funzione: str = "run") -> tuple[Callable | None, str]:
     """Import protetto di uno step non ancora scritto.
@@ -263,6 +271,32 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
         state["steps"]["resolver"] = await _passo_se_esiste(
             "resolver", "app.fonte_ufficiale", giro=giro,
         )
+
+        # Step 5-bis: i ricontrolli delle fonti rimaste indietro.
+        # Lo step 5 gira in modo `nuovi`, cioe' sulle sole righe appena
+        # arrivate a `enriched`. La cadenza di A33 (`in_verifica` a 14 giorni
+        # per tre tentativi, poi 60; `non_trovata` a 60) vive in
+        # `bando_controllo.prossimo_controllo_at`, ma **nessuno step la
+        # consumava**: misurato il 24/09/2026, 1 141 righe `in_verifica` e 507
+        # `non_trovata` avevano una data di ricontrollo che nessun giro
+        # avrebbe mai letto. Senza questo passaggio quella colonna e' un
+        # promemoria che nessuno apre, e una fonte che oggi non si trova non
+        # si trova mai piu' — nemmeno dopo un `domini --import` che rende
+        # riconoscibili centinaia di host.
+        #
+        # Solo nei giri del monitor, e con un tetto proprio: i ricontrolli
+        # sono manutenzione, non devono mai rubare la finestra ai bandi nuovi
+        # (che escono senza fonte se lo step 5 non li lavora) ne' consumare da
+        # soli il tetto giornaliero delle ricerche.
+        if _giro_previsto(giro):
+            state["steps"]["ricontrolli"] = await _passo_se_esiste(
+                "ricontrolli", "app.fonte_ufficiale", giro=giro,
+                modo="ricontrolli", limit=RICONTROLLI_PER_GIRO,
+            )
+        else:
+            state["steps"]["ricontrolli"] = {
+                "status": "ok", "saltato": "giro_non_previsto",
+            }
 
         # Step 6: seo (no kwargs: opera su 'enriched')
         state["steps"]["seo"] = await _safe_run("seo", _seo_run)
