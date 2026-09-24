@@ -487,3 +487,48 @@ rileva le colonne assenti, `blocco` la RPC mancante, il monitor salta lo step co
 Comandi nuovi, tutti con `--dry-run` e `--limit` e tutti verificati con credenziali finte e senza rete:
 `salute`, `domini --import`, `risolvi-fonte`, `oe-dettaglio`, `link-verifica`, `fondi-doppioni`,
 `monitor`, `report-ombra`, `applica-eventi`, `pulisci-contenuto`, `rigenera`, `archivia-processed`.
+
+## Controllo esterno delle fonti trovate (24/09/2026)
+
+Verifica indipendente sulle 495 fonti `trovata` in produzione, fatta rileggendo il DB e
+riclassificando ogni host con la tabella dei domini vera, non con i contatori del resolver.
+
+**Cosa regge.** Nessuna fonte punta a un aggregatore; nessun `fonte_ufficiale_host` diverso
+dall'host dell'URL; nessuna riga `trovata` senza `fonte_ufficiale_link_id`; nessun link di un
+altro bando; nessun URL non http; nessuna senza `fonte_ufficiale_verificata_at`. Il vincolo
+centrale dell'intervento — l'aggregatore non deve mai comparire in pubblico — non ha eccezioni.
+
+**Tre difetti trovati e chiusi.**
+
+1. *193 fonti su 495 senza pulsante.* `fonte_ufficiale_tipo` è NULL quando l'host è riconosciuto
+   solo per forma (`regione.*.it`, `*.gov.it`, `*.camcom.it`): il resolver li ammette a `trovata`
+   di proposito, ma `sceltaCta` pretendeva `ente`/`atto`/`portale_pubblico` e quelle schede
+   mostravano l'URL ufficiale nella riga della fonte e **nessun pulsante**. Ora l'ultimo ramo
+   della cascata è «fonte trovata», non «fonte di un tipo noto». Commit `56a120b`.
+2. *137 fonti su 495 puntano a una riga che anon non legge.* `upsert_bando_link` usa
+   `ignore_duplicates=True` (l'URL è immutabile), quindi la riga di backfill della migrazione 02
+   (`origine='raw'`, `trovato_in_fonte_at` NULL, `pubblicabile=false`) non veniva mai promossa.
+   Il resolver ora promuove la riga che adotta, e `link-verifica` riconosce come prova il fatto
+   che la riga **sia** la fonte ufficiale di un bando `trovata`: senza quest'ultimo ramo le 137
+   righe già scritte non avevano nessun percorso di riparazione, perché `risolvi-fonte` non
+   ripassa su un bando già risolto. Commit `56a120b`.
+3. *Il titolo in pagina non contava se la pagina diceva di più.* Il Jaccard è simmetrico e si
+   diluisce sui portali che ripetono il titolo e ci aggiungono il proprio nome: misurato 0,16 su
+   una pagina che conteneva il titolo del bando per intero. Aggiunta la copertura, con soglie più
+   severe e un minimo di quattro token distintivi. Commit `d8e5b1f`.
+
+**Cosa resta aperto sul terzo segnale (`contenuto`).** Su un campione di 14 bandi `in_verifica`,
+uno per host, il segnale che manca più spesso non è il titolo ma il contenuto (12 su 14).
+Misurato su tutte le 1 636 righe con una fonte: delle quattro strade previste da §5 per quel
+segnale, **due non hanno mai prodotto niente** — `numero d'atto` e `identificatore` valgono 0 su
+tutte le righe — quindi il segnale poggia solo su scadenza e importo. E 116 dei 1 141
+`in_verifica` (10%) non hanno a DB né l'una né l'altro: per loro il terzo segnale è
+irraggiungibile qualunque pagina si scarichi. Sbloccarli richiede una decisione che non è stata
+presa: o si ammette che due prove di contenuto indipendenti (scadenza esatta *e* importo
+coerente) valgano quanto la terna, o quei bandi restano `in_verifica` per sempre.
+
+**Da fare in produzione.** `python -m app domini --import` non è mai stato eseguito: la tabella
+`dominio_ufficiale` ha 52 righe (i 10 aggregatori della 02 più il seed), quindi mancano i 118
+host di `fonte.link` e IndicePA. Non è più un difetto bloccante dopo la correzione 1, ma con
+l'import gli host regionali passerebbero da `pattern` a `ente` e le schede mostrerebbero anche
+la qualifica «(pagina dell'ente)».
