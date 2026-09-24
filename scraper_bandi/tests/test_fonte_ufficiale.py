@@ -2257,3 +2257,85 @@ class TestCostoDelConfrontoGemelli(unittest.TestCase):
 
 if __name__ == "__main__":                              # pragma: no cover
     unittest.main()
+
+
+class TestTitoloDellaFonte(unittest.TestCase):
+    """Il segnale «titolo» va confrontato col titolo della FONTE, non col nostro.
+
+    `bando.titolo` e' il titolo editoriale che la pipeline genera per i lettori;
+    `bando.titolo_raw` e' come il bando si chiama nella fonte. La pagina
+    dell'ente porta il secondo. Misurato su un caso qualunque il 24/09/2026:
+
+        titolo      Contributi fondo perduto per cortometraggi di interesse
+                    regionale in Sardegna
+        titolo_raw  Sardegna - Concessione di contributi finalizzati alla
+                    produzione di cortometraggi di rilevante interesse regionale
+
+    Confrontando solo il primo, il segnale non scattava quasi mai, e senza di
+    esso i tre segnali richiesti da `trovata` non si completano: **437 bandi su
+    2 134 avevano un punteggio da `trovata` e restavano `in_verifica`** per
+    questo motivo, dopo un giro del resolver su tutto il corpus.
+    """
+
+    TITOLO_NOSTRO = "Contributi fondo perduto per cortometraggi di interesse regionale in Sardegna"
+    TITOLO_FONTE = ("Sardegna - Concessione di contributi finalizzati alla produzione "
+                    "di cortometraggi di rilevante interesse regionale")
+
+    def _contesto(self, **extra):
+        valori = {"titolo": self.TITOLO_NOSTRO, "titolo_fonte": self.TITOLO_FONTE}
+        valori.update(extra)
+        return contesto(**valori)
+
+    def _pagina_dell_ente(self):
+        # La pagina si intitola come la fonte, non come noi.
+        return pagina(URL_BUONO, titolo=self.TITOLO_FONTE, corpo=CORPO_COMPLETO)
+
+    def test_il_titolo_della_fonte_fa_scattare_il_segnale(self):
+        p = fu.punteggia(candidato(pag=self._pagina_dell_ente()), self._contesto())
+        self.assertIn(fu.SEGNALE_TITOLO, p.segnali,
+                      "il segnale titolo non scatta: i tre segnali non si completeranno mai")
+        self.assertEqual(p.segnali, fu.SEGNALI_RICHIESTI)
+        self.assertEqual(p.stato, fu.STATO_TROVATA)
+
+    def test_senza_il_titolo_della_fonte_restava_in_verifica(self):
+        """Il comportamento di prima, sullo stesso candidato."""
+        p = fu.punteggia(candidato(pag=self._pagina_dell_ente()),
+                         contesto(titolo=self.TITOLO_NOSTRO))
+        self.assertNotIn(fu.SEGNALE_TITOLO, p.segnali)
+        self.assertGreaterEqual(p.valore, fu.SOGLIA_VERIFICA)
+        self.assertEqual(p.stato, fu.STATO_IN_VERIFICA,
+                         "e' il difetto misurato: punteggio buono, stato no")
+
+    def test_vince_il_confronto_migliore_dei_due(self):
+        # Se e' il titolo NOSTRO a somigliare alla pagina, il segnale scatta
+        # comunque: si prende il massimo, non si sostituisce una fonte all'altra.
+        p = fu.punteggia(
+            candidato(pag=pagina(URL_BUONO, titolo=self.TITOLO_NOSTRO, corpo=CORPO_COMPLETO)),
+            self._contesto(),
+        )
+        self.assertIn(fu.SEGNALE_TITOLO, p.segnali)
+
+    def test_senza_titolo_raw_niente_cambia(self):
+        # Gli 86 pubblicati che non hanno `titolo_raw`: si comportano come prima.
+        p = fu.punteggia(candidato(pag=self._pagina_dell_ente()),
+                         self._contesto(titolo_fonte=""))
+        self.assertNotIn(fu.SEGNALE_TITOLO, p.segnali)
+
+    def test_il_contesto_legge_titolo_raw_dalla_riga(self):
+        c = fu.contesto_da_bando({
+            "id": 1, "titolo": self.TITOLO_NOSTRO, "titolo_raw": self.TITOLO_FONTE,
+            "ente_erogatore": ENTE,
+        })
+        self.assertEqual(c.titolo, self.TITOLO_NOSTRO)
+        self.assertEqual(c.titolo_fonte, self.TITOLO_FONTE)
+        self.assertTrue(c.token_titolo_fonte)
+        # L'unione serve ai gate morbidi: una pagina con il titolo ufficiale e
+        # non il nostro non e' un soft-404 ne' una pagina indice.
+        self.assertEqual(c.token_titolo_qualsiasi, c.token_titolo | c.token_titolo_fonte)
+
+    def test_una_pagina_con_il_solo_titolo_ufficiale_non_e_un_soft404(self):
+        # Prima il gate morbido guardava solo i token del titolo editoriale: una
+        # pagina giusta, intitolata come la fonte, poteva essere scartata.
+        p = fu.punteggia(candidato(pag=self._pagina_dell_ente()), self._contesto())
+        self.assertTrue(p.duri_superati)
+        self.assertIsNone(p.tetto)

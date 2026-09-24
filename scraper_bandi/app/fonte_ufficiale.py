@@ -237,11 +237,46 @@ class Contesto:
     importo: int | None = None
     identificatori: tuple[str, ...] = ()
     numero_atto: str | None = None
+    #: `titolo_raw`: come il bando si chiama nella fonte, non come lo abbiamo
+    #: intitolato noi. E' quello che la pagina dell'ente porta davvero.
+    titolo_fonte: str = ""
     tabella: Tabella = TABELLA_SEED
 
     @property
     def token_titolo(self) -> frozenset[str]:
         return token(self.titolo)
+
+    @property
+    def token_titolo_fonte(self) -> frozenset[str]:
+        """I token del titolo **della fonte** (`titolo_raw`).
+
+        Esiste perche' `titolo` non e' il titolo del bando: e' il titolo
+        editoriale che la pipeline genera per i lettori. Misurato il 24/09/2026
+        su un caso qualunque:
+
+            titolo      Contributi fondo perduto per cortometraggi di interesse
+                        regionale in Sardegna
+            titolo_raw  Sardegna - Concessione di contributi finalizzati alla
+                        produzione di cortometraggi di rilevante interesse
+                        regionale
+
+        La pagina dell'ente porta il secondo, non il primo. Confrontare le
+        intestazioni con il solo titolo editoriale faceva mancare il segnale
+        «titolo» quasi sempre, e senza quello i tre segnali non si completano
+        mai: 437 bandi avevano un punteggio da `trovata` e restavano
+        `in_verifica` per questo motivo, su 2 134 pubblicati.
+        """
+        return token(self.titolo_fonte)
+
+    @property
+    def token_titolo_qualsiasi(self) -> frozenset[str]:
+        """L'unione dei due titoli, per i gate che chiedono «almeno un token».
+
+        Li' l'unione e' la cosa giusta: una pagina che contiene il titolo
+        ufficiale ma non la nostra riscrittura non e' un soft-404 ne' una
+        pagina indice.
+        """
+        return self.token_titolo | self.token_titolo_fonte
 
 
 @dataclass
@@ -455,7 +490,8 @@ def e_soft_404(pagina: Pagina, contesto: Contesto) -> bool:
     """
     if not _RE_SOFT_404.search(pagina.testo or ""):
         return False
-    return not (contesto.token_titolo & token(f"{pagina.intestazioni} {pagina.testo[:2000]}"))
+    return not (contesto.token_titolo_qualsiasi
+                & token(f"{pagina.intestazioni} {pagina.testo[:2000]}"))
 
 
 def e_pagina_indice(candidato: Candidato, contesto: Contesto) -> bool:
@@ -469,9 +505,9 @@ def e_pagina_indice(candidato: Candidato, contesto: Contesto) -> bool:
     if _is_likely_index_url(candidato.url):
         return True
     intestazioni = token(candidato.pagina.intestazioni if candidato.pagina else "")
-    if not intestazioni or not contesto.token_titolo:
+    if not intestazioni or not contesto.token_titolo_qualsiasi:
         return False
-    return not (contesto.token_titolo & intestazioni)
+    return not (contesto.token_titolo_qualsiasi & intestazioni)
 
 
 def punti_dominio(tipo: str) -> int:
@@ -610,7 +646,15 @@ def punteggia(candidato: Candidato, contesto: Contesto) -> Punteggio:
         voci.append(("dominio", punti))
         segnali.add(SEGNALE_DOMINIO)
 
-    somiglianza = jaccard(contesto.token_titolo, token(pagina.intestazioni))
+    # Il migliore dei due confronti: il titolo editoriale e quello della fonte.
+    # Bastava il primo e il segnale «titolo» non scattava quasi mai, perche' il
+    # titolo editoriale e' scritto per i lettori e non somiglia a quello che
+    # l'ente mette in pagina (vedi `Contesto.token_titolo_fonte`).
+    intestazioni = token(pagina.intestazioni)
+    somiglianza = max(
+        jaccard(contesto.token_titolo, intestazioni),
+        jaccard(contesto.token_titolo_fonte, intestazioni),
+    )
     if somiglianza >= JACCARD_ALTO:
         voci.append(("titolo", PUNTI["titolo_alto"]))
         segnali.add(SEGNALE_TITOLO)
@@ -775,6 +819,7 @@ def contesto_da_bando(bando: Mapping[str, Any], *, tabella: Tabella = TABELLA_SE
     return Contesto(
         bando_id=bando.get("id"),
         titolo=titolo,
+        titolo_fonte=str(bando.get("titolo_raw") or "").strip(),
         ente=str(bando.get("ente_erogatore") or "").strip(),
         data_scadenza=scadenza if isinstance(scadenza, date_cls) else None,
         importo=importo,

@@ -272,6 +272,35 @@ Conseguenza da sapere leggendo il DB: la colonna oggi codifica «l'ultimo giro h
 una memoria. Per farla funzionare davvero serve una migrazione che aggiunga `controlli_senza_diff`;
 non è stata scritta.
 
+## Il segnale «titolo» misurava il titolo sbagliato (24/09/2026)
+
+Primo giro del resolver su tutto il corpus, notte del 23/09: **66 fonti trovate su 2 134**, contro
+l'85% che il piano stimava. Non è andato storto il resolver: era sbagliata una regola del punteggio.
+
+`trovata` richiede punteggio ≥ 70 **e** tre segnali indipendenti: dominio, titolo e almeno un
+segnale di contenuto. Il segnale «titolo» confrontava le intestazioni della pagina con
+`bando.titolo`, che però non è il titolo del bando: è il titolo editoriale che la pipeline genera
+per i lettori. Il titolo della fonte sta in `titolo_raw`, e è quello che la pagina dell'ente porta.
+
+```
+titolo      Contributi fondo perduto per cortometraggi di interesse regionale in Sardegna
+titolo_raw  Sardegna - Concessione di contributi finalizzati alla produzione di cortometraggi
+            di rilevante interesse regionale
+```
+
+Con quella distanza il Jaccard non arriva a 0,50 quasi mai, il segnale non scatta, e i tre segnali
+non si completano: **437 bandi avevano un punteggio da `trovata` e restavano `in_verifica`** senza
+che nessun contatore lo spiegasse.
+
+La correzione confronta le intestazioni con **entrambi** i titoli e prende il migliore dei due, e i
+due gate morbidi (pagina indice, soft-404) guardano l'unione dei token: una pagina intitolata come
+la fonte e non come noi non è un soft-404. `titolo_raw` c'è su 2 048 pubblicati su 2 134, e su 418
+dei 437 bloccati.
+
+Misurato su un campione di quattro casi riprodotti offline: punteggi da 70, 75 e 87 passati a 95,
+100 e 100, e tre su quattro da `in_verifica` a `trovata`. La misura vera è un
+`risolvi-fonte --solo-in-verifica --dry-run` sul server, che riporta i contatori senza scrivere.
+
 ## F2: il frontend legge dalla vista (23/09/2026)
 
 Il secondo rilascio del frontend è scritto e verificato, e **non è ancora acceso**: il deploy e
