@@ -760,10 +760,29 @@ def prossimo_controllo(
     Una sola cadenza in tutto il piano: `in_verifica` a 14 giorni per tre
     tentativi e poi ogni 60; `non_trovata` ogni 60. `trovata` non ha un
     ricontrollo del resolver: la pagina passa al monitor.
+
+    E «passa al monitor» ha una conseguenza sulla data, che il codice sbagliava.
+    `prossimo_controllo_at` e' **una sola colonna per due mestieri**: il
+    resolver ci scrive quando tornare a cercare la fonte, il monitor ci legge la
+    sua coda (`select_bandi_da_monitorare` piu' il filtro di scadenza). Mettere
+    sessanta giorni su un bando appena risolto significava chiudere fuori il
+    monitor proprio dai bandi che in quel momento diventavano controllabili.
+
+    Misurato il 24/09/2026: risolte 213 fonti, e `monitor --ombra` rispondeva
+    `candidati: 0` perche' tutti e 213 avevano il prossimo controllo a piu' di
+    due settimane. La catena resolver -> monitor -> eventi -> box
+    «Aggiornamenti» era interrotta al primo anello, e nessun contatore lo
+    diceva: il monitor riferiva un giro riuscito con zero candidati.
+
+    Quindi per `trovata` la data e' **oggi**: la riga resta dovuta e il primo
+    giro del monitor la prende e da li' in poi la cadenza la decide lui, per
+    fase. Il resolver non la riprendera' comunque, perche' la sua selezione
+    esclude le righe `trovata` (`_filtra_selezione`), tranne con `--forza`, che
+    ha la sua guardia sul giorno.
     """
     prossimi = max(0, int(tentativi)) + 1
     if stato == STATO_TROVATA:
-        return oggi + timedelta(days=GIORNI_RICONTROLLO_LUNGO), PRIORITA_TROVATA, prossimi
+        return oggi, PRIORITA_TROVATA, prossimi
     if stato == STATO_IN_VERIFICA:
         giorni = (
             GIORNI_RICONTROLLO_BREVE if prossimi <= TENTATIVI_BREVI else GIORNI_RICONTROLLO_LUNGO

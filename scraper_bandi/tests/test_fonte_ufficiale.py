@@ -557,10 +557,33 @@ class TestCadenze(unittest.TestCase):
             self.assertEqual((data - self.OGGI).days, fu.GIORNI_RICONTROLLO_LUNGO)
             self.assertEqual(priorita, fu.PRIORITA_NON_TROVATA)
 
-    def test_trovata_non_torna_al_resolver(self):
+    def test_trovata_passa_al_monitor_subito(self):
+        """Una fonte trovata resta DOVUTA, cosi' il monitor la prende al primo giro.
+
+        `prossimo_controllo_at` e' una sola colonna per due mestieri: il
+        resolver ci scrive quando tornare a cercare la fonte, il monitor ci
+        legge la sua coda. Mettere sessanta giorni su un bando appena risolto
+        chiudeva fuori il monitor proprio dai bandi che in quel momento
+        diventavano controllabili.
+
+        Misurato il 24/09/2026: 213 fonti risolte e `monitor --ombra` con
+        `candidati: 0`, perche' tutti e 213 avevano il prossimo controllo a
+        piu' di due settimane. La catena resolver -> monitor -> eventi -> box
+        «Aggiornamenti» era interrotta al primo anello, e il monitor riferiva
+        un giro riuscito.
+        """
         data, priorita, _ = fu.prossimo_controllo(fu.STATO_TROVATA, 0, self.OGGI)
-        self.assertEqual((data - self.OGGI).days, fu.GIORNI_RICONTROLLO_LUNGO)
+        self.assertEqual(data, self.OGGI, "la riga deve restare dovuta")
+        self.assertTrue(fu.scaduto({"prossimo_controllo_at": data.isoformat()}, self.OGGI))
         self.assertEqual(priorita, fu.PRIORITA_TROVATA)
+
+    def test_gli_altri_due_stati_tengono_la_loro_cadenza(self):
+        # La correzione riguarda solo `trovata`: gli altri due sono ricontrolli
+        # del resolver e la cadenza A33 resta quella.
+        breve, _, _ = fu.prossimo_controllo(fu.STATO_IN_VERIFICA, 0, self.OGGI)
+        self.assertEqual((breve - self.OGGI).days, fu.GIORNI_RICONTROLLO_BREVE)
+        lungo, _, _ = fu.prossimo_controllo(fu.STATO_NON_TROVATA, 0, self.OGGI)
+        self.assertEqual((lungo - self.OGGI).days, fu.GIORNI_RICONTROLLO_LUNGO)
 
     def test_scaduto_solo_quando_la_data_e_passata(self):
         self.assertTrue(fu.scaduto({"prossimo_controllo_at": "2026-09-23"}, self.OGGI))

@@ -272,6 +272,33 @@ Conseguenza da sapere leggendo il DB: la colonna oggi codifica «l'ultimo giro h
 una memoria. Per farla funzionare davvero serve una migrazione che aggiunga `controlli_senza_diff`;
 non è stata scritta.
 
+## Il resolver chiudeva fuori il monitor dai bandi appena risolti (24/09/2026)
+
+`bando_controllo.prossimo_controllo_at` è **una sola colonna per due mestieri**: il resolver ci
+scrive quando tornare a cercare la fonte, il monitor ci legge la sua coda. Su un bando appena
+risolto il resolver scriveva sessanta giorni, e così chiudeva fuori il monitor proprio dai bandi che
+in quel momento diventavano controllabili.
+
+Misurato: risolte 213 fonti, e `monitor --ombra` rispondeva `candidati: 0`, perché tutti e 213
+avevano il prossimo controllo a più di due settimane. La catena
+
+```
+resolver -> monitor -> eventi -> box «Aggiornamenti»
+```
+
+era interrotta al primo anello, e nessun contatore lo diceva: il monitor riferiva un giro riuscito
+con zero candidati. La docstring della funzione diceva già la cosa giusta — «`trovata` non ha un
+ricontrollo del resolver: la pagina passa al monitor» — ed era il codice a non farla.
+
+Ora per `trovata` la data è **oggi**: la riga resta dovuta, il primo giro del monitor la prende, e da
+lì in poi la cadenza la decide lui per fase. Il resolver non la riprende comunque, perché la sua
+selezione esclude le righe `trovata`.
+
+**Sui 213 già risolti la data sessantennale è già scritta**, e la correzione vale solo per le
+risoluzioni future. Per sbloccarli subito bastano due strade: il giro `--backlog --forza` di domani,
+che li ririsolve e riscrive la data a oggi, oppure un UPDATE mirato su `bando_controllo`. Il monitor
+non ha un `--forza`: la sua cadenza si scavalca solo cambiando la data.
+
 ## I portali dei bandi delle Regioni erano «domini sconosciuti» (24/09/2026)
 
 La causa più grossa del basso numero di fonti trovate, più grossa del titolo.
