@@ -2632,3 +2632,95 @@ class TestProvaDellaFonteUfficiale(unittest.TestCase):
         self.assertEqual(esito["senza_prova"], 1)
         self.assertFalse(scritture[0][1]["pubblicabile"],
                          "una riga che nessuno ha visto in una pagina non e' pubblicabile")
+
+
+class TestCoperturaDelTitolo(unittest.TestCase):
+    """Il segnale «titolo» non deve morire perche' la pagina dice di piu'.
+
+    Misura del 24/09/2026 su un campione di bandi fermi a `in_verifica`: su
+    dieci pagine, **otto** mancavano del solo segnale «titolo», e su
+    `portalebandi.regione.basilicata.it` l'intestazione conteneva il titolo
+    del bando **per intero**. Il Jaccard e' simmetrico: il portale ripete il
+    titolo fra `<title>` e `h1` e ci aggiunge il proprio nome, l'unione
+    cresce, il rapporto crolla a 0,16 e il segnale non scatta. La copertura
+    guarda solo quanta parte del titolo e' finita in pagina.
+    """
+
+    #: Il caso reale: titolo del bando dentro l'intestazione del portale.
+    INTESTAZIONE_PORTALE = (
+        "Avviso pubblico per la presentazione delle domande di accesso al "
+        "Fondo Microfinanza FSE+ 2021-2027 - CeBas Portale Bandi "
+        "Avviso pubblico per la presentazione delle domande di accesso al "
+        "Fondo Microfinanza FSE+ 2021-2027"
+    )
+
+    def _contesto(self, titolo, titolo_fonte=""):
+        return fu.Contesto(bando_id=1, titolo=titolo, titolo_fonte=titolo_fonte)
+
+    def test_il_titolo_contenuto_per_intero_vale_il_segnale(self):
+        ctx = self._contesto("Fondo Microfinanza FSE+ Basilicata 2021-2027")
+        ints = fu.token(self.INTESTAZIONE_PORTALE)
+        jacc = fu.jaccard(ctx.token_titolo, ints)
+        cop = fu.copertura(ctx.token_titolo, ints)
+        self.assertLess(jacc, fu.JACCARD_ALTO,
+                        "il caso perde senso se il Jaccard desse gia' il segnale")
+        self.assertGreaterEqual(cop, fu.COPERTURA_ALTA)
+        valore, metrica = fu.somiglianza_titolo(ctx, ints)
+        self.assertGreaterEqual(valore, fu.JACCARD_ALTO)
+        self.assertTrue(metrica.startswith("copertura"), metrica)
+
+    def test_meta_titolo_in_pagina_non_basta(self):
+        # Copertura 0,50: e' il valore misurato su lazioeuropa.it, dove la
+        # pagina era davvero un'altra. Deve restare sotto ogni soglia.
+        ctx = self._contesto("alfa beta gamma delta epsilon zeta")
+        ints = fu.token("alfa beta gamma altro portale")
+        self.assertEqual(fu.copertura(ctx.token_titolo, ints), 0.5)
+        valore, metrica = fu.somiglianza_titolo(ctx, ints)
+        self.assertLess(valore, fu.JACCARD_ALTO, "mezzo titolo non e' il segnale")
+        self.assertNotIn("copertura", metrica,
+                         "sotto COPERTURA_MEDIA la copertura non deve dire niente")
+
+    def test_un_titolo_corto_non_si_misura_per_copertura(self):
+        # Tre token distintivi stanno dentro mezzo portale: la copertura non
+        # va nemmeno guardata, altrimenti ogni pagina somiglia a ogni bando.
+        ctx = self._contesto("bando formazione duemila")
+        ints = fu.token("bando formazione duemila regione sezione avvisi portale")
+        self.assertEqual(fu.copertura(ctx.token_titolo, ints), 1.0)
+        valore, metrica = fu.somiglianza_titolo(ctx, ints)
+        self.assertEqual(metrica, "jaccard/titolo")
+        self.assertLess(valore, fu.JACCARD_ALTO)
+
+    def test_la_copertura_non_abbassa_mai_un_jaccard_migliore(self):
+        ctx = self._contesto("alfa beta gamma delta")
+        ints = fu.token("alfa beta gamma delta")
+        valore, metrica = fu.somiglianza_titolo(ctx, ints)
+        self.assertEqual(valore, 1.0)
+        self.assertEqual(metrica, "jaccard/titolo")
+
+    def test_vale_anche_sul_titolo_della_fonte(self):
+        ctx = self._contesto(
+            "Microfinanza in Basilicata: come chiedere il fondo",
+            titolo_fonte=("Avviso pubblico per la presentazione delle domande "
+                          "di accesso al Fondo Microfinanza FSE+ 2021-2027"),
+        )
+        valore, metrica = fu.somiglianza_titolo(ctx, fu.token(self.INTESTAZIONE_PORTALE))
+        self.assertGreaterEqual(valore, fu.JACCARD_ALTO)
+        self.assertIn("titolo_fonte", metrica)
+
+    def test_intestazione_vuota_non_da_niente(self):
+        ctx = self._contesto("Fondo Microfinanza FSE+ Basilicata 2021-2027")
+        valore, _ = fu.somiglianza_titolo(ctx, frozenset())
+        self.assertEqual(valore, 0.0)
+
+    def test_il_punteggio_promuove_il_segnale(self):
+        ctx = self._contesto("Fondo Microfinanza FSE+ Basilicata 2021-2027")
+        pagina = fu.Pagina(
+            url="https://portalebandi.regione.basilicata.it/avvisi-e-bandi/microfinanza/",
+            stato=200, html="<html></html>",
+            testo="Avviso pubblico. " + "testo della pagina. " * 40,
+            intestazioni=self.INTESTAZIONE_PORTALE,
+        )
+        p = fu.punteggia(
+            fu.Candidato(url=pagina.url, metodo="link_strutturato", pagina=pagina), ctx)
+        self.assertIn(fu.SEGNALE_TITOLO, p.segnali)
+        self.assertEqual(dict(p.voci).get("titolo"), fu.PUNTI["titolo_alto"])

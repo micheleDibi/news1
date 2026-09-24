@@ -97,6 +97,20 @@ PRIORITA_404 = 90
 JACCARD_ALTO = 0.50
 JACCARD_MEDIO = 0.30
 
+#: Seconda strada per lo stesso segnale: la **copertura**
+#: `|titolo ∩ intestazioni| / |titolo|`. Il Jaccard e' simmetrico, quindi si
+#: dilui'sce quando la pagina ripete il titolo e ci aggiunge il nome del
+#: portale: misurato il 24/09/2026 su `portalebandi.regione.basilicata.it`, la
+#: pagina conteneva il titolo del bando **per intero** (copertura 1,00) e il
+#: Jaccard valeva 0,16, sotto ogni soglia. Le soglie qui sono piu' severe di
+#: quelle del Jaccard proprio perche' la copertura non penalizza il rumore: si
+#: accende solo quando l'intestazione contiene quasi tutto il titolo.
+COPERTURA_ALTA = 0.80
+COPERTURA_MEDIA = 0.60
+#: Sotto questo numero di token distintivi la copertura non si guarda: «bando
+#: formazione 2026» sta dentro mezzo portale e non prova niente.
+TOKEN_MINIMI_COPERTURA = 4
+
 #: Punteggio, voce per voce (§5). Tenerli qui invece che sparsi nel codice e'
 #: cio' che rende il totale verificabile a mano da chi rilegge un esito.
 PUNTI: dict[str, int] = {
@@ -444,6 +458,51 @@ def jaccard(a: Iterable[str], b: Iterable[str]) -> float:
     return len(insieme_a & insieme_b) / len(insieme_a | insieme_b)
 
 
+def copertura(a: Iterable[str], b: Iterable[str]) -> float:
+    """|A∩B| / |A|: quanta parte di `a` compare in `b`. Zero se `a` e' vuoto.
+
+    Non e' simmetrica, ed e' il punto: `a` e' il titolo del bando, `b` sono le
+    intestazioni della pagina, e una pagina ha tutto il diritto di dire piu'
+    cose del titolo (il nome del portale, la sezione, il titolo ripetuto due
+    volte fra `<title>` e `h1`).
+    """
+    insieme_a, insieme_b = frozenset(a), frozenset(b)
+    if not insieme_a:
+        return 0.0
+    return len(insieme_a & insieme_b) / len(insieme_a)
+
+
+def somiglianza_titolo(
+    contesto: "Contesto", intestazioni: Iterable[str],
+) -> tuple[float, str]:
+    """La somiglianza del titolo, e con quale metrica e' stata ottenuta.
+
+    Si prende il migliore fra quattro numeri: il Jaccard e la copertura, ognuno
+    sul titolo editoriale e su quello della fonte. La copertura entra sulla
+    scala del Jaccard (`JACCARD_ALTO`/`JACCARD_MEDIO`) solo dopo aver superato
+    le proprie soglie, piu' severe: cosi' le due metriche restano confrontabili
+    dal chiamante senza che la piu' generosa abbassi la soglia dell'altra.
+    """
+    ints = frozenset(intestazioni)
+    migliore, metrica = 0.0, ""
+    for nome, titolo in (("titolo", contesto.token_titolo),
+                         ("titolo_fonte", contesto.token_titolo_fonte)):
+        valore = jaccard(titolo, ints)
+        if valore > migliore:
+            migliore, metrica = valore, f"jaccard/{nome}"
+        if len(titolo) < TOKEN_MINIMI_COPERTURA:
+            continue
+        cop = copertura(titolo, ints)
+        # La copertura non porta un valore proprio: porta il verdetto. Sotto
+        # `COPERTURA_MEDIA` non dice niente, e non deve poter abbassare un
+        # Jaccard piu' alto.
+        promosso = (JACCARD_ALTO if cop >= COPERTURA_ALTA
+                    else JACCARD_MEDIO if cop >= COPERTURA_MEDIA else 0.0)
+        if promosso > migliore:
+            migliore, metrica = promosso, f"copertura/{nome}"
+    return migliore, metrica
+
+
 def intestazioni_pagina(html: str | None) -> str:
     """`<title>` + `h1` + `og:title`, e **mai** il corpo (§5).
 
@@ -646,15 +705,14 @@ def punteggia(candidato: Candidato, contesto: Contesto) -> Punteggio:
         voci.append(("dominio", punti))
         segnali.add(SEGNALE_DOMINIO)
 
-    # Il migliore dei due confronti: il titolo editoriale e quello della fonte.
-    # Bastava il primo e il segnale «titolo» non scattava quasi mai, perche' il
-    # titolo editoriale e' scritto per i lettori e non somiglia a quello che
-    # l'ente mette in pagina (vedi `Contesto.token_titolo_fonte`).
+    # Il migliore di quattro confronti: Jaccard e copertura, ognuno sul titolo
+    # editoriale e su quello della fonte. Il solo Jaccard sul solo titolo
+    # editoriale faceva scattare il segnale quasi mai, per due motivi diversi:
+    # il titolo editoriale e' scritto per i lettori (vedi
+    # `Contesto.token_titolo_fonte`) e il Jaccard si diluisce quando la pagina
+    # ripete il titolo e ci aggiunge il nome del portale (vedi `copertura`).
     intestazioni = token(pagina.intestazioni)
-    somiglianza = max(
-        jaccard(contesto.token_titolo, intestazioni),
-        jaccard(contesto.token_titolo_fonte, intestazioni),
-    )
+    somiglianza, _metrica = somiglianza_titolo(contesto, intestazioni)
     if somiglianza >= JACCARD_ALTO:
         voci.append(("titolo", PUNTI["titolo_alto"]))
         segnali.add(SEGNALE_TITOLO)
@@ -2917,6 +2975,8 @@ __all__ = [
     "STATO_TROVATA", "TESTO_MINIMO", "TIPI_MAI_TROVATA", "candidati_da_scheda",
     "candidati_strutturati", "contesto_da_bando", "domini_ammessi", "e_pagina_indice",
     "e_soft_404", "esito_da_punteggio", "eventi", "gate_duri", "intestazioni_pagina",
+    "copertura", "somiglianza_titolo", "COPERTURA_ALTA", "COPERTURA_MEDIA",
+    "TOKEN_MINIMI_COPERTURA",
     "jaccard", "pagina_da_risposta", "payload_controllo", "payload_fonte",
     "prossimo_controllo", "punteggia", "punti_dominio", "query_ricerca", "righe_link",
     "scaduto",
