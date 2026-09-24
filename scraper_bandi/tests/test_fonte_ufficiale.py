@@ -2724,3 +2724,58 @@ class TestCoperturaDelTitolo(unittest.TestCase):
             fu.Candidato(url=pagina.url, metodo="link_strutturato", pagina=pagina), ctx)
         self.assertIn(fu.SEGNALE_TITOLO, p.segnali)
         self.assertEqual(dict(p.voci).get("titolo"), fu.PUNTI["titolo_alto"])
+
+
+class TestSoloFonti(unittest.TestCase):
+    """`--solo-fonti` guarda le righe della fonte ufficiale e basta.
+
+    Le righe da riparare (backfill della 02 adottato dal resolver senza
+    promozione) erano 137 su 5 616 link: un giro completo costa ore di HEAD
+    per trovarle. Il filtro deve stare **dentro** la selezione, altrimenti
+    `--limit` conta le righe sbagliate.
+    """
+
+    def _righe(self, quante=6):
+        return [{"id": i, "bando_id": i, "url": f"https://ente.it/{i}",
+                 "tipo": "pagina_bando", "origine": "raw", "esito_http": None,
+                 "pubblicabile": False, "trovato_in_fonte_at": None,
+                 "impronta_pagina": None}
+                for i in range(1, quante + 1)]
+
+    def _giro(self, fonti, **extra):
+        viste = []
+        with unittest.mock.patch.object(fu.db, "select_link_delle_fonti", lambda **k: fonti), \
+             unittest.mock.patch.object(fu.db, "aggiorna_link",
+                                        lambda i, p, **k: {"scritto": True}):
+            esito = esegui(fu.run_link_verifica(
+                attivo=True, righe=self._righe(),
+                verifica=lambda u: viste.append(u) or (200, "text/html", "", None, None),
+                **extra,
+            ))
+        return esito, viste
+
+    def test_senza_il_flag_si_guardano_tutte(self):
+        esito, viste = self._giro({2, 5})
+        self.assertEqual(esito["esaminati"], 6)
+        self.assertEqual(len(viste), 6)
+
+    def test_con_il_flag_solo_le_fonti(self):
+        esito, viste = self._giro({2, 5}, solo_fonti=True)
+        self.assertEqual(esito["esaminati"], 2)
+        self.assertEqual(esito["saltate"], 4, "le righe tolte dal filtro vanno dichiarate")
+        self.assertEqual(sorted(viste), ["https://ente.it/2", "https://ente.it/5"])
+        self.assertEqual(esito["pubblicabili"], 2)
+
+    def test_il_limite_conta_le_righe_filtrate(self):
+        # Il filtro dentro lo scorrimento: `--limit` significa «verificane N»,
+        # non «guardane N e poi buttane quasi tutte».
+        raccolte = []
+        contatori = {"saltate": 0}
+        with unittest.mock.patch.object(
+                fu.db, "select_link_da_verificare",
+                lambda **k: self._righe(10)[k.get("offset", 0):][:k.get("limit") or 500]):
+            raccolte = fu._da_verificare(
+                limit=2, offset=0, bando_id=None, oggi=fu.oggi_roma(),
+                contatori=contatori, solo={3, 7, 9},
+            )
+        self.assertEqual([r["id"] for r in raccolte], [3, 7])

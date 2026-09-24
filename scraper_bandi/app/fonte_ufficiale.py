@@ -2528,12 +2528,17 @@ def _da_verificare(
     bando_id: Any,
     oggi: date_cls,
     contatori: dict[str, int],
+    solo: AbstractSet[Any] | None = None,
 ) -> list[Mapping[str, Any]]:
     """Le righe di `bando_link` da verificare, scorrendo la selezione a pagine.
 
     Gemello di `_da_leggere`: le righe gia' verificate oggi si contano in
     `saltate` e non consumano il `--limit`, che torna a significare «verificane
     N» invece di «guardane N».
+
+    `solo` e' l'insieme di id di `--solo-fonti`: scarta qui, dentro lo
+    scorrimento, cosi' il `--limit` continua a contare le righe che il comando
+    verifichera' davvero.
     """
     # `--limit 0` e' un limite, ed e' quello che un operatore mette per non
     # toccare niente (la convenzione e' scritta in `db._pagina`). Il
@@ -2555,6 +2560,9 @@ def _da_verificare(
             # `--id X` e' un bando solo, chiesto a mano: saltarne i link
             # perche' sono stati guardati stamattina renderebbe il comando
             # inutile proprio quando serve.
+            if solo is not None and riga.get("id") not in solo:
+                contatori["saltate"] += 1
+                continue
             if bando_id is None and not _da_verificare_ora(riga, oggi):
                 contatori["saltate"] += 1
                 continue
@@ -2575,6 +2583,7 @@ async def run_link_verifica(
     offset: int = 0,
     verifica: Callable[[str], Any] | None = None,
     righe: Sequence[Mapping[str, Any]] | None = None,
+    solo_fonti: bool = False,
 ) -> dict[str, Any]:
     """Ricontrolla le righe di `bando_link` e decide la pubblicabilita'.
 
@@ -2607,16 +2616,25 @@ async def run_link_verifica(
     contatori = {"esaminati": 0, "pubblicabili": 0, "ritirati": 0,
                  "rimandati": 0, "senza_prova": 0, "non_scritte": 0,
                  "saltate": 0, "errori": 0}
+    # Il filtro `--solo-fonti` va dato alla selezione, non applicato dopo:
+    # `--limit` conta le righe da verificare davvero, e filtrare a valle
+    # significherebbe prendere le prime N righe della tabella e buttarle quasi
+    # tutte.
+    solo = db.select_link_delle_fonti() if solo_fonti else None
     if righe is None:
         elenco = _da_verificare(
             limit=limit, offset=offset, bando_id=bando_id,
-            oggi=oggi_roma(), contatori=contatori,
+            oggi=oggi_roma(), contatori=contatori, solo=solo,
         )
     else:
         elenco = list(righe)
+        if solo is not None:
+            prima = len(elenco)
+            elenco = [r for r in elenco if r.get("id") in solo]
+            contatori["saltate"] += prima - len(elenco)
     # Le righe che il resolver ha scelto come fonte ufficiale: hanno la prova
     # di provenienza anche quando la riga di link non se la porta dietro.
-    fonti = db.select_link_delle_fonti()
+    fonti = solo if solo is not None else db.select_link_delle_fonti()
     chiudi: Callable[[], None] | None = None
     if verifica is None:
         from .settings import get_settings

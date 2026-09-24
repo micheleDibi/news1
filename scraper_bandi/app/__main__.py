@@ -57,9 +57,14 @@ Comandi:
                  lotto ripartirebbe ogni volta dalla prima pagina.
   link-verifica  Ricontrollo di `bando_link`: 2xx e dominio non aggregatore
                  decidono `pubblicabile`. Opzioni: --dry-run, --limit N,
-                 --id X, --offset N, --ombra|--attivo.
+                 --id X, --offset N, --solo-fonti, --ombra|--attivo.
                  `--limit` conta le righe da verificare davvero: quelle gia'
                  verificate oggi finiscono in `saltate`.
+                 `--solo-fonti` guarda **solo** le righe che sono la fonte
+                 ufficiale di un bando `trovata`: sono poche centinaia invece
+                 di qualche migliaio, ed e' il giro che ripara le righe di
+                 backfill della 02 che il resolver ha adottato senza
+                 promuoverle.
   fondi-doppioni Gemelli esatti (fusione) e possibili doppioni (report).
                  Opzioni: --dry-run, --limit N, --ombra|--attivo.
                  Qui il confronto e' fra righe dello stesso elenco e non si
@@ -643,10 +648,15 @@ def _cmd_link_verifica(argv: list[str]) -> int:
     def parametri(opzioni: Opzioni) -> dict:
         identificativo, resto = _valore_opzione(opzioni.resto, "--id")
         offset, _ = _valore_opzione(resto, "--offset")
-        return {"bando_id": identificativo, "offset": _offset_opzione(offset)}
+        return {
+            "bando_id": identificativo,
+            "offset": _offset_opzione(offset),
+            "solo_fonti": "--solo-fonti" in opzioni.resto,
+        }
 
     return _esegui_v11(
         "link-verifica", "run_link_verifica", argv,
+        ammessi=FLAG_MODALITA | frozenset({"--solo-fonti"}),
         con_valore=frozenset({"--id", "--offset"}), extra=parametri,
     )
 

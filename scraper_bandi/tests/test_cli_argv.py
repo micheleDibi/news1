@@ -458,7 +458,20 @@ class TestComandiV11(_ConRunnerFinti):
             cli.main(["link-verifica", "--dry-run", "--id", "42"])
         finto.run_link_verifica.assert_awaited_once_with(
             dry_run=True, limit=None, attivo=None, bando_id="42", offset=0,
+            solo_fonti=False,
         )
+        log.warning.assert_not_called()
+
+    def test_link_verifica_solo_fonti(self):
+        # Il giro mirato che ripara le righe di backfill adottate dal resolver:
+        # se il flag non arrivasse al modulo, il comando ripasserebbe tutta la
+        # tabella dicendo di averne guardata una fetta.
+        finto = _modulo_finto("fonte_ufficiale", ingressi=_INGRESSI_FONTE)
+        log = MagicMock()
+        with patch.dict(sys.modules, {f"{ALIAS}.fonte_ufficiale": finto}), \
+                patch.object(cli, "logger", log):
+            cli.main(["link-verifica", "--dry-run", "--solo-fonti"])
+        self.assertIs(finto.run_link_verifica.await_args.kwargs["solo_fonti"], True)
         log.warning.assert_not_called()
 
     def test_scarico_non_configurato_non_e_un_giro_riuscito(self):
