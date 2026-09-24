@@ -384,3 +384,66 @@ class TestLimiteZero(unittest.TestCase):
                              contatori={"saltate": 0, "da_scaricare": 0})
         return bersaglio(limit=0, offset=0, bando_id=None, oggi=date(2026, 9, 23),
                          contatori={"saltate": 0})
+
+
+class TestEventoGiaRegistrato(unittest.TestCase):
+    """Un evento gia' in tabella non e' un guasto: e' l'indice che fa il suo lavoro.
+
+    L'indice di dedup della migrazione 02 rifiuta un secondo evento con lo
+    stesso bando, tipo, campo, valore e giorno. E' il caso **normale** quando si
+    rifa' un giro sulle stesse righe nella stessa giornata, che e' proprio cio'
+    che `risolvi-fonte --forza --anche-oggi` serve a fare.
+
+    Misurato in produzione il 24/09/2026: il lotto di recupero ha cominciato a
+    scrivere una riga di WARNING con il corpo intero dell'errore per ogni
+    bando gia' risolto, e sarebbero state migliaia. I guasti veri ci si
+    sarebbero persi dentro.
+    """
+
+    def _errore(self, codice=None, testo=""):
+        e = RuntimeError(testo)
+        if codice is not None:
+            e.code = codice
+        return e
+
+    def test_il_codice_di_postgres_riconosce_il_duplicato(self):
+        self.assertTrue(db._e_gia_registrato(self._errore(codice="23505")))
+
+    def test_un_altro_codice_resta_un_guasto(self):
+        for codice in ("23514", "42703", "42501"):
+            with self.subTest(codice=codice):
+                self.assertFalse(db._e_gia_registrato(self._errore(codice=codice)))
+
+    def test_senza_codice_si_guarda_il_testo(self):
+        # Il client non sempre espone `code`: il messaggio lo porta comunque.
+        messaggio = ("{'message': 'duplicate key value violates unique constraint "
+                     "\"bando_evento_dedup_uidx\"', 'code': '23505'}")
+        self.assertTrue(db._e_gia_registrato(self._errore(testo=messaggio)))
+
+    def test_un_messaggio_qualunque_non_e_un_duplicato(self):
+        self.assertFalse(db._e_gia_registrato(self._errore(testo="connessione persa")))
+
+    def test_il_duplicato_non_conta_come_evento_scritto(self):
+        """Torna comunque False: in questo giro non e' stato scritto niente.
+
+        Restituire True direbbe al chiamante di aver registrato un evento che
+        esisteva gia', e il contatore `eventi` del riepilogo conterebbe due
+        volte lo stesso fatto.
+        """
+        class _Tabella:
+            def insert(self, _riga):
+                return self
+
+            def execute(self):
+                e = RuntimeError("duplicate key")
+                e.code = "23505"
+                raise e
+
+        class _Client:
+            def table(self, _nome):
+                return _Tabella()
+
+        strumento = _strumento({"bando_evento": ["bando_id", "tipo", "campo"]})
+        esito = db.registra_evento({"bando_id": 1, "tipo": "fonte_ufficiale_verificata"},
+                                   client=_Client(), strumento=strumento)
+        self.assertFalse(esito)

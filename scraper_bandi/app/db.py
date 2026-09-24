@@ -1842,9 +1842,38 @@ def registra_evento(
     try:
         _client(client).table(TABELLA_EVENTO).insert(riga).execute()
     except Exception as e:
+        if _e_gia_registrato(e):
+            # L'indice di dedup della 02 ha fatto il suo lavoro: quell'evento
+            # c'e' gia', con lo stesso bando, tipo, campo, valore e giorno. Non
+            # e' un guasto ed e' anzi il caso NORMALE quando si rifa' un giro
+            # sulle stesse righe nella stessa giornata
+            # (`risolvi-fonte --forza --anche-oggi`). Scriverlo a WARNING con il
+            # corpo intero dell'errore riempiva il log di migliaia di righe e
+            # nascondeva i guasti veri.
+            logger.debug("[db] evento {} gia' registrato per il bando {}",
+                         riga.get("tipo"), riga.get("bando_id"))
+            return False
         logger.warning("[db] insert bando_evento ({}) fallito: {}", riga.get("tipo"), e)
         return False
     return True
+
+
+#: Il codice di Postgres per la violazione di un vincolo di unicita'.
+_VIOLAZIONE_UNICITA = "23505"
+
+
+def _e_gia_registrato(errore: Exception) -> bool:
+    """L'insert e' stato rifiutato perche' la riga c'era gia'?
+
+    Si guarda il codice di Postgres e non il testo del messaggio: il testo
+    cambia con la lingua del server e con il nome dell'indice, il codice no.
+    """
+    codice = getattr(errore, "code", None)
+    if codice is None:
+        dettagli = getattr(errore, "details", None) or getattr(errore, "args", None)
+        testo = str(dettagli or errore)
+        return _VIOLAZIONE_UNICITA in testo
+    return str(codice) == _VIOLAZIONE_UNICITA
 
 
 def upsert_domini(
