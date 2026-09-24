@@ -49,6 +49,14 @@ from .logger import logger
 from .stato_bando import adesso_roma, oggi_roma, stato_effettivo
 
 NOME_LOCK = "monitor"
+
+#: Quanti eventi respinti per bando si registrano. Servono a misurare i gate
+#: nel periodo d'ombra, non a tenere un registro completo: un modello che
+#: proponesse cinquanta eventi su una pagina non deve poter scrivere cinquanta
+#: righe. Il primo giro e' il picco per costruzione (nessun «prima» con cui
+#: confrontare, quindi ogni data della pagina e' una proposta); dai successivi
+#: il diff e' piccolo e le proposte poche.
+RESPINTI_A_DB_PER_BANDO = 5
 STEP = "monitor"
 
 # --- fasi del ciclo di vita (§6.2) ------------------------------------------
@@ -1060,6 +1068,21 @@ async def controlla(
                 scrittore.registra_evento(applicazione.riga)
         else:
             respinti.append(voce)
+            # I respinti vanno **a DB**, non solo nel riepilogo del giro.
+            # Difetto misurato il 24/09/2026 sulla semina: 390 classificazioni
+            # pagate 5,17 dollari, 691 proposte, **zero** eventi registrati, e
+            # `report-ombra` lanciato dopo non trova niente da misurare perche'
+            # legge `bando_evento`. Il periodo d'ombra esiste per calcolare la
+            # precisione su almeno cento eventi: se i respinti muoiono con il
+            # processo, si spende a ogni giro senza imparare nulla, e i gate che
+            # respingono restano ignoti.
+            #
+            # La riga e' già innocua per costruzione (`riga_evento`):
+            # `verificato=false` la esclude da `applicabile()`, `leggibile=false`
+            # le nega il cursore e quindi la RLS di anon, e `gate` porta quale
+            # gate ha respinto — che e' l'unica informazione utile.
+            if scrittore is not None and len(respinti) <= RESPINTI_A_DB_PER_BANDO:
+                scrittore.registra_evento(applicazione.riga)
 
     esito.eventi = tuple(ammessi)
     esito.respinti = tuple(respinti)
@@ -2360,7 +2383,11 @@ def _scrivi_telemetria(
     run_riga = telemetria.PipelineRun(step=passo, giro=giro).concludi(
         durata_s=tempo,
         esito=telemetria.esito_da_contatori(
-            errori=int(riepilogo.get("errori") or 0), interrotto_per_tetto=interrotto),
+            errori=int(riepilogo.get("errori") or 0),
+            # Quante righe il giro ha davvero guardato: sei pagine morte su
+            # 420 controllate sono una giornata normale, non un guasto.
+            lavorate=int(riepilogo.get("controllati") or 0),
+            interrotto_per_tetto=interrotto),
         contatori=dict(riepilogo),
         crediti=contatori.crediti_firecrawl,
         costo_usd=contatori.usd,
@@ -2845,8 +2872,18 @@ async def run_report_ombra(
         **precisione(elenco),
     }
     avvertenze: list[str] = []
-    if sorgente == "bando_evento":
-        avvertenze.append("i respinti dei tipi proponibili non sono a DB")
+    if sorgente == "bando_evento" and not any(
+            not r.get("ammesso") for r in elenco):
+        # L'avvertenza vale solo se nel campione non c'e' **nessun** respinto:
+        # da quando `controlla` li registra (con `verificato=false` e il campo
+        # `gate`) la misura sui gate e' possibile anche per il comando
+        # autonomo. Dirla sempre spegneva il verdetto anche quando i dati
+        # c'erano: `sufficiente` sparisce in presenza di avvertenze, quindi
+        # un'avvertenza falsa rendeva il periodo d'ombra impossibile da
+        # chiudere. Restano fuori i giri precedenti alla correzione.
+        avvertenze.append(
+            "nel campione non ci sono respinti: i giri anteriori al 24/09/2026 "
+            "non li registravano")
     if dal is None and sorgente == "bando_evento":
         avvertenze.append(
             "senza --dal il campione e' quello dei primi eventi registrati")

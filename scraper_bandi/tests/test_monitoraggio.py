@@ -1495,16 +1495,34 @@ class TestReportOmbra(unittest.IsolatedAsyncioTestCase):
             uscita=io.StringIO(), campione=120)
         self.assertTrue(esito["sufficiente"])
 
-    async def test_da_bando_evento_nessun_verdetto(self):
-        # A DB non arrivano i respinti dei tipi proponibili (`eventi.applica`
-        # esce prima della RPC): la precisione e' misurata su una popolazione
-        # parziale, e un `sufficiente` calcolato li' sarebbe una promessa
-        # falsa. `sufficiente` **sparisce**, non vale `False`.
+    async def test_da_bando_evento_senza_respinti_nessun_verdetto(self):
+        # Un campione di soli ammessi viene da giri anteriori al 24/09/2026,
+        # quando i respinti morivano con il processo: la precisione sarebbe
+        # calcolata su una popolazione parziale e darebbe sempre 100%.
+        # `sufficiente` **sparisce**, non vale `False`.
         esito = await monitoraggio.run_report_ombra(
             righe=[_evento_db(id=i) for i in range(120)],
             uscita=io.StringIO(), campione=120, dal=date(2026, 9, 1))
         self.assertNotIn("sufficiente", esito)
-        self.assertIn("non sono a DB", esito["avvertenza"])
+        self.assertIn("non ci sono respinti", esito["avvertenza"])
+
+    async def test_da_bando_evento_con_respinti_il_verdetto_c_e(self):
+        # Da quando `controlla` registra i respinti (`verificato=false` e il
+        # campo `gate`), il comando autonomo misura i gate come la sorgente in
+        # memoria: il verdetto deve tornare, altrimenti il periodo d'ombra non
+        # si puo' chiudere mai.
+        righe = [_evento_db(id=i) for i in range(114)]
+        righe += [_evento_db(id=900 + i, verificato=False,
+                            gate={"falliti": [{"gate": "G6", "motivo": "senza parola chiave"}]})
+                  for i in range(6)]
+        esito = await monitoraggio.run_report_ombra(
+            righe=righe, uscita=io.StringIO(), campione=120, dal=date(2026, 9, 1))
+        self.assertNotIn("avvertenza", esito)
+        self.assertIn("sufficiente", esito)
+        self.assertEqual(esito["eventi"], 120)
+        self.assertEqual(esito["respinti"], 6)
+        self.assertEqual(esito["precisione"], 0.95)
+        self.assertTrue(esito["sufficiente"], esito)
 
     async def test_senza_g7_nessun_verdetto(self):
         esito = await monitoraggio.run_report_ombra(
@@ -2943,3 +2961,66 @@ class TestLottoDelMonitor(unittest.TestCase):
         lotto = self.bilancio.verifica(molte, tetti, step="backfill:L6", gia_oggi={})
         self.assertFalse(regime.consentito, "a regime il tetto deve mordere")
         self.assertTrue(lotto.consentito, "nel lotto no: ha i suoi tetti")
+
+
+class TestRespintiADatabase(unittest.IsolatedAsyncioTestCase):
+    """Un respinto che muore con il processo e' un giro pagato per niente.
+
+    Misurato in produzione il 24/09/2026 sulla semina del monitor: 390
+    classificazioni per 5,17 dollari, 691 proposte, **zero** eventi a DB.
+    `report-ombra` legge `bando_evento`, quindi non trovava niente da misurare
+    e la precisione richiesta da §6.2 (95% su almeno 100 eventi) non era
+    calcolabile. I respinti vanno registrati: portano il campo `gate`, che dice
+    quale gate ha respinto, ed e' la sola informazione che serve.
+    """
+
+    async def _giro(self, quante_proposte):
+        eventi = carica_modulo("eventi")
+        dominio_ufficiale = carica_modulo("dominio_ufficiale")
+
+        html = ("<h1>Avviso</h1><p>Sono online le FAQ dell'avviso.</p>"
+                "<p><a href='https://www.lazioeuropa.it/faq.pdf'>FAQ</a></p>")
+
+        async def scarica(url, **_k):
+            return _Risposta(html=html)
+
+        async def classifica(_ctx):
+            return [eventi.Evento(
+                tipo="faq", citazione="Sono online le FAQ dell'avviso",
+                url_prova="https://www.lazioeuropa.it/bandi/avviso-1/")
+                for _ in range(quante_proposte)]
+
+        tabella = dominio_ufficiale.costruisci(
+            fonti=[{"id": 1, "link": "https://www.lazioeuropa.it/bandi/"}])
+        fonte = monitoraggio.FonteDati()
+        riga = _bando(testo_norm="Avviso\n\nNessuna novita'.",
+                      impronta_contenuto="diversa-da-quella-nuova")
+        esito = await monitoraggio.controlla(
+            riga, scarica=scarica, classifica=classifica, fonte_dati=fonte,
+            modalita="ombra", tabella_domini=tabella, adesso=ADESSO,
+            casuale=lambda: 0.5)
+        return esito, fonte.registrati
+
+    async def test_il_respinto_arriva_a_db_con_il_suo_gate(self):
+        esito, registrati = await self._giro(2)
+        self.assertGreaterEqual(len(esito.respinti), 1)
+        respinti_a_db = [r for r in registrati if not r.get("verificato")]
+        self.assertTrue(respinti_a_db, "nessun respinto registrato: l'ombra non misura niente")
+        riga = respinti_a_db[0]
+        self.assertFalse(riga["leggibile"], "un respinto non deve essere leggibile")
+        self.assertFalse(riga["applicato"])
+        self.assertTrue(riga.get("gate"), "senza `gate` non si sa quale gate ha respinto")
+
+    async def test_il_respinto_non_e_applicabile(self):
+        # La cintura: anche se un domani `applica-eventi` leggesse queste righe,
+        # `applicabile()` le esclude perche' `verificato` e' falso.
+        _esito, registrati = await self._giro(2)
+        for riga in (r for r in registrati if not r.get("verificato")):
+            self.assertFalse(monitoraggio.applicabile(riga))
+
+    async def test_il_tetto_per_bando_vale(self):
+        # Un modello che proponesse cinquanta eventi su una pagina non deve
+        # poter scrivere cinquanta righe.
+        _esito, registrati = await self._giro(monitoraggio.RESPINTI_A_DB_PER_BANDO + 6)
+        respinti_a_db = [r for r in registrati if not r.get("verificato")]
+        self.assertLessEqual(len(respinti_a_db), monitoraggio.RESPINTI_A_DB_PER_BANDO)

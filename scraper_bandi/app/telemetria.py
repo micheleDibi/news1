@@ -174,18 +174,49 @@ class FonteRun:
         return riga
 
 
+#: Quota di righe fallite oltre la quale il giro e' un guasto e non una
+#: giornata con qualche sito giu'. Sotto questa soglia gli errori restano nei
+#: contatori (e `salute` li vede) ma l'esito resta `ok`.
+QUOTA_ERRORI_GUASTO = 0.5
+
+
 def esito_da_contatori(
     *,
     errori: int = 0,
+    lavorate: int | None = None,
     interrotto_per_tetto: bool = False,
     saltato_per_lock: bool = False,
 ) -> str:
-    """Un solo posto che decide l'esito, cosi' i tre stati non divergono."""
+    """Un solo posto che decide l'esito, cosi' i tre stati non divergono.
+
+    `lavorate` e' quante righe il giro ha davvero guardato, e serve a
+    distinguere «qualche sito era giu'» da «il giro e' fallito». Difetto
+    misurato in produzione il 24/09/2026: la semina del monitor ha controllato
+    420 bandi, 6 pagine non hanno risposto, e la riga di `pipeline_run` e'
+    stata scritta `esito='errore'` mentre il riepilogo dello step diceva
+    `status: ok` — due verdetti opposti sulla stessa riga. Un giro dichiarato
+    fallito fa scattare `salute` e, se qualcuno lo automatizza, fa ripetere un
+    lavoro riuscito: 1,4% di pagine morte e' la normalita' di un corpus di
+    bandi pubblici, non un guasto.
+
+    Senza `lavorate` il comportamento resta quello di prima (un errore = esito
+    errore): i chiamanti che non sanno quante righe hanno lavorato non devono
+    diventare piu' indulgenti per una firma nuova.
+    """
     if saltato_per_lock:
         return ESITO_SALTATO
     if interrotto_per_tetto:
         return ESITO_INTERROTTO
-    return ESITO_ERRORE if errori else ESITO_OK
+    if not errori:
+        return ESITO_OK
+    if lavorate is None:
+        return ESITO_ERRORE
+    if int(lavorate) <= 0:
+        # Nessuna riga lavorata e almeno un errore: non c'e' nient'altro che
+        # possa aver funzionato.
+        return ESITO_ERRORE
+    return (ESITO_ERRORE if errori / int(lavorate) >= QUOTA_ERRORI_GUASTO
+            else ESITO_OK)
 
 
 def riepilogo(run: PipelineRun) -> str:
@@ -368,6 +399,7 @@ __all__ = [
     "ESITO_ERRORE", "ESITO_INTERROTTO", "ESITO_OK", "ESITO_SALTATO", "FonteRun",
     "PREFISSO_ALLARME", "PipelineRun", "RISPECCHIATI_PIPELINE_RUN", "Salute",
     "Stato", "TABELLA_FONTE_RUN",
-    "TABELLA_RUN", "esito_da_contatori", "riepilogo", "righe_allarme", "salute",
+    "QUOTA_ERRORI_GUASTO", "TABELLA_RUN", "esito_da_contatori", "riepilogo",
+    "righe_allarme", "salute",
     "scrivi_fonte_run", "scrivi_pipeline_run",
 ]
