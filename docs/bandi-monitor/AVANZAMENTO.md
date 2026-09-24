@@ -532,3 +532,63 @@ coerente) valgano quanto la terna, o quei bandi restano `in_verifica` per sempre
 host di `fonte.link` e IndicePA. Non è più un difetto bloccante dopo la correzione 1, ma con
 l'import gli host regionali passerebbero da `pattern` a `ente` e le schede mostrerebbero anche
 la qualifica «(pagina dell'ente)».
+
+## Messa in esercizio (24/09/2026, pomeriggio)
+
+Due configurazioni mancavano in produzione, e nessuna delle due dava errore.
+
+**Il resolver girava in ombra.** `RESOLVER_MODALITA` non era nel `.env`, quindi valeva `ombra` per
+difetto. Il log del giro delle 12:07 lo dice per intero: `esaminati: 10, trovate: 4, fetch: 22,
+attivo: False, link_scritti: 0`. Ogni giro risolveva i bandi nuovi, pagava le richieste e buttava il
+risultato; i bandi pubblicati dopo il rilascio uscivano senza fonte ufficiale. Ora è `attivo`.
+`MONITOR_MODALITA` resta **ombra** di proposito: si attiva dopo `report-ombra --campione 100` con
+precisione ≥ 95%, che è ciò che il piano chiede prima di lasciargli scrivere stato e date.
+
+**I ricontrolli non avvenivano mai.** Lo step 5 gira in modo `nuovi`, cioè sulle sole righe appena
+arrivate a `enriched` — il log lo conferma: `'modo': 'nuovi'`. La cadenza di A33 viene calcolata e
+scritta in `bando_controllo.prossimo_controllo_at`, ma nessuno step la leggeva: 1 650 righe con una
+data di ricontrollo che nessun giro avrebbe mai aperto. È il difetto che rendeva inutile l'import
+della whitelist, perché i bandi fermi non venivano riesaminati mai. Aggiunto lo **step 5-bis**
+(`modo=ricontrolli`, 60 righe per giro, solo nei giri del monitor, sempre **dopo** i nuovi).
+
+### Stato misurato a fine giornata
+
+| | |
+|---|---|
+| bandi pubblicati | 2 143 |
+| fonti ufficiali trovate | **574** (0 ieri sera, 66 stamattina) |
+| in verifica / non trovate | 1 143 / 507 |
+| link pubblicabili | 5 832 su 9 771 |
+| **CTA verso un aggregatore** | **0 su 2 143** |
+| schede con un pulsante | 542 |
+| impronte seminate dal monitor | 495 su 495, 2 controlli falliti, 259 ETag |
+
+`domini --import` eseguito: la tabella passa da 52 a 109 righe (i soli host delle fonti; IndicePA
+richiede il foglio `enti.xlsx` con `--enti PATH` e non è stato importato). Effetto misurato sui
+candidati già scelti: i «domini sconosciuti» passano da **439 a 0**, e 1 018 candidati diventano di
+tipo `ente`, che vale 30 punti invece di 25.
+
+### Una trappola di metodo, incontrata due volte nello stesso giorno
+
+**Un campione ordinato per `id` non è un campione.** La selezione del resolver fa `order("id")`:
+i primi N sono i bandi più vecchi del corpus, importati a giugno da fonti che non funzionano più.
+Un `risolvi-fonte --limit 60` ha risposto `trovate: 0` e mi ha portato a concludere che il ripasso
+fosse inutile — conclusione sbagliata. Su un campione costruito con **un host diverso per riga** la
+resa è 3 su 30, e il resolver vero su uno di quei bandi (`--id 17541`) risponde `trovate: 1` con
+100 punti. La stessa trappola era scattata al mattino, con un campione quasi tutto della Basilicata
+che indicava il titolo come collo di bottiglia mentre su campione vario è il contenuto.
+
+Per stimare una resa su questo corpus: mai i primi N, sempre uno per host.
+
+### Cosa resta aperto
+
+Il terzo segnale (`contenuto`) è il limite strutturale. Delle quattro strade previste da §5 **due
+non hanno mai prodotto niente** — `numero d'atto` e `identificatore` valgono 0 su tutte le 1 636
+righe con una fonte — quindi il segnale poggia solo su scadenza e importo. E **116 dei 1 141
+`in_verifica` (10%) non hanno a DB né l'una né l'altro**: per loro è irraggiungibile qualunque
+pagina si scarichi. Sbloccarli richiede una decisione che non è stata presa: o due prove di
+contenuto indipendenti (scadenza esatta *e* importo coerente) valgono quanto la terna, oppure quei
+bandi restano `in_verifica` per sempre.
+
+Fuori perimetro, annotato: `bandiavvisi.regione.lazio.it` presenta un certificato con la catena
+incompleta e fallisce sempre lo scarico. È un problema dell'ente.
