@@ -372,6 +372,7 @@ OPZIONI_BACKFILL = frozenset({"--lotto", "--offset"})
 # una decisione della riga di comando, non del codice che scrive.
 FLAG_RESOLVER = frozenset({
     "--nuovi", "--backlog", "--solo-oe", "--solo-in-verifica", "--forza",
+    "--anche-oggi",
 }) | FLAG_MODALITA
 
 # `--senza-rete` e' del solo monitor: e' l'unico step che, se non scarica, ha
@@ -591,6 +592,12 @@ def _cmd_risolvi_fonte(argv: list[str]) -> int:
             "solo_in_verifica": "--solo-in-verifica" in opzioni.resto,
             "bando_id": identificativo,
             "forza": "--forza" in opzioni.resto,
+            # `--anche-oggi` vale solo con `--forza` e serve a un caso solo: le
+            # regole sono cambiate sotto le righe (una correzione al punteggio o
+            # alla whitelist) e il lavoro di poche ore prima e' stato fatto con
+            # criteri diversi. Senza, l'unica alternativa era aspettare il
+            # giorno dopo o falsificare `ultimo_controllo_at` a mano.
+            "anche_oggi": "--anche-oggi" in opzioni.resto,
             # Con `--forza` non resta nessun predicato capace di far uscire una
             # riga dalla selezione: `--offset` e' il solo modo di lanciare i
             # blocchi a mano senza ripetere sempre gli id piu' bassi.
@@ -740,6 +747,11 @@ def _cmd_monitor(argv: list[str]) -> int:
             # sa gia' (forza l'ombra), ma l'adattatore che scrive non deve
             # nemmeno essere costruito.
             "rigenerazione": _rigenerazione_di_produzione(attivo and not opzioni.dry_run),
+            # `--lotto Lx` sposta il giro sui tetti del backfill: la semina
+            # delle impronte (L6) passa dal modello su ogni riga, perche' al
+            # primo controllo non c'e' un «prima», e i trenta del regime
+            # bastano per trenta bandi.
+            "lotto": _valore_opzione(opzioni.resto, "--lotto")[0],
             # I due adattatori del G7 e i contatori che li misurano: in ombra
             # si costruiscono lo stesso (vedi `_adattatori_g7`).
             **_adattatori_g7(),
@@ -747,7 +759,7 @@ def _cmd_monitor(argv: list[str]) -> int:
 
     return _esegui_v11(
         "monitor", "run", argv, modulo="monitoraggio",
-        ammessi=FLAG_MONITOR, extra=parametri,
+        ammessi=FLAG_MONITOR, con_valore=frozenset({"--lotto"}), extra=parametri,
     )
 
 

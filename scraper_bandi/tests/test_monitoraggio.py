@@ -2904,3 +2904,42 @@ class TestPagineCollegate(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":       # pragma: no cover
     unittest.main()
+
+
+class TestLottoDelMonitor(unittest.TestCase):
+    """`--lotto` sposta il monitor sui tetti del backfill.
+
+    Il tetto di trenta classificazioni al giorno e' giusto **a regime**, dove il
+    modello si chiama solo sulle pagine che sono cambiate davvero. Alla
+    **semina** no: al primo controllo un bando non ha un «prima» con cui
+    confrontarsi, quindi passa dal modello sempre.
+
+    Misurato il 24/09/2026 sul primo giro vero: `candidati: 50, controllati:
+    30`, fermato dal tetto dopo tre minuti, con 213 bandi da seminare. Sette
+    giorni per finire una cosa che il piano voleva in un lotto solo (L6, sui
+    tetti di backfill). Il comando non aveva il modo di dirlo.
+    """
+
+    def setUp(self):
+        self.bilancio = carica_modulo("bilancio")
+
+    def test_senza_lotto_lo_step_resta_quello_del_regime(self):
+        self.assertEqual(monitoraggio.STEP, "monitor")
+        self.assertFalse(self.bilancio.e_backfill(monitoraggio.STEP))
+
+    def test_col_lotto_lo_step_diventa_un_backfill(self):
+        # E' il prefisso che `bilancio.verifica` guarda per cambiare tetti.
+        self.assertTrue(self.bilancio.e_backfill("backfill:L6"))
+
+    def test_i_due_insiemi_di_tetti_sono_diversi(self):
+        # Se coincidessero, il flag non servirebbe a niente.
+        tetti = self.bilancio.Tetti(classificazioni_giorno=30,
+                                    backfill_crediti=8000, backfill_usd=60.0)
+        # `usd` e' una proprieta' calcolata dai modelli: il tetto che morde qui
+        # e' quello delle classificazioni, che e' esattamente il numero che ha
+        # fermato il giro vero al trentesimo bando.
+        molte = self.bilancio.Contatori(classificazioni=30)
+        regime = self.bilancio.verifica(molte, tetti, step="monitor", gia_oggi={})
+        lotto = self.bilancio.verifica(molte, tetti, step="backfill:L6", gia_oggi={})
+        self.assertFalse(regime.consentito, "a regime il tetto deve mordere")
+        self.assertTrue(lotto.consentito, "nel lotto no: ha i suoi tetti")

@@ -2445,3 +2445,48 @@ class TestNessunaRispostaNonEAssenza(unittest.TestCase):
         fra_non_trovata, _, _ = fu.prossimo_controllo(fu.STATO_NON_TROVATA, 0, oggi)
         self.assertLess(fra_in_verifica, fra_non_trovata,
                         "in_verifica deve tornare in coda prima di non_trovata")
+
+
+class TestAncheOggi(unittest.TestCase):
+    """`--anche-oggi`: rifare oggi cio' che oggi e' gia' stato fatto.
+
+    Con `--forza` la cadenza non vale piu', ma una riga lavorata **oggi** si
+    salta lo stesso: e' la guardia che impedisce a due lanci di fila nella
+    stessa giornata di ripetere lo stesso blocco di id.
+
+    C'e' pero' un caso in cui rifare e' esattamente cio' che serve: **le regole
+    sono cambiate sotto le righe**. Il 24/09/2026 sono stati 1 923 bandi,
+    risolti la mattina e poi rimasti indietro quando la whitelist ha smesso di
+    chiamare «sconosciuti» i portali regionali. Senza questo flag l'unica
+    alternativa era aspettare il giorno dopo, oppure falsificare a mano
+    `ultimo_controllo_at`, che e' peggio.
+    """
+
+    OGGI = date(2026, 9, 24)
+
+    def _controllo(self, quando):
+        return {"ultimo_controllo_at": quando, "prossimo_controllo_at": "2026-11-23"}
+
+    def test_senza_il_flag_una_riga_di_oggi_si_salta(self):
+        oggi = self._controllo("2026-09-24T09:30:00+00:00")
+        self.assertFalse(fu._da_risolvere_ora(oggi, self.OGGI, forza=True))
+
+    def test_col_flag_la_stessa_riga_si_rifa(self):
+        oggi = self._controllo("2026-09-24T09:30:00+00:00")
+        self.assertTrue(fu._da_risolvere_ora(oggi, self.OGGI, forza=True, anche_oggi=True))
+
+    def test_il_flag_non_serve_a_chi_e_stato_lavorato_ieri(self):
+        ieri = self._controllo("2026-09-23T09:30:00+00:00")
+        self.assertTrue(fu._da_risolvere_ora(ieri, self.OGGI, forza=True))
+        self.assertTrue(fu._da_risolvere_ora(ieri, self.OGGI, forza=True, anche_oggi=True))
+
+    def test_senza_forza_il_flag_non_fa_niente(self):
+        # `--anche-oggi` e' una deroga alla guardia del giorno, che vive dentro
+        # il ramo `--forza`. Da solo non deve scavalcare la cadenza: quella e'
+        # la protezione dal rilavorare una riga ogni giro, e costa crediti.
+        oggi = self._controllo("2026-09-24T09:30:00+00:00")
+        self.assertFalse(fu._da_risolvere_ora(oggi, self.OGGI, forza=False, anche_oggi=True))
+
+    def test_una_riga_mai_vista_si_lavora_comunque(self):
+        self.assertTrue(fu._da_risolvere_ora(None, self.OGGI, forza=False))
+        self.assertTrue(fu._da_risolvere_ora({}, self.OGGI, forza=True, anche_oggi=True))

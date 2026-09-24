@@ -1554,6 +1554,7 @@ async def run(
     adesso: datetime | None = None,
     casuale: Callable[[], float] | None = None,
     senza_rete: bool = False,
+    lotto: str | None = None,
     contatori: bilancio.Contatori | None = None,
     lock: Any = blocco,
 ) -> dict[str, Any]:
@@ -1585,6 +1586,16 @@ async def run(
     conferma entra nel tetto giornaliero in $ mentre il giro corre — non a
     giro finito, quando un tetto non serve piu' a niente.
     """
+    # Lo step nomina la riga di `pipeline_run` E decide quali tetti valgono:
+    # `bilancio.e_backfill` guarda il prefisso. Senza `--lotto` il monitor
+    # risponde ai tetti del regime (30 classificazioni e 1,5 dollari al
+    # giorno), che sono giusti a regime e sbagliati per la **semina**: il primo
+    # giro su un bando non ha un «prima» con cui confrontare, quindi passa dal
+    # modello sempre, e con 213 bandi da seminare il tetto morde al trentesimo.
+    # Misurato il 24/09/2026: `candidati: 50, controllati: 30`, fermato dal
+    # tetto dopo tre minuti. Il piano lo prevedeva (il lotto L6 sta sui tetti
+    # di backfill) e il comando non aveva il modo di dirlo.
+    passo = f"backfill:{lotto}" if lotto else STEP
     avvio = time.monotonic()
     momento = adesso_roma(adesso)
     # Le chiavi che ogni uscita di `run` deve avere, comprese le quattro
@@ -1679,7 +1690,7 @@ async def run(
         motivo_tetto = ""
         for riga in righe:
             verifica = bilancio.verifica(
-                contatori, tetti, step=STEP, gia_oggi=dati.consumo_oggi())
+                contatori, tetti, step=passo, gia_oggi=dati.consumo_oggi())
             if not verifica.consentito:
                 interrotto = True
                 motivo_tetto = verifica.motivo
@@ -1764,7 +1775,7 @@ async def run(
             "durata_s": round(time.monotonic() - avvio, 1),
         }
         _scrivi_telemetria(riepilogo, contatori, giro, slug_modificati, interrotto,
-                           tempo=time.monotonic() - avvio)
+                           tempo=time.monotonic() - avvio, passo=passo)
         logger.info("[monitor] {}", riepilogo)
         return riepilogo
     except Exception as e:
@@ -2344,8 +2355,9 @@ def _scrivi_telemetria(
     interrotto: bool,
     *,
     tempo: float,
+    passo: str = STEP,
 ) -> None:
-    run_riga = telemetria.PipelineRun(step=STEP, giro=giro).concludi(
+    run_riga = telemetria.PipelineRun(step=passo, giro=giro).concludi(
         durata_s=tempo,
         esito=telemetria.esito_da_contatori(
             errori=int(riepilogo.get("errori") or 0), interrotto_per_tetto=interrotto),

@@ -310,7 +310,7 @@ class TestComandiV11(_ConRunnerFinti):
         self.assertEqual(codice, cli.EXIT_TETTO)
         finto.run.assert_awaited_once_with(
             dry_run=True, limit=5, attivo=True, modo="backlog", solo_oe=True,
-            solo_in_verifica=False, bando_id="42", forza=True, offset=0, lotto="L5",
+            solo_in_verifica=False, bando_id="42", forza=True, anche_oggi=False, offset=0, lotto="L5",
         )
 
     def test_offset_arriva_al_runner(self):
@@ -347,7 +347,7 @@ class TestComandiV11(_ConRunnerFinti):
         self.assertEqual(codice, cli.EXIT_OK)
         finto.run.assert_awaited_once_with(
             dry_run=True, limit=None, attivo=None, modo="nuovi", solo_oe=False,
-            solo_in_verifica=False, bando_id=None, forza=False, offset=0, lotto=None,
+            solo_in_verifica=False, bando_id=None, forza=False, anche_oggi=False, offset=0, lotto=None,
         )
 
     def test_solo_in_verifica_seleziona_i_ricontrolli(self):
@@ -488,7 +488,7 @@ class TestComandiV11(_ConRunnerFinti):
         # restano `None` perche' il modulo finto non espone i costruttori.
         finto.run.assert_awaited_once_with(
             dry_run=True, limit=None, attivo=None, senza_rete=False, rigenerazione=None,
-            contatori=None, seconda_opinione=None, pagine_collegate=None,
+            lotto=None, contatori=None, seconda_opinione=None, pagine_collegate=None,
         )
 
     def test_modulo_rotto_non_si_confonde_con_modulo_assente(self):
@@ -945,7 +945,10 @@ _OPZIONI_AMMESSE_DI = {
     "oe-dettaglio": {"--id", "--offset"},
     "link-verifica": {"--id", "--offset"},
     "fondi-doppioni": set(),
-    "monitor": set(),
+    # `--lotto` sul monitor sposta il giro sui tetti del backfill: la semina
+    # delle impronte passa dal modello su ogni riga (al primo controllo non
+    # esiste un «prima») e i trenta del regime bastano per trenta bandi.
+    "monitor": {"--lotto"},
     "report-ombra": {"--campione", "--tipo", "--dal"},
     "applica-eventi": {"--dal", "--tipo", "--offset"},
     "pulisci-contenuto": {"--lotto", "--offset"},

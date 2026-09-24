@@ -1708,6 +1708,7 @@ def _lavorata_oggi(controllo: Mapping[str, Any] | None, oggi: date_cls) -> bool:
 
 def _da_risolvere_ora(
     controllo: Mapping[str, Any] | None, oggi: date_cls, forza: bool,
+    anche_oggi: bool = False,
 ) -> bool:
     """Su questa riga c'e' davvero lavoro da fare in questo giro?
 
@@ -1726,11 +1727,20 @@ def _da_risolvere_ora(
     Con `--forza` la cadenza non c'e' («rifai» e' il suo scopo), ma una riga
     lavorata **oggi** si salta lo stesso: senza, due lanci di fila nella stessa
     giornata ripeterebbero lo stesso blocco di id, che e' il difetto misurato.
+
+    `anche_oggi` toglie anche quella guardia, e serve a un caso solo: **le
+    regole sono cambiate sotto le righe**. Succede quando si corregge il
+    punteggio o la whitelist e il lavoro fatto poche ore prima e' stato fatto
+    con criteri diversi — il 24/09/2026 sono stati 1 923 bandi, risolti prima
+    che la regola dei sottodomini fosse attiva. Senza questa via d'uscita
+    l'unica alternativa era aspettare il giorno dopo, oppure falsificare
+    `ultimo_controllo_at` a mano, che e' peggio. Si chiede a mano e non e' mai
+    il default, perche' il suo effetto e' rifare lavoro gia' fatto.
     """
     if not controllo or not controllo.get("ultimo_controllo_at"):
         return True
     if forza:
-        return not _lavorata_oggi(controllo, oggi)
+        return anche_oggi or not _lavorata_oggi(controllo, oggi)
     return scaduto(controllo, oggi, forza=False)
 
 
@@ -1744,6 +1754,7 @@ def _da_risolvere(
     forza: bool,
     oggi: date_cls,
     contatori: Contatori,
+    anche_oggi: bool = False,
 ) -> tuple[list[Mapping[str, Any]], dict[Any, Mapping[str, Any]]]:
     """Le righe su cui c'e' lavoro, scorrendo la selezione a pagine.
 
@@ -1777,7 +1788,8 @@ def _da_risolvere(
         pagina = db.select_controlli([b.get("id") for b in blocco])
         controlli.update(pagina)
         for bando in blocco:
-            if not _da_risolvere_ora(pagina.get(bando.get("id")), oggi, forza):
+            if not _da_risolvere_ora(
+                    pagina.get(bando.get("id")), oggi, forza, anche_oggi):
                 contatori.saltate += 1
                 continue
             raccolte.append(bando)
@@ -1799,6 +1811,7 @@ async def run(
     solo_in_verifica: bool = False,
     bando_id: Any = None,
     forza: bool = False,
+    anche_oggi: bool = False,
     offset: int = 0,
     lotto: str | None = None,
     ambiente: Ambiente | None = None,
@@ -1850,7 +1863,7 @@ async def run(
             bandi, controlli = _da_risolvere(
                 limit=limit, offset=offset, modo=modo, solo_oe=solo_oe,
                 solo_in_verifica=solo_in_verifica, forza=forza,
-                oggi=ambiente.oggi, contatori=contatori,
+                oggi=ambiente.oggi, contatori=contatori, anche_oggi=anche_oggi,
             )
         if bandi:
             ambiente.pubblicati = ambiente.pubblicati or db.select_pubblicati_per_gemelli()
