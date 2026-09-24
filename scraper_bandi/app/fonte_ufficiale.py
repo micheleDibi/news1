@@ -43,7 +43,7 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 from datetime import date as date_cls, datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
+from typing import AbstractSet, Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from . import allegati as allegati_mod
 from . import bilancio, blocco, db, gemelli, impronte, oe_scheda, sedia, telemetria
@@ -1616,7 +1616,10 @@ def scrivi_esito(
     scrivono solo `bando_controllo` (che nessuno legge) e gli eventi muti, cosi'
     il committente puo' misurare la resa prima di cambiare una riga visibile.
     """
-    scritture = {"bando": False, "link": 0, "controllo": False, "eventi": 0}
+    scritture: dict[str, Any] = {
+        "bando": False, "link": 0, "link_promosso": False,
+        "controllo": False, "eventi": 0,
+    }
     if dry_run:
         return {"status": "ok", "dry_run": True, **scritture}
 
@@ -1629,7 +1632,10 @@ def scrivi_esito(
         # Senza `fonte_ufficiale_link_id` una riga `trovata` viola il CHECK
         # della 03: `payload_fonte` degrada da solo, qui basta passargli cio'
         # che il DB ha davvero accettato.
-        link_id = _link_id_di(esito, client=client, strumento=strumento)
+        riga_fonte = _riga_link_di(esito, client=client, strumento=strumento)
+        link_id = riga_fonte.get("id") if riga_fonte else None
+        if _promuovi_riga_fonte(esito, riga_fonte, strumento=strumento):
+            scritture["link_promosso"] = True
         esito_scrittura = db.aggiorna_fonte_ufficiale(
             esito.bando_id, payload_fonte(esito, link_id=link_id), strumento=strumento,
         )
@@ -1646,15 +1652,68 @@ def scrivi_esito(
     return {"status": "ok", "dry_run": False, **scritture}
 
 
-def _link_id_di(esito: Esito, *, client: Any, strumento: Any) -> Any:
-    """L'id della riga `bando_link` della fonte, riletto dopo l'upsert."""
+def _riga_link_di(
+    esito: Esito, *, client: Any, strumento: Any,
+) -> dict[str, Any] | None:
+    """La riga di `bando_link` della fonte, riletta dopo l'upsert."""
     if not esito.url:
         return None
+    atteso = impronte.normalizza_url(esito.url)
     for riga in db.select_link_da_verificare(
             bando_id=esito.bando_id, client=client, strumento=strumento):
-        if impronte.normalizza_url(str(riga.get("url"))) == impronte.normalizza_url(esito.url):
-            return riga.get("id")
+        if impronte.normalizza_url(str(riga.get("url"))) == atteso:
+            return dict(riga)
     return None
+
+
+def _promuovi_riga_fonte(
+    esito: Esito, riga: Mapping[str, Any] | None, *, strumento: Any,
+) -> bool:
+    """Porta a `pubblicabile` la riga di link che era gia' a DB.
+
+    `upsert_bando_link` usa `ignore_duplicates=True` perche' `url` e'
+    immutabile (§16.3.3): una riga che esiste **non viene riscritta**. Ma la
+    migrazione 02 ha creato una riga di backfill per ogni `link_bando`
+    (`origine='raw'`, `trovato_in_fonte_at` NULL, `pubblicabile=false`), e
+    quando la fonte ufficiale e' proprio quell'URL il resolver ne adotta l'id
+    senza promuoverla: misurato in produzione su 137 delle 495 fonti
+    `trovata`. Il risultato e' una fonte dichiarata trovata che punta a una
+    riga che anon non puo' leggere, contro la promessa di §13.4 (ogni riga
+    leggibile ha risposto 2xx ed e' stata vista nella fonte).
+
+    Si scrivono solo i campi della promessa, mai `url` ne' `url_normalizzato`
+    (il trigger li rifiuta), e solo quando cambiano davvero: il CHECK
+    `bando_link_pubblicabile_http_check` pretende che `pubblicabile`,
+    `esito_http` 2xx e `trovato_in_fonte_at` nascano insieme.
+    """
+    if not riga or esito.stato != STATO_TROVATA or not _e_2xx(esito.esito_http):
+        return False
+    link_id = riga.get("id")
+    if link_id is None:
+        return False
+    tipo = "atto" if esito.e_atto else "pagina_bando"
+    payload: dict[str, Any] = {}
+    if not riga.get("pubblicabile"):
+        payload["pubblicabile"] = True
+    if riga.get("esito_http") != esito.esito_http:
+        payload["esito_http"] = esito.esito_http
+    if not riga.get("trovato_in_fonte_at"):
+        payload["trovato_in_fonte_at"] = _adesso()
+    if riga.get("tipo") != tipo:
+        payload["tipo"] = tipo
+    if esito.prova and not riga.get("impronta_pagina"):
+        payload["impronta_pagina"] = esito.prova
+    if esito.url_prova and not riga.get("url_prova"):
+        payload["url_prova"] = esito.url_prova
+    if not payload:
+        return False
+    # `pubblicabile` senza i suoi due presupposti fa fallire il CHECK: se la
+    # riga non li ha e questo giro non li porta, si rinuncia alla promozione.
+    if payload.get("pubblicabile"):
+        if not (payload.get("trovato_in_fonte_at") or riga.get("trovato_in_fonte_at")):
+            return False
+    payload["ultimo_visto_at"] = _adesso()
+    return bool(db.aggiorna_link(link_id, payload, strumento=strumento).get("scritto"))
 
 
 # --- runner: `python -m app risolvi-fonte` ----------------------------------
@@ -2497,6 +2556,9 @@ async def run_link_verifica(
         )
     else:
         elenco = list(righe)
+    # Le righe che il resolver ha scelto come fonte ufficiale: hanno la prova
+    # di provenienza anche quando la riga di link non se la porta dietro.
+    fonti = db.select_link_delle_fonti()
     chiudi: Callable[[], None] | None = None
     if verifica is None:
         from .settings import get_settings
@@ -2505,7 +2567,9 @@ async def run_link_verifica(
         )
         verifica, chiudi = verificatore, verificatore.chiudi
     try:
-        return await _verifica_link(elenco, verifica, contatori, dry_run, attivo)
+        return await _verifica_link(
+            elenco, verifica, contatori, dry_run, attivo, fonti_ufficiali=fonti,
+        )
     finally:
         if chiudi is not None:
             chiudi()
@@ -2517,6 +2581,8 @@ async def _verifica_link(
     contatori: dict[str, int],
     dry_run: bool,
     attivo: bool,
+    *,
+    fonti_ufficiali: AbstractSet[Any] = frozenset(),
 ) -> dict[str, Any]:
     """Il ciclo di `run_link_verifica`, separato per tenere la chiusura del
     client fuori dal corpo e il corpo leggibile.
@@ -2564,7 +2630,14 @@ async def _verifica_link(
         # l'hanno, e restano non pubblicabili invece di far fallire l'UPDATE.
         prova = riga.get("impronta_pagina")
         trovato = riga.get("trovato_in_fonte_at")
-        ha_prova = bool(prova or trovato)
+        # Terza forma di prova: la riga **e'** la fonte ufficiale di un bando
+        # `trovata`. Il resolver ha scaricato quell'URL, l'ha valutato e ci ha
+        # puntato `fonte_ufficiale_link_id`; la prova esiste, e' solo rimasta
+        # su `bando` invece che sulla riga di link. Senza questo ramo le 137
+        # righe di backfill adottate dal resolver (misura del 24/09/2026)
+        # restavano non pubblicabili per sempre: `risolvi-fonte` non ripassa
+        # su un bando gia' `trovata`, e qui finivano in `senza_prova`.
+        ha_prova = bool(prova or trovato or riga.get("id") in fonti_ufficiali)
         pubblicabile = bool(esito and esito.ok) and not e_aggregatore(url) and ha_prova
         if bool(esito and esito.ok) and not e_aggregatore(url) and not ha_prova:
             contatori["senza_prova"] = contatori.get("senza_prova", 0) + 1

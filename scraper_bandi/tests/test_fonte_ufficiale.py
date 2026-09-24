@@ -2490,3 +2490,145 @@ class TestAncheOggi(unittest.TestCase):
     def test_una_riga_mai_vista_si_lavora_comunque(self):
         self.assertTrue(fu._da_risolvere_ora(None, self.OGGI, forza=False))
         self.assertTrue(fu._da_risolvere_ora({}, self.OGGI, forza=True, anche_oggi=True))
+
+
+class TestLinkDiBackfillPromosso(unittest.TestCase):
+    """La fonte trovata non puo' puntare a una riga che anon non legge.
+
+    Difetto misurato in produzione il 24/09/2026: **137 delle 495** fonti
+    `trovata` avevano `fonte_ufficiale_link_id` su una riga di `bando_link`
+    creata dal backfill della migrazione 02 (`origine='raw'`,
+    `trovato_in_fonte_at` NULL, `pubblicabile=false`). Causa:
+    `upsert_bando_link` usa `ignore_duplicates=True` perche' `url` e'
+    immutabile, quindi la riga che esiste non viene riscritta; il resolver ne
+    adottava l'id senza promuoverla. Risultato: una fonte dichiarata trovata
+    che punta a una riga esclusa dalla RLS, contro la promessa di §13.4.
+    """
+
+    def _riga_backfill(self, **extra):
+        riga = {"id": 77, "bando_id": 5, "url": "https://regione.esempio.it/bando",
+                "tipo": "pagina_bando", "origine": "raw", "esito_http": 200,
+                "pubblicabile": False, "trovato_in_fonte_at": None,
+                "impronta_pagina": None, "url_prova": None}
+        riga.update(extra)
+        return riga
+
+    def _giro(self, esito, riga, scritto=True):
+        scritture = []
+
+        def _aggiorna(identificativo, payload, **_k):
+            scritture.append((identificativo, dict(payload)))
+            return {"scritto": scritto}
+
+        with unittest.mock.patch.object(fu.db, "upsert_bando_link", lambda *a, **k: 1), \
+             unittest.mock.patch.object(
+                 fu.db, "select_link_da_verificare", lambda **k: [riga]), \
+             unittest.mock.patch.object(fu.db, "aggiorna_fonte_ufficiale",
+                                        lambda *a, **k: {"scritto": True}), \
+             unittest.mock.patch.object(fu.db, "aggiorna_controllo",
+                                        lambda *a, **k: {"scritto": True}), \
+             unittest.mock.patch.object(fu.db, "registra_evento", lambda *a, **k: True), \
+             unittest.mock.patch.object(fu.db, "aggiorna_link", _aggiorna):
+            esito_scrittura = fu.scrivi_esito(esito, attivo=True)
+        return esito_scrittura, scritture
+
+    def _esito(self, **extra):
+        valori = {"bando_id": 5, "stato": fu.STATO_TROVATA,
+                  "url": "https://regione.esempio.it/bando",
+                  "host": "regione.esempio.it", "tipo": None,
+                  "esito_http": 200, "prova": "sha256#0",
+                  "url_prova": "https://regione.esempio.it/bando"}
+        valori.update(extra)
+        return fu.Esito(**valori)
+
+    def test_la_riga_di_backfill_diventa_pubblicabile(self):
+        esito, scritture = self._giro(self._esito(), self._riga_backfill())
+        self.assertTrue(esito["link_promosso"], "la riga adottata non e' stata promossa")
+        self.assertEqual(len(scritture), 1)
+        identificativo, payload = scritture[0]
+        self.assertEqual(identificativo, 77)
+        self.assertTrue(payload["pubblicabile"])
+        self.assertIsNotNone(payload["trovato_in_fonte_at"],
+                             "pubblicabile senza la data viola il CHECK della 02")
+        self.assertEqual(payload["impronta_pagina"], "sha256#0")
+        for vietata in ("url", "url_normalizzato", "bando_id"):
+            self.assertNotIn(vietata, payload,
+                             f"{vietata} e' immutabile: il trigger rifiuta l'UPDATE")
+
+    def test_una_riga_gia_pubblicabile_non_si_riscrive(self):
+        riga = self._riga_backfill(pubblicabile=True, trovato_in_fonte_at="2026-09-20T10:00:00",
+                                   impronta_pagina="sha256#0",
+                                   url_prova="https://regione.esempio.it/bando")
+        esito, scritture = self._giro(self._esito(), riga)
+        self.assertFalse(esito["link_promosso"])
+        self.assertEqual(scritture, [], "UPDATE inutile su una riga gia' a posto")
+
+    def test_senza_2xx_non_si_promuove_niente(self):
+        esito, scritture = self._giro(self._esito(esito_http=None), self._riga_backfill())
+        self.assertFalse(esito["link_promosso"])
+        self.assertEqual(scritture, [],
+                         "una riga pubblicabile senza 2xx osservato non e' scrivibile")
+
+    def test_una_fonte_non_trovata_non_promuove(self):
+        esito, scritture = self._giro(
+            self._esito(stato=fu.STATO_IN_VERIFICA), self._riga_backfill())
+        self.assertFalse(esito["link_promosso"])
+        self.assertEqual(scritture, [])
+
+    def test_l_atto_corregge_il_tipo_della_riga(self):
+        esito, scritture = self._giro(self._esito(e_atto=True), self._riga_backfill())
+        self.assertEqual(scritture[0][1]["tipo"], "atto")
+
+    def test_il_rifiuto_del_database_non_si_conta(self):
+        esito, _ = self._giro(self._esito(), self._riga_backfill(), scritto=False)
+        self.assertFalse(esito["link_promosso"],
+                         "promozione dichiarata su una riga che il DB ha rifiutato")
+
+
+class TestProvaDellaFonteUfficiale(unittest.TestCase):
+    """`link-verifica` deve poter promuovere la riga scelta dal resolver.
+
+    Le righe `raw` del backfill della 02 non hanno prova di provenienza e
+    restano giustamente non pubblicabili. Ma quando una di quelle righe e' la
+    fonte ufficiale di un bando `trovata`, la prova esiste: il resolver ha
+    scaricato quell'URL e ci ha puntato `fonte_ufficiale_link_id`. Senza
+    questo ramo le 137 righe misurate il 24/09/2026 non avevano **nessun**
+    percorso di riparazione, perche' `risolvi-fonte` non ripassa su un bando
+    gia' `trovata`.
+    """
+
+    def _riga(self, identificativo=77):
+        return {"id": identificativo, "bando_id": 5,
+                "url": "https://regione.esempio.it/bando", "tipo": "pagina_bando",
+                "origine": "raw", "esito_http": None, "pubblicabile": False,
+                "trovato_in_fonte_at": None, "impronta_pagina": None}
+
+    def _giro(self, fonti):
+        scritture = []
+
+        def _aggiorna(identificativo, payload, **_k):
+            scritture.append((identificativo, dict(payload)))
+            return {"scritto": True}
+
+        with unittest.mock.patch.object(fu.db, "select_link_delle_fonti", lambda **k: fonti), \
+             unittest.mock.patch.object(fu.db, "aggiorna_link", _aggiorna):
+            esito = esegui(fu.run_link_verifica(
+                attivo=True, righe=[self._riga()],
+                verifica=lambda _url: (200, "text/html", "", None, None),
+            ))
+        return esito, scritture
+
+    def test_la_fonte_ufficiale_ha_la_prova(self):
+        esito, scritture = self._giro({77})
+        self.assertEqual(esito["pubblicabili"], 1)
+        self.assertEqual(esito["senza_prova"], 0)
+        self.assertTrue(scritture[0][1]["pubblicabile"])
+        self.assertIsNotNone(scritture[0][1]["trovato_in_fonte_at"],
+                             "il CHECK della 02 pretende la data insieme al flag")
+
+    def test_una_riga_raw_qualunque_resta_senza_prova(self):
+        esito, scritture = self._giro(set())
+        self.assertEqual(esito["pubblicabili"], 0)
+        self.assertEqual(esito["senza_prova"], 1)
+        self.assertFalse(scritture[0][1]["pubblicabile"],
+                         "una riga che nessuno ha visto in una pagina non e' pubblicabile")

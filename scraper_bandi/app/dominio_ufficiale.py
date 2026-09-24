@@ -474,9 +474,12 @@ def tipo_fonte_ufficiale(
 
     Mappatura unica di §16.1 A11: `ente → 'ente'`, `portale_pubblico →
     'portale_pubblico'`, `pattern | dedotto | aggregatore | sconosciuto →
-    None`. Con None la fonte non puo' essere `trovata`: l'esito massimo e'
-    `in_verifica`, perche' il CHECK della migrazione 01 non conosce altri
-    valori e una colonna non scrivibile non si aggira scrivendoci lo stesso.
+    None`. Il CHECK della migrazione 01 ammette NULL e §13.2 lo elenca fra i
+    valori validi, quindi None **non** impedisce a una fonte di essere
+    `trovata`: chi decide l'esito e' `esito_da_punteggio()`, dove il tipo non
+    entra nella condizione (un host riconosciuto solo per forma vale 25 punti
+    di dominio proprio perche' possa arrivare a 70). I tetti veri sono i gate
+    morbidi: `dedotto`, `calendario`, ricerca non vincolata, pagina indice.
     """
     tipo = classifica(host, tabella)
     return tipo if tipo in TIPI_FONTE_UFFICIALE else None

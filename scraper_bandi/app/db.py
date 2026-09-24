@@ -1641,6 +1641,37 @@ def select_pubblicati_per_gemelli(
         return []
 
 
+def select_link_delle_fonti(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> set[Any]:
+    """Gli id di `bando_link` che sono la **fonte ufficiale** di un bando.
+
+    Serve a `link-verifica` per distinguere due righe `raw` identiche in
+    tabella: quella che nessuno ha mai visto in una pagina, e quella che il
+    resolver ha scelto come fonte dopo averla scaricata e valutata. La seconda
+    ha la prova per costruzione (`bando.fonte_ufficiale_verificata_at`), anche
+    quando la riga di link non se la porta dietro.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.ha("bando", "fonte_ufficiale_link_id"):
+        return set()
+    try:
+        righe = _scorri(
+            lambda quanto, salto: _client(client).table("bando")
+            .select("fonte_ufficiale_link_id")
+            .eq("fonte_ufficiale_stato", "trovata")
+            .not_.is_("fonte_ufficiale_link_id", "null")
+            .order("id").limit(quanto).offset(salto)
+        )
+    except Exception as e:
+        logger.warning("[db] select_link_delle_fonti fallita: {}", e)
+        return set()
+    return {r.get("fonte_ufficiale_link_id") for r in righe
+            if r.get("fonte_ufficiale_link_id") is not None}
+
+
 def select_link_da_verificare(
     *,
     limit: int | None = None,

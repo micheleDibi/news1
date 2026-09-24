@@ -70,6 +70,35 @@ test('la cascata: candidatura, ente/atto, portale pubblico', () => {
   );
 });
 
+test('una fonte trovata con tipo nullo ha comunque il suo pulsante', () => {
+  // Gli host riconosciuti solo per forma (`regione.*.it`, `*.gov.it`,
+  // `*.camcom.it`) non hanno un valore da scrivere in `fonte_ufficiale_tipo`,
+  // ma il resolver li ammette a `trovata` di proposito. In produzione sono 193
+  // fonti su 495: pretendere `tipo='ente'` le lasciava senza nessun pulsante.
+  for (const url of [
+    'https://bandi.regione.piemonte.it/contributi/avviso-1',
+    'https://creativitacontemporanea.cultura.gov.it/edizione1/',
+    'https://bs.camcom.it/bando',
+  ]) {
+    assert.deepEqual(
+      sceltaCta({ fonteUfficiale: { stato: 'trovata', url, host: new URL(url).hostname, tipo: null } }),
+      { url, etichetta: 'Apri la pagina ufficiale del bando' },
+    );
+  }
+
+  // Resta vero che un aggregatore non diventa una CTA per il fatto di avere
+  // `tipo` nullo: lo esclude `urlPubblicabile`, non il tipo.
+  assert.equal(
+    sceltaCta({
+      fonteUfficiale: {
+        stato: 'trovata', url: 'https://www.obiettivoeuropa.com/bandi/x',
+        host: 'obiettivoeuropa.com', tipo: null,
+      },
+    }),
+    null,
+  );
+});
+
 test('nessuna CTA quando nessuna destinazione è affidabile', () => {
   // Fonte non ancora conclusa: il suo URL non si usa, anche se c'è.
   assert.equal(sceltaCta({

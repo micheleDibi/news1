@@ -10,9 +10,11 @@
  *
  * Cascata di §13.4, dalla più autorevole:
  *  1. link di candidatura → «Vai al modulo di candidatura»
- *  2. fonte ufficiale trovata, pagina dell'ente o atto → «Apri la pagina
+ *  2. fonte ufficiale trovata su un portale pubblico → «Consulta il bando sul
+ *     portale pubblico»
+ *  3. ogni altra fonte ufficiale trovata (pagina dell'ente, atto, host
+ *     riconosciuto solo per forma e quindi con `tipo` nullo) → «Apri la pagina
  *     ufficiale del bando»
- *  3. portale pubblico → «Consulta il bando sul portale pubblico»
  *  4. altrimenti **nessun box**: meglio nessun pulsante che un pulsante che
  *     porta altrove.
  *
@@ -72,12 +74,18 @@ export function sceltaCta(ingresso: IngressoCta): Cta | null {
   const fonte = ingresso.fonteUfficiale;
   const url = urlFonte(fonte);
   if (url !== null && fonte) {
-    if (fonte.tipo === 'ente' || fonte.e_atto === true) {
-      return { url, etichetta: 'Apri la pagina ufficiale del bando' };
-    }
     if (fonte.tipo === 'portale_pubblico') {
       return { url, etichetta: 'Consulta il bando sul portale pubblico' };
     }
+    // `tipo` nullo non è «fonte debole»: è un host riconosciuto per forma
+    // (`regione.*.it`, `*.gov.it`, `*.camcom.it`), e per quelli
+    // `tipo_fonte_ufficiale()` non ha un valore da scrivere. Il resolver li
+    // ammette a `trovata` di proposito (soglia 70 più tre segnali
+    // indipendenti), e sono la fetta più grande: misurati in produzione 193
+    // bandi su 495 con la fonte trovata e `tipo` nullo. Pretendere `ente`
+    // lasciava quelle schede **senza nessun pulsante** pur avendo l'URL
+    // ufficiale verificato. `urlPubblicabile` ha già escluso gli aggregatori.
+    return { url, etichetta: 'Apri la pagina ufficiale del bando' };
   }
 
   const portale = primoLinkUtile(ingresso.link, 'portale');
