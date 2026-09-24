@@ -272,6 +272,27 @@ Conseguenza da sapere leggendo il DB: la colonna oggi codifica «l'ultimo giro h
 una memoria. Per farla funzionare davvero serve una migrazione che aggiunga `controlli_senza_diff`;
 non è stata scritta.
 
+## I ricontrolli lavoravano sugli scarti della pipeline (24/09/2026)
+
+`--solo-in-verifica` selezionava **4 076 righe invece di 1 283**: il ramo dei ricontrolli era il solo
+dei tre a non filtrare sulle righe che una fonte ufficiale la useranno davvero. Dentro finivano
+2 337 `rejected`, cioè gli scarti della pipeline, e 455 chiusi mai pubblicati, che sono materia del
+lotto L8.
+
+Due terzi del lavoro finivano su pagine che non esisteranno. E il costo non era solo tempo: su una
+riga senza candidato la cascata scende fino alla ricerca a pagamento, quindi gli scarti potevano
+spendere crediti. Al ritmo misurato, sedici bandi al minuto, il giro sarebbe durato quattro ore e
+mezza invece di tre quarti d'ora.
+
+Il ricontrollo vale ora per i pubblicati e per gli `enriched`, cioè per chi sta per diventarlo. Sui
+DB senza la colonna `pubblicato` il ripiego è `stato_processing in (completed, enriched)`, così il
+difetto non torna prima delle migrazioni.
+
+| selezione | prima | adesso |
+|---|---|---|
+| `--solo-in-verifica` | 4 076 | 1 284 |
+| ricontrolli completi | 4 976 | 2 069 |
+
 ## Il segnale «titolo» misurava il titolo sbagliato (24/09/2026)
 
 Primo giro del resolver su tutto il corpus, notte del 23/09: **66 fonti trovate su 2 134**, contro

@@ -861,6 +861,31 @@ class TestSelezione(unittest.TestCase):
         filtri = self._esegui(modo="ricontrolli").filtri
         self.assertIn(("in_", "fonte_ufficiale_stato", ["in_verifica", "non_trovata"]), filtri)
 
+    def test_i_ricontrolli_non_toccano_gli_scarti_della_pipeline(self):
+        """Il ricontrollo vale per chi la fonte ufficiale la usera' davvero.
+
+        Senza questo filtro la selezione prendeva 4 076 righe invece di 1 283
+        (misurato il 24/09/2026): 2 337 `rejected`, che sono gli scarti della
+        pipeline, e 455 chiusi mai pubblicati, che sono materia del lotto L8.
+        Due terzi del lavoro finivano su pagine che non esisteranno, e su una
+        riga senza candidato la cascata arriva fino alla ricerca a pagamento:
+        il costo non era solo tempo.
+        """
+        filtri = self._esegui(modo="ricontrolli").filtri
+        rami = [f[1] for f in filtri if f[0] == "or_"]
+        self.assertTrue(rami, "nessun filtro sulle righe che useranno la fonte")
+        self.assertIn("pubblicato.eq.true", rami[0])
+        self.assertIn("stato_processing.eq.enriched", rami[0])
+
+    def test_senza_la_colonna_pubblicato_si_ripiega_su_stato_processing(self):
+        # Prima della migrazione 01 `pubblicato` non c'e': il filtro deve
+        # esistere comunque, altrimenti il difetto torna sui DB non migrati.
+        strumento = self._strumento({"bando": [
+            "id", "titolo", "stato_processing", "fonte_ufficiale_stato"]})
+        filtri = self._esegui(modo="ricontrolli", strumento=strumento).filtri
+        self.assertIn(("in_", "stato_processing", ["completed", "enriched"]), filtri)
+        self.assertFalse([f for f in filtri if f[0] == "or_"])
+
     def test_senza_le_colonne_nuove_nessun_filtro_le_cita(self):
         # Prima della migrazione 01 un filtro su `fonte_ufficiale_stato`
         # risponderebbe 42703 e fermerebbe lo step su tutte le righe.

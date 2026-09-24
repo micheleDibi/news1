@@ -1524,6 +1524,18 @@ def _filtra_selezione(
     elif modo == "ricontrolli":
         if ha_stato:
             query = query.in_("fonte_ufficiale_stato", ["in_verifica", "non_trovata"])
+        # Il ricontrollo vale per le righe che una fonte ufficiale la useranno
+        # davvero: i pubblicati, e gli `enriched` che stanno per diventarlo.
+        # Senza questo filtro la selezione prendeva **4 076** righe invece di
+        # 1 283 (misurato il 24/09/2026): 2 337 `rejected` — gli scarti della
+        # pipeline, in gran parte righe di un calendario letto male — e 455
+        # chiusi mai pubblicati, che sono materia del lotto L8. Due terzi del
+        # lavoro finivano su pagine che non esisteranno, e su righe senza
+        # candidato la cascata arriva fino alla ricerca a pagamento: il costo
+        # non era solo tempo.
+        query = (query.or_("pubblicato.eq.true,stato_processing.eq.enriched")
+                 if ha_pubblicato
+                 else query.in_("stato_processing", ["completed", "enriched"]))
     else:                                              # nuovi
         query = query.eq("stato_processing", "enriched")
         if senza_fonte:
