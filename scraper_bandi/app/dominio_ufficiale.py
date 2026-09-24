@@ -272,9 +272,34 @@ def registrabile(host: str | None) -> str | None:
 
 
 def _regex_pattern(modello: str) -> re.Pattern[str]:
-    """`*` → «qualunque sequenza», tutto il resto letterale (come LIKE a DB)."""
+    r"""`*` → «qualunque sequenza», tutto il resto letterale (come LIKE a DB).
+
+    Il prefisso `(?:.*\.)?` e' la regola dei **sottodomini**, quella che le
+    righe letterali hanno sempre avuto (`host == regola or host.endswith("." +
+    regola)`) e che ai pattern mancava. La regola scritta in testa a questo
+    modulo la promette per tutte le righe; l'implementazione la applicava solo
+    alle letterali, e la differenza pesava:
+
+        regione.basilicata.it               -> pattern      (combaciava)
+        portalebandi.regione.basilicata.it  -> sconosciuto  (NON combaciava)
+        bandi.regione.lombardia.it          -> sconosciuto
+        agricoltura.regione.emilia-romagna.it -> sconosciuto
+
+    Sono i portali dei bandi delle Regioni, cioe' proprio le pagine che il
+    resolver cerca. `sconosciuto` fa fallire il gate duro `whitelist`, quindi
+    quei candidati non venivano nemmeno valutati e il bando finiva
+    `non_trovata`, che costa sessanta giorni di attesa.
+
+    Misurato il 24/09/2026 su 900 bandi pubblicati fra `in_verifica` e
+    `non_trovata`: 1 290 candidati classificati `sconosciuto`, di cui **705**
+    diventano `pattern` con questa regola (698 per `regione.*.it`), e **330 dei
+    900 bandi** guadagnano almeno un candidato ammissibile.
+
+    `www.` non c'entra: quello lo toglie `dominio_di`, ed e' il motivo per cui
+    `www.regione.veneto.it` combaciava mentre `bandi.regione.veneto.it` no.
+    """
     pezzi = [re.escape(p) for p in modello.lower().split("*")]
-    return re.compile(".*".join(pezzi) + r"\Z")
+    return re.compile(r"(?:.*\.)?" + ".*".join(pezzi) + r"\Z")
 
 
 def _regola(host: str | None) -> str:

@@ -382,3 +382,76 @@ class Costruzione(unittest.TestCase):
 
 if __name__ == "__main__":                                  # pragma: no cover
     unittest.main()
+
+
+class TestSottodominiDeiPattern(unittest.TestCase):
+    """La regola dei sottodomini vale anche per le righe `pattern`.
+
+    La regola scritta in testa al modulo la promette per tutte le righe:
+    «host = d.host OPPURE host termina con '.' + d.host». L'implementazione la
+    applicava solo alle righe letterali, e ai pattern no. La differenza pesava
+    esattamente dove il resolver cerca, perche' i portali dei bandi delle
+    Regioni stanno su un sottodominio:
+
+        regione.basilicata.it                 -> pattern      (combaciava)
+        portalebandi.regione.basilicata.it    -> sconosciuto  (NON combaciava)
+
+    E `sconosciuto` fa fallire il gate duro `whitelist`, quindi quei candidati
+    non venivano nemmeno valutati e il bando finiva `non_trovata`, che costa
+    sessanta giorni prima del ricontrollo.
+
+    Misurato il 24/09/2026 su 900 bandi pubblicati fra `in_verifica` e
+    `non_trovata`: 1 290 candidati `sconosciuto`, di cui 705 diventano
+    `pattern` (698 per `regione.*.it`), e 330 dei 900 bandi guadagnano almeno
+    un candidato ammissibile.
+    """
+
+    def setUp(self):
+        self.tab = dominio_ufficiale.costruisci()
+
+    def _tipo(self, host):
+        return dominio_ufficiale.classifica(f"https://{host}/qualcosa", self.tab)
+
+    def test_i_portali_dei_bandi_regionali_sono_riconosciuti(self):
+        for host in (
+            "portalebandi.regione.basilicata.it",
+            "bandi.regione.lombardia.it",
+            "bandi.regione.veneto.it",
+            "agricoltura.regione.emilia-romagna.it",
+            "coesione.regione.abruzzo.it",
+        ):
+            with self.subTest(host=host):
+                self.assertEqual(self._tipo(host), "pattern")
+
+    def test_vale_per_tutti_i_pattern_territoriali(self):
+        self.assertEqual(self._tipo("servizi.comune.milano.it"), "pattern")
+        self.assertEqual(self._tipo("bandi.provincia.trento.it"), "pattern")
+        # `*.gov.it` su un host che non e' fra i portali elencati a mano: quelli
+        # vincono come `portale_pubblico`, che e' un tipo piu' forte, ed e'
+        # giusto (`area-riservata.istruzione.gov.it` e' il sottodominio di una
+        # riga letterale, non un pattern).
+        self.assertEqual(self._tipo("bandi.esempioministero.gov.it"), "pattern")
+        self.assertEqual(self._tipo("area-riservata.istruzione.gov.it"), "portale_pubblico")
+
+    def test_il_dominio_nudo_continua_a_combaciare(self):
+        self.assertEqual(self._tipo("regione.veneto.it"), "pattern")
+        self.assertEqual(self._tipo("www.regione.veneto.it"), "pattern")
+
+    def test_la_blocklist_prevale_comunque(self):
+        # Un aggregatore resta un aggregatore anche su un sottodominio: la
+        # regola della blocklist non si allenta.
+        self.assertEqual(self._tipo("www.obiettivoeuropa.com"), "aggregatore")
+        self.assertEqual(self._tipo("bandi.obiettivoeuropa.com"), "aggregatore")
+
+    def test_un_dominio_privato_resta_sconosciuto(self):
+        # La regola non deve diventare un passe-partout: se il pattern non
+        # c'entra, l'host resta quello che era.
+        for host in ("fondazionecariplo.it", "erasmusplus.it", "esempio-privato.com"):
+            with self.subTest(host=host):
+                self.assertEqual(self._tipo(host), "sconosciuto")
+
+    def test_un_pattern_non_combacia_a_meta_di_un_etichetta(self):
+        # `regione.*.it` non deve prendere `maxiregione.qualcosa.it`: il
+        # prefisso ammesso finisce con un punto, quindi il confine di etichetta
+        # resta rispettato.
+        self.assertEqual(self._tipo("maxiregione.lombardia.it"), "sconosciuto")

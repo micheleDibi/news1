@@ -272,6 +272,40 @@ Conseguenza da sapere leggendo il DB: la colonna oggi codifica «l'ultimo giro h
 una memoria. Per farla funzionare davvero serve una migrazione che aggiunga `controlli_senza_diff`;
 non è stata scritta.
 
+## I portali dei bandi delle Regioni erano «domini sconosciuti» (24/09/2026)
+
+La causa più grossa del basso numero di fonti trovate, più grossa del titolo.
+
+La regola di confronto con `dominio_ufficiale` è dichiarata così, in testa al modulo e nei due
+gemelli SQL: «host = d.host **oppure** host termina con `.` + d.host». Le righe letterali la
+applicavano; le righe `pattern` (quelle con il jolly) no, perché il confronto era un `LIKE` sul solo
+host. Risultato:
+
+```
+regola `regione.*.it`
+  regione.basilicata.it                  combacia
+  portalebandi.regione.basilicata.it     NON combacia
+  bandi.regione.lombardia.it             NON combacia
+  agricoltura.regione.emilia-romagna.it  NON combacia
+```
+
+Sono i portali dei bandi delle Regioni, cioè esattamente le pagine che il resolver cerca. Un dominio
+`sconosciuto` fa fallire il gate **duro** `whitelist`, quindi quei candidati non venivano nemmeno
+valutati e il bando finiva `non_trovata`, che costa sessanta giorni prima del ricontrollo.
+
+Misurato su 900 bandi pubblicati fra `in_verifica` e `non_trovata`: 1 290 candidati classificati
+`sconosciuto`, di cui **705** combaciano con un pattern applicando la regola dei sottodomini (698 per
+`regione.*.it`), e **330 dei 900 bandi** guadagnano almeno un candidato ammissibile.
+
+Corretto in `app/dominio_ufficiale.py`. **La stessa regola sta in due funzioni SQL** e va allineata
+con `bando_v11_10_sottodomini_dei_pattern.sql`, scritta e non applicata. Finché non la applichi il DB
+resta più stretto del codice: la direzione è sicura, perché il trigger rifiuta e non accetta di più,
+ma il resolver proporrà eventi `verificato` che il trigger rimetterà a `false`.
+
+La 10 è stata verificata su un cluster PostgreSQL locale ed effimero: applicata, riapplicata,
+annullata e riapplicata, con i controlli sui sottodomini regionali, sulla blocklist che non si
+allenta e sul confine di etichetta (`maxiregione.lombardia.it` resta fuori).
+
 ## I ricontrolli lavoravano sugli scarti della pipeline (24/09/2026)
 
 `--solo-in-verifica` selezionava **4 076 righe invece di 1 283**: il ramo dei ricontrolli era il solo
