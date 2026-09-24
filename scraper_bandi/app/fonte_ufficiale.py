@@ -1350,6 +1350,45 @@ def _candidati_sedia(contesto: Contesto, ambiente: Ambiente) -> tuple[Candidato,
     return tuple(prodotti)
 
 
+#: Stati HTTP che dicono «riprova», non «non esiste». Un 5xx e' un guasto del
+#: server dell'ente, un 429 e' un nostro eccesso, e nessuna risposta e' la
+#: nostra rete: in tutti e tre i casi del bando non sappiamo niente.
+_STATI_RIPROVABILI: frozenset[int] = frozenset({429, 500, 502, 503, 504, 408, 425})
+
+
+def _non_giudicabile(candidato: Candidato) -> bool:
+    """Questo candidato non e' stato giudicato: non e' arrivata una risposta.
+
+    Un 404 e' un giudizio (quella pagina non c'e'), e una pagina scaricata che
+    non parla del nostro bando e' un giudizio. Un timeout, un 503 o un 429 no:
+    sono notizie sulla rete, non sul bando.
+    """
+    pagina = candidato.pagina
+    if pagina is None or pagina.stato is None:
+        return True
+    return int(pagina.stato) in _STATI_RIPROVABILI
+
+
+def _esito_senza_candidato_valido(
+    valutati: Sequence[tuple[Candidato, Punteggio]],
+) -> tuple[str, str]:
+    """Lo stato e il motivo quando nessun candidato ha superato i gate.
+
+    `non_trovata` significa «cercato e non c'e'», e costa sessanta giorni di
+    attesa prima del ricontrollo (A33). Darlo quando le pagine non si sono
+    potute scaricare sarebbe registrare come assenza un guasto nostro o
+    dell'ente: e' lo stesso difetto che `link-verifica` aveva sui link morti.
+    Se c'erano candidati e **nessuno** di loro ha risposto, l'esito e'
+    `in_verifica`, che torna in coda in quattordici giorni.
+    """
+    if not valutati:
+        return STATO_NON_TROVATA, "nessun candidato"
+    if all(_non_giudicabile(c) for c, _ in valutati):
+        return (STATO_IN_VERIFICA,
+                "nessuna risposta dai candidati: guasto di rete, non assenza della fonte")
+    return STATO_NON_TROVATA, "nessun candidato ha superato i gate"
+
+
 def _componi_esito(
     contesto: Contesto,
     valutati: Sequence[tuple[Candidato, Punteggio]],
@@ -1363,7 +1402,8 @@ def _componi_esito(
     stati_allegati: tuple[tuple[str, int | None], ...] = (),
 ) -> Esito:
     """Dal miglior candidato all'`Esito`, con cadenza e priorita' gia' dentro."""
-    stato = migliore[1].stato if migliore is not None else STATO_NON_TROVATA
+    senza_candidato, motivo_senza = _esito_senza_candidato_valido(valutati)
+    stato = migliore[1].stato if migliore is not None else senza_candidato
     data, priorita, tentativi_nuovi = prossimo_controllo(stato, tentativi, ambiente.oggi)
     if stato == STATO_TROVATA:
         ambiente.contatori.trovate += 1
@@ -1375,13 +1415,13 @@ def _componi_esito(
     if migliore is None:
         return Esito(
             bando_id=contesto.bando_id,
-            stato=STATO_NON_TROVATA,
+            stato=senza_candidato,
             candidato_prioritario=prioritario,
             valutati=tuple(valutati),
             tentativi=tentativi_nuovi,
             prossimo_controllo=data,
             priorita=priorita,
-            motivo="nessun candidato ha superato i gate",
+            motivo=motivo_senza,
         )
     candidato, punteggio = migliore
     trovata = stato == STATO_TROVATA

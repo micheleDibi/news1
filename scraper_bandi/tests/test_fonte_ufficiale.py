@@ -2339,3 +2339,61 @@ class TestTitoloDellaFonte(unittest.TestCase):
         p = fu.punteggia(candidato(pag=self._pagina_dell_ente()), self._contesto())
         self.assertTrue(p.duri_superati)
         self.assertIsNone(p.tetto)
+
+
+class TestNessunaRispostaNonEAssenza(unittest.TestCase):
+    """«Non ho potuto chiedere» non e' «la risposta e' no».
+
+    `non_trovata` vuol dire «cercato e non c'e'», e costa sessanta giorni prima
+    del ricontrollo (A33) contro i quattordici di `in_verifica`. Darlo quando le
+    pagine dei candidati non hanno risposto significa registrare come assenza
+    della fonte un guasto della nostra rete o del server dell'ente, e
+    parcheggiare il bando per due mesi.
+
+    E' lo stesso difetto che `link-verifica` aveva sui link morti, nello stesso
+    punto concettuale: un esito mancante trattato come un esito negativo.
+    """
+
+    def _valutati(self, *stati):
+        """Un candidato per stato HTTP, con il punteggio che i gate gli danno."""
+        fuori = []
+        for i, stato in enumerate(stati):
+            pag = None if stato is None else fu.Pagina(
+                url=f"https://regione.marche.it/{i}", stato=stato, testo="", intestazioni="")
+            cand = fu.Candidato(url=f"https://regione.marche.it/{i}", pagina=pag)
+            fuori.append((cand, fu.punteggia(cand, contesto())))
+        return fuori
+
+    def test_nessuna_risposta_resta_in_verifica(self):
+        for stato in (None, 503, 502, 500, 429, 504):
+            with self.subTest(stato=stato):
+                esito, motivo = fu._esito_senza_candidato_valido(self._valutati(stato))
+                self.assertEqual(esito, fu.STATO_IN_VERIFICA, f"stato HTTP {stato}")
+                self.assertIn("rete", motivo)
+
+    def test_un_404_e_un_giudizio(self):
+        # La pagina non c'e': e' un'informazione sul bando, non sulla rete.
+        esito, motivo = fu._esito_senza_candidato_valido(self._valutati(404))
+        self.assertEqual(esito, fu.STATO_NON_TROVATA)
+        self.assertIn("gate", motivo)
+
+    def test_basta_un_candidato_giudicato_perche_sia_un_giudizio(self):
+        # Misto: uno non risponde, uno risponde 404. Il secondo e' una risposta,
+        # quindi il giro ha davvero guardato e `non_trovata` e' corretto.
+        esito, _ = fu._esito_senza_candidato_valido(self._valutati(503, 404))
+        self.assertEqual(esito, fu.STATO_NON_TROVATA)
+
+    def test_nessun_candidato_resta_non_trovata(self):
+        # Nessun URL da provare: qui `non_trovata` e' l'esito giusto, e il
+        # motivo lo distingue dal caso «provati e nessuna risposta».
+        esito, motivo = fu._esito_senza_candidato_valido([])
+        self.assertEqual(esito, fu.STATO_NON_TROVATA)
+        self.assertEqual(motivo, "nessun candidato")
+
+    def test_la_cadenza_segue_lo_stato(self):
+        """Il punto per cui la distinzione conta: quattordici giorni o sessanta."""
+        oggi = date(2026, 9, 24)
+        fra_in_verifica, _, _ = fu.prossimo_controllo(fu.STATO_IN_VERIFICA, 0, oggi)
+        fra_non_trovata, _, _ = fu.prossimo_controllo(fu.STATO_NON_TROVATA, 0, oggi)
+        self.assertLess(fra_in_verifica, fra_non_trovata,
+                        "in_verifica deve tornare in coda prima di non_trovata")
