@@ -2,27 +2,58 @@
 /**
  * Frammento HTML della lista bandi, reso con gli stessi componenti della pagina.
  * Vedi src/pages/api/lista/interpelli.astro per il perche'.
+ *
+ * Oltre a lista e paginazione porta le «regioni» della pagina che dipendono dai
+ * filtri (`data-regione`: testata, tessere, chip, vista) e i testi da copiare
+ * (`data-testo`: «Mostra N bandi», i contatori dei segmenti). La testata e'
+ * quella di /bandi: dopo un filtro l'URL e' /bandi?…, anche partendo da una
+ * pagina filtro.
  */
 export const prerender = false;
 
 import ListaBandi from '../../../components/liste/ListaBandi.astro';
-import PaginazioneLinks from '../../../components/filtro/PaginazioneLinks.astro';
-import { DEF_BANDI, caricaBandi } from '../../../lib/liste/bandi';
-import { leggiFiltri, filtriAttivi, urlLista } from '../../../lib/liste/parametri';
+import ChipBandi from '../../../components/bandi/ChipBandi.astro';
+import PaginazioneBandi from '../../../components/bandi/PaginazioneBandi.astro';
+import TessereBandi from '../../../components/bandi/TessereBandi.astro';
+import TestataBandi from '../../../components/bandi/TestataBandi.astro';
+import VistaBandi from '../../../components/bandi/VistaBandi.astro';
+import { DEF_BANDI, caricaBandi, conteggiStatoBandi, corpusBandi, gruppiFiltroBandi } from '../../../lib/liste/bandi';
+import { leggiFiltri, urlLista, type Valori } from '../../../lib/liste/parametri';
 import { numeroPagine } from '../../../lib/paginazione';
+import {
+  chipFiltri, conValori, contaFiltriContenuto, normalizzaPresentazione, numeroGrande, segmentiStato, tessere,
+  TESTATA_LISTA, titoloLista, valoriReset,
+} from '../../../lib/bandi/elenco';
 
 Astro.response.headers.set('X-Robots-Tag', 'noindex');
 Astro.response.headers.set('Cache-Control', 'no-store');
 
-const valori = leggiFiltri(Astro.url, DEF_BANDI);
+const valori = normalizzaPresentazione(leggiFiltri(Astro.url, DEF_BANDI)).valori;
 const grezzo = Astro.url.searchParams.get('page');
 const pagina = /^[1-9]\d{0,5}$/.test(grezzo ?? '1') ? Number(grezzo ?? '1') : 1;
 
-const { righe, totale } = await caricaBandi(valori, pagina);
+const [{ righe, totale, errore }, c] = await Promise.all([caricaBandi(valori, pagina), corpusBandi()]);
+const gruppi = await gruppiFiltroBandi(valori, c);
+const conteggi = conteggiStatoBandi(c);
 const pagine = numeroPagine(totale, DEF_BANDI.perPagina);
-const base = urlLista(DEF_BANDI, valori, 1);
+const url = (v: Valori): string => urlLista(DEF_BANDI, v, 1);
+const vista: 'elenco' | 'griglia' = valori.vista?.[0] === 'griglia' ? 'griglia' : 'elenco';
+const hrefReset = url(valoriReset(valori));
 ---
-<div id="frammento" data-totale={totale} data-pagina={pagina} data-pagine={pagine}>
-  <ListaBandi righe={righe} filtrata={filtriAttivi(valori) > 0} />
-  <PaginazioneLinks base={base} pagina={pagina} pagine={pagine} accento="blu" />
+<div
+  id="frammento"
+  data-totale={totale}
+  data-totale-testo={numeroGrande(totale)}
+  data-pagina={pagina}
+  data-pagine={pagine}
+  data-titolo={titoloLista(pagina, pagine)}
+>
+  <ListaBandi righe={righe} filtrata={contaFiltriContenuto(valori) > 0} vista={vista} errore={errore} hrefReset={hrefReset} />
+  <PaginazioneBandi base={url(valori)} pagina={pagina} pagine={pagine} />
+  <TestataBandi {...TESTATA_LISTA} />
+  <TessereBandi tessere={tessere(valori, conteggi, url)} />
+  <ChipBandi chip={chipFiltri(valori, gruppi, url)} hrefReset={hrefReset} />
+  <VistaBandi vista={vista} hrefElenco={url(conValori(valori, { vista: [] }))} hrefGriglia={url(conValori(valori, { vista: ['griglia'] }))} />
+  <span data-testo="mostra">{numeroGrande(totale)}</span>
+  {segmentiStato(valori, conteggi).map((s, i) => <span data-testo={`segmento-${i}`}>{s.conteggio}</span>)}
 </div>

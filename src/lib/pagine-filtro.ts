@@ -44,7 +44,7 @@ export async function risolvi(
 }
 
 /** Etichetta configurata (se c'e') al posto del valore grezzo del DB. */
-function applicaEtichetta(voce: VoceFaccetta, dim: DimensioneFiltro): VoceFaccetta {
+export function applicaEtichetta(voce: VoceFaccetta, dim: DimensioneFiltro): VoceFaccetta {
   const personalizzata = voce.valoriDb.map((v) => dim.etichette?.[v]).find(Boolean);
   return personalizzata ? { ...voce, etichetta: personalizzata } : voce;
 }

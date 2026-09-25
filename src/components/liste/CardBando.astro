@@ -1,19 +1,23 @@
 ---
 /**
- * Card di un bando di finanziamento. Unico template: lo usano la pagina elenco,
- * le pagine filtro e il frammento richiamato dal JS dopo un cambio di filtro.
- * La classe `bando-item` e' l'aggancio dello script client: non rimuoverla.
+ * Card di un bando di finanziamento, nel design «Bandi Redesign». Unico
+ * template: lo usano la lista, le pagine filtro e il frammento richiamato dal JS
+ * dopo un cambio di filtro. La classe `bando-item` e' l'aggancio dello script
+ * client: non rimuoverla.
  *
- * Nel DOM il titolo viene prima della riga stato/scadenza, che `order-first`
- * riporta in cima a schermo: chi naviga per titoli (e il Markdown per agenti)
- * legge il titolo e subito dopo il suo stato, non quello della card precedente.
- * L'unico link e' il titolo; il suo `::after` copre la card, che resta
- * cliccabile per intero.
+ * Due varianti del mock: `elenco` (colonna data, testo, dotazione) e `griglia`
+ * (barra di stato, testo, piede Scadenza/Dotazione).
+ *
+ * Nel DOM il titolo viene prima dei badge e della colonna data, che `order` e il
+ * posizionamento della griglia riportano al loro posto a schermo: chi naviga per
+ * titoli (e il Markdown per agenti) legge il titolo e subito dopo i suoi dati,
+ * non quelli della card precedente. L'unico link e' il titolo; il suo `::after`
+ * copre la card, che resta cliccabile per intero.
  */
 import { statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
-import { BADGE_STATO, badgeStato, rigaScadenza } from '../../lib/bandi/testi-stato';
+import { BARRA_SCONOSCIUTO, PALETTE_SCADENZA } from '../../lib/bandi/aspetto';
+import { modelloCard } from '../../lib/bandi/elenco';
 import type { Bando } from '../../lib/supabase-bandi';
-import { formatImportoEuro } from '../../lib/liste/formato';
 
 /** Bando arricchito in lista: le tre FK risolte a nome tramite il catalogo. */
 export type BandoLista = Bando & {
@@ -24,61 +28,114 @@ export type BandoLista = Bando & {
 
 interface Props {
   bando: BandoLista;
+  vista?: 'elenco' | 'griglia';
 }
 
-const { bando } = Astro.props;
+const { bando, vista = 'elenco' } = Astro.props;
 
-// Badge sullo stato EFFETTIVO. Se la lista legge dalla vista, quel valore lo
-// calcola il database (`stato_effettivo`) e conosce anche l'ora di scadenza e
-// se la data di apertura ha una prova; altrimenti si ricostruisce dalla colonna
-// corretta dalla scadenza, perche' `stato_bando` non viene piu' aggiornata dopo
-// il preprocess. La card e il filtro della lista devono usare la STESSA
-// sorgente, altrimenti un bando puo' comparire fra gli aperti con il badge
-// «Chiuso». Etichetta e classi da `bandi/testi-stato.ts`.
+// Stato EFFETTIVO. Se la lista legge dalla vista, quel valore lo calcola il
+// database (`stato_effettivo`) e conosce anche l'ora di scadenza e se la data
+// di apertura ha una prova; altrimenti si ricostruisce dalla colonna corretta
+// dalla scadenza, perche' `stato_bando` non viene piu' aggiornata dopo il
+// preprocess. La card e il filtro della lista devono usare la STESSA sorgente,
+// altrimenti un bando puo' comparire fra gli aperti con il badge «Chiuso».
 const calcolato = (bando as unknown as Record<string, unknown>).stato_effettivo;
 const stato = typeof calcolato === 'string' && calcolato !== ''
-  ? (calcolato as ReturnType<typeof statoEffettivo>)
+  ? calcolato
   : statoEffettivo({ stato: bando.stato_bando, data_scadenza: bando.data_scadenza });
-const badge = badgeStato(stato);
-// Lo stato sconosciuto ha «—» come etichetta: un segnaposto, quindi non si mostra.
-const conBadge = badge !== BADGE_STATO.sconosciuto;
 
 // «Oggi» di Roma, come nella scheda: mai l'ora locale del server.
-const scadenza = rigaScadenza(stato, bando.data_scadenza, todayRomeISO());
+const m = modelloCard({ stato, data_scadenza: bando.data_scadenza, importo_totale_eur: bando.importo_totale_eur }, todayRomeISO());
+const palette = m.urgente ? PALETTE_SCADENZA.urgente : PALETTE_SCADENZA.normale;
 
-// L'area si omette quando il nome dell'ente la contiene gia' («Regione Marche · Marche»).
 const ente = bando.ente_erogatore?.trim() || null;
-const area = bando.area_geografica?.trim() || null;
-const areaUtile = area && !(ente ?? '').toLowerCase().includes(area.toLowerCase()) ? area : null;
-const dettagli = [ente, areaUtile, bando.tipologia?.trim() || null].filter((v): v is string => v !== null);
+const tipologia = bando.tipologia?.trim() || null;
+const programma = bando.programma?.trim() || null;
+const tipologiaProgramma = [tipologia, programma].filter((v): v is string => v !== null).join(' · ');
+
+const articolo = 'bando-item relative cursor-pointer overflow-hidden rounded-2xl border border-[#e3e7ee] bg-white transition-[border-color,box-shadow] duration-150 hover:border-[#9fb3d1] hover:shadow-[0_10px_28px_-18px_rgba(10,34,68,.45)] motion-reduce:transition-none';
+const link = 'text-inherit no-underline after:absolute after:inset-0 after:rounded-2xl focus-visible:outline-none focus-visible:after:outline focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-[#004e9c]';
+const pilloleEtichetta = 'max-w-full flex-none overflow-hidden text-ellipsis whitespace-nowrap rounded-full border border-[#e3e7ee] px-[9px] py-[3px] text-[12px] text-[#4b5565]';
 ---
-<article class="bando-item relative flex flex-col gap-2 rounded-lg border border-gray-200 bg-white p-5 transition-colors hover:border-gray-400 motion-reduce:transition-none">
-  <h2 class="font-heading text-lg font-semibold leading-snug text-gray-900 line-clamp-2">
-    <a
-      href={`/bandi/${bando.slug}`}
-      class="hover:text-primary after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none focus-visible:after:outline focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-primary"
-    >{bando.titolo}</a>
-  </h2>
-
-  {(conBadge || scadenza) && (
-    <p class="order-first flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-700">
-      {conBadge && (
-        <span class={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${badge.classi}`}>{badge.etichetta}</span>
+{vista === 'griglia' ? (
+  <article class={`${articolo} flex flex-col`}>
+    <h2 class="mx-5 mt-3 line-clamp-3 font-heading text-[19px] font-semibold leading-[1.22] text-[#0a2244]">
+      <a href={`/bandi/${bando.slug}`} class={link}>{bando.titolo}</a>
+    </h2>
+    {ente && <p class="mx-5 mt-2 text-[13px] leading-[1.45] text-[#4b5565]">{ente}</p>}
+    {tipologiaProgramma && <p class="mx-5 mt-1.5 text-[12.5px] text-[#5b6576]">{tipologiaProgramma}</p>}
+    <div class="min-h-[18px] flex-1"></div>
+    <div class="grid grid-cols-2 border-t border-[#eef1f5]">
+      <div class="border-r border-[#eef1f5] px-5 py-3.5">
+        <span class="block text-[11.5px] text-[#5b6576]">Scadenza</span>
+        <span class="mt-[3px] block text-[14px] font-semibold tabular-nums text-[#0a2244]">{m.scadenzaLunga}</span>
+      </div>
+      <div class="px-5 py-3.5">
+        <span class="block text-[11.5px] text-[#5b6576]">Dotazione</span>
+        <span class="mt-[3px] block text-[14px] font-semibold tabular-nums text-[#0a2244]">{m.dotazioneBreve}</span>
+      </div>
+    </div>
+    {/* Barra e badge vengono dopo nel DOM ma prima a schermo (order-first, in quest'ordine). */}
+    <div aria-hidden="true" class={`order-first h-1 ${m.urgente ? palette.barra : (m.aspetto?.barra ?? BARRA_SCONOSCIUTO)}`}></div>
+    {(m.aspetto || m.giorniTesto) && (
+      <div class="order-first flex flex-wrap items-center gap-2 px-5 pt-[18px]">
+        {m.aspetto && (
+          <span class={`inline-flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full py-[3px] pl-2 pr-[9px] text-[12px] font-semibold ${m.aspetto.pillola}`}>
+            <span class={`h-[7px] w-[7px] rounded-full ${m.aspetto.punto}`}></span><span class={m.aspetto.extraEtichetta}>{m.aspetto.etichetta}</span>
+          </span>
+        )}
+        {m.giorniTesto && (
+          <span class={`flex-none whitespace-nowrap rounded-md px-2 py-[3px] text-[11.5px] font-semibold ${palette.pillolaGiorni}`}>{m.giorniTesto}</span>
+        )}
+      </div>
+    )}
+  </article>
+) : (
+  <article class={`${articolo} grid grid-cols-[96px_minmax(0,1fr)] md:grid-cols-[128px_minmax(0,1fr)_200px]`}>
+    <div class="col-start-2 row-start-1 flex min-w-0 flex-col px-4 py-4 md:px-6 md:py-5">
+      <h2 class="mt-2.5 text-pretty font-heading text-[21px] font-semibold leading-[1.2] text-[#0a2244]">
+        <a href={`/bandi/${bando.slug}`} class={link}>{bando.titolo}</a>
+      </h2>
+      {ente && <p class="mt-1.5 text-[13.5px] text-[#4b5565]">{ente}</p>}
+      {bando.descrizione_breve && (
+        <p class="mt-2 line-clamp-2 text-[14px] leading-[1.6] text-[#3d4657]">{bando.descrizione_breve}</p>
       )}
-      {scadenza && <span class="tabular-nums">{scadenza.testo}</span>}
-      {scadenza?.mancano && <span class="whitespace-nowrap tabular-nums text-gray-600">· {scadenza.mancano}</span>}
-    </p>
-  )}
-
-  {dettagli.length > 0 && <p class="text-sm text-gray-600">{dettagli.join(' · ')}</p>}
-
-  {bando.importo_totale_eur != null && (
-    <p class="text-sm text-gray-700">
-      Dotazione <span class="font-semibold tabular-nums text-gray-900">{formatImportoEuro(bando.importo_totale_eur)}</span>
-    </p>
-  )}
-
-  {bando.descrizione_breve && (
-    <p class="text-sm leading-relaxed text-gray-600 line-clamp-2">{bando.descrizione_breve}</p>
-  )}
-</article>
+      {(m.aspetto || tipologia || programma) && (
+        <div class="order-first flex flex-wrap items-center gap-2">
+          {m.aspetto && (
+            <span class={`inline-flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full py-[3px] pl-2 pr-[9px] text-[12px] font-semibold ${m.aspetto.pillola}`}>
+              <span class={`h-[7px] w-[7px] rounded-full ${m.aspetto.punto}`}></span><span class={m.aspetto.extraEtichetta}>{m.aspetto.etichetta}</span>
+            </span>
+          )}
+          {tipologia && <span class={pilloleEtichetta}>{tipologia}</span>}
+          {programma && <span class={pilloleEtichetta}>{programma}</span>}
+        </div>
+      )}
+    </div>
+    <div class={`col-start-1 row-start-1 flex flex-col border-r border-[#eef1f5] px-3 py-4 md:px-[18px] md:py-5 ${palette.sfondoData}`}>
+      <span class="text-[11.5px] font-medium text-[#5b6576]">Scadenza</span>
+      {m.data ? (
+        <Fragment>
+          <span class={`mt-2 font-heading text-[34px] font-bold leading-none tabular-nums md:text-[44px] ${palette.giorno}`}>{m.data.giorno}</span>
+          <span class="mt-0.5 text-[13px] text-[#3d4657]">{m.data.meseAnno}</span>
+        </Fragment>
+      ) : (
+        <span class="mt-2 text-[13.5px] leading-[1.35] text-[#3d4657]">Non indicata</span>
+      )}
+      {m.giorniTesto && (
+        <span class="mt-auto pt-3">
+          <span class={`inline-block whitespace-nowrap rounded-md px-2 py-[3px] text-[11.5px] font-semibold ${palette.pillolaGiorni}`}>{m.giorniTesto}</span>
+        </span>
+      )}
+    </div>
+    <div class="col-span-2 row-start-2 flex flex-row flex-wrap items-baseline gap-x-2 border-t border-[#eef1f5] px-4 py-3 md:col-span-1 md:col-start-3 md:row-start-1 md:flex-col md:items-stretch md:border-l md:border-t-0 md:px-[22px] md:py-5">
+      <span class="text-[11.5px] font-medium text-[#5b6576]">Dotazione</span>
+      {m.dotazione
+        ? <span class="whitespace-nowrap font-heading text-[20px] font-bold tabular-nums text-[#0a2244] md:mt-2 md:text-[24px]">{m.dotazione}</span>
+        : <span class="text-[13.5px] text-[#3d4657] md:mt-2">Non indicata</span>}
+      <span aria-hidden="true" class="ml-auto flex items-center gap-1.5 text-[13.5px] font-semibold text-[#004e9c] md:ml-0 md:mt-auto md:pt-3.5">
+        Apri la scheda<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M13 6l6 6-6 6"></path></svg>
+      </span>
+    </div>
+  </article>
+)}

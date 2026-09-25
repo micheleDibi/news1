@@ -130,7 +130,8 @@ export const PAGINE_FILTRO: ConfigSezione[] = [
     sezione: 'bandi',
     basePath: '/bandi',
     etichetta: 'Bandi e finanziamenti pubblici',
-    perPagina: 20,
+    // 24 e non 20: nella vista a griglia (3 colonne) ogni pagina chiude la riga.
+    perPagina: 24,
     dimensioni: [
       {
         slug: 'regione', etichetta: 'Regione', etichettaPlurale: 'Regioni',

@@ -1,0 +1,49 @@
+---
+/**
+ * Paginazione della lista bandi nel design «Bandi Redesign»: tre slot
+ * («Pagina X di Y», i numeri, Precedente/Successiva). Link reali, come
+ * PaginazioneLinks: id `pagination` e `data-*` restano, li legge lista.ts.
+ *
+ * Numeri con `vicini = 0`: per la pagina 1 di 180 danno 1, 2, 3, …, 180, come
+ * nel mock.
+ */
+import { elementiPaginazione, hrefPagina, PUNTINI } from '../../lib/paginazione';
+
+interface Props {
+  /** URL della pagina 1 (puo' contenere i filtri in query string). */
+  base: string;
+  pagina: number;
+  pagine: number;
+}
+
+const { base, pagina, pagine } = Astro.props;
+const elementi = pagine > 1 ? elementiPaginazione(pagina, pagine, 0) : [1];
+const cella = (n: number): string => (String(n).length >= 3 ? 'w-12' : 'w-10');
+const freccia = 'flex h-10 items-center gap-1.5 rounded-[10px] border border-[#d5dbe4] bg-white px-4 text-[14px] font-semibold text-[#0a2244] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]';
+---
+{pagine > 1 && (
+  <nav id="pagination" aria-label="Paginazione" data-pagina={pagina} data-pagine={pagine} class="mt-8 flex flex-wrap items-center justify-between gap-3">
+    <span class="text-[13.5px] text-[#4b5565]">Pagina {pagina} di {pagine}</span>
+    <div class="flex gap-1.5">
+      {elementi.map((e) => (
+        e === PUNTINI
+          ? <span aria-hidden="true" class="flex h-10 w-7 items-center justify-center text-[#6b7383]">…</span>
+          : e === pagina
+            ? <span aria-current="page" class={`flex h-10 ${cella(e as number)} items-center justify-center rounded-[10px] bg-[#0a2244] text-[14px] font-semibold text-white`}>{e}</span>
+            : <a href={hrefPagina(base, e as number)} aria-label={`Pagina ${e}`} class={`flex h-10 ${cella(e as number)} items-center justify-center rounded-[10px] border border-[#d5dbe4] bg-white text-[14px] text-[#1f2937] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]`}>{e}</a>
+      ))}
+    </div>
+    <div class="flex gap-1.5">
+      {pagina > 1 && (
+        <a href={hrefPagina(base, pagina - 1)} rel="prev" class={freccia}>
+          <svg aria-hidden="true" focusable="false" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 12H5M11 6l-6 6 6 6"></path></svg>Precedente
+        </a>
+      )}
+      {pagina < pagine && (
+        <a href={hrefPagina(base, pagina + 1)} rel="next" class={freccia}>
+          Successiva<svg aria-hidden="true" focusable="false" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M13 6l6 6-6 6"></path></svg>
+        </a>
+      )}
+    </div>
+  </nav>
+)}

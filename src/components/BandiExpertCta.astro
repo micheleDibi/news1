@@ -1,13 +1,15 @@
 ---
 /**
- * Rimando a BandoFit, la piattaforma di supporto alla candidatura. Il nome si
- * legge nel testo del link, non solo negli attributi per gli screen reader.
+ * Rimando a BandoFit, la piattaforma di supporto alla candidatura, nel design
+ * «Bandi Redesign». Il nome si legge nel testo, non solo negli attributi per gli
+ * screen reader.
  *
  * Due varianti:
- *  - `scheda`: blocco nella colonna della scheda /bandi/[slug], sotto il
- *    pannello di partecipazione. Resta secondario rispetto alla CTA ufficiale:
- *    link testuale, mai un secondo bottone pieno.
- *  - `riga`: una frase con il link, nell'header della lista /bandi.
+ *  - `hero`: il riquadro a destra del titolo nella testata scura della lista e
+ *    delle pagine filtro. Link testuale.
+ *  - `scheda`: la card scura nella colonna della scheda /bandi/[slug], sotto il
+ *    pannello di partecipazione. Bottone con il solo bordo: resta secondario
+ *    rispetto alla CTA ufficiale, l'unico bottone pieno della pagina.
  *
  * L'URL passa sempre da bandofitCtaUrl(): il chiamante dichiara la posizione,
  * che diventa lo utm_content. Non esiste una pagina BandoFit per singolo bando.
@@ -15,7 +17,7 @@
 import { bandofitCtaUrl, type BandofitCtaPosition } from '../lib/bandofit';
 
 interface Props {
-  variante: 'scheda' | 'riga';
+  variante: 'hero' | 'scheda';
   utmContent: BandofitCtaPosition;
   /**
    * Solo `scheda`: false quando il bando non accetta domande (chiuso, sospeso,
@@ -26,32 +28,34 @@ interface Props {
 
 const { variante, utmContent, candidabile = true } = Astro.props;
 const href = bandofitCtaUrl(utmContent);
-
-const classiLink =
-  'inline-flex min-h-11 items-center gap-1.5 rounded-md font-semibold text-primary underline underline-offset-2 ' +
-  'hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ' +
-  'focus-visible:outline-primary';
+const titolo = candidabile ? 'Supporto alla candidatura' : 'Misure alternative';
+const testo = candidabile
+  ? 'Verifica i requisiti e prepara la domanda con i progettisti di BandoFit.'
+  : 'Cerca misure alternative con i progettisti di BandoFit.';
 ---
 
-{variante === 'scheda' ? (
-  <aside aria-label="BandoFit" class="border-t border-gray-200 pt-5">
-    <p class="font-heading text-base font-semibold text-gray-900">
-      {candidabile ? 'Supporto alla candidatura' : 'Misure alternative'}
-    </p>
-    <p class="mt-1 text-sm leading-relaxed text-gray-700">
-      {candidabile
-        ? 'Verifica i requisiti e prepara la domanda con i progettisti di BandoFit.'
-        : 'Cerca misure alternative con i progettisti di BandoFit.'}
-    </p>
-    <a href={href} target="_blank" rel="noopener noreferrer" class={`mt-1 text-sm ${classiLink}`}>
-      Vai a BandoFit<svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg><span class="sr-only"> (si apre in una nuova scheda)</span>
-    </a>
+{variante === 'hero' ? (
+  <aside aria-label="BandoFit" class="rounded-2xl border border-white/[.18] bg-white/[.04] px-5 py-[18px]">
+    <div class="flex items-center gap-2 text-[12px] font-semibold text-[#9cc3f0]">BandoFit</div>
+    <p class="mt-1.5 font-heading text-[19px] font-semibold leading-[1.2]">{titolo}</p>
+    <p class="mt-1.5 text-[13.5px] leading-[1.55] text-white/[.78]">{testo}</p>
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      class="mt-3 inline-flex items-center gap-1.5 text-[14px] font-semibold text-white underline underline-offset-[3px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+    >Vai a BandoFit<svg aria-hidden="true" focusable="false" width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg><span class="sr-only"> (si apre in una nuova scheda)</span></a>
   </aside>
 ) : (
-  <p class="flex flex-wrap items-center gap-x-3 text-sm text-gray-700">
-    <span>Supporto alla candidatura: verifica i requisiti e prepara la domanda con i progettisti di BandoFit.</span>{' '}
-    <a href={href} target="_blank" rel="noopener noreferrer" class={classiLink}>
-      Vai a BandoFit<svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg><span class="sr-only"> (si apre in una nuova scheda)</span>
-    </a>
-  </p>
+  <aside aria-label="BandoFit" class="rounded-[20px] bg-[#0a2244] p-[22px] text-white">
+    <span class="inline-block rounded-md bg-[#9cc3f0] px-[9px] py-[3px] text-[12px] font-semibold text-[#0a2244]">BandoFit</span>
+    <p class="mt-3 font-heading text-[21px] font-semibold leading-[1.2]">{titolo}</p>
+    <p class="mt-2 text-[14px] leading-[1.6] text-white/80">{testo}</p>
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      class="mt-4 flex h-[46px] items-center justify-center gap-2 rounded-[11px] border-[1.5px] border-white/60 text-[14.5px] font-semibold text-white no-underline hover:border-white hover:bg-white/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+    >Vai a BandoFit<svg aria-hidden="true" focusable="false" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg><span class="sr-only"> (si apre in una nuova scheda)</span></a>
+  </aside>
 )}

@@ -1,6 +1,8 @@
 import { supabase } from './supabase';
 import { supabaseBandi, loadCatalogo, todayRomeISO, FONTE_BANDI, type CatalogoRow } from './supabase-bandi';
 import { statoEffettivo } from './stato-bando';
+import { inScadenza } from './bandi/aspetto';
+import { giorniAllaScadenza } from './bandi/testi-stato';
 import { regionePerValore, regionePerSlug } from './regioni';
 import { slugifica } from './slug';
 import { TTL_CORPUS_MS, configSezione, type Sezione } from '../config/pagine-filtro';
@@ -34,6 +36,24 @@ export interface VoceFaccetta {
   /** Annunci non scaduti. Per gli interpelli non esiste una scadenza: vale totale. */
   aperti: number;
   ultimaData: string | null;
+  /** Solo bandi: annunci per stato effettivo (tessere e segmenti delle pagine filtro). */
+  perStato?: Record<string, number>;
+  /** Solo bandi: aperti con la scadenza fra oggi e oggi+15. */
+  inScadenza?: number;
+}
+
+/** Gruppi di filtro dei bandi che hanno un conteggio per id di catalogo. */
+export type GruppoConteggioBandi = 'regione' | 'settore' | 'programma' | 'tipologia' | 'modalita' | 'beneficiario' | 'ateco';
+
+/** Conteggi della lista bandi: tessere dell'hero, segmenti di stato, numeri delle opzioni. */
+export interface ConteggiBandi {
+  perStato: Record<string, number>;
+  inScadenza: number;
+  /**
+   * gruppo -> id di catalogo -> bandi pubblicati. Un gruppo manca se la sua
+   * lettura e' fallita: le opzioni restano, senza numero.
+   */
+  perId: Partial<Record<GruppoConteggioBandi, Map<number, number>>>;
 }
 
 export interface Corpus {
@@ -45,6 +65,8 @@ export interface Corpus {
   /** "dimA|dimB" -> slugA -> slugB -> conteggio. */
   incroci: Map<string, Map<string, Map<string, number>>>;
   generatoIl: number;
+  /** Solo per la sezione bandi. */
+  bandi?: ConteggiBandi;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +109,15 @@ class Accumulatore {
     dimensione: string,
     slug: string,
     etichetta: string,
-    opzioni: { valoreDb?: string; idDb?: number; aperto: boolean; data: string | null },
+    opzioni: {
+      valoreDb?: string;
+      idDb?: number;
+      aperto: boolean;
+      data: string | null;
+      /** Solo bandi: stato effettivo e scadenza entro 15 giorni. */
+      stato?: string;
+      inScadenza?: boolean;
+    },
   ): void {
     if (this.escluso(dimensione, opzioni.valoreDb)) return;
     const mappa = (this.faccette[dimensione] ??= new Map());
@@ -104,6 +134,11 @@ class Accumulatore {
     voce.totale++;
     if (opzioni.aperto) voce.aperti++;
     if (opzioni.data && (!voce.ultimaData || opzioni.data > voce.ultimaData)) voce.ultimaData = opzioni.data;
+    if (opzioni.stato !== undefined) {
+      voce.perStato ??= {};
+      voce.perStato[opzioni.stato] = (voce.perStato[opzioni.stato] ?? 0) + 1;
+      voce.inScadenza = (voce.inScadenza ?? 0) + (opzioni.inScadenza ? 1 : 0);
+    }
   }
 
   incrocia(dimA: string, slugA: string, dimB: string, slugB: string): void {
@@ -272,6 +307,7 @@ interface RigaBando {
   id: number;
   programma_id: number | null;
   tipologia_bando_id: number | null;
+  modalita_erogazione_id: number | null;
   stato_bando: string | null;
   data_scadenza: string | null;
   data_pubblicazione: string | null;
@@ -289,6 +325,51 @@ function slugCatalogo(riga: CatalogoRow, dimensione: string): { slug: string; et
   return slug ? { slug, etichetta: riga.nome } : null;
 }
 
+/**
+ * Coppie (bando, id) di una junction, lette a blocchi da 1000 righe in
+ * parallelo (a gruppi di cinque): quella dei codici ATECO vale decine di
+ * blocchi e in fila allungherebbe la costruzione del corpus. L'ordine su
+ * entrambe le colonne rende stabili i blocchi.
+ */
+async function leggiJunction(tabella: string, colonna: string): Promise<Array<{ bando_id: number; id: number }>> {
+  const { count, error } = await supabaseBandi.from(tabella).select('bando_id', { count: 'exact', head: true });
+  if (error) throw error;
+  const blocchi = Math.ceil((count ?? 0) / 1000);
+  const righe: Array<{ bando_id: number; id: number }> = [];
+  for (let primo = 0; primo < blocchi; primo += 5) {
+    const lotti = await Promise.all(
+      Array.from({ length: Math.min(5, blocchi - primo) }, (_, i) => {
+        const da = (primo + i) * 1000;
+        return supabaseBandi
+          .from(tabella)
+          .select(`bando_id, ${colonna}`)
+          .order('bando_id', { ascending: true })
+          .order(colonna, { ascending: true })
+          .range(da, da + 999);
+      }),
+    );
+    for (const { data, error: errore } of lotti) {
+      if (errore) throw errore;
+      for (const r of (data ?? []) as unknown as Array<Record<string, number>>) righe.push({ bando_id: r.bando_id, id: r[colonna] });
+    }
+  }
+  return righe;
+}
+
+/** id di catalogo -> numero di bandi visibili che lo hanno (ogni bando conta una volta). */
+function contaPerId(legami: Iterable<{ bando_id: number; id: number }>, visibili: Map<number, unknown>): Map<number, number> {
+  const visti = new Set<string>();
+  const conteggi = new Map<number, number>();
+  for (const l of legami) {
+    if (!visibili.has(l.bando_id)) continue;
+    const chiave = `${l.bando_id}:${l.id}`;
+    if (visti.has(chiave)) continue;
+    visti.add(chiave);
+    conteggi.set(l.id, (conteggi.get(l.id) ?? 0) + 1);
+  }
+  return conteggi;
+}
+
 async function costruisciBandi(): Promise<Corpus> {
   const [righe, catalogo] = await Promise.all([
     leggiTutto<RigaBando>((da, a) => {
@@ -298,7 +379,7 @@ async function costruisciBandi(): Promise<Corpus> {
       // Lo stato calcolato si chiede solo se la fonte ce l'ha: sulla tabella
       // `stato_effettivo` non esiste e la richiesta fallirebbe con 42703,
       // spegnendo tutte le pagine filtro insieme.
-      const colonne = 'id, programma_id, tipologia_bando_id, stato_bando, data_scadenza, data_pubblicazione'
+      const colonne = 'id, programma_id, tipologia_bando_id, modalita_erogazione_id, stato_bando, data_scadenza, data_pubblicazione'
         + (FONTE_BANDI.colonnaStato === null ? '' : `, ${FONTE_BANDI.colonnaStato}`);
       let query = supabaseBandi
         .from(FONTE_BANDI.tabella)
@@ -344,6 +425,37 @@ async function costruisciBandi(): Promise<Corpus> {
   const catProgrammi = perId(catalogo.programmi);
   const catTipologie = perId(catalogo.tipologie);
 
+  // Beneficiari e codici ATECO servono solo ai numeri delle opzioni della
+  // lista: letti a parte e senza far fallire il corpus, che regge anche le
+  // pagine filtro. Se la lettura cade, quei due gruppi escono senza numeri.
+  const conteggiPerId: ConteggiBandi['perId'] = {};
+  const [beneficiari, ateco] = await Promise.all([
+    leggiJunction('bando_beneficiari', 'beneficiario_id').catch((e) => {
+      console.error('[corpus] bando_beneficiari:', e);
+      return null;
+    }),
+    leggiJunction('bando_codici_ateco', 'codice_ateco_id').catch((e) => {
+      console.error('[corpus] bando_codici_ateco:', e);
+      return null;
+    }),
+  ]);
+  if (beneficiari) conteggiPerId.beneficiario = contaPerId(beneficiari, visibili);
+  if (ateco) conteggiPerId.ateco = contaPerId(ateco, visibili);
+
+  const coppie = (mappa: Map<number, Set<number>>) =>
+    [...mappa].flatMap(([bando_id, ids]) => [...ids].map((id) => ({ bando_id, id })));
+  conteggiPerId.regione = contaPerId(coppie(regioniPerBando), visibili);
+  conteggiPerId.settore = contaPerId(coppie(settoriPerBando), visibili);
+  const perFk = (colonna: 'programma_id' | 'tipologia_bando_id' | 'modalita_erogazione_id') =>
+    contaPerId(righe.filter((r) => r[colonna] != null).map((r) => ({ bando_id: r.id, id: r[colonna]! })), visibili);
+  conteggiPerId.programma = perFk('programma_id');
+  conteggiPerId.tipologia = perFk('tipologia_bando_id');
+  conteggiPerId.modalita = perFk('modalita_erogazione_id');
+
+  const oggi = todayRomeISO();
+  const perStato: Record<string, number> = {};
+  let urgenti = 0;
+
   const acc = new Accumulatore('bandi');
   let aperti = 0;
 
@@ -354,10 +466,15 @@ async function costruisciBandi(): Promise<Corpus> {
     // nemmeno chiuso (A3). Il conteggio deve usare la stessa sorgente del
     // filtro della lista, altrimenti una pagina filtro dichiara un numero di
     // aperti che la lista non mostra.
-    const aperto = (typeof b.stato_effettivo === 'string' && b.stato_effettivo !== ''
+    const stato = typeof b.stato_effettivo === 'string' && b.stato_effettivo !== ''
       ? b.stato_effettivo
-      : statoEffettivo({ stato: b.stato_bando, data_scadenza: b.data_scadenza })) === 'aperto';
+      : (statoEffettivo({ stato: b.stato_bando, data_scadenza: b.data_scadenza }) ?? 'sconosciuto');
+    const aperto = stato === 'aperto';
     if (aperto) aperti++;
+    // Stessa regola del filtro `?in_scadenza=si`: aperto, scadenza fra oggi e oggi+15.
+    const urgente = inScadenza(stato, giorniAllaScadenza(b.data_scadenza, oggi));
+    perStato[stato] = (perStato[stato] ?? 0) + 1;
+    if (urgente) urgenti++;
     const data = b.data_pubblicazione;
 
     const slugRegioni: string[] = [];
@@ -366,7 +483,7 @@ async function costruisciBandi(): Promise<Corpus> {
       const v = riga ? slugCatalogo(riga, 'regione') : null;
       if (!v || !riga) continue;
       const slug = acc.slugDi('regione', riga.nome, v.slug);
-      acc.aggiungi('regione', slug, v.etichetta, { valoreDb: riga.nome, idDb: idRegione, aperto, data });
+      acc.aggiungi('regione', slug, v.etichetta, { valoreDb: riga.nome, idDb: idRegione, aperto, data, stato, inScadenza: urgente });
       slugRegioni.push(v.slug);
     }
 
@@ -376,7 +493,7 @@ async function costruisciBandi(): Promise<Corpus> {
       const v = riga ? slugCatalogo(riga, 'settore') : null;
       if (!v || !riga) continue;
       const slug = acc.slugDi('settore', riga.nome, v.slug);
-      acc.aggiungi('settore', slug, v.etichetta, { valoreDb: riga.nome, idDb: idSettore, aperto, data });
+      acc.aggiungi('settore', slug, v.etichetta, { valoreDb: riga.nome, idDb: idSettore, aperto, data, stato, inScadenza: urgente });
       slugSettori.push(v.slug);
     }
 
@@ -388,7 +505,7 @@ async function costruisciBandi(): Promise<Corpus> {
         // Alias: "FSE+" e "FSE+ - Fondo Sociale Europeo +" sono due righe distinte del
         // catalogo per lo stesso programma e devono confluire in un URL solo.
         const slug = acc.slugDi('programma', riga.nome, v.slug);
-        acc.aggiungi('programma', slug, v.etichetta, { valoreDb: riga.nome, idDb: b.programma_id, aperto, data });
+        acc.aggiungi('programma', slug, v.etichetta, { valoreDb: riga.nome, idDb: b.programma_id, aperto, data, stato, inScadenza: urgente });
         slugProgramma = slug;
       }
     }
@@ -397,7 +514,7 @@ async function costruisciBandi(): Promise<Corpus> {
       const v = riga ? slugCatalogo(riga, 'tipologia') : null;
       if (v && riga) {
         acc.aggiungi('tipologia', acc.slugDi('tipologia', riga.nome, v.slug), v.etichetta,
-          { valoreDb: riga.nome, idDb: b.tipologia_bando_id, aperto, data });
+          { valoreDb: riga.nome, idDb: b.tipologia_bando_id, aperto, data, stato, inScadenza: urgente });
       }
     }
 
@@ -417,6 +534,7 @@ async function costruisciBandi(): Promise<Corpus> {
     faccette: acc.faccette,
     incroci: acc.incroci,
     generatoIl: Date.now(),
+    bandi: { perStato, inScadenza: urgenti, perId: conteggiPerId },
   };
 }
 

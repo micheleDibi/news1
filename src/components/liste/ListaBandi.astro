@@ -1,22 +1,49 @@
 ---
 /**
- * Contenitore della lista bandi, condiviso fra la pagina e la rotta frammento.
+ * Contenitore della lista bandi, condiviso fra la pagina, le pagine filtro e la
+ * rotta frammento. `#bandi-list` e' l'elemento che lista.ts sostituisce.
  */
 import CardBando from './CardBando.astro';
 import type { Bando } from '../../lib/supabase-bandi';
 
 interface Props {
   righe: Bando[];
+  /** true se ci sono filtri di contenuto attivi (ordinamento e vista non contano). */
   filtrata: boolean;
+  vista?: 'elenco' | 'griglia';
+  /** true se la lettura e' fallita: il vuoto non e' colpa dei filtri. */
+  errore?: boolean;
+  /** Link del reset nello stato vuoto (conserva ordinamento e vista). */
+  hrefReset?: string;
 }
 
-const { righe, filtrata } = Astro.props;
+const { righe, filtrata, vista = 'elenco', errore = false, hrefReset = '/bandi' } = Astro.props;
+
+const contenitore = righe.length === 0
+  ? 'mt-[18px]'
+  : vista === 'griglia'
+    ? 'mt-[18px] grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3'
+    : 'mt-[18px] flex flex-col gap-3';
+
+const [titoloVuoto, testoVuoto] = errore
+  ? ['Elenco momentaneamente non disponibile', 'Non riusciamo a leggere i bandi in questo momento. Riprova fra qualche istante.']
+  : filtrata
+    ? ['Nessun bando con questi filtri', 'Prova a togliere qualche filtro o ad allargare le date di scadenza.']
+    : ['Nessun bando disponibile', 'Al momento non ci sono bandi da mostrare.'];
 ---
-<div id="bandi-list" class="space-y-3">
+<div id="bandi-list" class={`${contenitore} transition-opacity aria-busy:opacity-60 motion-reduce:transition-none`}>
   {righe.length === 0 ? (
-    <div id="no-results-message" class="rounded-lg border border-gray-200 bg-white px-6 py-12 text-center">
-      <p class="font-heading text-lg font-semibold text-gray-900">Nessun bando trovato</p>
-      <p class="mt-1 text-sm text-gray-600">{filtrata ? 'Prova a modificare i filtri di ricerca.' : 'Nessun bando disponibile al momento.'}</p>
+    <div id="no-results-message" class="rounded-2xl border border-dashed border-[#c9d1dc] bg-white px-6 py-12 text-center">
+      <p class="font-heading text-[22px] font-semibold text-[#0a2244]">{titoloVuoto}</p>
+      <p class="mt-2 text-[14px] text-[#4b5565]">{testoVuoto}</p>
+      {filtrata && !errore && (
+        <a
+          href={hrefReset}
+          data-naviga
+          data-chiave="reset-vuoto"
+          class="mt-4 inline-flex h-[42px] cursor-pointer items-center rounded-[10px] border border-[#0a2244] bg-white px-5 text-[14px] font-semibold text-[#0a2244] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
+        >Resetta i filtri</a>
+      )}
     </div>
-  ) : righe.map((bando) => <CardBando bando={bando} />)}
+  ) : righe.map((bando) => <CardBando bando={bando} vista={vista} />)}
 </div>

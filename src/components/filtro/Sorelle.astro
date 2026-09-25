@@ -21,11 +21,32 @@ interface Props {
   livello?: 2 | 3;
   hrefTutti?: string;
   etichettaTutti?: string;
+  /** `bandi`: lo stile del design «Bandi Redesign». Senza, il markup di sempre. */
+  variante?: 'bandi';
 }
 
-const { titolo, voci, livello = 2, hrefTutti, etichettaTutti = 'Vedi tutte' } = Astro.props;
+const { titolo, voci, livello = 2, hrefTutti, etichettaTutti = 'Vedi tutte', variante } = Astro.props;
 ---
-{voci.length > 0 && (
+{variante === 'bandi' ? (voci.length > 0 && (
+  <section class="mt-10 rounded-2xl border border-[#e3e7ee] bg-white p-[22px]">
+    <div class="mb-3 flex items-baseline justify-between gap-3">
+      {livello === 2
+        ? <h2 class="font-heading text-[19px] font-semibold text-[#0a2244]">{titolo}</h2>
+        : <h3 class="font-heading text-[19px] font-semibold text-[#0a2244]">{titolo}</h3>}
+      {hrefTutti && <a href={hrefTutti} class="text-[13.5px] font-medium text-[#004e9c] underline underline-offset-2">{etichettaTutti}</a>}
+    </div>
+    <ul class="flex flex-wrap gap-2">
+      {voci.map((v) => (
+        <li>
+          <a href={v.href} class="sorella-item inline-flex items-baseline gap-1.5 whitespace-nowrap rounded-full border border-[#c7d6ea] bg-white px-[11px] py-1 text-[12.5px] font-medium text-[#003d7a] no-underline hover:border-[#004e9c]">
+            <span>{v.etichetta}</span>
+            {v.totale != null && <span class="text-[12px] font-normal tabular-nums text-[#6b7383]">{v.totale}</span>}
+          </a>
+        </li>
+      ))}
+    </ul>
+  </section>
+)) : voci.length > 0 && (
   <section class="mt-8 mb-10 p-5 bg-white rounded-xl shadow-sm border border-gray-100">
     <div class="flex items-baseline justify-between gap-3 mb-3">
       {livello === 2

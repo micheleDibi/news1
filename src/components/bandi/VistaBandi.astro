@@ -1,0 +1,25 @@
+---
+/**
+ * Interruttore elenco / griglia della lista bandi. Due link veri
+ * (`?vista=griglia` o senza): funzionano senza JavaScript e lo script li
+ * intercetta. Regione del frammento, perche' gli href portano i filtri correnti.
+ */
+interface Props {
+  vista: 'elenco' | 'griglia';
+  hrefElenco: string;
+  hrefGriglia: string;
+}
+
+const { vista, hrefElenco, hrefGriglia } = Astro.props;
+const attivo = 'bg-[#0a2244] text-white';
+const spento = 'bg-white text-[#4b5565]';
+const base = 'flex h-9 w-10 cursor-pointer items-center justify-center border-0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#004e9c]';
+---
+<div data-regione="vista" class="flex flex-none overflow-hidden rounded-[9px] border border-[#c9d1dc] bg-white">
+  <a href={hrefElenco} data-naviga data-chiave="vista-elenco" aria-label="Vista elenco" aria-current={vista === 'elenco' ? 'true' : undefined} class={`${base} ${vista === 'elenco' ? attivo : spento}`}>
+    <svg aria-hidden="true" focusable="false" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="3" rx="1"></rect><rect x="1" y="6.5" width="14" height="3" rx="1"></rect><rect x="1" y="11" width="14" height="3" rx="1"></rect></svg>
+  </a>
+  <a href={hrefGriglia} data-naviga data-chiave="vista-griglia" aria-label="Vista griglia" aria-current={vista === 'griglia' ? 'true' : undefined} class={`${base} border-l border-[#c9d1dc] ${vista === 'griglia' ? attivo : spento}`}>
+    <svg aria-hidden="true" focusable="false" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="6" rx="1"></rect><rect x="9" y="1" width="6" height="6" rx="1"></rect><rect x="1" y="9" width="6" height="6" rx="1"></rect><rect x="9" y="9" width="6" height="6" rx="1"></rect></svg>
+  </a>
+</div>

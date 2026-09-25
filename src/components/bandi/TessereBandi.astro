@@ -1,0 +1,28 @@
+---
+/**
+ * Le tre tessere dell'hero (aperti, in scadenza, in apertura). Sono link veri:
+ * senza JavaScript portano alla lista filtrata, con JavaScript lo script le
+ * intercetta (`data-naviga`). Regione del frammento: i link cambiano con i filtri.
+ */
+import type { Tessera } from '../../lib/bandi/elenco';
+
+interface Props {
+  tessere: Tessera[];
+}
+
+const { tessere } = Astro.props;
+---
+<div data-regione="tessere" class="mt-[18px] grid grid-cols-1 gap-3 sm:grid-cols-3">
+  {tessere.map((t) => (
+    <a
+      href={t.href}
+      data-naviga
+      data-chiave={t.chiave}
+      aria-current={t.attiva ? 'true' : undefined}
+      class={`flex cursor-pointer items-baseline gap-3 rounded-xl border px-[18px] py-3.5 text-left text-white no-underline hover:border-white/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${t.attiva ? 'border-white bg-white/[.14]' : 'border-white/[.18] bg-white/[.05]'}`}
+    >
+      <span class="font-heading text-[30px] font-bold leading-none tabular-nums text-white">{t.numero}</span>
+      <span class="text-[14px] leading-[1.35] text-white/[.85]">{t.etichetta}</span>
+    </a>
+  ))}
+</div>

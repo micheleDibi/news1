@@ -1,0 +1,47 @@
+---
+/**
+ * Testata scura delle pagine bandi (design «Bandi Redesign»): breadcrumb, H1,
+ * testo e, a destra, il rimando a BandoFit.
+ *
+ * E' una «regione» (`data-regione="testata"`): il frammento /api/lista/bandi la
+ * restituisce e lo script la sostituisce, cosi' dopo un filtro applicato da una
+ * pagina filtro la testata torna quella della lista, come l'URL.
+ * La ricerca NON sta qui dentro: sostituirla farebbe perdere il cursore.
+ */
+import BandiExpertCta from '../BandiExpertCta.astro';
+import type { BandofitCtaPosition } from '../../lib/bandofit';
+
+interface Briciola {
+  etichetta: string;
+  href?: string;
+}
+
+interface Props {
+  briciole: ReadonlyArray<Briciola>;
+  titolo: string;
+  testo: string;
+  /** Posizione del rimando a BandoFit (utm_content); null lo omette (hub). */
+  bandofit?: BandofitCtaPosition | null;
+}
+
+const { briciole, titolo, testo, bandofit = null } = Astro.props;
+---
+<div data-regione="testata">
+  <nav aria-label="Breadcrumb" class="flex min-w-0 flex-wrap items-center gap-2 text-[13px] text-white/[.72]">
+    {briciole.map((b, i) => (
+      <Fragment>
+        {i > 0 && <span aria-hidden="true" class="text-white/40">/</span>}
+        {b.href
+          ? <a href={b.href} class="text-white/[.72] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white">{b.etichetta}</a>
+          : <span aria-current="page" class="font-medium text-white">{b.etichetta}</span>}
+      </Fragment>
+    ))}
+  </nav>
+  <div class={`mt-[22px] grid grid-cols-1 items-end gap-6 ${bandofit ? 'lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-14' : ''}`}>
+    <div>
+      <h1 class="font-heading text-[38px] font-bold leading-[.98] tracking-[-.02em] text-balance sm:text-[46px] lg:text-[58px]">{titolo}</h1>
+      <p class="mt-4 max-w-[600px] text-[17px] leading-[1.6] text-white/[.82]">{testo}</p>
+    </div>
+    {bandofit && <BandiExpertCta variante="hero" utmContent={bandofit} />}
+  </div>
+</div>

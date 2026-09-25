@@ -14,6 +14,9 @@ interface Opzioni {
   idLista: string;
 }
 
+/** Evento emesso sul documento dopo ogni aggiornamento della lista. */
+export const EVENTO_AGGIORNATA = 'lista:aggiornata';
+
 const ATTESA_TESTO = 350;
 const ATTESA_CONTROLLI = 250;
 
@@ -36,6 +39,10 @@ export function attivaLista({ idLista }: Opzioni): void {
   const contatore = document.getElementById('visible-count');
   const stato = document.getElementById('stato-risultati');
   let inCorso: AbortController | null = null;
+  // Percorso su cui il frammento ha senso: i link verso altri percorsi (la
+  // paginazione statica di una pagina filtro) restano navigazioni vere.
+  const percorsoLista = new URL(form.getAttribute('action') ?? window.location.pathname, window.location.href).pathname;
+  const stessoPercorso = (href: string): boolean => new URL(href, window.location.href).pathname === percorsoLista;
 
   const urlDaForm = (): string => {
     const qs = new URLSearchParams();
@@ -53,7 +60,7 @@ export function attivaLista({ idLista }: Opzioni): void {
     indicatore.classList.toggle('flex', attivo);
   };
 
-  async function vaiA(url: string, opzioni: { push?: boolean; focus?: boolean } = {}): Promise<void> {
+  async function vaiA(url: string, opzioni: { push?: boolean; focus?: boolean; sincronizza?: boolean } = {}): Promise<void> {
     inCorso?.abort();
     inCorso = new AbortController();
     const contenitore = document.getElementById(idLista);
@@ -91,12 +98,32 @@ export function attivaLista({ idLista }: Opzioni): void {
       else if (navVecchia) navVecchia.remove();
       else if (navNuova) nuovaLista.after(navNuova);
 
-      const totale = meta.dataset.totale ?? '';
+      // Regioni: parti della pagina che dipendono dai filtri, se il frammento le
+      // porta (oggi solo i bandi). Il focus resta sull'elemento con la stessa
+      // `data-chiave`, cosi' chi naviga da tastiera non lo perde.
+      for (const nuova of documento.querySelectorAll<HTMLElement>('[data-regione]')) {
+        const vecchia = document.querySelector<HTMLElement>(`[data-regione="${CSS.escape(nuova.dataset.regione ?? '')}"]`);
+        if (!vecchia) continue;
+        const attivo = document.activeElement as HTMLElement | null;
+        const chiave = attivo && vecchia.contains(attivo) ? attivo.dataset.chiave : undefined;
+        vecchia.replaceWith(nuova);
+        if (chiave) nuova.querySelector<HTMLElement>(`[data-chiave="${CSS.escape(chiave)}"]`)?.focus();
+      }
+      for (const origine of documento.querySelectorAll<HTMLElement>('[data-testo]')) {
+        for (const bersaglio of document.querySelectorAll<HTMLElement>(`[data-testo="${CSS.escape(origine.dataset.testo ?? '')}"]`)) {
+          bersaglio.textContent = origine.textContent;
+        }
+      }
+      if (meta.dataset.titolo) document.title = meta.dataset.titolo;
+
+      const totale = meta.dataset.totaleTesto ?? meta.dataset.totale ?? '';
       if (contatore) contatore.textContent = totale;
       if (stato) stato.textContent = `${totale} risultati, pagina ${meta.dataset.pagina} di ${meta.dataset.pagine}`;
 
       if (opzioni.push !== false) window.history.pushState(null, '', url);
+      if (opzioni.sincronizza && form) sincronizzaForm(form);
       if (opzioni.focus) document.getElementById(idLista)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      document.dispatchEvent(new CustomEvent(EVENTO_AGGIORNATA));
     } catch (errore) {
       if ((errore as { name?: string })?.name !== 'AbortError') window.location.assign(url);
     } finally {
@@ -109,8 +136,22 @@ export function attivaLista({ idLista }: Opzioni): void {
     e.preventDefault();
     void vaiA(urlDaForm());
   });
-  form.addEventListener('change', ritarda(() => void vaiA(urlDaForm()), ATTESA_CONTROLLI));
-  form.addEventListener('input', ritarda(() => void vaiA(urlDaForm()), ATTESA_TESTO));
+  // Solo i controlli con un `name` cambiano la lista: la ricerca dentro una
+  // tendina o la casella che apre un pannello no. E se l'URL non cambia non si
+  // ricarica niente, cosi' la cronologia non si riempie di voci identiche.
+  const conNome = (e: Event): boolean => {
+    const bersaglio = e.target as { name?: unknown } | null;
+    return typeof bersaglio?.name === 'string' && bersaglio.name !== '';
+  };
+  const aggiorna = (): void => {
+    const url = urlDaForm();
+    if (url === window.location.pathname + window.location.search) return;
+    void vaiA(url);
+  };
+  const aggiornaControlli = ritarda(aggiorna, ATTESA_CONTROLLI);
+  const aggiornaTesto = ritarda(aggiorna, ATTESA_TESTO);
+  form.addEventListener('change', (e) => { if (conNome(e)) aggiornaControlli(); });
+  form.addEventListener('input', (e) => { if (conNome(e)) aggiornaTesto(); });
 
   const reset = document.getElementById('reset-filters');
   reset?.addEventListener('click', (e) => {
@@ -133,13 +174,29 @@ export function attivaLista({ idLista }: Opzioni): void {
   document.addEventListener('click', (e) => {
     const evento = e as MouseEvent;
     if (evento.metaKey || evento.ctrlKey || evento.shiftKey || evento.button !== 0) return;
-    const bersaglio = (evento.target as Element | null)?.closest('#pagination a[href]') as HTMLAnchorElement | null;
-    if (!bersaglio) return;
-    evento.preventDefault();
-    void vaiA(bersaglio.getAttribute('href')!, { focus: true });
+    const elemento = evento.target as Element | null;
+    const pagina = elemento?.closest('#pagination a[href]') as HTMLAnchorElement | null;
+    if (pagina && stessoPercorso(pagina.getAttribute('href')!)) {
+      evento.preventDefault();
+      void vaiA(pagina.getAttribute('href')!, { focus: true });
+      return;
+    }
+    // Chip, tessere, vista e reset: link veri che portano un altro stato della
+    // lista. Dopo il caricamento il form si riallinea all'URL.
+    const naviga = elemento?.closest('a[data-naviga][href]') as HTMLAnchorElement | null;
+    if (naviga && stessoPercorso(naviga.getAttribute('href')!)) {
+      evento.preventDefault();
+      void vaiA(naviga.getAttribute('href')!, { sincronizza: true });
+    }
   });
 
   window.addEventListener('popstate', () => {
+    // Tornando a un URL di un altro percorso (da /bandi?… alla pagina filtro da
+    // cui si era partiti) il frammento della lista non basta: ricarica vera.
+    if (window.location.pathname !== percorsoLista) {
+      window.location.reload();
+      return;
+    }
     sincronizzaForm(form);
     void vaiA(window.location.pathname + window.location.search, { push: false });
   });
@@ -152,6 +209,10 @@ function sincronizzaForm(form: HTMLFormElement): void {
     const elemento = campo as HTMLInputElement | HTMLSelectElement;
     if (elemento.type === 'checkbox') {
       (elemento as HTMLInputElement).checked = parametri.getAll(elemento.name).includes(elemento.value);
+    } else if (elemento.type === 'radio') {
+      // Il radio ha un valore fisso: si sceglie, non si riscrive. Senza
+      // parametro vale la voce con valore vuoto («Tutti»).
+      (elemento as HTMLInputElement).checked = (parametri.get(elemento.name) ?? '') === elemento.value;
     } else {
       elemento.value = parametri.get(elemento.name) ?? '';
     }

@@ -1,0 +1,39 @@
+---
+/**
+ * Chip dei filtri attivi, ognuna un link alla lista senza quel filtro, e
+ * «Cancella tutto». Regione del frammento: il contenitore c'e' sempre, anche
+ * vuoto, cosi' lo script lo trova e lo sostituisce.
+ */
+import type { Chip } from '../../lib/bandi/elenco';
+
+interface Props {
+  chip: Chip[];
+  hrefReset: string;
+}
+
+const { chip, hrefReset } = Astro.props;
+---
+<div data-regione="chip">
+  {chip.length > 0 && (
+    <div class="mt-3 flex flex-wrap items-center gap-2">
+      {chip.map((c, i) => (
+        <a
+          href={c.href}
+          data-naviga
+          data-chiave={`chip-${i}`}
+          class="flex h-8 cursor-pointer items-center gap-1.5 rounded-2xl border border-[#b8cbe6] bg-[#e8f0fb] pl-3 pr-2 text-[13px] text-[#003d7a] no-underline hover:bg-[#dbe7f8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
+        >
+          <span class="text-[#4d6a92]">{c.chiave}</span><span class="font-medium">{c.valore}</span>
+          <svg aria-hidden="true" focusable="false" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" d="M6 18L18 6M6 6l12 12"></path></svg>
+          <span class="sr-only">(togli il filtro)</span>
+        </a>
+      ))}
+      <a
+        href={hrefReset}
+        data-naviga
+        data-chiave="cancella-tutto"
+        class="cursor-pointer p-1.5 text-[13px] text-[#4b5565] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
+      >Cancella tutto</a>
+    </div>
+  )}
+</div>

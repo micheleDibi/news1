@@ -1,150 +1,231 @@
 /**
- * Comportamento delle tendine a scelta multipla di /bandi.
+ * Filtri della lista bandi (design «Bandi Redesign»): miglioramento progressivo
+ * di ElencoBandi.astro. Senza questo script la pagina funziona lo stesso: il
+ * pannello «Tutti i filtri» si apre col solo CSS e il form fa un GET normale.
  *
- * Le opzioni NON sono piu' iniettate da JavaScript: sono checkbox reali renderizzate
- * dal server dentro il form, quindi i filtri funzionano anche senza JavaScript e
- * dall'HTML sparisce il payload che serializzava tutti i codici ATECO, i settori e i
- * programmi (piu' URL e chiave anon di Supabase).
+ * Cosa aggiunge:
+ *  - le quattro tendine rapide (Regione, Tipologia, Beneficiario, Settore): le
+ *    righe sono CLONI di quelle del pannello, senza `name`, cosi' nel form esiste
+ *    una sola casella per valore e nessuna copia da tenere allineata a mano;
+ *  - le etichette che il mock ricalcola a ogni scelta: testo e stato dei bottoni
+ *    rapidi, «N selezionati», il contatore di «Tutti i filtri», i preset attivi,
+ *    il link di reset (che conserva ordinamento e vista);
+ *  - i preset di importo e scadenza;
+ *  - «Mostra N bandi» chiude il pannello, «Cerca» porta ai risultati.
  *
- * Qui resta solo l'interazione: apri/chiudi il popover, filtra le voci con la ricerca
- * interna, aggiorna l'etichetta e il contatore, pulisci.
+ * Le etichette si calcolano con le stesse funzioni del server
+ * (src/lib/bandi/elenco.ts): la pagina appena caricata e quella aggiornata dallo
+ * script non possono dire cose diverse.
  */
-
-const CHIAVE_COLLASSO = 'bandi:filters-collapsed';
+import { contaAvanzati, etichettaRapida, PARAMETRI_PRESENTAZIONE } from '../lib/bandi/elenco';
+import type { Valori } from '../lib/liste/parametri';
+import { EVENTO_AGGIORNATA } from './lista';
 
 export function attivaFiltriBandi(): void {
-  for (const root of document.querySelectorAll<HTMLElement>('.multiselect')) attivaMultiselect(root);
-  attivaPannello();
-  aggiornaBadgeAttivi();
-  document.getElementById('filtri')?.addEventListener('change', aggiornaBadgeAttivi);
-}
-
-function attivaMultiselect(root: HTMLElement): void {
-  const trigger = root.querySelector<HTMLButtonElement>('.ms-trigger');
-  const popover = root.querySelector<HTMLElement>('.ms-popover');
-  const ricerca = root.querySelector<HTMLInputElement>('.ms-search');
-  const pulisci = root.querySelector<HTMLButtonElement>('.ms-clear');
-  if (!trigger || !popover) return;
-
-  const caselle = () => [...root.querySelectorAll<HTMLInputElement>('.ms-list input[type="checkbox"]')];
-
-  const aggiorna = () => {
-    const scelte = caselle().filter((c) => c.checked);
-    const display = root.querySelector<HTMLElement>('.ms-display');
-    const contatore = root.querySelector<HTMLElement>('.ms-count');
-    const stato = root.querySelector<HTMLElement>('.ms-status');
-    if (display) {
-      const vuoto = display.dataset.empty ?? '';
-      display.textContent = scelte.length === 0
-        ? vuoto
-        : scelte.length === 1
-          ? (scelte[0].closest('label')?.textContent?.trim() || vuoto)
-          : `${scelte.length} selezionati`;
-      display.classList.toggle('text-gray-500', scelte.length === 0);
-      display.classList.toggle('text-gray-900', scelte.length > 0);
-    }
-    if (contatore) {
-      contatore.textContent = String(scelte.length);
-      contatore.classList.toggle('hidden', scelte.length === 0);
-    }
-    if (stato) stato.textContent = `${scelte.length} selezionati`;
-  };
-
-  trigger.addEventListener('click', (e) => {
-    e.preventDefault();
-    const aperto = !popover.classList.contains('hidden');
-    for (const altro of document.querySelectorAll('.ms-popover')) altro.classList.add('hidden');
-    popover.classList.toggle('hidden', aperto);
-    if (!aperto) ricerca?.focus();
-  });
-
-  document.addEventListener('click', (e) => {
-    if (!root.contains(e.target as Node)) popover.classList.add('hidden');
-  });
-
-  ricerca?.addEventListener('input', () => {
-    const testo = ricerca.value.trim().toLowerCase();
-    for (const etichetta of root.querySelectorAll<HTMLElement>('.ms-list label')) {
-      etichetta.hidden = testo !== '' && !(etichetta.textContent ?? '').toLowerCase().includes(testo);
-    }
-  });
-
-  pulisci?.addEventListener('click', (e) => {
-    e.preventDefault();
-    for (const c of caselle()) c.checked = false;
-    aggiorna();
-    root.closest('form')?.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-
-  root.addEventListener('change', aggiorna);
-  aggiorna();
-}
-
-/** Pannello filtri collassabile, con lo stato ricordato in localStorage. */
-function attivaPannello(): void {
-  const toggle = document.getElementById('filters-toggle');
-  const corpo = document.getElementById('filters-body');
-  const chevron = document.getElementById('filters-chevron');
-  if (!toggle || !corpo) return;
-
-  // Se l'URL porta gia' dei filtri il pannello si apre comunque, altrimenti l'utente
-  // atterrerebbe su una lista filtrata senza vedere da cosa.
-  const conFiltri = [...new URLSearchParams(window.location.search).keys()].some((k) => k !== 'page');
-  // Lettura protetta come la scrittura: con lo storage bloccato un'eccezione qui
-  // fermava anche attivaLista(), cioe' tutto il miglioramento progressivo.
-  let ricordato: string | null = null;
-  try {
-    ricordato = localStorage.getItem(CHIAVE_COLLASSO);
-  } catch {
-    /* storage non disponibile: vale il default */
-  }
-  let chiuso = conFiltri ? false : ricordato === '1';
-  if (!conFiltri && ricordato === null) {
-    chiuso = window.matchMedia('(max-width: 640px)').matches;
-  }
-
-  const applica = () => {
-    corpo.classList.toggle('hidden', chiuso);
-    chevron?.classList.toggle('rotate-180', !chiuso);
-    toggle.setAttribute('aria-expanded', String(!chiuso));
-  };
-  applica();
-
-  const commuta = () => {
-    chiuso = !chiuso;
-    try {
-      localStorage.setItem(CHIAVE_COLLASSO, chiuso ? '1' : '0');
-    } catch {
-      /* modalita' privata: si ignora */
-    }
-    applica();
-  };
-
-  toggle.addEventListener('click', (e) => {
-    if ((e.target as HTMLElement).closest('[data-no-toggle="true"]')) return;
-    commuta();
-  });
-  // Il toggle e' un div role=button: Invio e Spazio vanno gestiti a mano, come
-  // farebbe un <button>. Spazio senza preventDefault farebbe scorrere la pagina.
-  toggle.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    if ((e.target as HTMLElement).closest('[data-no-toggle="true"]')) return;
-    e.preventDefault();
-    commuta();
-  });
-}
-
-function aggiornaBadgeAttivi(): void {
   const form = document.getElementById('filtri') as HTMLFormElement | null;
   if (!form) return;
-  let attivi = 0;
-  for (const [, valore] of new FormData(form) as unknown as Iterable<[string, string]>) {
-    if (valore !== '') attivi++;
+  const modulo: HTMLFormElement = form;
+  const velo = modulo.querySelector<HTMLElement>('[data-velo]');
+  const pannello = document.getElementById('pannello-filtri') as HTMLInputElement | null;
+
+  const valoriForm = (): Valori => {
+    const valori: Valori = {};
+    for (const [nome, valore] of new FormData(modulo)) {
+      if (typeof valore === 'string' && valore !== '') (valori[nome] ??= []).push(valore);
+    }
+    return valori;
+  };
+
+  const gruppo = (chiave: string): HTMLElement | null => modulo.querySelector<HTMLElement>(`[data-gruppo="${chiave}"]`);
+  const caselleGruppo = (chiave: string): HTMLInputElement[] =>
+    [...(gruppo(chiave)?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]') ?? [])];
+
+  // -------------------------------------------------------------------------
+  // Etichette calcolate
+  // -------------------------------------------------------------------------
+
+  function aggiornaEtichette(): void {
+    const valori = valoriForm();
+
+    for (const radice of modulo.querySelectorAll<HTMLElement>('[data-rapido]')) {
+      const chiave = radice.dataset.rapido ?? '';
+      const scelte = caselleGruppo(chiave)
+        .filter((c) => c.checked)
+        .map((c) => c.closest('label')?.querySelector('.riga-testo')?.textContent?.trim() ?? '');
+      const testo = radice.querySelector<HTMLElement>('[data-rapido-testo]');
+      if (testo) testo.textContent = etichettaRapida(gruppo(chiave)?.dataset.etichetta ?? chiave, scelte);
+      radice.querySelector<HTMLElement>('[data-rapido-apri]')?.toggleAttribute('data-attivo', scelte.length > 0);
+    }
+
+    for (const etichetta of modulo.querySelectorAll<HTMLElement>('[data-selezionati]')) {
+      const n = caselleGruppo(etichetta.dataset.selezionati ?? '').filter((c) => c.checked).length;
+      etichetta.textContent = n ? `${n} selezionati` : '';
+    }
+
+    const contatore = modulo.querySelector<HTMLElement>('[data-contatore-filtri]');
+    if (contatore) {
+      const n = contaAvanzati(valori);
+      contatore.textContent = String(n);
+      contatore.classList.toggle('hidden', n === 0);
+      contatore.classList.toggle('inline-flex', n > 0);
+    }
+
+    for (const bottone of modulo.querySelectorAll<HTMLButtonElement>('[data-preset]')) {
+      const [nomeDa, nomeA] = bottone.dataset.preset === 'importo' ? ['imin', 'imax'] : ['scad_da', 'scad_a'];
+      const attivo = (valori[nomeDa]?.[0] ?? '') === (bottone.dataset.da ?? '')
+        && (valori[nomeA]?.[0] ?? '') === (bottone.dataset.a ?? '');
+      bottone.setAttribute('aria-pressed', attivo ? 'true' : 'false');
+    }
+
+    // Il reset toglie i filtri e tiene ordinamento e vista, come nel mock.
+    const tenuti = new URLSearchParams();
+    for (const nome of PARAMETRI_PRESENTAZIONE) for (const v of valori[nome] ?? []) tenuti.append(nome, v);
+    const coda = tenuti.toString();
+    for (const reset of modulo.querySelectorAll<HTMLAnchorElement>('[data-reset]')) {
+      reset.href = `${modulo.getAttribute('action') ?? '/bandi'}${coda ? `?${coda}` : ''}`;
+    }
   }
-  const badge = document.getElementById('active-filters-badge');
-  const conteggio = document.getElementById('active-count');
-  const plurale = document.getElementById('active-pluralize');
-  if (conteggio) conteggio.textContent = String(attivi);
-  if (plurale) plurale.textContent = attivi === 1 ? 'o' : 'i';
-  badge?.classList.toggle('hidden', attivi === 0);
+
+  // -------------------------------------------------------------------------
+  // Tendine rapide
+  // -------------------------------------------------------------------------
+
+  let aperta: HTMLElement | null = null;
+
+  /** Le righe della tendina: cloni delle righe del pannello, senza `name`. */
+  function riempiTendina(radice: HTMLElement): void {
+    const elenco = radice.querySelector<HTMLElement>('[data-tendina-elenco]');
+    const origine = gruppo(radice.dataset.rapido ?? '');
+    if (!elenco || !origine) return;
+    elenco.replaceChildren();
+    for (const riga of origine.querySelectorAll<HTMLLabelElement>('label.riga-pannello')) {
+      const casellaOrigine = riga.querySelector<HTMLInputElement>('input');
+      if (!casellaOrigine) continue;
+      const copia = riga.cloneNode(true) as HTMLLabelElement;
+      copia.className = 'riga-tendina';
+      copia.hidden = false;
+      const casella = copia.querySelector<HTMLInputElement>('input');
+      if (!casella) continue;
+      casella.removeAttribute('name');
+      casella.checked = casellaOrigine.checked;
+      casella.addEventListener('change', () => {
+        casellaOrigine.checked = casella.checked;
+        casellaOrigine.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      elenco.appendChild(copia);
+    }
+    filtraTendina(radice);
+  }
+
+  function filtraTendina(radice: HTMLElement): void {
+    const cerca = radice.querySelector<HTMLInputElement>('[data-tendina-cerca]');
+    const testo = (cerca?.value ?? '').trim().toLowerCase();
+    for (const riga of radice.querySelectorAll<HTMLElement>('.riga-tendina')) {
+      const etichetta = riga.querySelector('.riga-testo')?.textContent?.toLowerCase() ?? '';
+      riga.hidden = testo !== '' && !etichetta.includes(testo);
+    }
+  }
+
+  /** Riallinea le caselle clonate alle originali (dopo Pulisci, reset, Indietro). */
+  function riallineaTendina(): void {
+    if (!aperta) return;
+    const originali = caselleGruppo(aperta.dataset.rapido ?? '');
+    aperta.querySelectorAll<HTMLInputElement>('.riga-tendina input').forEach((c, i) => {
+      if (originali[i]) c.checked = originali[i].checked;
+    });
+  }
+
+  function chiudiTendina(): void {
+    if (!aperta) return;
+    const tendina = aperta.querySelector<HTMLElement>('[data-tendina]');
+    if (tendina) tendina.hidden = true;
+    aperta.querySelector('[data-rapido-apri]')?.setAttribute('aria-expanded', 'false');
+    aperta = null;
+    if (velo) velo.hidden = true;
+  }
+
+  function apriTendina(radice: HTMLElement): void {
+    chiudiTendina();
+    // Tendina e pannello non stanno aperti insieme (come nel mock).
+    if (pannello?.checked) pannello.checked = false;
+    const tendina = radice.querySelector<HTMLElement>('[data-tendina]');
+    if (!tendina) return;
+    const cerca = radice.querySelector<HTMLInputElement>('[data-tendina-cerca]');
+    if (cerca) cerca.value = '';
+    riempiTendina(radice);
+    tendina.hidden = false;
+    radice.querySelector('[data-rapido-apri]')?.setAttribute('aria-expanded', 'true');
+    if (velo) velo.hidden = false;
+    aperta = radice;
+    cerca?.focus();
+  }
+
+  for (const radice of modulo.querySelectorAll<HTMLElement>('[data-rapido]')) {
+    radice.querySelector('[data-rapido-apri]')?.addEventListener('click', () => {
+      if (aperta === radice) chiudiTendina();
+      else apriTendina(radice);
+    });
+    radice.querySelector('[data-tendina-cerca]')?.addEventListener('input', () => filtraTendina(radice));
+    radice.querySelector('[data-tendina-fatto]')?.addEventListener('click', () => {
+      chiudiTendina();
+      radice.querySelector<HTMLElement>('[data-rapido-apri]')?.focus();
+    });
+    radice.querySelector('[data-tendina-pulisci]')?.addEventListener('click', () => {
+      const scelte = caselleGruppo(radice.dataset.rapido ?? '').filter((c) => c.checked);
+      for (const c of scelte) c.checked = false;
+      scelte.at(-1)?.dispatchEvent(new Event('change', { bubbles: true }));
+      riallineaTendina();
+    });
+  }
+
+  // Il velo trasparente prende il clic fuori dalla tendina, come l'overlay del
+  // mock: il clic non arriva alla card che sta sotto.
+  velo?.addEventListener('click', chiudiTendina);
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !aperta) return;
+    const bottone = aperta.querySelector<HTMLElement>('[data-rapido-apri]');
+    chiudiTendina();
+    bottone?.focus();
+  });
+  pannello?.addEventListener('change', () => {
+    if (pannello.checked) chiudiTendina();
+  });
+
+  // -------------------------------------------------------------------------
+  // Preset, «Mostra», «Cerca»
+  // -------------------------------------------------------------------------
+
+  for (const bottone of modulo.querySelectorAll<HTMLButtonElement>('[data-preset]')) {
+    bottone.addEventListener('click', () => {
+      const [nomeDa, nomeA] = bottone.dataset.preset === 'importo' ? ['imin', 'imax'] : ['scad_da', 'scad_a'];
+      const da = modulo.elements.namedItem(nomeDa) as HTMLInputElement | null;
+      const a = modulo.elements.namedItem(nomeA) as HTMLInputElement | null;
+      if (!da || !a) return;
+      da.value = bottone.dataset.da ?? '';
+      a.value = bottone.dataset.a ?? '';
+      a.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  const risultati = (): void => document.getElementById('risultati')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  modulo.addEventListener('submit', (e) => {
+    const invio = (e as SubmitEvent).submitter;
+    if (invio?.hasAttribute('data-mostra')) {
+      if (pannello) pannello.checked = false;
+      risultati();
+    } else if (invio?.hasAttribute('data-cerca-invio') || document.activeElement?.id === 'cerca-bandi') {
+      risultati();
+    }
+  });
+
+  modulo.addEventListener('change', () => {
+    aggiornaEtichette();
+    riallineaTendina();
+  });
+  modulo.addEventListener('input', aggiornaEtichette);
+  document.addEventListener(EVENTO_AGGIORNATA, () => {
+    aggiornaEtichette();
+    riallineaTendina();
+  });
+  aggiornaEtichette();
 }

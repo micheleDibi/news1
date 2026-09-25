@@ -453,3 +453,16 @@ export function titoloLista(pagina: number, pagine: number): string {
     ? `Bandi e finanziamenti pubblici: pagina ${pagina} di ${pagine} - EduNews24`
     : 'Bandi e finanziamenti pubblici - EduNews24';
 }
+
+/** Testata della lista /bandi: la stessa nella pagina e nel frammento. */
+export const TESTATA_LISTA = {
+  briciole: [{ etichetta: 'Home', href: '/' }, { etichetta: 'Bandi' }],
+  titolo: 'Bandi e finanziamenti pubblici',
+  testo: 'Bandi europei (FESR, FSE+, Interreg), nazionali e regionali, aggiornati ogni giorno.',
+  bandofit: 'lista-hero',
+} as const satisfies {
+  briciole: ReadonlyArray<{ etichetta: string; href?: string }>;
+  titolo: string;
+  testo: string;
+  bandofit: string;
+};

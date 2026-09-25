@@ -1,0 +1,320 @@
+---
+/**
+ * Lista dei bandi nel design «Bandi Redesign»: testata scura con ricerca e
+ * tessere, barra sticky dei filtri (stato, quattro filtri rapidi, «In scadenza»,
+ * «Tutti i filtri»), pannello completo e risultati. La usano /bandi e le pagine
+ * filtro (/bandi/regione/…), che le passano la voce gia' scelta.
+ *
+ * Tutto sta in un solo <form method="get" action="/bandi">: senza JavaScript e'
+ * un GET normale e il server rende la lista filtrata; e il form contiene anche i
+ * risultati, cosi' la barra resta sticky fino in fondo.
+ *
+ * Il pannello si apre con una checkbox senza `name` e `group-has-[…]`: niente
+ * JavaScript, niente flash, e senza JS funziona. Le tendine rapide invece sono
+ * solo JavaScript (src/scripts/bandi-filtri.ts): clonano le righe del pannello,
+ * che restano le uniche caselle con un `name`.
+ *
+ * Le parti che cambiano con i filtri sono «regioni» (`data-regione`,
+ * `data-testo`): il frammento /api/lista/bandi le restituisce e lista.ts le
+ * sostituisce. Controlli con lo stato dell'utente (ricerca, caselle, select)
+ * restano fuori dalle regioni.
+ */
+import ChipBandi from './ChipBandi.astro';
+import PaginazioneBandi from './PaginazioneBandi.astro';
+import TessereBandi from './TessereBandi.astro';
+import TestataBandi from './TestataBandi.astro';
+import VistaBandi from './VistaBandi.astro';
+import ListaBandi from '../liste/ListaBandi.astro';
+import type { BandofitCtaPosition } from '../../lib/bandofit';
+import {
+  chipFiltri, conValori, contaAvanzati, contaFiltriContenuto, etichettaRapida, GRUPPI_RAPIDI, numeroGrande,
+  numeroOpzione, opzioneSelezionata, presetImporto, presetScadenza, segmentiStato, tessere, valoriReset,
+  type ConteggiStato, type GruppoFiltro,
+} from '../../lib/bandi/elenco';
+import { VOCI_ORDINA } from '../../lib/bandi/ordinamento';
+import { DEF_BANDI } from '../../lib/liste/bandi';
+import { urlLista, type Valori } from '../../lib/liste/parametri';
+import type { Bando } from '../../lib/supabase-bandi';
+
+interface Props {
+  valori: Valori;
+  righe: Bando[];
+  totale: number;
+  errore: boolean;
+  pagina: number;
+  pagine: number;
+  /** URL della pagina 1 per la paginazione: la lista con i filtri, o la pagina filtro. */
+  basePaginazione: string;
+  gruppi: GruppoFiltro[];
+  conteggi: ConteggiStato;
+  testata: {
+    briciole: ReadonlyArray<{ etichetta: string; href?: string }>;
+    titolo: string;
+    testo: string;
+    bandofit: BandofitCtaPosition;
+  };
+  /** Data civile di Roma: preset della scadenza. */
+  oggi: string;
+}
+
+const { valori, righe, totale, errore, pagina, pagine, basePaginazione, gruppi, conteggi, testata, oggi } = Astro.props;
+
+const url = (v: Valori): string => urlLista(DEF_BANDI, v, 1);
+const vista: 'elenco' | 'griglia' = valori.vista?.[0] === 'griglia' ? 'griglia' : 'elenco';
+const filtrata = contaFiltriContenuto(valori) > 0;
+const hrefReset = url(valoriReset(valori));
+const avanzati = contaAvanzati(valori);
+const segmenti = segmentiStato(valori, conteggi);
+const inScadenzaAttivo = valori.in_scadenza?.[0] === 'si';
+const ordina = valori.ordina?.[0] ?? '';
+const chip = chipFiltri(valori, gruppi, url);
+
+const perChiave = new Map(gruppi.map((g) => [g.chiave, g]));
+const rapidi = GRUPPI_RAPIDI.map((chiave) => {
+  const g = perChiave.get(chiave)!;
+  const scelte = g.opzioni.filter((o) => opzioneSelezionata(o, valori[chiave] ?? [])).map((o) => o.etichetta);
+  return { chiave, etichetta: g.etichetta, testo: etichettaRapida(g.etichetta, scelte), attivo: scelte.length > 0 };
+});
+
+const campo = 'flex h-11 flex-1 items-center gap-1.5 rounded-[10px] border border-[#c9d1dc] px-3';
+const preset = 'h-8 cursor-pointer rounded-2xl border border-[#c9d1dc] bg-white px-3 text-[12.5px] text-[#1f2937] aria-pressed:border-[#0a2244] aria-pressed:bg-[#0a2244] aria-pressed:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]';
+const legenda = 'mb-2 p-0 font-heading text-[16px] font-semibold text-[#0a2244]';
+---
+<form
+  id="filtri"
+  method="get"
+  action="/bandi"
+  data-frammento="/api/lista/bandi"
+  data-lista="bandi-list"
+  data-oggi={oggi}
+  class="group/filtri"
+>
+  {/* ============================ Testata ============================ */}
+  <section class="relative bg-[#0a2244] text-white">
+    <div class="mx-auto max-w-[1200px] px-4 pb-10 pt-9 sm:px-8">
+      <TestataBandi {...testata} />
+
+      <div class="mt-[30px] flex items-center gap-3 rounded-[14px] bg-white p-1.5 pl-5 shadow-[0_12px_40px_-16px_rgba(0,0,0,.5)] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-[#9cc3f0]">
+        <svg aria-hidden="true" focusable="false" width="22" height="22" fill="none" stroke="#5b6576" viewBox="0 0 24 24" class="flex-none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+        <input
+          type="search"
+          id="cerca-bandi"
+          name="q"
+          value={valori.q?.[0] ?? ''}
+          placeholder="Cerca per titolo, ente o parola chiave"
+          aria-label="Cerca un bando"
+          class="h-[52px] min-w-0 flex-1 border-0 bg-transparent px-0.5 py-px text-[17px] text-[#0f172a] outline-none"
+        >
+        <button type="submit" data-cerca-invio class="h-[52px] cursor-pointer rounded-[10px] border-0 bg-[#004e9c] px-5 text-[15px] font-semibold text-white hover:bg-[#003d7a] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c] sm:px-7">Cerca</button>
+      </div>
+
+      <TessereBandi tessere={tessere(valori, conteggi, url)} />
+    </div>
+  </section>
+
+  {/* ========================== Barra sticky ========================== */}
+  <div class="sticky top-0 z-20 border-b border-[#e3e7ee] bg-white/[.97] shadow-[0_1px_0_rgba(10,34,68,.02)]">
+    <div data-velo hidden class="fixed inset-0 z-[1]"></div>
+    <div class="relative z-[2] mx-auto flex max-w-[1200px] flex-wrap items-center gap-x-2.5 gap-y-2 px-4 py-3 sm:px-8">
+      <div role="radiogroup" aria-label="Stato del bando" class="flex max-w-full flex-none gap-0.5 overflow-x-auto rounded-[10px] bg-[#eef1f5] p-[3px]">
+        {segmenti.map((s, i) => (
+          <label class="group/seg relative flex h-9 flex-none cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[13.5px] font-medium text-[#4b5565] has-[:checked]:bg-white has-[:checked]:text-[#0a2244] has-[:checked]:shadow-[0_1px_3px_rgba(10,34,68,.15)] has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-[#004e9c]">
+            <input type="radio" name="stato" value={s.valore} checked={s.attivo} class="sr-only">
+            {s.etichetta}<span data-testo={`segmento-${i}`} class="text-[12px] tabular-nums text-[#7b8494] group-has-[:checked]/seg:text-[#004e9c]">{s.conteggio}</span>
+          </label>
+        ))}
+      </div>
+
+      {rapidi.map((r) => (
+        <div class="relative flex-none" data-rapido={r.chiave}>
+          <button
+            type="button"
+            data-rapido-apri
+            aria-expanded="false"
+            aria-controls={`tendina-${r.chiave}`}
+            data-attivo={r.attivo ? '' : undefined}
+            class="flex h-10 cursor-pointer items-center gap-2 rounded-[10px] border border-[#d5dbe4] bg-white pl-3.5 pr-3 text-[13.5px] font-medium text-[#1f2937] hover:border-[#7b8aa3] data-[attivo]:border-[#004e9c] data-[attivo]:bg-[#e8f0fb] data-[attivo]:text-[#003d7a] data-[attivo]:hover:border-[#7b8aa3] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
+          >
+            <span data-rapido-testo class="max-w-[200px] overflow-hidden text-ellipsis whitespace-nowrap">{r.testo}</span>
+            <svg aria-hidden="true" focusable="false" width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+          </button>
+          <div id={`tendina-${r.chiave}`} data-tendina hidden class="absolute left-0 top-12 w-80 max-w-[calc(100vw-32px)] overflow-hidden rounded-[14px] border border-[#d5dbe4] bg-white shadow-[0_20px_48px_-16px_rgba(10,34,68,.35)]">
+            <div class="border-b border-[#eef1f5] p-2.5">
+              <input type="text" data-tendina-cerca aria-label={`Cerca in ${r.etichetta}`} placeholder={`Cerca ${r.etichetta.toLowerCase()}…`} class="h-10 w-full rounded-lg border border-[#d5dbe4] px-3 text-[14px] outline-none focus-visible:border-[#004e9c]">
+            </div>
+            <div data-tendina-elenco class="max-h-[280px] overflow-y-auto py-1.5"></div>
+            <div class="flex items-center justify-between border-t border-[#eef1f5] px-3 py-2.5">
+              <button type="button" data-tendina-pulisci class="cursor-pointer border-0 bg-transparent p-1.5 text-[13.5px] text-[#4b5565] underline underline-offset-2">Pulisci</button>
+              <button type="button" data-tendina-fatto class="h-9 cursor-pointer rounded-lg border-0 bg-[#004e9c] px-4 text-[13.5px] font-semibold text-white">Fatto</button>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      <label class="relative flex h-10 flex-none cursor-pointer items-center gap-2 whitespace-nowrap rounded-[10px] border border-[#d5dbe4] bg-white px-3.5 text-[13.5px] font-medium text-[#1f2937] has-[:checked]:border-[#e07b00] has-[:checked]:bg-[#fff1dc] has-[:checked]:text-[#7a3d00] has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-[#004e9c]">
+        <input type="checkbox" id="in-scadenza" name="in_scadenza" value="si" checked={inScadenzaAttivo} class="sr-only">
+        <span aria-hidden="true" class="h-2 w-2 rounded-full bg-[#e07b00]"></span>In scadenza
+      </label>
+
+      <input type="checkbox" id="pannello-filtri" aria-controls="pannello-bandi" class="sr-only">
+      <label
+        for="pannello-filtri"
+        class="ml-auto flex h-10 flex-none cursor-pointer items-center gap-2 whitespace-nowrap rounded-[10px] border border-[#0a2244] bg-white px-4 text-[13.5px] font-semibold text-[#0a2244] group-has-[#pannello-filtri:checked]/filtri:bg-[#0a2244] group-has-[#pannello-filtri:checked]/filtri:text-white group-has-[#pannello-filtri:focus-visible]/filtri:outline group-has-[#pannello-filtri:focus-visible]/filtri:outline-2 group-has-[#pannello-filtri:focus-visible]/filtri:outline-offset-2 group-has-[#pannello-filtri:focus-visible]/filtri:outline-[#004e9c]"
+      >
+        <svg aria-hidden="true" focusable="false" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M4 6h16M7 12h10M10 18h4"></path></svg>
+        Tutti i filtri
+        <span data-contatore-filtri class={`${avanzati === 0 ? 'hidden' : 'inline-flex'} h-5 min-w-5 items-center justify-center rounded-[10px] bg-[#e07b00] px-1.5 text-[11.5px] text-white`}>{avanzati}</span>
+      </label>
+    </div>
+
+    {/* ======================= Pannello completo ======================= */}
+    <div id="pannello-bandi" class="relative z-[2] hidden max-h-[72vh] overflow-y-auto border-t border-[#e3e7ee] bg-white group-has-[#pannello-filtri:checked]/filtri:block">
+      <div class="mx-auto max-w-[1200px] px-4 pt-6 sm:px-8">
+        <div class="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2 lg:grid-cols-4">
+          {gruppi.map((g) => {
+            const scelte = g.opzioni.filter((o) => opzioneSelezionata(o, valori[g.chiave] ?? [])).length;
+            return (
+              <fieldset class="m-0 min-w-0 border-0 p-0">
+                <legend class={`${legenda} flex items-baseline gap-2`}>{g.etichetta}<span data-selezionati={g.chiave} class="font-sans text-[12px] font-medium text-[#004e9c]">{scelte ? `${scelte} selezionati` : ''}</span></legend>
+                <div data-gruppo={g.chiave} data-etichetta={g.etichetta} class="max-h-[196px] overflow-y-auto rounded-xl border border-[#e3e7ee] py-1">
+                  {g.opzioni.map((o) => (
+                    <label class="riga-pannello">
+                      <input type="checkbox" name={g.chiave} value={o.valore} checked={opzioneSelezionata(o, valori[g.chiave] ?? [])} class="sr-only">
+                      <span class="riga-casella" aria-hidden="true"></span>
+                      <span class="riga-testo">{o.etichetta}</span>
+                      {o.conteggio !== null && <span class="riga-numero">{numeroOpzione(o.conteggio)}</span>}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            );
+          })}
+          <fieldset class="m-0 min-w-0 border-0 p-0">
+            <legend class={legenda}>Opzioni</legend>
+            <label for="in-scadenza" class="flex cursor-pointer items-center justify-between gap-2.5 rounded-xl border border-[#e3e7ee] px-3.5 py-3">
+              <span class="text-[13.5px] leading-[1.35] text-[#1f2937]">Solo bandi in scadenza<span class="block text-[12px] text-[#6b7383]">aperti, entro 15 giorni</span></span>
+              <span aria-hidden="true" class="relative h-6 w-10 flex-none rounded-xl bg-[#c9d1dc] group-has-[#in-scadenza:checked]/filtri:bg-[#004e9c]"><span class="absolute left-[3px] top-[3px] h-[18px] w-[18px] rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,.25)] group-has-[#in-scadenza:checked]/filtri:left-[19px]"></span></span>
+            </label>
+          </fieldset>
+        </div>
+
+        <div class="mt-6 grid grid-cols-1 gap-6 border-t border-[#eef1f5] pt-[22px] md:grid-cols-2">
+          <fieldset class="m-0 min-w-0 border-0 p-0">
+            <legend class={legenda}>Importo (dotazione)</legend>
+            <div class="flex items-center gap-2.5">
+              <label class={campo}><span class="text-[12px] text-[#6b7383]">Da</span><input type="number" name="imin" value={valori.imin?.[0] ?? ''} min="0" step="1000" placeholder="0" aria-label="Importo minimo in euro" class="min-w-0 flex-1 border-0 text-[15px] tabular-nums outline-none"><span class="text-[13px] text-[#6b7383]">€</span></label>
+              <span aria-hidden="true" class="text-[#9aa3b2]">–</span>
+              <label class={campo}><span class="text-[12px] text-[#6b7383]">A</span><input type="number" name="imax" value={valori.imax?.[0] ?? ''} min="0" step="1000" placeholder="Nessun limite" aria-label="Importo massimo in euro" class="min-w-0 flex-1 border-0 text-[15px] tabular-nums outline-none"><span class="text-[13px] text-[#6b7383]">€</span></label>
+            </div>
+            <div class="mt-2.5 flex flex-wrap gap-2">
+              {presetImporto(valori).map((p) => (
+                <button type="button" data-preset="importo" data-da={p.da} data-a={p.a} aria-pressed={p.attivo ? 'true' : 'false'} class={preset}>{p.etichetta}</button>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset class="m-0 min-w-0 border-0 p-0">
+            <legend class={legenda}>Scadenza</legend>
+            <div class="flex items-center gap-2.5">
+              <label class={campo}><span class="text-[12px] text-[#6b7383]">Dal</span><input type="date" name="scad_da" value={valori.scad_da?.[0] ?? ''} aria-label="Scadenza dal" class="min-w-0 flex-1 border-0 text-[14px] text-[#1f2937] outline-none"></label>
+              <span aria-hidden="true" class="text-[#9aa3b2]">–</span>
+              <label class={campo}><span class="text-[12px] text-[#6b7383]">Al</span><input type="date" name="scad_a" value={valori.scad_a?.[0] ?? ''} aria-label="Scadenza al" class="min-w-0 flex-1 border-0 text-[14px] text-[#1f2937] outline-none"></label>
+            </div>
+            <div class="mt-2.5 flex flex-wrap gap-2">
+              {presetScadenza(valori, oggi).map((p) => (
+                <button type="button" data-preset="scadenza" data-da={p.da} data-a={p.a} aria-pressed={p.attivo ? 'true' : 'false'} class={preset}>{p.etichetta}</button>
+              ))}
+            </div>
+          </fieldset>
+        </div>
+      </div>
+      <div class="sticky bottom-0 mt-6 border-t border-[#e3e7ee] bg-white">
+        <div class="mx-auto flex max-w-[1200px] items-center justify-between gap-4 px-4 py-3.5 sm:px-8">
+          <a href={hrefReset} data-naviga data-reset data-chiave="reset-pannello" class="cursor-pointer text-[14px] text-[#4b5565] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Resetta tutti i filtri</a>
+          <button type="submit" data-mostra class="h-[46px] cursor-pointer rounded-[10px] border-0 bg-[#004e9c] px-[26px] text-[15px] font-semibold text-white hover:bg-[#003d7a] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Mostra <span data-testo="mostra">{numeroGrande(totale)}</span> bandi</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {/* ============================ Risultati ============================ */}
+  <section id="risultati" class="scroll-mt-[76px] bg-[#f4f6f9] pb-16 pt-6">
+    <div class="mx-auto max-w-[1200px] px-4 sm:px-8">
+      <div class="flex min-h-[44px] flex-wrap items-center gap-4">
+        <p class="flex-none whitespace-nowrap text-[15px] text-[#3d4657]"><strong id="visible-count" class="font-heading text-[22px] font-bold tabular-nums text-[#0a2244]">{numeroGrande(totale)}</strong> bandi trovati</p>
+        <div class="hidden flex-1 sm:block"></div>
+        <label class="flex items-center gap-2 whitespace-nowrap text-[13.5px] text-[#4b5565]">Ordina per
+          <select name="ordina" class="h-[38px] cursor-pointer rounded-[9px] border border-[#c9d1dc] bg-white px-2.5 text-[13.5px] text-[#1f2937]">
+            {VOCI_ORDINA.map((v) => <option value={v.valore} selected={v.valore === ordina}>{v.etichetta}</option>)}
+          </select>
+        </label>
+        <VistaBandi vista={vista} hrefElenco={url(conValori(valori, { vista: [] }))} hrefGriglia={url(conValori(valori, { vista: ['griglia'] }))} />
+      </div>
+      <p id="stato-risultati" class="sr-only" aria-live="polite"></p>
+
+      <ChipBandi chip={chip} hrefReset={hrefReset} />
+
+      <ListaBandi righe={righe} filtrata={filtrata} vista={vista} errore={errore} hrefReset={hrefReset} />
+
+      <PaginazioneBandi base={basePaginazione} pagina={pagina} pagine={pagine} />
+
+      <slot />
+    </div>
+  </section>
+
+  <input type="hidden" name="vista" value={vista === 'griglia' ? 'griglia' : ''}>
+</form>
+
+{/* Le righe-opzione sono circa 300: ripetere le utility su ognuna costerebbe
+    decine di KB per pagina. Stile identico al mock, scritto una volta.
+    is:global evita che Astro aggiunga un attributo di scope a ogni elemento.
+    `riga-pannello` e' la riga del pannello, `riga-tendina` il suo clone nelle
+    tendine rapide: il mock le disegna con misure diverse. */}
+<style is:global>
+  .riga-pannello,
+  .riga-tendina {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    color: #1f2937;
+  }
+  .riga-pannello { padding: 7px 12px; font-size: 13.5px; }
+  .riga-tendina { padding: 9px 14px; font-size: 14px; }
+  .riga-pannello:hover,
+  .riga-tendina:hover { background: #f5f7fa; }
+  .riga-pannello[hidden],
+  .riga-tendina[hidden] { display: none; }
+  .riga-casella {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px solid #9aa3b2;
+    background: #fff;
+  }
+  .riga-pannello .riga-casella { width: 16px; height: 16px; border-radius: 4px; }
+  .riga-tendina .riga-casella { width: 18px; height: 18px; border-radius: 5px; }
+  /* La spunta del mock (M5 13l4 4L19 7, tratto bianco da 3) come sfondo: un
+     SVG in linea per ognuna delle ~300 righe pesava ~55 KB. */
+  .riga-pannello input:checked + .riga-casella,
+  .riga-tendina input:checked + .riga-casella {
+    border-color: #004e9c;
+    background: #004e9c url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='%23fff' stroke-width='3' viewBox='0 0 24 24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M5 13l4 4L19 7'/%3E%3C/svg%3E") center / 11px 11px no-repeat;
+  }
+  .riga-tendina input:checked + .riga-casella { background-size: 12px 12px; }
+  .riga-pannello input:focus-visible + .riga-casella,
+  .riga-tendina input:focus-visible + .riga-casella { outline: 2px solid #004e9c; outline-offset: 2px; }
+  .riga-testo { flex: 1; }
+  .riga-pannello .riga-testo { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .riga-numero { color: #6b7383; font-variant-numeric: tabular-nums; }
+  .riga-pannello .riga-numero { font-size: 12px; }
+  .riga-tendina .riga-numero { font-size: 12.5px; }
+</style>
+
+<script>
+  import { attivaLista } from '../../scripts/lista';
+  import { attivaFiltriBandi } from '../../scripts/bandi-filtri';
+  attivaFiltriBandi();
+  attivaLista({ idLista: 'bandi-list' });
+</script>

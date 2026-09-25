@@ -1,26 +1,28 @@
 ---
 /**
- * Elenco dei bandi di finanziamento.
+ * Elenco dei bandi di finanziamento (design «Bandi Redesign»).
  *
- * Lo stato della lista (tredici filtri e pagina) vive nell'URL ed e' reso dal server:
- * senza JavaScript la pagina funziona lo stesso e un crawler raggiunge tutti i bandi
- * seguendo i link di paginazione. Lo script client serve solo a evitare il
- * ricaricamento e chiede al server lo stesso frammento HTML.
+ * Lo stato della lista (filtri, ordinamento, vista e pagina) vive nell'URL ed e'
+ * reso dal server: senza JavaScript la pagina funziona lo stesso e un crawler
+ * raggiunge tutti i bandi seguendo i link di paginazione. Lo script client serve
+ * solo a evitare il ricaricamento e chiede al server lo stesso frammento HTML.
+ * Il markup della lista sta in src/components/bandi/ElencoBandi.astro, condiviso
+ * con le pagine filtro.
  */
 export const prerender = false;
 
 import Layout from '../layouts/Layout.astro';
-import ListaBandi from '../components/liste/ListaBandi.astro';
-import PaginazioneLinks from '../components/filtro/PaginazioneLinks.astro';
+import ElencoBandi from '../components/bandi/ElencoBandi.astro';
 import Sorelle from '../components/filtro/Sorelle.astro';
-import BandiExpertCta from '../components/BandiExpertCta.astro';
+import IntroSezione from '../components/liste/IntroSezione.astro';
 import { vociPubblicate, hrefFiltro, hrefHub, hubDisponibili } from '../lib/pagine-filtro';
-import { DEF_BANDI, caricaBandi, opzioniFiltroBandi, dimensioneUnicaBandi, MULTISELECT } from '../lib/liste/bandi';
-import { leggiFiltri, filtriAttivi, normalizzazioneRichiesta, seoLista, urlLista } from '../lib/liste/parametri';
+import { DEF_BANDI, caricaBandi, conteggiStatoBandi, corpusBandi, dimensioneUnicaBandi, gruppiFiltroBandi } from '../lib/liste/bandi';
+import { leggiFiltri, normalizzazioneRichiesta, seoLista, urlLista } from '../lib/liste/parametri';
 import { leggiPagina, numeroPagine, rispostaNonTrovata } from '../lib/paginazione';
 import { generateBreadcrumbStructuredData, generateItemListStructuredData } from '../lib/seo';
-import IntroSezione from '../components/liste/IntroSezione.astro';
+import { contaFiltriContenuto, normalizzaPresentazione, TESTATA_LISTA, titoloLista } from '../lib/bandi/elenco';
 import { INTRO_BANDI } from '../lib/liste/testi';
+import { todayRomeISO } from '../lib/stato-bando';
 import type { Bando } from '../lib/supabase-bandi';
 
 const DEF = DEF_BANDI;
@@ -32,6 +34,19 @@ const normalizzato = normalizzazioneRichiesta(Astro.url, DEF, valori, pagina);
 if (normalizzato) return Astro.redirect(normalizzato, 301);
 if (pag.tipo === 'redirect') return Astro.redirect(pag.href, 301);
 
+// `ordina`, `vista` e `in_scadenza` hanno pochi valori ammessi: un valore diverso
+// (anche il predefinito scritto per esteso, `ordina=scadenza`) va all'URL pulito.
+// Gli altri parametri, utm compresi, restano come sono arrivati.
+const presentazione = normalizzaPresentazione(valori);
+if (presentazione.cambiato) {
+  const pulito = new URL(Astro.url);
+  for (const nome of ['in_scadenza', 'ordina', 'vista']) {
+    pulito.searchParams.delete(nome);
+    for (const v of presentazione.valori[nome] ?? []) pulito.searchParams.append(nome, v);
+  }
+  return Astro.redirect(`${pulito.pathname}${pulito.search}`, 301);
+}
+
 // Una sola dimensione filtrata ha un equivalente indicizzabile: la pagina statica.
 // I valori dei filtri qui sono id di catalogo, quindi la traduzione passa dal corpus.
 const unica = await dimensioneUnicaBandi(valori, pagina);
@@ -42,19 +57,18 @@ if (unica) {
   }
 }
 
-const { righe, totale } = await caricaBandi(valori, pagina);
+const { righe, totale, errore } = await caricaBandi(valori, pagina);
 const pagine = numeroPagine(totale, DEF.perPagina);
 if (pagina > pagine || (righe.length === 0 && pagina > 1)) {
   return rispostaNonTrovata('Pagina non trovata', 'La pagina richiesta non esiste.', DEF.base, 'Torna ai bandi');
 }
 
-const opzioni = await opzioniFiltroBandi();
-const conFiltri = filtriAttivi(valori) > 0;
+const c = await corpusBandi();
+const gruppi = await gruppiFiltroBandi(valori, c);
+const conFiltri = contaFiltriContenuto(valori) > 0;
 const { canonical, robots } = seoLista(DEF, valori, pagina);
 
-const pageTitle = pagina > 1
-  ? `Bandi e finanziamenti pubblici: pagina ${pagina} di ${pagine} - EduNews24`
-  : 'Bandi e finanziamenti pubblici - EduNews24';
+const pageTitle = titoloLista(pagina, pagine);
 const pageDescription = pagina > 1
   ? `Bandi europei, nazionali e regionali, pagina ${pagina} di ${pagine}: filtra per regione, settore, beneficiario, tipologia, importo e scadenza.`
   // Description 153 caratteri, con i programmi al posto dell'elenco dei filtri.
@@ -82,8 +96,6 @@ const itemListStructuredData = itemListItems.length > 0
 
 const hrefPrec = pagina > 2 ? urlLista(DEF, valori, pagina - 1) : pagina === 2 ? urlLista(DEF, valori, 1) : null;
 const hrefSucc = pagina < pagine ? urlLista(DEF, valori, pagina + 1) : null;
-const basePaginazione = urlLista(DEF, valori, 1);
-const selezionato = (nome: string, valore: string) => (valori[nome] ?? []).includes(valore);
 ---
 <Layout title={pageTitle} description={pageDescription} keywords={pageKeywords} image="https://edunews24.it/og-bandi.png" canonicalUrl={canonical} robots={robots}>
   <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
@@ -91,237 +103,24 @@ const selezionato = (nome: string, valore: string) => (valori[nome] ?? []).inclu
   {hrefPrec && <link rel="prev" href={`https://edunews24.it${hrefPrec}`} slot="head" />}
   {hrefSucc && <link rel="next" href={`https://edunews24.it${hrefSucc}`} slot="head" />}
 
-  <main class="bg-gray-50 min-h-screen">
-    <div class="border-b border-gray-200 bg-white">
-      <div class="container mx-auto max-w-6xl px-4 py-8 sm:py-10">
-        <nav class="text-sm text-gray-600" aria-label="Breadcrumb">
-          <ol class="flex flex-wrap items-center gap-x-1">
-            <li><a href="/" class="-my-3 inline-block rounded-md py-3 underline-offset-2 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Home</a></li>
-            <li class="flex items-center gap-x-1">
-              <svg aria-hidden="true" focusable="false" class="h-4 w-4 text-gray-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <span aria-current="page" class="font-medium text-gray-900">Bandi</span>
-            </li>
-          </ol>
-        </nav>
-        <h1 class="mt-4 font-heading text-3xl font-bold leading-tight text-gray-900">Bandi e finanziamenti pubblici</h1>
-        <p class="mt-3 max-w-2xl text-base leading-relaxed text-gray-700">
-          Bandi europei (FESR, FSE+, Interreg), nazionali e regionali, aggiornati ogni giorno.
-        </p>
-        <p class="mt-2 text-sm text-gray-600">
-          <span id="hero-count" class="font-semibold tabular-nums text-gray-900">{totale}</span> bandi disponibili
-        </p>
-        <div class="mt-4">
-          <BandiExpertCta variante="riga" utmContent="lista-hero" />
-        </div>
-      </div>
-    </div>
-
-    <div class="container mx-auto max-w-6xl px-4 py-6">
-      {/* Filtri: form GET, funzionante anche senza JavaScript */}
-      <form id="filtri" method="get" action="/bandi" data-frammento="/api/lista/bandi" data-lista="bandi-list"
-            class="mb-6 rounded-lg border border-gray-200 bg-white">
-        {/* Ricerca testuale fuori dal pannello collassabile: resta visibile anche a filtri chiusi. */}
-        <div class="p-4 sm:p-5">
-          <label for="search-filter" class="block text-sm font-medium text-gray-900">Cerca un bando</label>
-          <input type="search" id="search-filter" name="q" value={valori.q[0] ?? ''} placeholder="Titolo, ente o parola chiave"
-                 class="mt-1.5 block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base text-gray-900 placeholder:text-gray-500 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
-        </div>
-
-        {/* Header del pannello. NB: il toggle e' un div role=button, NON un <button>:
-            prima conteneva il Reset, anch'esso un <button>, e il nesting di button non e'
-            valido HTML (il browser chiudeva il toggle prima del Reset e il body del
-            pannello finiva FUORI dalla card). Ora il Reset e' un fratello del toggle,
-            fuori dal role=button; il toggle resta un div e Invio/Spazio li gestisce
-            bandi-filtri.ts. */}
-        <div class="flex items-center gap-2 border-t border-gray-200 px-2 sm:px-3">
-          <div
-            id="filters-toggle"
-            role="button"
-            tabindex="0"
-            class="flex min-h-12 flex-1 cursor-pointer select-none items-center gap-3 rounded-md px-2 text-left hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-            aria-expanded="true"
-            aria-controls="filters-body"
-          >
-            <span class="font-heading text-base font-semibold text-gray-900">Filtri</span>
-            <span id="active-filters-badge" class="hidden inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
-              <span id="active-count">0</span>&nbsp;attiv<span id="active-pluralize">i</span>
-            </span>
-            <svg id="filters-chevron" aria-hidden="true" focusable="false" class="ml-auto h-5 w-5 text-gray-500 transition-transform duration-200 motion-reduce:transition-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-          </div>
-          <button
-            type="button"
-            id="reset-filters"
-            class="hidden sm:inline-flex min-h-11 items-center rounded-md px-3 text-sm font-medium text-gray-700 underline-offset-2 hover:text-gray-900 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-            data-no-toggle="true"
-          >
-            Resetta
-          </button>
-        </div>
-
-        {/* Body */}
-        <div id="filters-body" class="space-y-6 border-t border-gray-200 px-4 pb-5 pt-5 sm:px-5">
-          {/* Sei tendine a scelta multipla. Le opzioni sono checkbox REALI rese dal
-              server: prima erano iniettate via JS a partire da un define:vars che
-              serializzava tutti i codici ATECO, i settori e i programmi nell'HTML,
-              insieme a URL e chiave anon di Supabase. L'etichetta sta sopra la
-              tendina: dopo una scelta il testo del trigger diventa il valore. */}
-          <fieldset class="min-w-0">
-            <legend class="text-sm font-medium text-gray-900">Categorie</legend>
-            <div class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {MULTISELECT.map((m) => {
-                // Stesso testo che aggiorna() di bandi-filtri.ts scrive dopo: senza JS
-                // (e nel Markdown) la tendina dice gia' cosa filtra.
-                const scelte = (opzioni.multiselect[m.nome] ?? []).filter((o) => selezionato(m.nome, o.value));
-                const testoScelte = scelte.length === 0 ? 'Qualsiasi' : scelte.length === 1 ? scelte[0].label : `${scelte.length} selezionati`;
-                return (
-                <div class="multiselect relative min-w-0" data-name={m.nome}>
-                  <span id={`ms-etichetta-${m.nome}`} class="mb-1 block text-sm text-gray-700">{m.etichetta}</span>
-                  <button type="button" aria-labelledby={`ms-etichetta-${m.nome} ms-valore-${m.nome}`}
-                          class="ms-trigger flex min-h-11 w-full items-center justify-between gap-2 rounded-md border border-gray-500 bg-white px-3 text-left text-sm hover:border-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
-                    <span id={`ms-valore-${m.nome}`} class={`ms-display flex-1 truncate ${scelte.length === 0 ? 'text-gray-500' : 'text-gray-900'}`} data-empty="Qualsiasi">{testoScelte}</span>
-                    <span class="ms-count hidden inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-primary px-1.5 text-xs font-semibold tabular-nums text-white">0</span>
-                    <svg class="ms-chevron h-4 w-4 shrink-0 text-gray-500" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-                  </button>
-                  <div class="ms-popover hidden absolute left-0 right-0 z-30 mt-1 overflow-hidden rounded-lg border border-gray-300 bg-white shadow-sm">
-                    <div class="border-b border-gray-200 p-2">
-                      <input type="text" aria-label={`Cerca in ${m.etichetta}`}
-                             class="ms-search block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base text-gray-900 placeholder:text-gray-500 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary"
-                             placeholder="Cerca…">
-                    </div>
-                    <div class="ms-list max-h-64 overflow-y-auto py-1">
-                      {(opzioni.multiselect[m.nome] ?? []).map((o) => (
-                        <label>
-                          <input type="checkbox" name={m.nome} value={o.value} checked={selezionato(m.nome, o.value)}>
-                          <span>{o.label}</span>
-                        </label>
-                      ))}
-                    </div>
-                    <div class="ms-footer flex items-center justify-between border-t border-gray-200 p-2 text-sm">
-                      <button type="button" class="ms-clear inline-flex min-h-11 items-center rounded-md px-2 font-medium text-gray-700 underline-offset-2 hover:text-gray-900 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Pulisci</button>
-                      <span class="ms-status text-gray-600">0 selezionati</span>
-                    </div>
-                  </div>
-                </div>
-                );
-              })}
-            </div>
-          </fieldset>
-
-          {/* Chip: checkbox mascherate, cosi' funzionano anche senza JavaScript */}
-          <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <fieldset class="min-w-0">
-              <legend class="text-sm font-medium text-gray-900">Tipologia</legend>
-              <div id="tipologia-chips" class="mt-2 flex flex-wrap gap-2">
-                {opzioni.tipologie.map((t) => (
-                  <label class="cursor-pointer">
-                    <input type="checkbox" name="tipologia" value={t.value} checked={selezionato('tipologia', t.value)} class="peer sr-only">
-                    <span class="inline-flex min-h-11 items-center rounded-md border border-gray-500 bg-white px-3 text-sm text-gray-800 transition-colors hover:border-gray-700 peer-checked:border-primary peer-checked:bg-primary peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-primary motion-reduce:transition-none sm:min-h-9">{t.label}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset class="min-w-0">
-              <legend class="text-sm font-medium text-gray-900">Stato del bando</legend>
-              <div id="scadenza-chips" class="mt-2 flex flex-wrap gap-2">
-                {opzioni.stati.map((s) => (
-                  <label class="cursor-pointer">
-                    <input type="checkbox" name="stato" value={s.value} checked={selezionato('stato', s.value)} class="peer sr-only">
-                    <span class="inline-flex min-h-11 items-center rounded-md border border-gray-500 bg-white px-3 text-sm text-gray-800 transition-colors hover:border-gray-700 peer-checked:border-primary peer-checked:bg-primary peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-primary motion-reduce:transition-none sm:min-h-9">{s.label}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-          </div>
-
-          <fieldset class="min-w-0">
-            <legend class="text-sm font-medium text-gray-900">Importo e scadenza</legend>
-            <div class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <label for="importo-min" class="mb-1 block text-sm text-gray-700">Importo minimo (€)</label>
-                <input type="number" id="importo-min" name="imin" value={valori.imin[0] ?? ''} min="0" step="1000" placeholder="0" class="block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base tabular-nums text-gray-900 placeholder:text-gray-500 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-              <div>
-                <label for="importo-max" class="mb-1 block text-sm text-gray-700">Importo massimo (€)</label>
-                <input type="number" id="importo-max" name="imax" value={valori.imax[0] ?? ''} min="0" step="1000" placeholder="Nessun limite" class="block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base tabular-nums text-gray-900 placeholder:text-gray-500 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-              <div>
-                <label for="scadenza-da" class="mb-1 block text-sm text-gray-700">Scadenza dal</label>
-                <input type="date" id="scadenza-da" name="scad_da" value={valori.scad_da[0] ?? ''} class="block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base tabular-nums text-gray-900 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-              <div>
-                <label for="scadenza-a" class="mb-1 block text-sm text-gray-700">Scadenza al</label>
-                <input type="date" id="scadenza-a" name="scad_a" value={valori.scad_a[0] ?? ''} class="block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base tabular-nums text-gray-900 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
-              </div>
-            </div>
-          </fieldset>
-
-          <div class="flex flex-col gap-2 border-t border-gray-200 pt-5 sm:flex-row">
-            <button type="submit" class="inline-flex min-h-11 items-center justify-center rounded-md bg-primary px-5 text-sm font-semibold text-white hover:bg-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Applica filtri</button>
-            <a href="/bandi" class="inline-flex min-h-11 items-center justify-center rounded-md border border-gray-300 bg-white px-5 text-sm font-medium text-gray-800 hover:border-gray-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Resetta filtri</a>
-          </div>
-        </div>
-      </form>
-
-      <div class="mb-3 flex items-center justify-between">
-        <p id="results-count" class="text-sm text-gray-700">
-          <span id="visible-count" class="font-semibold tabular-nums text-gray-900">{totale}</span> bandi trovati
-        </p>
-        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-gray-700">
-          <svg aria-hidden="true" focusable="false" class="h-4 w-4 animate-spin text-primary motion-reduce:animate-none" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-          Caricamento…
-        </div>
-      </div>
-      <p id="stato-risultati" class="sr-only" aria-live="polite"></p>
-
-      <ListaBandi righe={righe} filtrata={conFiltri} />
-
-      <PaginazioneLinks base={basePaginazione} pagina={pagina} pagine={pagine} accento="blu" />
-
-      <IntroSezione intro={INTRO_BANDI} completa={pagina === 1 && !conFiltri} />
-
+  <main class="font-[Poppins,system-ui,sans-serif] text-[#1a2233] antialiased leading-[normal] [&_input::placeholder]:text-[#7b8494]">
+    <ElencoBandi
+      valori={valori}
+      righe={righe}
+      totale={totale}
+      errore={errore}
+      pagina={pagina}
+      pagine={pagine}
+      basePaginazione={urlLista(DEF, valori, 1)}
+      gruppi={gruppi}
+      conteggi={conteggiStatoBandi(c)}
+      testata={TESTATA_LISTA}
+      oggi={todayRomeISO()}
+    >
+      <IntroSezione intro={INTRO_BANDI} completa={pagina === 1 && !conFiltri} variante="bandi" />
       {blocchiEsplora.map((b) => (
-        <Sorelle titolo={b.titolo} voci={b.voci} hrefTutti={b.hrefTutti} />
+        <Sorelle titolo={b.titolo} voci={b.voci} hrefTutti={b.hrefTutti} variante="bandi" />
       ))}
-    </div>
+    </ElencoBandi>
   </main>
 </Layout>
-
-{/* Le opzioni delle tendine sono ~290: ripetere le utility Tailwind su ognuna
-    costava oltre 60 KB di HTML per pagina. Lo stile e' identico, scritto una volta.
-    is:global evita che Astro aggiunga un attributo di scope a ogni elemento. */}
-<style is:global>
-  .ms-list label {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    font-size: 0.875rem;
-    line-height: 1.25rem;
-    color: rgb(31 41 55);
-    cursor: pointer;
-  }
-  /* Su mobile ogni voce e' alta 44px: 20px di riga piu' 24px di padding. */
-  @media (max-width: 639px) {
-    .ms-list label { padding-top: 0.75rem; padding-bottom: 0.75rem; }
-  }
-  .ms-list label:hover { background-color: rgb(249 250 251); }
-  .ms-list label[hidden] { display: none; }
-  .ms-list input[type='checkbox'] {
-    margin-top: 0.125rem;
-    flex-shrink: 0;
-    width: 1rem;
-    height: 1rem;
-    accent-color: #004e9c;
-  }
-  .ms-list input[type='checkbox']:focus-visible {
-    outline: 2px solid #004e9c;
-    outline-offset: 2px;
-  }
-</style>
-
-<script>
-  import { attivaLista } from '../scripts/lista';
-  import { attivaFiltriBandi } from '../scripts/bandi-filtri';
-  attivaFiltriBandi();
-  attivaLista({ idLista: 'bandi-list' });
-</script>
