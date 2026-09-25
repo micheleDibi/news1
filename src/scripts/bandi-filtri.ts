@@ -90,19 +90,27 @@ function attivaPannello(): void {
   // Se l'URL porta gia' dei filtri il pannello si apre comunque, altrimenti l'utente
   // atterrerebbe su una lista filtrata senza vedere da cosa.
   const conFiltri = [...new URLSearchParams(window.location.search).keys()].some((k) => k !== 'page');
-  let chiuso = conFiltri ? false : localStorage.getItem(CHIAVE_COLLASSO) === '1';
-  if (!conFiltri && localStorage.getItem(CHIAVE_COLLASSO) === null) {
+  // Lettura protetta come la scrittura: con lo storage bloccato un'eccezione qui
+  // fermava anche attivaLista(), cioe' tutto il miglioramento progressivo.
+  let ricordato: string | null = null;
+  try {
+    ricordato = localStorage.getItem(CHIAVE_COLLASSO);
+  } catch {
+    /* storage non disponibile: vale il default */
+  }
+  let chiuso = conFiltri ? false : ricordato === '1';
+  if (!conFiltri && ricordato === null) {
     chiuso = window.matchMedia('(max-width: 640px)').matches;
   }
 
   const applica = () => {
     corpo.classList.toggle('hidden', chiuso);
     chevron?.classList.toggle('rotate-180', !chiuso);
+    toggle.setAttribute('aria-expanded', String(!chiuso));
   };
   applica();
 
-  toggle.addEventListener('click', (e) => {
-    if ((e.target as HTMLElement).closest('[data-no-toggle="true"]')) return;
+  const commuta = () => {
     chiuso = !chiuso;
     try {
       localStorage.setItem(CHIAVE_COLLASSO, chiuso ? '1' : '0');
@@ -110,6 +118,19 @@ function attivaPannello(): void {
       /* modalita' privata: si ignora */
     }
     applica();
+  };
+
+  toggle.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('[data-no-toggle="true"]')) return;
+    commuta();
+  });
+  // Il toggle e' un div role=button: Invio e Spazio vanno gestiti a mano, come
+  // farebbe un <button>. Spazio senza preventDefault farebbe scorrere la pagina.
+  toggle.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if ((e.target as HTMLElement).closest('[data-no-toggle="true"]')) return;
+    e.preventDefault();
+    commuta();
   });
 }
 

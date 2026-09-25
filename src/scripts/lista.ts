@@ -117,7 +117,11 @@ export function attivaLista({ idLista }: Opzioni): void {
     e.preventDefault();
     form.reset();
     for (const campo of form.querySelectorAll('input, select')) {
-      if (campo instanceof HTMLInputElement) campo.value = '';
+      // Su checkbox e radio `.value` riscrive l'attributo value: dopo un reset
+      // ogni scelta partiva vuota e il filtro veniva scartato. Si toglie la
+      // spunta, perche' `form.reset()` ripristina quelle rese dal server.
+      if (campo instanceof HTMLInputElement && (campo.type === 'checkbox' || campo.type === 'radio')) campo.checked = false;
+      else if (campo instanceof HTMLInputElement) campo.value = '';
       if (campo instanceof HTMLSelectElement) campo.selectedIndex = 0;
     }
     form.dispatchEvent(new Event('change'));
