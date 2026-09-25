@@ -144,6 +144,10 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > Stato al 25/09/2026 (RIPRESA §1, che resta la fonte aggiornata): applicate 01, 02, seed, 03, 04, 05, 08, 09, 10;
 > mancano 06 e 07; resolver attivo, monitor in ombra salvo due tipi di evento attivati a mano.
 
+> **Deroga registrata (intervento "documentazione allineata al codice", 25/09/2026).** Su richiesta esplicita
+> dell'utente è stato modificato solo il commento in testa a `scripts/migrate-slugs.ts` (il lancio documentato non
+> esisteva), senza toccare il codice. Fuori da questo elenco la regola sopra resta in vigore.
+
 Inoltre, sempre (non toccati dalle deroghe):
 - Credenziali mai in file tracciati (vivono in `.env`, `scraper_bandi/.env`,
   `src/pages/api/tts/google-credentials.json`, tutti ignorati da git); `google-credentials.json` mai in `public/`.
@@ -160,7 +164,7 @@ Inoltre, sempre (non toccati dalle deroghe):
 - **`scripts/migrate-slugs.ts` non va eseguito alla leggera**: tocca solo gli slug mancanti o non conformi e pretende
   `MIGRAZIONE_SLUG=si` (altrimenti non parte) più `SCRIVI=si` (senza, stampa solo cosa farebbe). Nella versione
   precedente riscriveva lo slug di *tutte* le righe ed era l'unico punto capace di mandare in 410 l'intero archivio in
-  un colpo solo.
+  un colpo solo. Oggi non ha un lancio funzionante (vedi il commento in testa al file).
 - **Nessuna service-role key del DB principale nel repo**: `backend/app/database.py` usa `PUBLIC_SUPABASE_ANON_KEY`
   malgrado il commento dica il contrario. Tutte le scritture su `articles` passano dalla anon key.
 - `backend/app/sender.py` gira **ogni ora dalle 03:00 alle 19:00**, non quattro volte al giorno, e la sua pipeline

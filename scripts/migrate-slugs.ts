@@ -14,10 +14,15 @@
  *  - usa `slugifica()` (accent-safe) invece di `slugify()`, che cancella gli
  *    accenti ("citta'" diventava "citt");
  *  - non parte senza la variabile d'ambiente MIGRAZIONE_SLUG=si;
- *  - stampa cosa farebbe e chiede un secondo flag per scrivere davvero.
+ *  - stampa cosa farebbe e chiede un secondo flag per scrivere davvero
+ *    (SCRIVI=si).
  *
- *   MIGRAZIONE_SLUG=si npx astro exec scripts/migrate-slugs.ts          # prova
- *   MIGRAZIONE_SLUG=si SCRIVI=si npx astro exec scripts/migrate-slugs.ts # scrive
+ * Come si lancia: oggi NON esiste un lancio funzionante. Il comando scritto
+ * qui in origine (`npx astro exec scripts/migrate-slugs.ts`) non esiste:
+ * `exec` non e' un sottocomando di Astro 5.4, che stampa solo l'help. Con
+ * node lo script si ferma all'import, perche' src/lib/supabase.ts legge
+ * `import.meta.env`, che esiste solo sotto Vite/Astro. Prima di usarlo va
+ * deciso come fornirgli il client Supabase.
  */
 import { supabase } from '../src/lib/supabase';
 import { slugifica, slugValido } from '../src/lib/slug';
