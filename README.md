@@ -442,7 +442,7 @@ uvicorn app.main:app --reload --port 8000
 cd scraper_bandi
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app <comando> --dry-run --limit N
 ```
-Comandi in `docs/bandi-monitor/RIPRESA.md` §6; senza `--dry-run` scrivono sul DB vero (senza `--dry-run` scrivono sul DB vero: gli step base `discover`, `scrape-bandi`, `preprocess`, `enrich` e `seo` non hanno modalita' ombra; i comandi v11 accettano `--ombra`/`--attivo` e, senza, decide la variabile `*_MODALITA` dell'ambiente).
+Comandi in `docs/bandi-monitor/RIPRESA.md` §6; senza `--dry-run` scrivono sul DB vero (gli step base `discover`, `scrape-bandi`, `preprocess`, `enrich` e `seo` non hanno modalita' ombra; i comandi v11 accettano `--ombra`/`--attivo` e, senza, decide la variabile `*_MODALITA` dell'ambiente).
 
 ---
 
