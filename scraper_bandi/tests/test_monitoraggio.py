@@ -3073,3 +3073,44 @@ class TestEventiRifiutatiDalDatabase(unittest.IsolatedAsyncioTestCase):
     async def test_senza_rifiuti_il_contatore_resta_a_zero(self):
         esito = await self._giro(monitoraggio.FonteDati())
         self.assertEqual(esito.eventi_non_scritti, 0)
+
+
+class TestForzaLaCoda(unittest.TestCase):
+    """`--forza` ignora la cadenza, non le altre tre condizioni.
+
+    Il 25/09/2026, finita la semina, la coda era vuota fino al pomeriggio (0
+    candidati alle 09:15, 56 alle 18:00): non c'era modo di verificare una
+    correzione appena fatta senza aspettare ore. Il resolver ha `--forza` da
+    sempre, il monitor no.
+    """
+
+    def _riga(self, **extra):
+        base = {"id": 1, "pubblicato": True, "bando_master_id": None,
+                "fonte_ufficiale_stato": "trovata",
+                "prossimo_controllo_at": "2026-12-31T00:00:00+00:00"}
+        base.update(extra)
+        return base
+
+    def test_la_cadenza_futura_non_ferma_il_forza(self):
+        riga = self._riga()
+        self.assertFalse(monitoraggio.selezionabile(riga))
+        self.assertTrue(monitoraggio.selezionabile(riga, forza=True))
+        self.assertEqual(len(monitoraggio.seleziona([riga], forza=True)), 1)
+        self.assertEqual(len(monitoraggio.seleziona([riga])), 0)
+
+    def test_le_altre_tre_condizioni_restano(self):
+        # Non pubblicato, doppione fuso, fonte non trovata: su queste righe non
+        # c'e' niente di lecito da scaricare, nemmeno a mano. La terza e' la piu'
+        # importante: l'unico URL che avremmo sarebbe quello dell'aggregatore.
+        for campo, valore in (("pubblicato", False),
+                              ("bando_master_id", 99),
+                              ("fonte_ufficiale_stato", "in_verifica")):
+            with self.subTest(campo=campo):
+                riga = self._riga(**{campo: valore})
+                self.assertFalse(monitoraggio.selezionabile(riga, forza=True),
+                                 f"--forza non deve superare il filtro su {campo}")
+
+    def test_una_riga_gia_da_controllare_non_cambia(self):
+        riga = self._riga(prossimo_controllo_at="2020-01-01T00:00:00+00:00")
+        self.assertTrue(monitoraggio.selezionabile(riga))
+        self.assertTrue(monitoraggio.selezionabile(riga, forza=True))

@@ -72,9 +72,12 @@ Comandi:
                  FUSIONI applicate (--limit 0 = solo report).
   monitor        Step 7 — ricontrollo delle pagine ufficiali
                  (`app/monitoraggio.py`). Opzioni: --dry-run, --limit N,
-                 --ombra|--attivo, --senza-rete (seleziona, ordina e riepiloga
-                 senza fare una sola richiesta: e' il modo di provare la
-                 selezione su dati veri senza spendere niente).
+                 --ombra|--attivo, --forza, --senza-rete (seleziona, ordina e
+                 riepiloga senza fare una sola richiesta: e' il modo di provare
+                 la selezione su dati veri senza spendere niente).
+                 `--forza` ignora `prossimo_controllo_at` e prende tutti i
+                 bandi con una fonte trovata: e' il modo di riprovare subito
+                 dopo una correzione, invece di aspettare la cadenza.
                  Da CLI il giro vale «sempre»: il confronto con MONITOR_GIRI
                  lo fa la pipeline, non la riga di comando.
   report-ombra   Misura della precisione prima di attivare (§6.2): gate
@@ -382,7 +385,7 @@ FLAG_RESOLVER = frozenset({
 
 # `--senza-rete` e' del solo monitor: e' l'unico step che, se non scarica, ha
 # comunque qualcosa da dire (la selezione e l'ordine della coda).
-FLAG_MONITOR = FLAG_MODALITA | frozenset({"--senza-rete"})
+FLAG_MONITOR = FLAG_MODALITA | frozenset({"--senza-rete", "--forza"})
 
 
 def _valore_opzione(resto: tuple[str, ...], nome: str) -> tuple[str | None, tuple[str, ...]]:
@@ -762,6 +765,15 @@ def _cmd_monitor(argv: list[str]) -> int:
             # primo controllo non c'e' un «prima», e i trenta del regime
             # bastano per trenta bandi.
             "lotto": _valore_opzione(opzioni.resto, "--lotto")[0],
+            # `--forza` ignora la cadenza e prende tutti i bandi con una fonte
+            # trovata: serve quando una regola e' cambiata sotto le righe e
+            # aspettare `prossimo_controllo_at` vorrebbe dire aspettare giorni.
+            # Il 25/09/2026 la coda era vuota fino al pomeriggio (0 candidati
+            # alle 09:15, 56 alle 18:00) e non c'era modo di provare una
+            # correzione appena fatta. Le altre condizioni della selezione
+            # restano: niente non pubblicati, niente doppioni fusi, niente
+            # bandi senza fonte ufficiale.
+            "forza": "--forza" in opzioni.resto,
             # I due adattatori del G7 e i contatori che li misurano: in ombra
             # si costruiscono lo stesso (vedi `_adattatori_g7`).
             **_adattatori_g7(),

@@ -498,13 +498,24 @@ def prossimo_dopo_errore(controlli_falliti: int, *, adesso: datetime | None = No
     return adesso_roma(adesso) + timedelta(hours=ore)
 
 
-def selezionabile(riga: Mapping[str, Any], *, adesso: datetime | None = None) -> bool:
+def selezionabile(
+    riga: Mapping[str, Any], *, adesso: datetime | None = None, forza: bool = False,
+) -> bool:
     """Il bando entra nella coda dei controlli? (§6.2, A33)
 
     Quattro condizioni. La terza e' quella che tiene fuori i «solo-OE»: un
     bando la cui fonte ufficiale non e' `trovata` **non** si fetcha dal monitor,
     perche' l'unico URL che abbiamo e' quello dell'aggregatore. Quei bandi li
     ripassa il resolver, alla sua cadenza.
+
+    `forza` toglie **solo** la quarta, la cadenza. Le altre tre restano: un non
+    pubblicato, un doppione fuso o un bando senza fonte ufficiale non si
+    controllano nemmeno a mano, perche' non c'e' niente di lecito da scaricare.
+    Serve quando le regole sono cambiate sotto le righe — una correzione ai
+    gate, alla whitelist o al payload — e aspettare la cadenza vorrebbe dire
+    aspettare giorni: misurato il 25/09/2026, dopo la semina la coda era vuota
+    fino al pomeriggio (0 candidati alle 09:15, 56 alle 18:00) e non c'era modo
+    di verificare una correzione appena fatta.
     """
     if not riga.get("pubblicato", True):
         return False
@@ -512,6 +523,8 @@ def selezionabile(riga: Mapping[str, Any], *, adesso: datetime | None = None) ->
         return False
     if riga.get("fonte_ufficiale_stato") != STATO_FONTE_TROVATA:
         return False
+    if forza:
+        return True
     quando = _istante(riga.get("prossimo_controllo_at"))
     if quando is not None and quando > adesso_roma(adesso):
         return False
@@ -523,6 +536,7 @@ def seleziona(
     *,
     tetto: int = 0,
     adesso: datetime | None = None,
+    forza: bool = False,
 ) -> tuple[Mapping[str, Any], ...]:
     """I bandi da controllare in questo giro, nell'ordine di §6.2.
 
@@ -532,7 +546,7 @@ def seleziona(
     bandi diversi, come gia' succede su `data_pubblicazione`).
     """
     momento = adesso_roma(adesso)
-    ammessi = [r for r in righe if selezionabile(r, adesso=momento)]
+    ammessi = [r for r in righe if selezionabile(r, adesso=momento, forza=forza)]
     lontano = momento + timedelta(days=3650)
 
     def chiave(riga: Mapping[str, Any]) -> tuple[int, str, int]:
@@ -587,8 +601,11 @@ class FonteDati:
     def disponibile(self) -> tuple[bool, str]:
         return True, ""
 
-    def candidati(self, *, limite: int = 0, adesso: datetime | None = None) -> list[dict[str, Any]]:
-        return [dict(r) for r in seleziona(self.righe, tetto=limite, adesso=adesso)]
+    def candidati(
+        self, *, limite: int = 0, adesso: datetime | None = None, forza: bool = False,
+    ) -> list[dict[str, Any]]:
+        return [dict(r) for r in seleziona(
+            self.righe, tetto=limite, adesso=adesso, forza=forza)]
 
     def eventi_recenti(self, bando_id: Any, giorni: int = 30) -> list[dict[str, Any]]:
         return list(self.eventi.get(bando_id, ()))
@@ -635,7 +652,9 @@ class FonteDatiSupabase(FonteDati):
             return False, "colonne_assenti"
         return True, ""
 
-    def candidati(self, *, limite: int = 0, adesso: datetime | None = None) -> list[dict[str, Any]]:
+    def candidati(
+        self, *, limite: int = 0, adesso: datetime | None = None, forza: bool = False,
+    ) -> list[dict[str, Any]]:
         """I bandi del giro: `bando` + `bando_controllo`, ordinati da `seleziona`.
 
         Due letture e non un embed: la RLS di `bando_controllo` non concede il
@@ -668,7 +687,8 @@ class FonteDatiSupabase(FonteDati):
             logger.warning("[monitor] lettura di bando_controllo fallita: {}", e)
             return []
         unite = [dict(r, **dict(controlli.get(r.get("id")) or {})) for r in righe]
-        scelte = [dict(r) for r in seleziona(unite, tetto=limite, adesso=adesso)]
+        scelte = [dict(r) for r in seleziona(
+            unite, tetto=limite, adesso=adesso, forza=forza)]
         return self._con_memoria(scelte)
 
     def _con_memoria(self, scelte: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1586,6 +1606,10 @@ async def run(
     casuale: Callable[[], float] | None = None,
     senza_rete: bool = False,
     lotto: str | None = None,
+    #: Ignora la cadenza e prende tutti i bandi con una fonte trovata. Le altre
+    #: tre condizioni di `selezionabile` restano: non si controlla un non
+    #: pubblicato, un doppione fuso o un bando senza fonte ufficiale.
+    forza: bool = False,
     contatori: bilancio.Contatori | None = None,
     lock: Any = blocco,
 ) -> dict[str, Any]:
@@ -1677,7 +1701,7 @@ async def run(
             contatori = bilancio.Contatori()
         tetto = tetti.fetch_giro if limit is None else min(
             limit, tetti.fetch_giro or limit)
-        righe = dati.candidati(limite=tetto, adesso=momento)
+        righe = dati.candidati(limite=tetto, adesso=momento, forza=forza)
         # Gli allarmi del giro: quelli della selezione (coda troncata) piu'
         # quelli dei tetti. Vivono nel riepilogo e quindi in `pipeline_run`,
         # perche' un allarme che esiste solo in una riga di log e' un allarme

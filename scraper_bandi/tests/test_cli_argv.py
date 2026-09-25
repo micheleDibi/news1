@@ -1149,3 +1149,26 @@ class TestSalute(_ConRunnerFinti):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestForzaDelMonitor(unittest.TestCase):
+    """`--forza` deve arrivare al modulo: se si perde, il comando dice di aver
+    guardato tutto e guarda una coda vuota. E' esattamente quello che e'
+    successo il 25/09/2026, con la riga `dati.candidati(...)` che non lo
+    propagava: `candidati: 0` con il flag acceso."""
+
+    def test_il_flag_arriva_a_run(self):
+        finto = _modulo_finto("monitoraggio", ingressi=("run",))
+        with patch.dict(sys.modules, {f"{ALIAS}.monitoraggio": finto}), \
+                patch.object(cli, "logger", MagicMock()):
+            cli.main(["monitor", "--dry-run", "--forza", "--lotto", "L6"])
+        kwargs = finto.run.await_args.kwargs
+        self.assertIs(kwargs["forza"], True)
+        self.assertEqual(kwargs["lotto"], "L6")
+
+    def test_senza_il_flag_vale_falso(self):
+        finto = _modulo_finto("monitoraggio", ingressi=("run",))
+        with patch.dict(sys.modules, {f"{ALIAS}.monitoraggio": finto}), \
+                patch.object(cli, "logger", MagicMock()):
+            cli.main(["monitor", "--dry-run"])
+        self.assertIs(finto.run.await_args.kwargs["forza"], False)
