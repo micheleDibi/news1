@@ -22,7 +22,7 @@ test('segmenti link: link solo se pubblicabile, altrimenti testo semplice', () =
   const ufficiale = renderSegmenti([{ kind: 'link', text: 'Bando', url: 'https://regione.marche.it/b' }]);
   assert.equal(
     ufficiale,
-    '<a href="https://regione.marche.it/b" class="text-blue-700 hover:underline" ' +
+    '<a href="https://regione.marche.it/b" class="text-primary underline underline-offset-2 hover:text-primary-dark" ' +
     'target="_blank" rel="noopener noreferrer nofollow">Bando</a>',
   );
   // rel: nofollow oltre a noopener/noreferrer. Prima mancava.
@@ -73,7 +73,7 @@ test('FAQ rese: accordion con la domanda e la risposta, link filtrati', () => {
       items: [{ question: 'Come si presenta?', answer: 'Dal portale.' }],
     }],
   });
-  assert.ok(html.includes('<details class="bg-gray-50 rounded-lg p-4 group">'));
+  assert.ok(html.includes('<details class="group border-b border-gray-200">'));
   assert.ok(html.includes('Come si presenta?'));
   assert.ok(html.includes('Dal portale.'));
   // Nessun FAQPage e nessun marcatore di dati strutturati nel corpo.
@@ -144,10 +144,50 @@ test('corpo: markup e classi delle sezioni', () => {
       { type: 'sconosciuto', text: 'ignorata' },
     ],
   });
-  assert.ok(html.includes('<h2 class="text-2xl font-bold text-gray-900 mt-8 mb-3">Requisiti &amp; limiti</h2>'));
-  assert.ok(html.includes('<h3 class="text-xl font-semibold text-gray-900 mt-6 mb-2">Sottotitolo</h3>'));
+  assert.ok(html.includes(
+    '<h2 id="requisiti-limiti" class="font-heading text-xl font-semibold leading-snug text-gray-900 mt-10 mb-3 scroll-mt-4">' +
+    'Requisiti &amp; limiti</h2>',
+  ));
+  assert.ok(html.includes('<h3 class="font-heading text-lg font-semibold leading-snug text-gray-900 mt-6 mb-2">Sottotitolo</h3>'));
   assert.ok(html.includes('<p class="text-gray-700 leading-relaxed mb-4">Paragrafo.</p>'));
-  assert.ok(html.includes('<ul class="list-disc list-inside space-y-2 mb-4 text-gray-700"><li>Primo</li></ul>'));
-  assert.ok(html.includes('<ol class="list-decimal list-inside space-y-2 mb-4 text-gray-700"><li>Uno</li></ol>'));
+  assert.ok(html.includes(
+    '<ul class="list-disc list-outside pl-5 space-y-2 mb-4 text-gray-700 leading-relaxed"><li>Primo</li></ul>',
+  ));
+  assert.ok(html.includes(
+    '<ol class="list-decimal list-outside pl-6 space-y-2 mb-4 text-gray-700 leading-relaxed"><li>Uno</li></ol>',
+  ));
   assert.equal(html.includes('ignorata'), false);
+});
+
+test('corpo: id degli H2 per l\'indice, con accenti, collisioni e testo vuoto', () => {
+  const html = renderSezioni({
+    sections: [
+      { type: 'h2', text: 'Perché partecipare? Città e comunità' },
+      { type: 'h2', text: 'FAQ' },
+      { type: 'h2', text: 'FAQ 2' },
+      { type: 'h2', text: 'FAQ' },
+      { type: 'h3', text: 'FAQ' },
+      { type: 'h2', text: '—' },
+      { type: 'h2' },
+      { type: 'h2', text: 'Valle d\'Aosta/Vallée d\'Aoste' },
+    ],
+  });
+  const id = [...html.matchAll(/<h2 id="([^"]*)"/g)].map((m) => m[1]);
+  assert.deepEqual(id, [
+    'perche-partecipare-citta-e-comunita',
+    'faq',
+    // Contare le occorrenze per slug darebbe `faq-2` due volte: si prova il
+    // primo suffisso libero.
+    'faq-2',
+    'faq-3',
+    'sezione',
+    'sezione-2',
+    'valle-d-aosta-vallee-d-aoste',
+  ]);
+  // Gli H3 non hanno ancora e non consumano suffissi.
+  assert.ok(html.includes('<h3 class="font-heading text-lg font-semibold leading-snug text-gray-900 mt-6 mb-2">FAQ</h3>'));
+  // Ogni id è un segmento valido: niente da scappare nell'attributo.
+  for (const valore of id) assert.match(valore, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+  // Due rese dello stesso contenuto danno gli stessi id: l'indice può contarci.
+  assert.equal(renderSezioni({ sections: [{ type: 'h2', text: 'In breve' }] }).includes('id="in-breve"'), true);
 });

@@ -19,6 +19,7 @@
  * Modulo «foglia»: nessun import impuro.
  */
 import { urlPubblicabile } from './domini';
+import { slugifica } from '../slug';
 import type { SegmentoBando, SezioneBando, VoceFaq } from './tipi';
 
 /** Escape per testo e per valori di attributo: la stessa tabella copre entrambi. */
@@ -84,7 +85,7 @@ export function renderSegmenti(segmenti: unknown): string {
     if (seg.kind === 'bold') return `<strong>${testo}</strong>`;
     if (seg.kind === 'link' && urlPubblicabile((seg as { url?: unknown }).url as string | undefined)) {
       const url = scappa(String((seg as { url: string }).url).trim());
-      return `<a href="${url}" class="text-blue-700 hover:underline" target="_blank" rel="noopener noreferrer nofollow">${testo}</a>`;
+      return `<a href="${url}" class="text-primary underline underline-offset-2 hover:text-primary-dark" target="_blank" rel="noopener noreferrer nofollow">${testo}</a>`;
     }
     return testo;
   }).join('');
@@ -119,7 +120,7 @@ export function vociFaq(items: unknown): VoceFaq[] {
 }
 
 const FRECCIA_FAQ =
-  '<svg class="w-5 h-5 text-gray-400 group-open:rotate-180 transition-transform" fill="none" ' +
+  '<svg class="shrink-0 w-5 h-5 text-gray-500 group-open:rotate-180 transition-transform motion-reduce:transition-none" fill="none" ' +
   'stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" ' +
   'stroke-width="2" d="M19 9l-7 7-7-7"/></svg>';
 
@@ -127,13 +128,15 @@ function renderFaq(items: unknown): string {
   const voci = vociFaq(items);
   if (voci.length === 0) return '';
   const dettagli = voci.map((voce) =>
-    '<details class="bg-gray-50 rounded-lg p-4 group">' +
-    '<summary class="cursor-pointer font-semibold text-gray-900 list-none flex items-center justify-between">' +
+    '<details class="group border-b border-gray-200">' +
+    '<summary class="flex min-h-11 cursor-pointer list-none items-center justify-between gap-4 py-4 font-semibold ' +
+    'text-gray-900 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ' +
+    'focus-visible:outline-primary [&::-webkit-details-marker]:hidden">' +
     scappa(voce.q) + FRECCIA_FAQ + '</summary>' +
-    `<p class="mt-3 text-gray-700 leading-relaxed">${renderSegmenti(voce.a.segments)}</p>` +
+    `<p class="pb-4 text-gray-700 leading-relaxed">${renderSegmenti(voce.a.segments)}</p>` +
     '</details>',
   ).join('');
-  return `<div class="mt-6 space-y-3">${dettagli}</div>`;
+  return `<div class="mt-6 border-t border-gray-200">${dettagli}</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,24 +151,48 @@ function renderVoci(items: unknown, tag: 'ul' | 'ol', classi: string): string {
 }
 
 /**
- * Corpo della scheda come HTML. Stesso markup (e stesse classi Tailwind) che la
- * pagina rendeva prima: cambia solo che i link passano dal filtro e che le FAQ
- * si leggono nella forma giusta. Un `contenuto` inutilizzabile dà stringa vuota.
+ * Gli id delle ancore degli H2, assegnati nell'ordine in cui compaiono: lo slug
+ * del testo (`slugifica`, mai `slugify` di utils.ts) e, se è già preso, il primo
+ * fra `-2`, `-3`… ancora libero. Contare le occorrenze per slug non basta:
+ * `['FAQ', 'FAQ 2', 'FAQ']` darebbe due volte `faq-2`. Un testo che non produce
+ * slug diventa `sezione`. L'indice «In questa pagina» della scheda legge questi
+ * id dall'HTML reso, quindi l'algoritmo esiste in un posto solo.
+ */
+function ancoreH2(): (testo: string) => string {
+  const usati = new Set<string>();
+  return (testo) => {
+    const base = slugifica(testo) || 'sezione';
+    let id = base;
+    for (let n = 2; usati.has(id); n++) id = `${base}-${n}`;
+    usati.add(id);
+    return id;
+  };
+}
+
+/**
+ * Corpo della scheda come HTML. I link passano dal filtro, le FAQ si leggono
+ * nella forma giusta, gli H2 hanno un `id` per l'indice. Un `contenuto`
+ * inutilizzabile dà stringa vuota.
  */
 export function renderSezioni(contenuto: unknown): string {
   const pezzi: string[] = [];
+  const ancora = ancoreH2();
   for (const sezione of sezioniDa(contenuto)) {
     if (sezione.type === 'h2') {
-      pezzi.push(`<h2 class="text-2xl font-bold text-gray-900 mt-8 mb-3">${scappa(testoDi(sezione.text))}</h2>`);
+      const testo = testoDi(sezione.text);
+      pezzi.push(
+        `<h2 id="${ancora(testo)}" class="font-heading text-xl font-semibold leading-snug text-gray-900 mt-10 mb-3 scroll-mt-4">` +
+        `${scappa(testo)}</h2>`,
+      );
     } else if (sezione.type === 'h3') {
-      pezzi.push(`<h3 class="text-xl font-semibold text-gray-900 mt-6 mb-2">${scappa(testoDi(sezione.text))}</h3>`);
+      pezzi.push(`<h3 class="font-heading text-lg font-semibold leading-snug text-gray-900 mt-6 mb-2">${scappa(testoDi(sezione.text))}</h3>`);
     } else if (sezione.type === 'paragraph') {
       const corpo = renderSegmenti(sezione.segments);
       if (corpo !== '') pezzi.push(`<p class="text-gray-700 leading-relaxed mb-4">${corpo}</p>`);
     } else if (sezione.type === 'bullet_list') {
-      pezzi.push(renderVoci(sezione.items, 'ul', 'list-disc list-inside space-y-2 mb-4 text-gray-700'));
+      pezzi.push(renderVoci(sezione.items, 'ul', 'list-disc list-outside pl-5 space-y-2 mb-4 text-gray-700 leading-relaxed'));
     } else if (sezione.type === 'numbered_list') {
-      pezzi.push(renderVoci(sezione.items, 'ol', 'list-decimal list-inside space-y-2 mb-4 text-gray-700'));
+      pezzi.push(renderVoci(sezione.items, 'ol', 'list-decimal list-outside pl-6 space-y-2 mb-4 text-gray-700 leading-relaxed'));
     } else if (sezione.type === 'faq') {
       pezzi.push(renderFaq(sezione.items));
     }
