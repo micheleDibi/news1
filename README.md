@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Astro-5.3-FF5D01?logo=astro&logoColor=white" alt="Astro" />
-  <img src="https://img.shields.io/badge/React-18.2-61DAFB?logo=react&logoColor=white" alt="React" />
+  <img src="https://img.shields.io/badge/Astro-5.4-FF5D01?logo=astro&logoColor=white" alt="Astro" />
+  <img src="https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=white" alt="React" />
   <img src="https://img.shields.io/badge/FastAPI-Python_3.10+-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?logo=supabase&logoColor=white" alt="Supabase" />
   <img src="https://img.shields.io/badge/TailwindCSS-3.4-06B6D4?logo=tailwindcss&logoColor=white" alt="TailwindCSS" />
@@ -28,10 +28,9 @@
 Oltre al flusso editoriale tradizionale (articoli, redazione, pubblicazione), il sistema integra:
 
 - **Pipeline news automatizzata** — scraping di fonti esterne, ricostruzione AI con Claude/OpenAI, pubblicazione e condivisione social.
-- **Sezione Bandi** — pipeline a due fasi che ingerisce bandi di finanziamento da OpenCoesione e fonti istituzionali, arricchiti da una skill Claude dedicata che genera contenuto SEO ed estrae i campi strutturati autoritativi.
-- **Interpelli parlamentari** — monitoraggio automatico delle interrogazioni di Camera e Senato.
-- **Selezione Personale** — concorsi e selezioni del comparto istruzione.
-- **EU funding** — focus su Italia Domani e fondi europei.
+- **Sezione Bandi** — pipeline `scraper_bandi/` (discover → scrape → preprocess → enrich → resolver → seo, più ricontrolli e monitor) che ingerisce bandi di finanziamento da OpenCoesione e fonti istituzionali, ne cerca la fonte ufficiale e genera con Claude il contenuto SEO.
+- **Interpelli scuola** — interpelli per docenti, ATA e DSGA pubblicati dalle scuole (raccolti da scuolainterpelli.it), con articolo generato da Claude.
+- **Selezione Personale** — concorsi e selezioni della Pubblica Amministrazione (API inPA, senza filtro di settore).
 
 Tutto orchestrato attorno a un'architettura dual-database (CMS principale + DB dedicato ai bandi) con scheduler Python, sender automatici e front-end SSR Astro.
 
@@ -64,20 +63,20 @@ Tutto orchestrato attorno a un'architettura dual-database (CMS principale + DB d
 ┌───────▼──────────┐         ┌─────────────▼──────────────┐
 │  Bandi Pipeline  │         │      Integrazioni AI       │
 │                  │         │                            │
-│  FASE 1 (Python) │         │  Claude Opus 4.7           │
-│  Scraper OpenCo. │         │   - Ricostruzione articoli │
-│  + Firecrawl     │         │   - Skill bandi SEO        │
-│  → Supabase B    │         │   - Persona rewriter       │
+│  scraper_bandi/  │         │  Claude Opus 4.7           │
+│  (Python, venv)  │         │   - Ricostruzione articoli │
+│  discover        │         │   - Skill bandi SEO        │
+│  → scrape        │         │   - Persona rewriter       │
+│  → preprocess    │         │                            │
+│  → enrich        │         │  OpenAI GPT-4.1            │
+│  → resolver      │         │   - Tag/Summary/FAQ        │
+│  → seo (Claude)  │         │   - Generazione articoli   │
+│  + ricontrolli   │         │                            │
+│  + monitor       │         │  Firecrawl                 │
+│  → Supabase B    │         │   - Scraping stealth/auto  │
 │                  │         │                            │
-│  FASE 2 (Claude  │         │  OpenAI GPT-4.1            │
-│  Agent SDK)      │         │   - Tag/Summary/FAQ        │
-│  bandi-seo-      │         │   - Generazione articoli   │
-│  enricher        │         │                            │
-│  → arricchimento │         │  Firecrawl                 │
-│  + verdetto      │         │   - Scraping stealth/auto  │
-│                  │         │                            │
-│                  │         │  Google Cloud TTS          │
-│                  │         │   - Audio articoli         │
+│  4 giri/giorno   │         │  Google Cloud TTS          │
+│  (bandi_sender)  │         │   - Audio articoli         │
 └──────────────────┘         └────────────────────────────┘
 ```
 
@@ -86,9 +85,9 @@ Tutto orchestrato attorno a un'architettura dual-database (CMS principale + DB d
 | DB | Provider | Contenuto | Accesso frontend |
 |---|---|---|---|
 | **DB A — `news1`** | Supabase | Articoli, profili, categorie, podcast, interpelli, selezione personale | anon key |
-| **DB B — `bandi`** | Supabase | Tabella `bando` + lookup (regioni, settori, beneficiari, ateco, programmi) | anon key + RLS (`is_bando_confermato = true`) |
+| **DB B — `bandi`** | Supabase | Tabella `bando` + lookup (regioni, settori, beneficiari, codici_ateco, programmi, tipologie_bando, modalita_erogazione) | anon key + RLS (`stato_processing = 'completed' AND slug IS NOT NULL`) |
 
-Tutta la scrittura su DB B avviene **solo** dal backend con service-role key. Il front-end legge in sola lettura via anon key e Row Level Security garantisce che solo bandi confermati dalla skill siano visibili.
+Tutta la scrittura su DB B avviene **solo** dal backend con service-role key. Il front-end legge in sola lettura via anon key e Row Level Security garantisce che siano visibili solo i bandi arrivati in fondo alla pipeline (`stato_processing = 'completed'` con slug; contratto completo in `docs/contratto-db-bandi.md`).
 
 ---
 
@@ -98,13 +97,13 @@ Tutta la scrittura su DB B avviene **solo** dal backend con service-role key. Il
 
 | Tecnologia | Versione | Utilizzo |
 |---|---|---|
-| **Astro** | 5.3 | Framework SSR con `@astrojs/node` standalone adapter |
-| **React** | 18.2 | Componenti interattivi (editor, dashboard, form) |
+| **Astro** | 5.4 | Framework SSR con `@astrojs/node` standalone adapter |
+| **React** | 18.3 | Componenti interattivi (editor, dashboard, form) |
 | **TailwindCSS** | 3.4 | Utility-first + plugin forms/typography |
 | **TipTap** | 2.11 | Editor rich-text |
-| **React Hook Form** | 7.51 | Form con validazione |
+| **React Hook Form** | 7.54 | Form con validazione |
 | **Splide** | 4.1 | Carousel e auto-scroll |
-| **@supabase/supabase-js** | 2.39 | Client DB sia per news che per bandi |
+| **@supabase/supabase-js** | 2.47 | Client DB sia per news che per bandi |
 | **@anthropic-ai/sdk** | 0.78 | SDK Claude lato edge per `generate-article` |
 
 ### Backend principale (`/backend`)
@@ -115,30 +114,24 @@ Tutta la scrittura su DB B avviene **solo** dal backend con service-role key. Il
 | **SQLAlchemy** | ORM news (staging SQLite) |
 | **Pydantic** | Schemi I/O |
 | **Uvicorn** | Server ASGI (no `--reload` in prod) |
-| **claude-agent-sdk** | Esecuzione in-process delle skill (news + bandi) |
+| **claude-agent-sdk** | Esecuzione in-process delle skill news (`backend/skill/`, `backend/news-angle-rewriter-persona/`); lo step SEO dei bandi usa l'SDK `anthropic` diretto |
 | **schedule** | Scheduler dei sender (news, bandi, interpelli, selezione personale) |
 | **firecrawl-py** | Scraping con bypass anti-bot |
 | **loguru** | Logging strutturato |
 | **boto3** | Upload media su S3 |
 | **google-cloud-texttospeech** | Generazione audio articoli |
 
-### Backend bandi — Nuovo scraper (`/scraper_bandi`, in costruzione)
+### Backend bandi (`/scraper_bandi`)
 
-Il vecchio subproject `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/` e' stato **rimosso in v5**. Al suo posto sta nascendo `scraper_bandi/` — sub-progetto Python autonomo (venv dedicato, ~9 file totali), costruito in step incrementali:
+Il vecchio subproject `Scraper-gerarchico-bandi-OpenCoesione-Backend-Python/` e' stato **rimosso in v5**. Al suo posto c'e' `scraper_bandi/` — sub-progetto Python autonomo (venv dedicato, ~56 file Python in `app/`, 17 comandi CLI `python -m app <comando>`), **in esercizio**: `backend/app/bandi_sender.py` lo lancia alle 00/06/12/18 (discover → scrape-bandi → preprocess → enrich → resolver → seo, più ricontrolli e monitor alle 06 e 18) fino a `stato_processing='completed'`.
 
-- **Step 1 (completato)**: discovery delle **fonti** dalla pagina indice di OpenCoesione → popola la tabella `fonte` (httpx + BeautifulSoup, no Firecrawl). Vedi `scraper_bandi/README.md` per setup e comando `python -m app discover`.
-- **Step 2 (prossimo)**: scraping di ogni fonte estratta → popola la tabella `bando`.
+Setup: `scraper_bandi/README.md`; comandi: `docs/bandi-monitor/RIPRESA.md` §6 e la docstring di `scraper_bandi/app/__main__.py`; stato e verifiche: `docs/bandi-monitor/RIPRESA.md`.
 
 Schema `fonte` ridotto in v5 (drop 8 colonne legacy: `titolo`, `note_aggiuntive`, retry/error tracking). Vedi `backend/sql/fonte_alter_v5_drop_legacy.sql`.
 
-### Skill bandi (`/bandi-seo-enricher`)
+### Skill SEO bandi (`scraper_bandi/app/seo_skill.py`)
 
-Skill Claude single-bando invocata in-process via Claude Agent SDK. Dato un `link_bando` + hint dominio (passato dall'orchestrator dal DB scraper, **mai da file**), produce **UN JSON 1:1** con la tabella `bando`:
-
-- Verdetto `is_valid_bando` (autoritativo, filtra le pagine indice/ricerca/categoria)
-- Campi strutturati: scadenza + `data_scadenza_source`, data pubblicazione + `data_pubblicazione_source`, importo, beneficiari, link candidatura **verificato** (no fallback a `source_url`)
-- Contenuto editoriale flash o guida con FAQ, intestazione, sezioni
-- Categoria di rifiuto strutturata: `index_page`, `search_results`, `category_page`, `expired_archive`, `not_a_funding_call`, `unreachable`
+`/bandi-seo-enricher` non esiste più. Il contenuto editoriale dei bandi lo genera lo step `seo` di `scraper_bandi/`: una chiamata Claude Opus 4.7 con tool use per bando (niente Agent SDK), su bandi già validati da `preprocess` (`is_valid_bando`) e arricchiti da `enrich` (FK, junction, date); stato finale `completed`. Dettagli in `scraper_bandi/README.md` (Step v8).
 
 ---
 
@@ -159,12 +152,12 @@ Skill Claude single-bando invocata in-process via Claude Agent SDK. Dato un `lin
 - **Tag SEO via OpenAI GPT-4.1** — 5-8 keyword ottimizzate
 - **Riassunti via GPT-4.1** — titolo + sommario
 - **FAQ on-demand via GPT-4.1** — 4-6 domande con structured data JSON-LD
-- **Generazione articoli da prompt** con ricerca web (Firecrawl + OpenAI)
-- **Skill `bandi-seo-enricher`** — Claude Agent SDK in-process, system prompt sandboxato (file ausiliari in `/tmp/`)
+- **Generazione articoli da prompt** con ricerca web (Firecrawl + Claude, skill `news-angle-rewriter-persona` via `/api/articles/generate-with-persona`)
+- **Step SEO bandi** — `scraper_bandi/app/seo_skill.py`, Claude Opus 4.7 con tool use (il system prompt sandboxato con file ausiliari in `/tmp/` è quello della skill news `backend/skill/`)
 - **Persona runner** — generazione articoli con persona giornalistica e job persistence
 
 ### SEO & dati strutturati
-- Sitemap XML dinamiche (articoli, categorie, video, news recenti, interpelli, selezione personale)
+- Sitemap XML dinamiche (articoli, categorie, video, news recenti, interpelli, selezione personale, bandi, pagine filtro)
 - JSON-LD `Article`, `BreadcrumbList`, `FAQPage`
 - Pagine AMP
 - Meta tag Open Graph + Twitter Card
@@ -173,14 +166,13 @@ Skill Claude single-bando invocata in-process via Claude Agent SDK. Dato un `lin
 - **IndexNow** — notifica push a Bing/Yandex su pubblicazione
 
 ### Pipeline news automatizzata
-- Scraping Selenium + BeautifulSoup + Firecrawl
-- Parsing feed RSS
-- Pipeline: scraping → analisi → ricostruzione AI → revisione manuale → pubblicazione
+- Scraping Firecrawl, con ripiego cloudscraper + BeautifulSoup
+- Pipeline: scraping → riassunto (automatici) → revisione manuale → ricostruzione AI e pubblicazione (avviate a mano dall'admin)
 - Scheduler `app/sender.py` configurabile per fasce orarie
 - Anti-duplicazione
 
-### Pipeline bandi (a due fasi)
-Vedi la sezione [Pipeline Bandi](#pipeline-bandi) sotto per il dettaglio.
+### Pipeline bandi (`scraper_bandi/`)
+Vedi la sezione [Pipeline Bandi](#pipeline-bandi) sotto e `docs/bandi-monitor/RIPRESA.md` §2 per il dettaglio.
 
 ### Social & engagement
 - Auto-posting Facebook con hashtag (testo del post dal sottotitolo, non dal titolo)
@@ -190,7 +182,7 @@ Vedi la sezione [Pipeline Bandi](#pipeline-bandi) sotto per il dettaglio.
 
 ### Pannello amministrazione
 - Dashboard gestione articoli, utenti, categorie, podcast
-- Sistema permessi role-based (admin, editore, redattore)
+- Sistema permessi role-based (admin, direttore, redattore, giornalista; accesso all'area admin anche per docente/insegnante)
 - Log attivita
 - Strumenti automazione news (scraping → riassunto → ricostruzione → pubblicazione)
 - Creazione utenti in batch
@@ -198,10 +190,10 @@ Vedi la sezione [Pipeline Bandi](#pipeline-bandi) sotto per il dettaglio.
 - API access registration
 
 ### Sezioni specializzate
-- **Interpelli parlamentari** — `/interpelli`, `/interpelli/[slug]` con sender dedicato
+- **Interpelli scuola** — `/interpelli`, `/interpelli/[slug]` con sender dedicato
 - **Bandi e Gare** — `/bandi`, `/bandi/[slug]` con filtri avanzati multi-select
-- **Finanziamenti EU** — `/eu-funding` per Italia Domani e fondi europei
-- **Selezione Personale** — `/selezione-personale`, `/selezione-personale/[slug]` concorsi del comparto
+- **Finanziamenti EU** — sezione rimossa: `/eu-funding` e i sotto-percorsi rispondono 410 Gone
+- **Selezione Personale** — `/selezione-personale`, `/selezione-personale/[slug]` concorsi della Pubblica Amministrazione
 - **Podcast** — pubblicazione episodi audio editoriali
 - **Linkinbio** — pagina aggregatrice per social
 
@@ -209,80 +201,23 @@ Vedi la sezione [Pipeline Bandi](#pipeline-bandi) sotto per il dettaglio.
 
 ## Pipeline Bandi
 
-> **Stato (v5)**: il vecchio subproject scraper e' stato rimosso (vedi commit "Bandi v5: rm scraper subproject"). Un nuovo scraper sara' progettato in un piano successivo. La sezione editorial (DB, skill, frontend) e' intatta — i bandi gia' in `state='confirmed'` sono pubblicati normalmente; quelli in `state='discovered'/'error'` possono essere drenati a mano con la skill.
+> **Stato (25/09/2026)**: la pipeline vive in `scraper_bandi/` (venv proprio) ed e' lanciata quattro volte al giorno (00:00, 06:00, 12:00, 18:00) da `backend/app/bandi_sender.py`, con gli step in `backend/app/bandi_pipeline.py`: discover → scrape → preprocess → enrich → resolver → seo, piu' ricontrolli e monitor alle 06:00 e 18:00. Stato, verifiche e decisioni aperte: `docs/bandi-monitor/RIPRESA.md`; contratto del DB: `docs/contratto-db-bandi.md`; comandi: `scraper_bandi/README.md`.
 
 ### Drain manuale skill
 
-```bash
-# Dalla root del repo
-backend/venv/bin/python -m backend.app.bandi skill-drain
-```
-
-Processa tutti i bandi in `state='discovered'`/`'error'` con `attempts < BANDI_SKILL_MAX_ATTEMPTS` fino a esaurimento, con concorrenza `BANDI_SKILL_CONCURRENCY` (default 3). Niente piu' systemd unit (`edunews-bandi-sender` disabilitato).
+Non esiste piu' un drain separato: la skill SEO e' lo step `seo` della pipeline e si lancia a mano con `cd scraper_bandi && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app seo --dry-run --limit 3` (senza `--dry-run` scrive sul DB). Elenco dei comandi: `scraper_bandi/README.md` e `docs/bandi-monitor/RIPRESA.md` §6.
 
 ### Fase skill SEO bandi (Claude)
 
-Modulo: `bandi-seo-enricher/` invocato da `backend/skill_bandi/scripts/run_agent_sdk_json_bandi.py` via Claude Agent SDK.
+Modulo: `scraper_bandi/app/seo_skill.py` (runner `bando_seo_runner.py`), step `seo` della pipeline: una chiamata Claude Opus 4.7 (`SEO_MODEL`, default `claude-opus-4-7`) con tool use `save_seo_bando` porta i bandi da `stato_processing='enriched'` a `'completed'` scrivendo i 14 campi editoriali (slug, titoli, contenuto, allegati, importi, `link_candidatura`...). Dettaglio in `scraper_bandi/README.md` ("Step v8 — skill SEO").
 
-```
-┌──────────────────────┐
-│ Supabase B           │
-│ status='queued'      │
-└──────────┬───────────┘
-           │ build_hint_from_bando()
-           │ (denormalizza FK → nomi)
-           ▼
-┌──────────────────────────────────────────────────────┐
-│  Skill bandi-seo-enricher (Claude Opus 4.7)          │
-│                                                      │
-│  STEP 0  Lettura references obbligatorie             │
-│  STEP 1  Hint dal prompt (NO sources.json!)          │
-│  STEP 2  Firecrawl scrape pagina bando               │
-│  STEP 2.5 Verdetto is_valid_bando + rejection_cat    │
-│  STEP 3  Lettura PDF allegati                        │
-│  STEP 4  Estrazione campi (no inventare!)            │
-│  STEP 5  link_candidatura verificato (no fallback)   │
-│  STEP 6  data_scadenza + scadenza_source enum        │
-│  STEP 6b data_pubblicazione + pubblicazione_source   │
-│  STEP 7  Generazione contenuto editoriale            │
-│  STEP 8  JSON output 1:1 con tabella bando           │
-└──────────┬───────────────────────────────────────────┘
-           │
-           ▼
-┌──────────────────────────────────────────────────────┐
-│  backend/app/bandi.py::update_bando_from_payload     │
-│                                                      │
-│  • is_bando_confermato ← skill verdict (autoritativo)│
-│  • data_scadenza ← skill SE source ∈                 │
-│      {official_pdf, official_page}                   │
-│  • data_pubblicazione ← stessa logica                │
-│  • link_candidatura_verified flag                    │
-│  • validation_reason + rejection_category persistiti │
-│  • Valori pre-skill salvati in raw_data per audit    │
-└──────────┬───────────────────────────────────────────┘
-           │
-           ▼
-┌──────────────────────────────────────────────────────┐
-│  Frontend /bandi e /bandi/[slug]                     │
-│  • RLS bando_public_read filtra is_bando_confermato  │
-│  • Ordinamento data_pubblicazione DESC nullslast     │
-│  • CTA "Apri pagina ufficiale" o link_candidatura    │
-└──────────────────────────────────────────────────────┘
-```
+### Colonne chiave su `bando` (DB B)
 
-### Colonne chiave su `bando` (DB B, schema v4)
-
-| Colonna | Origine | Note |
-|---|---|---|
-| `state` | Skill + orchestrator | Enum: `discovered \| enriching \| confirmed \| rejected \| refuted \| error \| stale`. RLS filtra `state='confirmed'` per il frontend. |
-| `state_detail` | Orchestrator | JSONB con `rejection_category`, `validation_reason`, `verifier_verdict`, `refuted_fields`, `last_error*`. |
-| `attempts` | Orchestrator | Contatore retry per `BANDI_SKILL_MAX_ATTEMPTS`. |
-| `date_quotes` | Skill (STEP 6/6b) | JSONB `{pubblicazione, scadenza}` con `value`, `source` (enum `official_pdf \| official_page \| inferred \| missing \| scraper_fallback`), `quote`. |
-| `link_candidatura_source` | Skill (STEP 5) | Enum `extracted \| fallback_source \| missing` — frontend mostra CTA solo se `extracted`. |
+Lo schema v4 non esiste piu': `state`, `state_detail`, `attempts` e `date_quotes` sono state rimosse (migrazioni v6 e v8). Oggi la lavorazione e' in `stato_processing` (`scraped → processed → enriched → completed`, oppure `rejected`), lo stato del bando in `stato_bando`, e il frontend mostra le righe con `stato_processing='completed'` e `slug` non nullo (`src/lib/bandi/pubblicazione.ts`); `link_candidatura_source` e' deprecata a favore di `bando_link`. Schema completo: tabella `bando` in `scraper_bandi/README.md` e `docs/contratto-db-bandi.md`.
 
 ### Orchestrazione
 
-v5: nessuno scheduler attivo. La skill si invoca manualmente via `python -m backend.app.bandi skill-drain`. Vedi sezione "Drain manuale skill" sopra.
+Il sender `backend/app/bandi_sender.py` esegue la pipeline al boot e poi quattro volte al giorno (00:00, 06:00, 12:00, 18:00); in produzione gira come servizio systemd e a DB un cron orario chiude i bandi scaduti e apre quelli in apertura (`docs/bandi-monitor/RIPRESA.md` §2 [DA VERIFICARE sul server]). La skill si lancia a mano come in "Drain manuale skill" sopra.
 
 ---
 
@@ -296,7 +231,7 @@ news1/
 │   │   │   ├── articles/                      # CRUD articoli
 │   │   │   ├── podcasts/                      # Gestione podcast
 │   │   │   ├── interpelli/                    # API interpelli
-│   │   │   ├── eu-funding/                    # API EU funding
+│   │   │   ├── v1/                            # API pubblica in sola lettura (docs/api-v1.md)
 │   │   │   ├── users/                         # Gestione utenti
 │   │   │   ├── generate-article.ts            # AI: articoli da prompt
 │   │   │   ├── generate-tags.ts               # AI: tag SEO
@@ -316,7 +251,7 @@ news1/
 │   │   ├── interpelli/[slug].astro            # Dettaglio interpello
 │   │   ├── selezione-personale.astro          # Lista concorsi
 │   │   ├── selezione-personale/[slug].astro   # Dettaglio concorso
-│   │   ├── eu-funding/                        # Sezione EU
+│   │   ├── eu-funding/                        # 410 Gone: sezione rimossa (bandi in /bandi)
 │   │   ├── team/                              # Profili team
 │   │   ├── podcasts/                          # Sezione podcast
 │   │   ├── sitemap-*.xml.ts                   # Sitemap dinamiche
@@ -346,23 +281,18 @@ news1/
 │   │   ├── main.py                            # App FastAPI + endpoint principali
 │   │   ├── models.py, schemas.py              # SQLAlchemy + Pydantic
 │   │   ├── sender.py                          # Scheduler pipeline news
-│   │   ├── bandi.py                           # Skill enrichment + state machine v4 + CLI skill-drain
-│   │   ├── bandi_skill_runner.py              # Invocazione skill bandi
-│   │   ├── bandi_supabase.py                  # Client Supabase B
-│   │   ├── interpelli.py, interpelli_sender.py
+│   │   ├── bandi_sender.py, bandi_pipeline.py # Scheduler 4 giri/giorno + step della pipeline bandi (scraper_bandi/)
+│   │   ├── interpelli.py, interpelli_sender.py, interpelli_tables.sql
 │   │   ├── selezione_personale.py, selezione_personale_sender.py
 │   │   ├── persona_runner.py                  # Persona rewriter job
 │   │   ├── skill_runner.py                    # Runner skill news
 │   │   ├── google_indexing.py, indexnow.py
-│   │   ├── variables_edunews.py               # Prompt + costanti modello
-│   │   ├── enhanced_scraper.py                # Scraper avanzato news
-│   │   └── ScrapingBandiEuropeiFinal/         # Scraper EU funding
+│   │   └── variables_edunews.py               # Prompt + costanti modello
+│   ├── enhanced_scraper.py                    # Scraper avanzato news
 │   ├── skill/                                 # Skill ricostruzione articoli
 │   │   ├── SKILL.md
 │   │   ├── references/                        # Linee guida editoriali
 │   │   └── scripts/                           # Firecrawl + JSON generator
-│   ├── skill_bandi/
-│   │   └── scripts/run_agent_sdk_json_bandi.py # Wrapper skill bandi
 │   ├── news-angle-rewriter-persona/           # Skill persona rewriter
 │   ├── sql/                                   # Migrazioni Postgres
 │   │   ├── bando_alter_seo_fields.sql
@@ -370,23 +300,14 @@ news1/
 │   │   ├── bando_alter_validation_v2.sql      # Validation + RLS
 │   │   ├── bando_alter_data_pubblicazione_source.sql
 │   │   ├── articles_alter_skill_fields.sql
-│   │   ├── interpelli_tables.sql
 │   │   ├── selezione_personale.sql
 │   │   └── persona_jobs.sql
 │   └── requirements.txt
 │
-├── bandi-seo-enricher/                        # Skill Claude single-bando
-│   ├── SKILL.md
-│   ├── references/
-│   │   ├── bando_data_extraction.md
-│   │   ├── article_structure.md
-│   │   ├── seo_guidelines.md
-│   │   └── blacklist_frasi.md
-│   ├── scripts/
-│   │   ├── firecrawl_scrape.py                # Wrapper Firecrawl per skill
-│   │   ├── extract_bando_fields.py            # Regex helpers (publication ctx)
-│   │   └── generate_json_output.py            # Validatore enum + schema
-│   └── output/
+├── scraper_bandi/                             # Pipeline bandi, venv proprio (scraper_bandi/README.md)
+│   ├── app/                                   # CLI `python -m app <comando>`, step e skill SEO (seo_skill.py)
+│   ├── tests/                                 # unittest (npm run test:py:bandi)
+│   └── requirements.txt
 │
 ├── scripts/                                   # Build helpers
 │   ├── copy-credentials.js                    # Pre-build: copia google creds
@@ -401,16 +322,17 @@ news1/
 
 ## API Endpoints
 
+API pubblica in sola lettura: `/api/v1/*` (13 rotte in `src/pages/api/v1/`), documentata in `docs/api-v1.md` e su `/sviluppatori/api`.
+
 ### Articoli (Astro)
 
 | Metodo | Endpoint | Descrizione |
 |---|---|---|
 | `POST` | `/api/articles/create` | Crea articolo |
-| `GET` | `/api/articles/index` | Lista paginata |
-| `GET` | `/api/articles/[id]` | Dettaglio |
-| `PUT` | `/api/articles/[id]/update` | Aggiorna |
-| `DELETE` | `/api/articles/delete` | Elimina |
-| `GET` | `/api/search` | Ricerca full-text |
+| `PUT` | `/api/articles/[id]` | Aggiorna (usato da ArticleForm) |
+| `DELETE` | `/api/articles/[id]` | Elimina per id |
+| `POST` | `/api/articles/delete` | Elimina |
+| `POST` | `/api/search` | Ricerca per titolo/sommario (ilike, max 10) |
 
 ### Generazione AI (Astro)
 
@@ -433,7 +355,7 @@ news1/
 | `POST` | `/api/upload-from-url` | Upload da URL remoto |
 | `POST` | `/api/contact` | Form contatti (con context bando opzionale) |
 | `POST` | `/api/indexnow-notify` | Trigger IndexNow su pubblicazione |
-| `GET` | `/api/check-api-status` | Health check |
+| `POST` | `/api/check-api-status` | Stato della richiesta di accesso API (email + codice di verifica) |
 
 ### Backend FastAPI (`/api/news/*`)
 
@@ -456,7 +378,7 @@ news1/
 
 ### Prerequisiti
 
-- **Node.js** ≥ 18
+- **Node.js** ≥ 22.6 (`npm test` usa `--experimental-strip-types`)
 - **Python** ≥ 3.10
 - **PostgreSQL client** (psql) per migrazioni manuali
 - Account Supabase (2 progetti separati: news + bandi)
@@ -492,26 +414,17 @@ pip install -r requirements.txt
 cd ..
 ```
 
+La pipeline bandi usa un venv e un `.env` propri: `cd scraper_bandi && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt schedule && cp .env.example .env` (`schedule` serve al sender e non sta in `requirements.txt`; dettagli in `scraper_bandi/README.md`, Setup).
+
 ### 5. Migrazioni database
 
-Sul **DB A** (news1) le migrazioni sono in `backend/sql/articles_alter_*.sql` e `interpelli_tables.sql`/`selezione_personale.sql`/`persona_jobs.sql`.
+Sul **DB A** (news1) le migrazioni sono in `backend/sql/articles_alter_*.sql`, `backend/sql/selezione_personale.sql`, `backend/sql/persona_jobs.sql` e `backend/app/interpelli_tables.sql`.
 
-Sul **DB B** (bandi):
-
-```bash
-export DATABASE_URL_BANDI='postgresql://postgres:<PWD>@db.<id>.supabase.co:5432/postgres'
-
-psql "$DATABASE_URL_BANDI" -f backend/sql/bando_alter_seo_fields.sql
-psql "$DATABASE_URL_BANDI" -f backend/sql/bando_alter_filters_and_attachments.sql
-psql "$DATABASE_URL_BANDI" -f backend/sql/bando_alter_validation_v2.sql
-psql "$DATABASE_URL_BANDI" -f backend/sql/bando_alter_data_pubblicazione_source.sql
-```
-
-In alternativa: incolla i file SQL nello SQL Editor del pannello Supabase B.
+Sul **DB B** (bandi) le migrazioni correnti sono i file idempotenti `backend/sql/bando_v11_*.sql` (ognuno con il suo `_rollback`): si applicano a mano nello SQL Editor del pannello Supabase B, nell'ordine scritto nelle intestazioni, e dopo ognuna va riavviato `edunews-bandi-sender` (`docs/bandi-monitor/RIPRESA.md` §3.5). Quali sono applicate (al 25/09/2026 mancano la 06 e la 07) e le regole: RIPRESA §1 e §7.
 
 ### 7. Avvio in sviluppo
 
-**Frontend** (porta 4321 in dev):
+**Frontend** (porta 80 anche in dev, da `server.port` in `astro.config.mjs`; il backend si aspetta la 4321, cioe' il CORS e il default di `FRONTEND_URL` in `backend/app/main.py`, che si ottiene con `npm run dev -- --port 4321`):
 ```bash
 npm run dev
 ```
@@ -524,10 +437,12 @@ uvicorn app.main:app --reload --port 8000
 
 > In produzione girare `uvicorn` **senza `--reload`** — il `reload=True` nel `__main__` e solo per dev.
 
-**Bandi — drain skill manuale** (no scheduler in v5):
+**Bandi** — pipeline in `scraper_bandi/` (venv proprio), schedulata da `backend/app/bandi_sender.py` alle 00/06/12/18; un singolo step a mano:
 ```bash
-python -m backend.app.bandi skill-drain
+cd scraper_bandi
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app <comando> --dry-run --limit N
 ```
+Comandi in `docs/bandi-monitor/RIPRESA.md` §6; senza `--dry-run` scrivono sul DB vero (ma senza `--attivo` non toccano colonne pubbliche).
 
 ---
 
@@ -541,7 +456,7 @@ PUBLIC_SUPABASE_URL="https://<id>.supabase.co"
 PUBLIC_SUPABASE_ANON_KEY="..."
 
 # === DB bandi (Supabase B) ===
-# Backend: service-role per scrittura
+# scraper_bandi e sender bandi: service-role per scrittura (letti da scraper_bandi/.env, poi dal .env della cartella di lavoro)
 SUPABASE_URL_BANDI="https://<id-bandi>.supabase.co"
 SUPABASE_SERVICE_KEY_BANDI="..."
 # Frontend: anon key + RLS lettura
@@ -553,7 +468,7 @@ OPENAI_API_KEY="sk-proj-..."
 ANTHROPIC_API_KEY="sk-ant-..."
 
 # === Scraping ===
-FIRECRAWL_API_KEY="fc-..."     # Usata da news scraping + skill bandi
+FIRECRAWL_API_KEY="fc-..."     # Usata da news scraping + scraper_bandi (che la legge da scraper_bandi/.env)
 
 # === Storage ===
 AWS_ACCESS_KEY_ID="..."
@@ -578,11 +493,18 @@ INDEXNOW_API_KEY="..."
 # === Backend Python ===
 BACKEND_URL="http://localhost:8000"
 
-# === Bandi: skill enrichment ===
-# v5: nessuno scraper, solo skill drain manuale (`python -m backend.app.bandi skill-drain`).
-BANDI_SKILL_BATCH_SIZE=10        # chunk SELECT per round drain
-BANDI_SKILL_MAX_ATTEMPTS=3       # retry massimi per singolo bando
-BANDI_SKILL_CONCURRENCY=3        # skill paralleli per round (asyncio.Semaphore)
+# === Web Bot Auth ===
+WEB_BOT_AUTH_PRIVATE_KEY="..."  # chiave privata Ed25519 (PKCS8 PEM); per ora inutilizzata
+
+# === API pubblica /api/v1 (facoltative) ===
+API_V1_FIDUCIA_IP=cloudflare     # cloudflare (default) | nginx | diretta
+API_V1_RL_CAPACITA=60            # richieste massime per client (token bucket)
+API_V1_RL_RICARICA=1             # gettoni ricaricati al secondo
+
+# === Bandi ===
+# La pipeline legge scraper_bandi/.env (variabili in scraper_bandi/app/settings.py; RESOLVER_MODALITA e MONITOR_* in RIPRESA §1).
+# Frontend, facoltative: BANDI_FONTE_LETTURA (bando | bando_pubblico) e BANDI_STATI_ESTESI (true solo dopo la migrazione 06).
+# DATABASE_URL e BANDI_SKILL_* compaiono in .env.example ma nessun codice le legge.
 ```
 
 > ⚠️ **Mai committare `.env` con segreti reali**. La chiave `SUPABASE_SERVICE_KEY_BANDI` da accesso pieno al DB bandi e va usata SOLO lato backend.
@@ -597,7 +519,7 @@ BANDI_SKILL_CONCURRENCY=3        # skill paralleli per round (asyncio.Semaphore)
 npm run build
 ```
 
-Il pre-build copia automaticamente le credenziali Google Cloud necessarie per il TTS (`scripts/copy-credentials.js`).
+Il pre-build (`scripts/copy-credentials.js`) e il post-build (`scripts/copy-credentials-post-build.js`) copiano le credenziali Google Cloud del TTS da `src/pages/api/tts/google-credentials.json` ed escono con errore se il file manca: in locale, senza quel file, `npx astro build` (vedi `docs/api-v1.md`).
 
 ### Configurazione server Astro
 
@@ -610,12 +532,12 @@ security: { checkOrigin: false }  // dietro Cloudflare + nginx
 
 ### Servizi systemd (esempio)
 
-In produzione tipicamente:
+In produzione tipicamente (nomi delle unit [DA VERIFICARE]; `edunews-bandi-sender` e' confermato da `docs/bandi-monitor/RIPRESA.md`):
 
 - `edunews-frontend.service` — `npm run build` + node entry
 - `edunews-backend.service` — `uvicorn app.main:app` (no `--reload`)
 - `edunews-news-sender.service` — `python -m app.sender`
-- ~~`edunews-bandi-sender.service`~~ — **disabilitato in v5** (`systemctl disable edunews-bandi-sender`); il drain skill si invoca a mano
+- `edunews-bandi-sender.service` — `scraper_bandi/.venv/bin/python -m backend.app.bandi_sender` dalla root del repo (esempio in `scraper_bandi/README.md`); **attivo**, giri alle 00/06/12/18 (`docs/bandi-monitor/RIPRESA.md` §2)
 - `edunews-interpelli-sender.service` — `python -m app.interpelli_sender`
 - `edunews-selezione-sender.service` — `python -m app.selezione_personale_sender`
 
@@ -628,12 +550,12 @@ In produzione tipicamente:
 | Tabella | Descrizione |
 |---|---|
 | `articles` | Articoli con contenuto, metadati, tag, FAQ, media, audio |
-| `profiles` | Profili utente con ruoli (admin/editore/redattore) |
+| `profiles` | Profili utente con ruoli (admin/direttore/redattore/giornalista) |
 | `categories` | Categorie primarie con colori e keyword |
 | `secondary_categories` | Sottocategorie collegate alle primarie |
 | `forum_messages` | Commenti e discussioni per articolo |
 | `podcasts` | Episodi podcast |
-| `interpelli` | Interpelli parlamentari Camera/Senato |
+| `interpelli` | Interpelli delle scuole (docenti, ATA, DSGA) da scuolainterpelli.it |
 | `selezione_personale` | Concorsi e selezioni |
 | `persona_jobs` | Job persistence per persona rewriter |
 
@@ -643,14 +565,15 @@ In produzione tipicamente:
 |---|---|
 | `bando` | Tabella principale (campi scraper + SEO skill + validation) |
 | `fonte` | Fonti istituzionali monitorate dallo scraper |
-| `regione`, `bando_regione` | Lookup geografiche + junction |
-| `settore`, `bando_settore` | Settori di intervento |
-| `beneficiario`, `bando_beneficiario` | Beneficiari ammissibili |
-| `codice_ateco`, `bando_ateco` | Classificazione ATECO |
-| `programma`, `bando_programma` | Programmi di finanziamento |
-| `modalita_erogazione` | Modalita erogazione (sussidio, prestito, ecc) |
+| `regioni`, `bando_regioni` | Lookup geografiche + junction |
+| `settori`, `bando_settori` | Settori di intervento |
+| `beneficiari`, `bando_beneficiari` | Beneficiari ammissibili |
+| `codici_ateco`, `bando_codici_ateco` | Classificazione ATECO |
+| `programmi` | Programmi di finanziamento (FK `bando.programma_id`, nessuna junction) |
+| `tipologie_bando` | Tipologia del bando (FK `bando.tipologia_bando_id`) |
+| `modalita_erogazione` | Modalita erogazione (sussidio, prestito, ecc; FK `bando.modalita_erogazione_id`) |
 
-**RLS attiva (v4)**: policy `bando_public_read` filtra `state = 'confirmed' AND slug IS NOT NULL` per l'anon key — il frontend vede solo i bandi confermati dalla skill (con slug pubblicabile).
+**RLS attiva (v9)**: la anon key legge solo le righe con `stato_processing = 'completed' AND slug IS NOT NULL`; la migrazione 07, non ancora applicata, la spostera' sul flag `pubblicato`. Tabelle di servizio v11 (`bando_link`, `bando_evento`, `bando_controllo`, `bando_fusione`, `bando_slug_storico`, `dominio_ufficiale`, `pipeline_run`, `pipeline_lock`, `fonte_run`), vista `bando_pubblico` e garanzie verso BandoFit: `docs/contratto-db-bandi.md`; migrazioni applicate: `docs/bandi-monitor/RIPRESA.md` §1.
 
 ---
 
@@ -669,16 +592,18 @@ Ogni categoria ha un colore identificativo proprio:
 | **Mondo** | Istruzione internazionale |
 | **Editoriali** | Opinioni e approfondimenti |
 | **Bandi** | Concorsi, gare e opportunita di finanziamento |
-| **Interpelli** | Interrogazioni parlamentari Camera/Senato |
-| **Selezione Personale** | Concorsi del comparto istruzione |
-| **EU Funding** | Italia Domani e fondi europei |
+| **Interpelli** | Interpelli delle scuole per supplenze (docenti, ATA, DSGA) |
+| **Selezione Personale** | Concorsi e selezioni della Pubblica Amministrazione (portale inPA) |
 
 ---
 
 ## Documentazione aggiuntiva
 
-- `bandi-seo-enricher/SKILL.md` — manifest skill bandi (workflow + regole critiche)
-- `bandi-seo-enricher/references/` — linee guida estrazione campi, struttura articoli, SEO, blacklist
+- `docs/bandi-monitor/RIPRESA.md` — stato attuale dei bandi, verifiche e comandi (`AVANZAMENTO.md`: cronaca dell'intervento)
+- `docs/contratto-db-bandi.md` — contratto del DB bandi per chi legge con la anon key (BandoFit)
+- `docs/api-v1.md` — API pubblica `/api/v1`
+- `docs/analisi-seo-elenchi.md`, `docs/report-seo-elenchi.md` — analisi e intervento SEO sulle pagine elenco
+- `scraper_bandi/README.md` — pipeline bandi, setup del venv
 - `backend/skill/SKILL.md` — skill ricostruzione articoli news
 - `backend/sql/bando_v4_collapse.sql` — migrazione state machine v4
 - `backend/sql/bando_v5_purge_legacy_scraper.sql` — drop tabelle scraper-internal
