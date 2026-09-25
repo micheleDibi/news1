@@ -85,7 +85,7 @@ export function renderSegmenti(segmenti: unknown): string {
     if (seg.kind === 'bold') return `<strong>${testo}</strong>`;
     if (seg.kind === 'link' && urlPubblicabile((seg as { url?: unknown }).url as string | undefined)) {
       const url = scappa(String((seg as { url: string }).url).trim());
-      return `<a href="${url}" class="text-primary underline underline-offset-2 hover:text-primary-dark" target="_blank" rel="noopener noreferrer nofollow">${testo}</a>`;
+      return `<a href="${url}" class="text-primary underline underline-offset-2" target="_blank" rel="noopener noreferrer nofollow">${testo}</a>`;
     }
     return testo;
   }).join('');
@@ -181,7 +181,7 @@ export function renderSezioni(contenuto: unknown): string {
     if (sezione.type === 'h2') {
       const testo = testoDi(sezione.text);
       pezzi.push(
-        `<h2 id="${ancora(testo)}" class="mt-11 mb-3 flex scroll-mt-4 items-baseline gap-3 font-heading text-[26px] font-bold tracking-[-.01em] text-[#0a2244] first:mt-0 [counter-increment:sezione] before:font-semibold before:text-[14px] before:tabular-nums before:text-[#004e9c] before:content-[counter(sezione,decimal-leading-zero)]">` +
+        `<h2 id="${ancora(testo)}" class="mt-11 mb-3 flex scroll-mt-4 items-baseline gap-3 font-heading text-[26px] font-bold tracking-[-.01em] text-[#0a2244] [counter-increment:sezione] before:font-semibold before:text-[14px] before:tabular-nums before:text-[#004e9c] before:content-[counter(sezione,decimal-leading-zero)]">` +
         `${scappa(testo)}</h2>`,
       );
     } else if (sezione.type === 'h3') {

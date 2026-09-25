@@ -144,7 +144,8 @@ export function attivaFiltriBandi(): void {
     if (velo) velo.hidden = true;
   }
 
-  function apriTendina(radice: HTMLElement): void {
+  /** `daTastiera`: aperta con Invio o Spazio. Solo allora il focus va nel campo di ricerca (il mock non lo sposta). */
+  function apriTendina(radice: HTMLElement, daTastiera: boolean): void {
     chiudiTendina();
     // Tendina e pannello non stanno aperti insieme (come nel mock).
     if (pannello?.checked) pannello.checked = false;
@@ -157,13 +158,14 @@ export function attivaFiltriBandi(): void {
     radice.querySelector('[data-rapido-apri]')?.setAttribute('aria-expanded', 'true');
     if (velo) velo.hidden = false;
     aperta = radice;
-    cerca?.focus();
+    if (daTastiera) cerca?.focus();
   }
 
   for (const radice of modulo.querySelectorAll<HTMLElement>('[data-rapido]')) {
-    radice.querySelector('[data-rapido-apri]')?.addEventListener('click', () => {
+    radice.querySelector('[data-rapido-apri]')?.addEventListener('click', (e) => {
       if (aperta === radice) chiudiTendina();
-      else apriTendina(radice);
+      // Un clic generato da tastiera ha `detail` 0.
+      else apriTendina(radice, (e as MouseEvent).detail === 0);
     });
     radice.querySelector('[data-tendina-cerca]')?.addEventListener('input', () => filtraTendina(radice));
     radice.querySelector('[data-tendina-fatto]')?.addEventListener('click', () => {
@@ -207,16 +209,30 @@ export function attivaFiltriBandi(): void {
     });
   }
 
-  const risultati = (): void => document.getElementById('risultati')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // «Cerca» porta ai risultati come `goResults` del mock: la barra dei filtri
+  // arriva a 76px dall'alto (nel mock: scroll a 620px, barra a 696px). Il conto
+  // parte dalla fine della testata, cosi' vale anche con testate piu' alte.
+  // «Mostra N bandi» chiude soltanto il pannello, la pagina resta dov'e'.
+  const testata = modulo.querySelector<HTMLElement>('[data-testata-lista]');
   modulo.addEventListener('submit', (e) => {
     const invio = (e as SubmitEvent).submitter;
     if (invio?.hasAttribute('data-mostra')) {
       if (pannello) pannello.checked = false;
-      risultati();
-    } else if (invio?.hasAttribute('data-cerca-invio') || document.activeElement?.id === 'cerca-bandi') {
-      risultati();
+    } else if (invio?.hasAttribute('data-cerca-invio') && testata) {
+      const fineTestata = testata.getBoundingClientRect().bottom + window.scrollY;
+      window.scrollTo({ top: Math.max(0, fineTestata - 76), behavior: 'smooth' });
     }
   });
+
+  // L'altezza della barra sticky (una o piu' righe secondo la larghezza) come
+  // variabile CSS: e' lo scroll-margin della lista, cosi' cambiando pagina la
+  // prima card non finisce sotto la barra.
+  const barra = modulo.querySelector<HTMLElement>('[data-barra]');
+  if (barra) {
+    const misura = (): void => modulo.style.setProperty('--altezza-barra', `${barra.offsetHeight}px`);
+    misura();
+    new ResizeObserver(misura).observe(barra);
+  }
 
   modulo.addEventListener('change', () => {
     aggiornaEtichette();

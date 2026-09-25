@@ -85,6 +85,7 @@ const altreDimensioni = hubDisponibili(sezione)
           briciole={[{ etichetta: 'Home', href: '/' }, { etichetta: 'Bandi', href: cfg.basePath }, { etichetta: dim.etichettaPlurale }]}
           titolo={titolo}
           testo={`${voci.length} ${voci.length === 1 ? 'pagina disponibile' : 'pagine disponibili'}`}
+          bandofit="filtro-hero"
         />
       </div>
     </section>
@@ -94,7 +95,7 @@ const altreDimensioni = hubDisponibili(sezione)
           {voci.map((v) => (
             <li>
               <a href={hrefFiltro(sezione, slugDimensione, v.slug)}
-                 class="flex items-baseline justify-between gap-3 rounded-xl border border-[#e3e7ee] bg-white px-[18px] py-3.5 no-underline transition-[border-color,box-shadow] duration-150 hover:border-[#9fb3d1] hover:shadow-[0_10px_28px_-18px_rgba(10,34,68,.45)] motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">
+                 class="flex items-baseline justify-between gap-3 rounded-xl border border-[#e3e7ee] bg-white px-[18px] py-3.5 no-underline transition-[border-color,box-shadow] duration-150 ease-[ease] hover:border-[#9fb3d1] hover:shadow-[0_10px_28px_-18px_rgba(10,34,68,.45)] motion-reduce:transition-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">
                 <span class="text-[15px] font-medium text-[#0a2244]">{v.etichetta}</span>
                 <span class="shrink-0 text-[13px] tabular-nums text-[#6b7383]">{v.totale}</span>
               </a>

@@ -53,7 +53,7 @@ const tipologia = bando.tipologia?.trim() || null;
 const programma = bando.programma?.trim() || null;
 const tipologiaProgramma = [tipologia, programma].filter((v): v is string => v !== null).join(' · ');
 
-const articolo = 'bando-item relative cursor-pointer overflow-hidden rounded-2xl border border-[#e3e7ee] bg-white transition-[border-color,box-shadow] duration-150 hover:border-[#9fb3d1] hover:shadow-[0_10px_28px_-18px_rgba(10,34,68,.45)] motion-reduce:transition-none';
+const articolo = 'bando-item relative cursor-pointer overflow-hidden rounded-2xl border border-[#e3e7ee] bg-white transition-[border-color,box-shadow] duration-150 ease-[ease] hover:border-[#9fb3d1] hover:shadow-[0_10px_28px_-18px_rgba(10,34,68,.45)] motion-reduce:transition-none';
 const link = 'text-inherit no-underline after:absolute after:inset-0 after:rounded-2xl focus-visible:outline-none focus-visible:after:outline focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-[#004e9c]';
 const pilloleEtichetta = 'max-w-full flex-none overflow-hidden text-ellipsis whitespace-nowrap rounded-full border border-[#e3e7ee] px-[9px] py-[3px] text-[12px] text-[#4b5565]';
 ---

@@ -22,7 +22,7 @@ test('segmenti link: link solo se pubblicabile, altrimenti testo semplice', () =
   const ufficiale = renderSegmenti([{ kind: 'link', text: 'Bando', url: 'https://regione.marche.it/b' }]);
   assert.equal(
     ufficiale,
-    '<a href="https://regione.marche.it/b" class="text-primary underline underline-offset-2 hover:text-primary-dark" ' +
+    '<a href="https://regione.marche.it/b" class="text-primary underline underline-offset-2" ' +
     'target="_blank" rel="noopener noreferrer nofollow">Bando</a>',
   );
   // rel: nofollow oltre a noopener/noreferrer. Prima mancava.
@@ -145,7 +145,7 @@ test('corpo: markup e classi delle sezioni', () => {
     ],
   });
   assert.ok(html.includes(
-    '<h2 id="requisiti-limiti" class="mt-11 mb-3 flex scroll-mt-4 items-baseline gap-3 font-heading text-[26px] font-bold tracking-[-.01em] text-[#0a2244] first:mt-0 [counter-increment:sezione] before:font-semibold before:text-[14px] before:tabular-nums before:text-[#004e9c] before:content-[counter(sezione,decimal-leading-zero)]">' +
+    '<h2 id="requisiti-limiti" class="mt-11 mb-3 flex scroll-mt-4 items-baseline gap-3 font-heading text-[26px] font-bold tracking-[-.01em] text-[#0a2244] [counter-increment:sezione] before:font-semibold before:text-[14px] before:tabular-nums before:text-[#004e9c] before:content-[counter(sezione,decimal-leading-zero)]">' +
     'Requisiti &amp; limiti</h2>',
   ));
   assert.ok(html.includes('<h3 class="mt-8 mb-2 font-heading text-[20px] font-semibold text-[#0a2244] first:mt-0">Sottotitolo</h3>'));

@@ -90,7 +90,7 @@ const legenda = 'mb-2 p-0 font-heading text-[16px] font-semibold text-[#0a2244]'
   class="group/filtri"
 >
   {/* ============================ Testata ============================ */}
-  <section class="relative bg-[#0a2244] text-white">
+  <section data-testata-lista class="relative bg-[#0a2244] text-white">
     <div class="mx-auto max-w-[1200px] px-4 pb-10 pt-9 sm:px-8">
       <TestataBandi {...testata} />
 
@@ -113,7 +113,7 @@ const legenda = 'mb-2 p-0 font-heading text-[16px] font-semibold text-[#0a2244]'
   </section>
 
   {/* ========================== Barra sticky ========================== */}
-  <div class="sticky top-0 z-20 border-b border-[#e3e7ee] bg-white/[.97] shadow-[0_1px_0_rgba(10,34,68,.02)]">
+  <div data-barra class="sticky top-0 z-20 border-b border-[#e3e7ee] bg-white/[.97] shadow-[0_1px_0_rgba(10,34,68,.02)]">
     <div data-velo hidden class="fixed inset-0 z-[1]"></div>
     <div class="relative z-[2] mx-auto flex max-w-[1200px] flex-wrap items-center gap-x-2.5 gap-y-2 px-4 py-3 sm:px-8">
       <div role="radiogroup" aria-label="Stato del bando" class="flex max-w-full flex-none gap-0.5 overflow-x-auto rounded-[10px] bg-[#eef1f5] p-[3px]">
@@ -140,7 +140,7 @@ const legenda = 'mb-2 p-0 font-heading text-[16px] font-semibold text-[#0a2244]'
           </button>
           <div id={`tendina-${r.chiave}`} data-tendina hidden class="absolute left-0 top-12 w-80 max-w-[calc(100vw-32px)] overflow-hidden rounded-[14px] border border-[#d5dbe4] bg-white shadow-[0_20px_48px_-16px_rgba(10,34,68,.35)]">
             <div class="border-b border-[#eef1f5] p-2.5">
-              <input type="text" data-tendina-cerca aria-label={`Cerca in ${r.etichetta}`} placeholder={`Cerca ${r.etichetta.toLowerCase()}…`} class="h-10 w-full rounded-lg border border-[#d5dbe4] px-3 text-[14px] outline-none focus-visible:border-[#004e9c]">
+              <input type="text" data-tendina-cerca aria-label={`Cerca in ${r.etichetta}`} placeholder={`Cerca ${r.etichetta.toLowerCase()}…`} class="h-10 w-full rounded-lg border border-[#d5dbe4] px-3 text-[14px] text-black outline-none focus-visible:border-[#004e9c]">
             </div>
             <div data-tendina-elenco class="max-h-[280px] overflow-y-auto py-1.5"></div>
             <div class="flex items-center justify-between border-t border-[#eef1f5] px-3 py-2.5">
@@ -202,9 +202,9 @@ const legenda = 'mb-2 p-0 font-heading text-[16px] font-semibold text-[#0a2244]'
           <fieldset class="m-0 min-w-0 border-0 p-0">
             <legend class={legenda}>Importo (dotazione)</legend>
             <div class="flex items-center gap-2.5">
-              <label class={campo}><span class="text-[12px] text-[#6b7383]">Da</span><input type="number" name="imin" value={valori.imin?.[0] ?? ''} min="0" step="1000" placeholder="0" aria-label="Importo minimo in euro" class="min-w-0 flex-1 border-0 text-[15px] tabular-nums outline-none"><span class="text-[13px] text-[#6b7383]">€</span></label>
+              <label class={campo}><span class="text-[12px] text-[#6b7383]">Da</span><input type="number" name="imin" value={valori.imin?.[0] ?? ''} placeholder="0" aria-label="Importo minimo in euro" class="min-w-0 flex-1 border-0 px-0.5 py-px text-[15px] tabular-nums text-black outline-none"><span class="text-[13px] text-[#6b7383]">€</span></label>
               <span aria-hidden="true" class="text-[#9aa3b2]">–</span>
-              <label class={campo}><span class="text-[12px] text-[#6b7383]">A</span><input type="number" name="imax" value={valori.imax?.[0] ?? ''} min="0" step="1000" placeholder="Nessun limite" aria-label="Importo massimo in euro" class="min-w-0 flex-1 border-0 text-[15px] tabular-nums outline-none"><span class="text-[13px] text-[#6b7383]">€</span></label>
+              <label class={campo}><span class="text-[12px] text-[#6b7383]">A</span><input type="number" name="imax" value={valori.imax?.[0] ?? ''} placeholder="Nessun limite" aria-label="Importo massimo in euro" class="min-w-0 flex-1 border-0 px-0.5 py-px text-[15px] tabular-nums text-black outline-none"><span class="text-[13px] text-[#6b7383]">€</span></label>
             </div>
             <div class="mt-2.5 flex flex-wrap gap-2">
               {presetImporto(valori).map((p) => (
@@ -215,9 +215,9 @@ const legenda = 'mb-2 p-0 font-heading text-[16px] font-semibold text-[#0a2244]'
           <fieldset class="m-0 min-w-0 border-0 p-0">
             <legend class={legenda}>Scadenza</legend>
             <div class="flex items-center gap-2.5">
-              <label class={campo}><span class="text-[12px] text-[#6b7383]">Dal</span><input type="date" name="scad_da" value={valori.scad_da?.[0] ?? ''} aria-label="Scadenza dal" class="min-w-0 flex-1 border-0 text-[14px] text-[#1f2937] outline-none"></label>
+              <label class={campo}><span class="text-[12px] text-[#6b7383]">Dal</span><input type="date" name="scad_da" value={valori.scad_da?.[0] ?? ''} aria-label="Scadenza dal" class="min-w-0 flex-1 border-0 pl-px text-[14px] text-[#1f2937] outline-none"></label>
               <span aria-hidden="true" class="text-[#9aa3b2]">–</span>
-              <label class={campo}><span class="text-[12px] text-[#6b7383]">Al</span><input type="date" name="scad_a" value={valori.scad_a?.[0] ?? ''} aria-label="Scadenza al" class="min-w-0 flex-1 border-0 text-[14px] text-[#1f2937] outline-none"></label>
+              <label class={campo}><span class="text-[12px] text-[#6b7383]">Al</span><input type="date" name="scad_a" value={valori.scad_a?.[0] ?? ''} aria-label="Scadenza al" class="min-w-0 flex-1 border-0 pl-px text-[14px] text-[#1f2937] outline-none"></label>
             </div>
             <div class="mt-2.5 flex flex-wrap gap-2">
               {presetScadenza(valori, oggi).map((p) => (
@@ -237,7 +237,7 @@ const legenda = 'mb-2 p-0 font-heading text-[16px] font-semibold text-[#0a2244]'
   </div>
 
   {/* ============================ Risultati ============================ */}
-  <section id="risultati" class="scroll-mt-[76px] bg-[#f4f6f9] pb-16 pt-6">
+  <section id="risultati" class="bg-[#f4f6f9] pb-16 pt-6">
     <div class="mx-auto max-w-[1200px] px-4 sm:px-8">
       <div class="flex min-h-[44px] flex-wrap items-center gap-4">
         <p class="flex-none whitespace-nowrap text-[15px] text-[#3d4657]"><strong id="visible-count" class="font-heading text-[22px] font-bold tabular-nums text-[#0a2244]">{numeroGrande(totale)}</strong> bandi trovati</p>

@@ -16,6 +16,7 @@ import {
 } from '../../lib/bandi/testi-stato';
 import { aspettoStato, inScadenza, PALETTE_SCADENZA } from '../../lib/bandi/aspetto';
 import { calendario } from '../../lib/bandi/calendario';
+import { eur } from '../../lib/bandi/elenco';
 import { sceltaCta } from '../../lib/bandi/cta';
 import { statoDaEventi, vociAggiornamento } from '../../lib/bandi/aggiornamenti';
 import { jsonLdBando } from '../../lib/bandi/jsonld';
@@ -349,9 +350,10 @@ const vociIndice = [...corpoHtml.matchAll(/<h2 id="([^"]+)"[^>]*>([^<]*)<\/h2>/g
   .filter((v) => v.testo.trim() !== '');
 const conIndice = vociIndice.length >= SOGLIA_INDICE;
 
-// Importi: su mobile un importo lungo prende la riga intera invece di sconfinare.
-const importoTotale = bando.importo_totale_eur != null ? formatImporto(bando.importo_totale_eur) : null;
-const importoMassimo = bando.importo_max_per_progetto_eur != null ? formatImporto(bando.importo_max_per_progetto_eur) : null;
+// Importi a video nel formato del mock (`eur`: punto delle migliaia anche sotto 10.000,
+// «6.500 €»); formatImporto resta per la meta description.
+const importoTotale = bando.importo_totale_eur != null ? eur(bando.importo_totale_eur) : null;
+const importoMassimo = bando.importo_max_per_progetto_eur != null ? eur(bando.importo_max_per_progetto_eur) : null;
 const beneficiari = bando.beneficiari_nomi.filter((b) => b.trim() !== '');
 const tematiche = (bando.tematica ?? []).filter((t) => typeof t === 'string' && t.trim() !== '');
 const ATECO_VISIBILI = 5;
