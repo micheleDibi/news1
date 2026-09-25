@@ -107,7 +107,7 @@ export function vociAggiornamento(
   eventi: readonly EventoBando[] | null | undefined,
 ): VoceAggiornamento[] {
   if (!Array.isArray(eventi)) return [];
-  const voci: VoceAggiornamento[] = [];
+  const voci: Array<{ voce: VoceAggiornamento; giorno: string }> = [];
   for (const evento of eventi) {
     if (evento.in_aggiornamenti !== true) continue;
     const testo = testoEvento(evento);
@@ -116,16 +116,25 @@ export function vociAggiornamento(
     // La prova su un aggregatore non si mostra: la regola vale in pagina come
     // vale a DB, dove un trigger azzera `url_prova` sui domini in denylist.
     const mostrabile = host !== null && !eAggregatore(host);
+    const giorno = typeof evento.data_evento === 'string' && /^\d{4}-\d{2}-\d{2}/.test(evento.data_evento)
+      ? evento.data_evento.slice(0, 10)
+      : '';
     voci.push({
-      id: evento.id,
-      testo,
-      quando: giornoItaliano(evento.data_evento ?? null),
-      url: mostrabile ? (evento.url_prova ?? null) : null,
-      host: mostrabile ? host : null,
-      verificato: evento.verificato === true,
+      voce: {
+        id: evento.id,
+        testo,
+        quando: giornoItaliano(evento.data_evento ?? null),
+        url: mostrabile ? (evento.url_prova ?? null) : null,
+        host: mostrabile ? host : null,
+        verificato: evento.verificato === true,
+      },
+      giorno,
     });
   }
-  return voci.sort((a, b) => (b.quando === null ? '' : b.quando).localeCompare(a.quando ?? ''));
+  // Si ordina sulla data ISO, non sulla frase: «9 luglio 2026» viene dopo
+  // «25 settembre 2026» nell'ordine dei caratteri. A parità di giorno resta
+  // l'ordine d'ingresso (sort stabile); le date mancanti vanno in fondo.
+  return voci.sort((a, b) => b.giorno.localeCompare(a.giorno)).map((v) => v.voce);
 }
 
 /**

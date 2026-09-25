@@ -9,8 +9,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BADGE_STATO, badgeStato, giornoItaliano, opzioniStato, oraItaliana, partecipazioneAperta,
-  sottotestoStato, testoFonteUfficiale,
+  BADGE_STATO, badgeStato, giornoItaliano, giorniAllaScadenza, opzioniStato, oraItaliana, partecipazioneAperta,
+  rigaScadenza, sottotestoStato, testoFonteUfficiale, testoGiorniMancanti,
 } from '../../src/lib/bandi/testi-stato.ts';
 import { STATI_BANDO } from '../../src/lib/stato-bando.ts';
 
@@ -167,4 +167,49 @@ test('opzioni del filtro: i due stati nuovi solo con il flag esteso', () => {
     ['aperto', 'in apertura prossimamente', 'chiuso', 'sospeso', 'revocato']);
   // Le etichette dei chip sono le stesse dei badge: un solo vocabolario visibile.
   for (const opzione of opzioniStato(true)) assert.equal(opzione.label, badgeStato(opzione.value).etichetta);
+});
+
+test('giorni alla scadenza: date civili, nessun fuso', () => {
+  assert.equal(giorniAllaScadenza('2026-10-29', OGGI), 36);
+  assert.equal(giorniAllaScadenza('2026-09-23', OGGI), 0);
+  assert.equal(giorniAllaScadenza('2026-09-24T12:00:00', OGGI), 1);
+  assert.equal(giorniAllaScadenza('2026-09-20', OGGI), -3);
+  // A cavallo del cambio d'ora (25 ottobre) resta un numero intero di giorni.
+  assert.equal(giorniAllaScadenza('2026-10-26', '2026-10-24'), 2);
+  assert.equal(giorniAllaScadenza(null, OGGI), null);
+  assert.equal(giorniAllaScadenza('entro fine mese', OGGI), null);
+  assert.equal(giorniAllaScadenza('2026-10-29', ''), null);
+  // Forma giusta, giorno inesistente: null, non NaN («tra NaN giorni»).
+  assert.equal(giorniAllaScadenza('2026-10-32', OGGI), null);
+  assert.equal(testoGiorniMancanti(Number.NaN), null);
+
+  assert.equal(testoGiorniMancanti(36), 'tra 36 giorni');
+  assert.equal(testoGiorniMancanti(1), 'scade domani');
+  assert.equal(testoGiorniMancanti(0), 'scade oggi');
+  // Mai «Scaduto da N giorni»: il passato non ha conto alla rovescia.
+  assert.equal(testoGiorniMancanti(-3), null);
+  assert.equal(testoGiorniMancanti(null), null);
+});
+
+test('riga scadenza della card: prima lo stato, poi la data', () => {
+  assert.deepEqual(rigaScadenza('aperto', '2026-10-29', OGGI), { testo: 'Scade il 29 ottobre 2026', mancano: 'tra 36 giorni' });
+  assert.deepEqual(rigaScadenza('aperto', '2026-09-24', OGGI), { testo: 'Scade il 24 settembre 2026', mancano: 'scade domani' });
+  assert.deepEqual(rigaScadenza('aperto', '2026-09-23', OGGI), { testo: 'Scade il 23 settembre 2026', mancano: 'scade oggi' });
+  // Dati incoerenti (aperto con data passata): niente «Scade il» al passato.
+  assert.deepEqual(rigaScadenza('aperto', '2026-09-01', OGGI), { testo: 'Scadenza: 1 settembre 2026', mancano: null });
+  assert.deepEqual(
+    rigaScadenza('in apertura prossimamente', '2026-12-15', OGGI),
+    { testo: 'Scade il 15 dicembre 2026', mancano: null },
+  );
+  assert.deepEqual(rigaScadenza('chiuso', '2026-09-01', OGGI), { testo: 'Scaduto il 1 settembre 2026', mancano: null });
+  // Chiuso oggi a ora di scadenza passata: la vista lo dà già chiuso.
+  assert.deepEqual(rigaScadenza('chiuso', '2026-09-23', OGGI), { testo: 'Scaduto il 23 settembre 2026', mancano: null });
+  // Chiusura anticipata: la data è ancora davanti, ma «Scade il» mentirebbe.
+  assert.deepEqual(rigaScadenza('chiuso', '2026-10-31', OGGI), { testo: 'Scadenza: 31 ottobre 2026', mancano: null });
+  assert.deepEqual(rigaScadenza('sospeso', '2026-10-31', OGGI), { testo: 'Scadenza: 31 ottobre 2026', mancano: null });
+  assert.deepEqual(rigaScadenza('revocato', '2026-10-31', OGGI), { testo: 'Scadenza: 31 ottobre 2026', mancano: null });
+  assert.deepEqual(rigaScadenza(null, '2026-10-31', OGGI), { testo: 'Scadenza: 31 ottobre 2026', mancano: null });
+  // Senza una data leggibile la riga non c'è: niente placeholder.
+  assert.equal(rigaScadenza('aperto', null, OGGI), null);
+  assert.equal(rigaScadenza('aperto', 'da definire', OGGI), null);
 });

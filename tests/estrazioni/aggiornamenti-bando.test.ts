@@ -79,6 +79,20 @@ test('le voci escono dalla più recente', () => {
   assert.deepEqual(voci.map((v) => v.id), [2, 1, 3]);
 });
 
+test('l\'ordine segue la data, non la frase in italiano', () => {
+  // Ordinate sulla frase, «9 luglio» e «9 ottobre» passavano davanti a
+  // «25 settembre» e a «12 ottobre»: il caso reale di una scheda con due allegati.
+  const voci = vociAggiornamento([
+    evento({ id: 1, data_evento: '2026-10-12' }),
+    evento({ id: 2, data_evento: '2026-10-09' }),
+    evento({ id: 3, data_evento: '2026-11-03' }),
+    evento({ id: 4, data_evento: '2026-07-09' }),
+    evento({ id: 5, data_evento: '2026-09-25T08:00:00Z' }),
+  ]);
+  assert.deepEqual(voci.map((v) => v.id), [3, 1, 2, 5, 4]);
+  assert.equal(voci[0].quando, '3 novembre 2026');
+});
+
 test('prima della migrazione 06 lo stato lo dicono gli eventi', () => {
   // Il caso che questa funzione esiste per coprire: la colonna dice «aperto»
   // perché il CHECK ammette tre valori, ma l'ente ha revocato il bando. Senza

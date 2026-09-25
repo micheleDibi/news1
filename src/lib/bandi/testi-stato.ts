@@ -171,6 +171,63 @@ export function sottotestoStato(campi: CampiTestoStato): string | null {
   return 'Lo stato di questo bando è in verifica.';
 }
 
+// ---------------------------------------------------------------------------
+// Scadenza: giorni che mancano e riga della card
+// ---------------------------------------------------------------------------
+
+/**
+ * Giorni di calendario da `oggi` alla scadenza, entrambe date civili di Roma:
+ * 0 il giorno stesso, negativo se è passata, null senza una data leggibile.
+ * `Date.parse` legge una data senza ora in UTC per specifica, quindi la
+ * differenza è un multiplo esatto del giorno qualunque sia il fuso del processo.
+ */
+export function giorniAllaScadenza(dataScadenza: string | null | undefined, oggi: string): number | null {
+  const scadenza = soloGiorno(dataScadenza);
+  const riferimento = soloGiorno(oggi);
+  if (scadenza === null || riferimento === null) return null;
+  const giorni = Math.round((Date.parse(scadenza) - Date.parse(riferimento)) / 86_400_000);
+  // `2026-10-32` passa la forma ma non è un giorno: Date.parse dà NaN.
+  return Number.isFinite(giorni) ? giorni : null;
+}
+
+/** «tra 36 giorni», «scade domani», «scade oggi»; null se la scadenza è passata o manca. */
+export function testoGiorniMancanti(giorni: number | null): string | null {
+  if (giorni === null || !Number.isFinite(giorni) || giorni < 0) return null;
+  if (giorni === 0) return 'scade oggi';
+  if (giorni === 1) return 'scade domani';
+  return `tra ${giorni} giorni`;
+}
+
+export interface RigaScadenza {
+  /** «Scade il 31 ottobre 2026», «Scaduto il …» oppure «Scadenza: …». */
+  readonly testo: string;
+  /** Solo per un bando aperto: «tra 36 giorni», «scade domani», «scade oggi». */
+  readonly mancano: string | null;
+}
+
+/**
+ * La riga di scadenza della card: prima lo stato, poi la data. Un bando chiuso
+ * prima della scadenza, o chiuso oggi a ora passata (la vista applica
+ * `ora_scadenza`, che la lista non legge), non deve leggere «Scade il»; un
+ * sospeso o un revocato non ha un conto alla rovescia.
+ */
+export function rigaScadenza(
+  stato: string | null | undefined,
+  dataScadenza: string | null | undefined,
+  oggi: string,
+): RigaScadenza | null {
+  const scadenza = soloGiorno(dataScadenza);
+  const giorno = giornoItaliano(scadenza);
+  if (scadenza === null || giorno === null) return null;
+  const futura = scadenza >= oggi;
+  if (stato === 'aperto' && futura) {
+    return { testo: `Scade il ${giorno}`, mancano: testoGiorniMancanti(giorniAllaScadenza(scadenza, oggi)) };
+  }
+  if (stato === 'in apertura prossimamente' && futura) return { testo: `Scade il ${giorno}`, mancano: null };
+  if (stato === 'chiuso' && scadenza <= oggi) return { testo: `Scaduto il ${giorno}`, mancano: null };
+  return { testo: `Scadenza: ${giorno}`, mancano: null };
+}
+
 /**
  * Su un bando sospeso o revocato la CTA e il conto alla rovescia spariscono:
  * invitare a candidarsi a un bando revocato è peggio che non dire nulla.
