@@ -3167,3 +3167,68 @@ class TestDuplicatoNonERifiuto(unittest.IsolatedAsyncioTestCase):
     async def test_il_rifiuto_vero_si_conta(self):
         esito = await self._giro(self._Rifiuta())
         self.assertGreaterEqual(esito.eventi_non_scritti, 1)
+
+
+class TestPopolazioneDelReport(unittest.IsolatedAsyncioTestCase):
+    """Il report misura le proposte del classificatore, non il registro.
+
+    Due difetti misurati il 25/09/2026, uno sopra l'altro, su un giro che aveva
+    appena ammesso 6 eventi su 17:
+
+    * il filtro escludeva i soli `TIPI_INTERNI`, quindi nel campione entravano
+      le 2 143 righe `pubblicazione` del backfill della 02, i
+      `fonte_ufficiale_*` e le transizioni del cron — tutti `verificato=false`
+      per costruzione: la precisione usciva **0**;
+    * i tipi si filtravano **dopo** la lettura, quindi `--campione 100` leggeva
+      100 righe e le prime erano 336 `segnale_fonte`: il report diceva
+      `eventi: 0`. E' lo stesso difetto del `--limit` che conta le righe lette
+      invece di quelle utili, gia' corretto in `link-verifica` e nel resolver.
+    """
+
+    async def test_solo_i_tipi_proponibili_entrano_nel_campione(self):
+        eventi_mod = carica_modulo("eventi")
+        righe = [
+            {"id": 1, "tipo": "pubblicazione", "verificato": False},
+            {"id": 2, "tipo": "segnale_fonte", "verificato": False},
+            {"id": 3, "tipo": "chiusura_automatica", "verificato": False},
+            {"id": 4, "tipo": "fonte_ufficiale_verificata", "verificato": False},
+            {"id": 5, "tipo": "faq", "verificato": True, "gate": {"falliti": []}},
+            {"id": 6, "tipo": "apertura", "verificato": False,
+             "gate": {"falliti": [{"gate": "G7", "motivo": "nessuna seconda prova"}]}},
+        ]
+        esito = await monitoraggio.run_report_ombra(
+            righe=righe, uscita=io.StringIO(), campione=100, dal=date(2026, 9, 25))
+        self.assertEqual(esito["eventi"], 2, "solo `faq` e `apertura` sono proposte")
+        self.assertEqual(esito["ammessi"], 1)
+        self.assertEqual(esito["respinti"], 1)
+        for riga in righe[:4]:
+            self.assertIn(riga["tipo"],
+                          set(righe[i]["tipo"] for i in range(4)))
+        self.assertNotIn(righe[0]["tipo"], eventi_mod.TIPI_PROPONIBILI)
+
+    async def test_la_lettura_chiede_i_tipi_al_database(self):
+        # Se i tipi non vanno nella query, il `--limit` li taglia prima che il
+        # filtro li veda.
+        eventi_mod = carica_modulo("eventi")
+        visti = {}
+
+        def select_eventi(**kwargs):
+            visti.update(kwargs)
+            return []
+
+        with patch.object(carica_modulo("db"), "select_eventi", select_eventi):
+            await monitoraggio.run_report_ombra(
+                uscita=io.StringIO(), campione=50, dal=date(2026, 9, 25))
+        self.assertEqual(tuple(visti["tipi"]), tuple(eventi_mod.TIPI_PROPONIBILI))
+
+    async def test_un_tipo_chiesto_a_mano_resta_quello(self):
+        visti = {}
+
+        def select_eventi(**kwargs):
+            visti.update(kwargs)
+            return []
+
+        with patch.object(carica_modulo("db"), "select_eventi", select_eventi):
+            await monitoraggio.run_report_ombra(
+                uscita=io.StringIO(), campione=50, tipo="proroga", dal=date(2026, 9, 25))
+        self.assertEqual(tuple(visti["tipi"]), ("proroga",))

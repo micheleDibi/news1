@@ -2820,13 +2820,17 @@ def report_ombra_da_eventi(
     for riga in righe:
         if tipo and riga.get("tipo") != tipo:
             continue
-        # Gli eventi interni non sono una proposta del classificatore e non
-        # hanno mai `verificato`: entrerebbero tutti come `ammesso=False` e
-        # affonderebbero la precisione. `applica_eventi` li esclude gia' —
-        # l'asimmetria era il difetto, non l'esclusione. Con un
-        # `segnale_fonte` per riga cambiata a ogni giro, il registro e' quasi
-        # solo interno: misurare su quella popolazione non misura i gate.
-        if riga.get("tipo") in eventi_mod.TIPI_INTERNI:
+        # Si misura **solo** cio' che il classificatore ha proposto. Escludere
+        # i soli `TIPI_INTERNI` non bastava: restavano dentro `pubblicazione`
+        # (2 143 righe scritte dal backfill della 02), `fonte_ufficiale_*` e le
+        # transizioni automatiche del cron, che sono eventi di sistema con
+        # `verificato=false` per costruzione. Misurato il 25/09/2026: il
+        # campione da 100 era fatto di 100 `pubblicazione` e la precisione
+        # usciva 0 su un monitor che aveva appena ammesso 6 eventi su 17.
+        # `TIPI_PROPONIBILI` e' lo stesso insieme che il tool del modello
+        # ammette: la popolazione giusta e' quella, non «tutto tranne gli
+        # interni».
+        if riga.get("tipo") not in eventi_mod.TIPI_PROPONIBILI:
             continue
         scelte.append(riga_report_da_evento(riga))
         if len(scelte) >= max(1, campione):
@@ -2923,8 +2927,14 @@ async def run_report_ombra(
             # Senza `--limit` si legge quanto serve al campione e non una riga
             # di piu': `bando_evento` e' un registro che cresce e basta, e un
             # comando di misura non deve poterselo portare via tutto.
+            # I tipi si filtrano **nella query**, non a valle. Altrimenti il
+            # `--limit` conta le righe lette e non quelle misurate: il
+            # 25/09/2026 il registro aveva 336 `segnale_fonte` e 16
+            # `chiusura_automatica` davanti a 17 proposte, e un campione da 100
+            # righe non ne conteneva nemmeno una — il report diceva
+            # `eventi: 0` su un giro che aveva appena ammesso sei eventi.
             righe = db.select_eventi(
-                tipi=(tipo,) if tipo else (), dal=dal,
+                tipi=(tipo,) if tipo else eventi_mod.TIPI_PROPONIBILI, dal=dal,
                 limit=limit if limit is not None else max(1, campione))
         elenco = report_ombra_da_eventi(righe, campione=campione, tipo=tipo)
         sorgente = "bando_evento"
