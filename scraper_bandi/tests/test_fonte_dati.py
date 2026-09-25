@@ -144,14 +144,42 @@ class CodaDelMonitor(unittest.TestCase):
             self.assertFalse(
                 monitoraggio.FonteDatiSupabase().salva_controllo(7, {"etag": "x"}))
 
-    def test_registra_evento_passa_da_registra_evento(self):
+    def test_registra_evento_passa_da_registra_evento_esito(self):
+        # Il booleano ora e' un involucro dell'esito a tre valori: chi conta il
+        # lavoro fatto deve poter distinguere un rifiuto da un duplicato.
         visti = []
-        with patch.object(db, "registra_evento",
-                          lambda riga, **k: visti.append(dict(riga)) or True):
+
+        def scrive(riga, **_k):
+            visti.append(dict(riga))
+            return db.EVENTO_SCRITTO
+
+        with patch.object(db, "registra_evento_esito", scrive):
             esito = monitoraggio.FonteDatiSupabase().registra_evento(
                 {"bando_id": 7, "tipo": "proroga"})
         self.assertTrue(esito)
         self.assertEqual(visti, [{"bando_id": 7, "tipo": "proroga"}])
+
+    def test_il_duplicato_non_e_una_scrittura_ma_non_e_un_rifiuto(self):
+        fonte = monitoraggio.FonteDatiSupabase()
+        with patch.object(db, "registra_evento_esito",
+                          lambda riga, **k: db.EVENTO_GIA_PRESENTE):
+            # Per il booleano «non ho scritto niente di nuovo» e' corretto...
+            self.assertFalse(fonte.registra_evento({"bando_id": 7, "tipo": "proroga"}))
+            # ...ma l'esito dice che non e' un rifiuto, e il contatore del giro
+            # guarda quello.
+            self.assertEqual(
+                fonte.registra_evento_esito({"bando_id": 7, "tipo": "proroga"}),
+                db.EVENTO_GIA_PRESENTE)
+
+    def test_un_guasto_nel_client_e_un_rifiuto(self):
+        def esplode(riga, **_k):
+            raise RuntimeError("connessione chiusa")
+
+        with patch.object(db, "registra_evento_esito", esplode):
+            fonte = monitoraggio.FonteDatiSupabase()
+            self.assertEqual(
+                fonte.registra_evento_esito({"bando_id": 7, "tipo": "proroga"}),
+                db.EVENTO_RIFIUTATO)
 
     def test_eventi_recenti_filtra_per_bando_e_per_data(self):
         visti = {}
