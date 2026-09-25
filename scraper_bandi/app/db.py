@@ -1850,6 +1850,33 @@ def senza_generate(riga: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in riga.items() if k not in COLONNE_GENERATE}
 
 
+#: I tre esiti di un INSERT in `bando_evento`. Servono a distinguere «il
+#: database ha rifiutato» da «c'era gia'»: il secondo e' il caso normale
+#: quando si rifa' un giro sulle stesse righe, e confonderli fa gridare un
+#: allarme su un lavoro riuscito (misurato il 25/09/2026: `eventi_non_scritti:
+#: 2` su due duplicati, con l'allarme «il database li ha rifiutati»).
+EVENTO_SCRITTO = "scritto"
+EVENTO_GIA_PRESENTE = "gia_presente"
+EVENTO_RIFIUTATO = "rifiutato"
+
+
+def registra_evento_esito(
+    evento: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> str:
+    """INSERT in `bando_evento`, con i tre esiti di `EVENTO_*`.
+
+    Gemello di `applica_evento_esito`, e per la stessa ragione: chi conta il
+    lavoro fatto deve poter distinguere un rifiuto da un duplicato. Il wrapper
+    booleano `registra_evento` resta per i chiamanti che non guardano il
+    motivo.
+    """
+    esito = _registra_evento(evento, client=client, strumento=strumento)
+    return esito
+
+
 def registra_evento(
     evento: Mapping[str, Any],
     *,
@@ -1861,15 +1888,29 @@ def registra_evento(
     Gli eventi del resolver in modalita' ombra arrivano qui con
     `leggibile=false` e `applicato=false`: il cursore non viene assegnato e
     nessun consumatore li vede finche' il committente non attiva il tipo.
+
+    Un evento **gia' presente** risponde `False` come prima: per chi guarda
+    solo il booleano «non ho scritto niente di nuovo» e' la risposta giusta.
+    Chi deve distinguere usa `registra_evento_esito`.
     """
+    return _registra_evento(
+        evento, client=client, strumento=strumento) == EVENTO_SCRITTO
+
+
+def _registra_evento(
+    evento: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> str:
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste(TABELLA_EVENTO):
-        return False
+        return EVENTO_RIFIUTATO
     presenti = strumento.colonne(TABELLA_EVENTO)
     riga = {k: v for k, v in senza_generate(evento).items()
             if not presenti or k in presenti}
     if not riga.get("bando_id") or not riga.get("tipo"):
-        return False
+        return EVENTO_RIFIUTATO
     try:
         _client(client).table(TABELLA_EVENTO).insert(riga).execute()
     except Exception as e:
@@ -1883,10 +1924,10 @@ def registra_evento(
             # nascondeva i guasti veri.
             logger.debug("[db] evento {} gia' registrato per il bando {}",
                          riga.get("tipo"), riga.get("bando_id"))
-            return False
+            return EVENTO_GIA_PRESENTE
         logger.warning("[db] insert bando_evento ({}) fallito: {}", riga.get("tipo"), e)
-        return False
-    return True
+        return EVENTO_RIFIUTATO
+    return EVENTO_SCRITTO
 
 
 #: Il codice di Postgres per la violazione di un vincolo di unicita'.

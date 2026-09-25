@@ -621,6 +621,12 @@ class FonteDati:
         self.registrati.append(dict(riga))
         return True
 
+    def registra_evento_esito(self, riga: Mapping[str, Any]) -> str:
+        """Tre esiti invece di un booleano: chi conta il lavoro fatto deve
+        distinguere «il database ha rifiutato» da «c'era gia'»."""
+        from . import db
+        return db.EVENTO_SCRITTO if self.registra_evento(riga) else db.EVENTO_RIFIUTATO
+
 
 class FonteDatiSupabase(FonteDati):
     """Versione reale: passa sempre da `db.controllo` e non solleva mai.
@@ -771,12 +777,16 @@ class FonteDatiSupabase(FonteDati):
 
     def registra_evento(self, riga: Mapping[str, Any]) -> bool:
         from . import db
+        return self.registra_evento_esito(riga) == db.EVENTO_SCRITTO
+
+    def registra_evento_esito(self, riga: Mapping[str, Any]) -> str:
+        from . import db
         try:
-            return bool(db.registra_evento(
-                riga, client=self._client, strumento=self._adattatore()))
+            return db.registra_evento_esito(
+                riga, client=self._client, strumento=self._adattatore())
         except Exception as e:                            # pragma: no cover - ripiego
             logger.warning("[monitor] evento {} non registrato: {}", riga.get("tipo"), e)
-            return False
+            return db.EVENTO_RIFIUTATO
 
 
 def da_db() -> FonteDati:
@@ -1091,7 +1101,8 @@ async def controlla(
             # identiche nella stessa risposta superano entrambe il G8 e il box
             # «Aggiornamenti» mostra due volte la stessa notizia.
             ctx = _ctx_aggiornato(ctx, applicazione.colonne, applicazione.riga)
-            if scrittore is not None and not scrittore.registra_evento(applicazione.riga):
+            if (scrittore is not None
+                    and _rifiutato(scrittore, applicazione.riga)):
                 esito.eventi_non_scritti += 1
         else:
             respinti.append(voce)
@@ -1109,7 +1120,7 @@ async def controlla(
             # le nega il cursore e quindi la RLS di anon, e `gate` porta quale
             # gate ha respinto — che e' l'unica informazione utile.
             if (scrittore is not None and len(respinti) <= RESPINTI_A_DB_PER_BANDO
-                    and not scrittore.registra_evento(applicazione.riga)):
+                    and _rifiutato(scrittore, applicazione.riga)):
                 esito.eventi_non_scritti += 1
 
     esito.eventi = tuple(ammessi)
@@ -1532,6 +1543,21 @@ def _sospendi_fonte(bando_id: Any) -> None:
     except Exception as e:                                # pragma: no cover - ripiego
         logger.warning(
             "[monitor] bando {}: fonte_ufficiale_stato non aggiornata: {}", bando_id, e)
+
+
+def _rifiutato(scrittore: Any, riga: Mapping[str, Any]) -> bool:
+    """Vero solo se il database ha **rifiutato** la riga.
+
+    Un evento che c'era gia' non e' un rifiuto: e' il caso normale quando si
+    rifa' un giro sulle stesse righe (`--forza`), e contarlo come fallimento
+    faceva gridare un allarme su un lavoro riuscito. Le fonti dati che non
+    espongono `registra_evento_esito` ricadono sul booleano.
+    """
+    from . import db
+    esito = getattr(scrittore, "registra_evento_esito", None)
+    if esito is None:
+        return not scrittore.registra_evento(riga)
+    return esito(riga) == db.EVENTO_RIFIUTATO
 
 
 def _salva(fonte_dati: FonteDati | None, esito: EsitoControllo) -> None:

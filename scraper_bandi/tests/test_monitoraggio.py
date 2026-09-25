@@ -3114,3 +3114,56 @@ class TestForzaLaCoda(unittest.TestCase):
         riga = self._riga(prossimo_controllo_at="2020-01-01T00:00:00+00:00")
         self.assertTrue(monitoraggio.selezionabile(riga))
         self.assertTrue(monitoraggio.selezionabile(riga, forza=True))
+
+
+class TestDuplicatoNonERifiuto(unittest.IsolatedAsyncioTestCase):
+    """Un evento che c'era gia' non e' un fallimento del giro.
+
+    Misurato il 25/09/2026: `eventi_non_scritti: 2` con l'allarme «il database
+    li ha rifiutati», su due eventi che erano semplicemente **duplicati** —
+    l'indice di dedup della migrazione 02 aveva fatto il suo lavoro. E' il caso
+    normale quando si rifa' un giro sulle stesse righe con `--forza`, e
+    confonderlo con un guasto fa gridare un allarme su un lavoro riuscito.
+    """
+
+    class _Duplica(monitoraggio.FonteDati):
+        def registra_evento_esito(self, riga):
+            from scraper_app import db
+            return db.EVENTO_GIA_PRESENTE
+
+    class _Rifiuta(monitoraggio.FonteDati):
+        def registra_evento_esito(self, riga):
+            from scraper_app import db
+            return db.EVENTO_RIFIUTATO
+
+    async def _giro(self, fonte):
+        eventi_mod = carica_modulo("eventi")
+        dominio_ufficiale = carica_modulo("dominio_ufficiale")
+        html = ("<h1>Avviso</h1><p>Sono online le FAQ dell'avviso.</p>"
+                "<p><a href='https://www.lazioeuropa.it/faq.pdf'>FAQ</a></p>")
+
+        async def scarica(url, **_k):
+            return _Risposta(html=html)
+
+        async def classifica(_ctx):
+            return [eventi_mod.Evento(
+                tipo="faq", citazione="Sono online le FAQ dell'avviso",
+                url_prova="https://www.lazioeuropa.it/bandi/avviso-1/")]
+
+        tabella = dominio_ufficiale.costruisci(
+            fonti=[{"id": 1, "link": "https://www.lazioeuropa.it/bandi/"}])
+        riga = _bando(testo_norm="Avviso\n\nNessuna novita'.",
+                      impronta_contenuto="diversa-da-quella-nuova")
+        return await monitoraggio.controlla(
+            riga, scarica=scarica, classifica=classifica, fonte_dati=fonte,
+            modalita="ombra", tabella_domini=tabella, adesso=ADESSO,
+            casuale=lambda: 0.5)
+
+    async def test_il_duplicato_non_si_conta(self):
+        esito = await self._giro(self._Duplica())
+        self.assertEqual(esito.eventi_non_scritti, 0,
+                         "un evento gia' presente non e' un rifiuto")
+
+    async def test_il_rifiuto_vero_si_conta(self):
+        esito = await self._giro(self._Rifiuta())
+        self.assertGreaterEqual(esito.eventi_non_scritti, 1)
