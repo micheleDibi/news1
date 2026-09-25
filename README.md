@@ -213,7 +213,7 @@ Modulo: `scraper_bandi/app/seo_skill.py` (runner `bando_seo_runner.py`), step `s
 
 ### Colonne chiave su `bando` (DB B)
 
-Lo schema v4 non esiste piu': `state`, `state_detail`, `attempts` e `date_quotes` sono state rimosse (migrazioni v6 e v8). Oggi la lavorazione e' in `stato_processing` (`scraped → processed → enriched → completed`, oppure `rejected`), lo stato del bando in `stato_bando`, e il frontend mostra le righe con `stato_processing='completed'` e `slug` non nullo (`src/lib/bandi/pubblicazione.ts`); `link_candidatura_source` e' deprecata a favore di `bando_link`. Schema completo: tabella `bando` in `scraper_bandi/README.md` e `docs/contratto-db-bandi.md`.
+Lo schema v4 non esiste piu': `state`, `state_detail`, `attempts` e `date_quotes` sono state rimosse (migrazioni v6 e v8). Oggi la lavorazione e' in `stato_processing` (`scraped → processed → enriched → completed`, oppure `rejected`; `archiviato` per i `processed` chiusi, via `archivia-processed`), lo stato del bando in `stato_bando`, e il frontend mostra le righe con `stato_processing='completed'` e `slug` non nullo (`src/lib/bandi/pubblicazione.ts`), ordinate per `data_pubblicazione` DESC con i NULL in fondo; `link_candidatura_source` e' deprecata a favore di `bando_link`. Schema completo: tabella `bando` in `scraper_bandi/README.md` e `docs/contratto-db-bandi.md`.
 
 ### Orchestrazione
 
@@ -380,7 +380,7 @@ API pubblica in sola lettura: `/api/v1/*` (13 rotte in `src/pages/api/v1/`), doc
 
 - **Node.js** ≥ 22.6 (`npm test` usa `--experimental-strip-types`)
 - **Python** ≥ 3.10
-- **PostgreSQL client** (psql) per migrazioni manuali
+- Accesso allo SQL Editor di Supabase (o `psql`) per le migrazioni manuali
 - Account Supabase (2 progetti separati: news + bandi)
 - AWS S3 bucket
 - Chiavi: OpenAI, Anthropic, Firecrawl, Google Cloud TTS
@@ -420,7 +420,7 @@ La pipeline bandi usa un venv e un `.env` propri: `cd scraper_bandi && python3 -
 
 Sul **DB A** (news1) le migrazioni sono in `backend/sql/articles_alter_*.sql`, `backend/sql/selezione_personale.sql`, `backend/sql/persona_jobs.sql` e `backend/app/interpelli_tables.sql`.
 
-Sul **DB B** (bandi) le migrazioni correnti sono i file idempotenti `backend/sql/bando_v11_*.sql` (ognuno con il suo `_rollback`): si applicano a mano nello SQL Editor del pannello Supabase B, nell'ordine scritto nelle intestazioni, e dopo ognuna va riavviato `edunews-bandi-sender` (`docs/bandi-monitor/RIPRESA.md` §3.5). Quali sono applicate (al 25/09/2026 mancano la 06 e la 07) e le regole: RIPRESA §1 e §7.
+Sul **DB B** (bandi) le migrazioni correnti sono i file idempotenti `backend/sql/bando_v11_*.sql` (ognuno con il suo `_rollback`, tranne il seed `bando_v11_seed_dominio_ufficiale.sql`): si applicano a mano nello SQL Editor del pannello Supabase B, nell'ordine scritto nelle intestazioni, e dopo ognuna va riavviato `edunews-bandi-sender` (`docs/bandi-monitor/RIPRESA.md` §3.5). Quali sono applicate (al 25/09/2026 mancano la 06 e la 07) e le regole: RIPRESA §1 e §7.
 
 ### 7. Avvio in sviluppo
 
@@ -442,7 +442,7 @@ uvicorn app.main:app --reload --port 8000
 cd scraper_bandi
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app <comando> --dry-run --limit N
 ```
-Comandi in `docs/bandi-monitor/RIPRESA.md` §6; senza `--dry-run` scrivono sul DB vero (ma senza `--attivo` non toccano colonne pubbliche).
+Comandi in `docs/bandi-monitor/RIPRESA.md` §6; senza `--dry-run` scrivono sul DB vero (senza `--dry-run` scrivono sul DB vero: gli step base `discover`, `scrape-bandi`, `preprocess`, `enrich` e `seo` non hanno modalita' ombra; i comandi v11 accettano `--ombra`/`--attivo` e, senza, decide la variabile `*_MODALITA` dell'ambiente).
 
 ---
 
@@ -492,6 +492,14 @@ INDEXNOW_API_KEY="..."
 
 # === Backend Python ===
 BACKEND_URL="http://localhost:8000"
+
+# === Email form contatti (/api/contact; assenti anche da .env.example) ===
+SMTP_HOST="..."
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER="..."
+SMTP_PASS="..."
+SMTP_FROM="..."
 
 # === Web Bot Auth ===
 WEB_BOT_AUTH_PRIVATE_KEY="..."  # chiave privata Ed25519 (PKCS8 PEM); per ora inutilizzata
@@ -550,7 +558,7 @@ In produzione tipicamente (nomi delle unit [DA VERIFICARE]; `edunews-bandi-sende
 | Tabella | Descrizione |
 |---|---|
 | `articles` | Articoli con contenuto, metadati, tag, FAQ, media, audio |
-| `profiles` | Profili utente con ruoli (admin/direttore/redattore/giornalista) |
+| `profiles` | Profili utente con ruoli (admin/direttore/redattore/giornalista/docente/insegnante) |
 | `categories` | Categorie primarie con colori e keyword |
 | `secondary_categories` | Sottocategorie collegate alle primarie |
 | `forum_messages` | Commenti e discussioni per articolo |
