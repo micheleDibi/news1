@@ -386,10 +386,10 @@ Aggiornare anche le liste di `openapi.test.ts` e `documentazione.test.ts`.
 ## 6. Test e tipi
 
 ```bash
-npm test     # 293 test (277 dell'API + 16 di ortografia); controllare anche "# skipped 0"
+npm test     # 404 test al 25/09/2026 (279 in tests/api-v1/); controllare anche "# skipped 0"
 TZ=Asia/Kathmandu node --experimental-strip-types --disable-warning=ExperimentalWarning \
   --import ./tests/supporto/registra-risolutore.mjs --test tests/api-v1/<file>.test.ts
-npx --no-install tsc --noEmit -p tsconfig.json   # 54 errori preesistenti, nessuno in api-v1
+npx --no-install tsc --noEmit -p tsconfig.json   # 51 errori preesistenti al 25/09/2026, nessuno in api-v1
 ```
 
 - **Resolve hook** (`tests/supporto/risolutore-ts.mjs`, registrato da `registra-risolutore.mjs` con
