@@ -42,10 +42,40 @@ const {
   etichettaSezione, basePathSezione, etichettaCorrente, itemList, blocchi = [], vuota = false,
 } = Astro.props;
 
+// Classi complete per sezione, non frammenti da comporre: l'header dei bandi e'
+// chiaro (testo scuro), quello di interpelli e selezione resta la banda
+// colorata. Per quelle due sezioni le stringhe sono identiche a prima, quindi
+// il loro HTML non cambia di un byte.
 const PALETTE = {
-  interpelli: { grad: 'from-red-700 to-red-800', testo: 'text-red-100', briciole: 'text-red-200', accento: 'rosso' as const },
-  'selezione-personale': { grad: 'from-yellow-700 to-yellow-800', testo: 'text-yellow-100', briciole: 'text-yellow-200', accento: 'giallo' as const },
-  bandi: { grad: 'from-blue-700 to-blue-800', testo: 'text-blue-100', briciole: 'text-blue-200', accento: 'blu' as const },
+  interpelli: {
+    testata: 'bg-gradient-to-r from-red-700 to-red-800 text-white py-10 px-4 sm:px-6 lg:px-8',
+    briciole: 'flex text-sm text-red-200 mb-4',
+    link: 'hover:text-white transition-colors',
+    corrente: 'text-white font-medium',
+    h1: 'text-3xl md:text-4xl font-bold mb-2',
+    testo: 'text-red-100 text-sm',
+    accento: 'rosso' as const,
+  },
+  'selezione-personale': {
+    testata: 'bg-gradient-to-r from-yellow-700 to-yellow-800 text-white py-10 px-4 sm:px-6 lg:px-8',
+    briciole: 'flex text-sm text-yellow-200 mb-4',
+    link: 'hover:text-white transition-colors',
+    corrente: 'text-white font-medium',
+    h1: 'text-3xl md:text-4xl font-bold mb-2',
+    testo: 'text-yellow-100 text-sm',
+    accento: 'giallo' as const,
+  },
+  bandi: {
+    // Padding sul contenitore interno, come nel corpo della pagina: breadcrumb e H1
+    // si allineano alle card (con il padding esterno restavano 16px piu' a sinistra).
+    testata: 'bg-white border-b border-gray-200 text-gray-900 py-8 sm:py-10 [&>div]:px-4',
+    briciole: 'flex text-sm text-gray-600 mb-4',
+    link: '-my-3 inline-block rounded-md py-3 underline-offset-2 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+    corrente: 'text-gray-900 font-medium',
+    h1: 'font-heading text-3xl font-bold leading-tight text-gray-900 mb-2',
+    testo: 'text-gray-600 text-sm',
+    accento: 'blu' as const,
+  },
 }[sezione];
 
 const breadcrumb = generateBreadcrumbStructuredData(
@@ -70,23 +100,23 @@ const hrefSucc = pagina < pagine ? `${base}?page=${pagina + 1}` : null;
   {hrefSucc && <link rel="next" href={`https://edunews24.it${hrefSucc}`} slot="head" />}
 
   <main class="bg-gray-50 min-h-screen">
-    <div class={`bg-gradient-to-r ${PALETTE.grad} text-white py-10 px-4 sm:px-6 lg:px-8`}>
+    <div class={PALETTE.testata}>
       <div class="container mx-auto max-w-6xl">
-        <nav class={`flex text-sm ${PALETTE.briciole} mb-4`} aria-label="Breadcrumb">
+        <nav class={PALETTE.briciole} aria-label="Breadcrumb">
           <ol class="inline-flex items-center flex-wrap gap-y-1">
-            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
+            <li><a href="/" class={PALETTE.link}>Home</a></li>
             <li class="flex items-center">
               <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <a href={basePathSezione} class="hover:text-white transition-colors">{etichettaSezione}</a>
+              <a href={basePathSezione} class={PALETTE.link}>{etichettaSezione}</a>
             </li>
             <li class="flex items-center">
               <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <span class="text-white font-medium">{etichettaCorrente}</span>
+              <span class={PALETTE.corrente}>{etichettaCorrente}</span>
             </li>
           </ol>
         </nav>
-        <h1 class="text-3xl md:text-4xl font-bold mb-2">{meta.h1}</h1>
-        {pagina > 1 && <p class={`${PALETTE.testo} text-sm`}>Pagina {pagina} di {pagine}</p>}
+        <h1 class={PALETTE.h1}>{meta.h1}</h1>
+        {pagina > 1 && <p class={PALETTE.testo}>Pagina {pagina} di {pagine}</p>}
       </div>
     </div>
 

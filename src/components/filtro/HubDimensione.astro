@@ -24,10 +24,35 @@ const cfg = configSezione(sezione);
 // esista, sia abilitata e abbia almeno una voce pubblicata (hubNonDisponibile).
 const dim = trovaDimensione(sezione, slugDimensione)!;
 
+// Classi complete per sezione (vedi PaginaFiltro.astro): header chiaro per i
+// bandi, banda colorata invariata byte per byte per interpelli e selezione.
 const PALETTE = {
-  interpelli: { grad: 'from-red-700 to-red-800', briciole: 'text-red-200' },
-  'selezione-personale': { grad: 'from-yellow-700 to-yellow-800', briciole: 'text-yellow-200' },
-  bandi: { grad: 'from-blue-700 to-blue-800', briciole: 'text-blue-200' },
+  interpelli: {
+    testata: 'bg-gradient-to-r from-red-700 to-red-800 text-white py-10 px-4 sm:px-6 lg:px-8',
+    briciole: 'flex text-sm text-red-200 mb-4',
+    link: 'hover:text-white transition-colors',
+    corrente: 'text-white font-medium',
+    h1: 'text-3xl md:text-4xl font-bold mb-2',
+    testo: 'text-white/80 text-sm',
+  },
+  'selezione-personale': {
+    testata: 'bg-gradient-to-r from-yellow-700 to-yellow-800 text-white py-10 px-4 sm:px-6 lg:px-8',
+    briciole: 'flex text-sm text-yellow-200 mb-4',
+    link: 'hover:text-white transition-colors',
+    corrente: 'text-white font-medium',
+    h1: 'text-3xl md:text-4xl font-bold mb-2',
+    testo: 'text-white/80 text-sm',
+  },
+  bandi: {
+    // Padding sul contenitore interno, come nel corpo della pagina: breadcrumb e H1
+    // si allineano alle card (con il padding esterno restavano 16px piu' a sinistra).
+    testata: 'bg-white border-b border-gray-200 text-gray-900 py-8 sm:py-10 [&>div]:px-4',
+    briciole: 'flex text-sm text-gray-600 mb-4',
+    link: '-my-3 inline-block rounded-md py-3 underline-offset-2 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+    corrente: 'text-gray-900 font-medium',
+    h1: 'font-heading text-3xl font-bold leading-tight text-gray-900 mb-2',
+    testo: 'text-gray-600 text-sm',
+  },
 }[sezione];
 
 const voci = await vociPubblicate(sezione, slugDimensione);
@@ -50,23 +75,23 @@ const altreDimensioni = hubDisponibili(sezione)
 <Layout title={`${titolo} - EduNews24`} description={descrizione} canonicalUrl={canonical}>
   <script type="application/ld+json" set:html={breadcrumb} slot="head" />
   <main class="bg-gray-50 min-h-screen">
-    <div class={`bg-gradient-to-r ${PALETTE.grad} text-white py-10 px-4 sm:px-6 lg:px-8`}>
+    <div class={PALETTE.testata}>
       <div class="container mx-auto max-w-6xl">
-        <nav class={`flex text-sm ${PALETTE.briciole} mb-4`} aria-label="Breadcrumb">
+        <nav class={PALETTE.briciole} aria-label="Breadcrumb">
           <ol class="inline-flex items-center flex-wrap gap-y-1">
-            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
+            <li><a href="/" class={PALETTE.link}>Home</a></li>
             <li class="flex items-center">
               <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <a href={cfg.basePath} class="hover:text-white transition-colors">{cfg.etichetta}</a>
+              <a href={cfg.basePath} class={PALETTE.link}>{cfg.etichetta}</a>
             </li>
             <li class="flex items-center">
               <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <span class="text-white font-medium">{dim.etichettaPlurale}</span>
+              <span class={PALETTE.corrente}>{dim.etichettaPlurale}</span>
             </li>
           </ol>
         </nav>
-        <h1 class="text-3xl md:text-4xl font-bold mb-2">{titolo}</h1>
-        <p class="text-white/80 text-sm">{voci.length} {voci.length === 1 ? 'pagina disponibile' : 'pagine disponibili'}</p>
+        <h1 class={PALETTE.h1}>{titolo}</h1>
+        <p class={PALETTE.testo}>{voci.length} {voci.length === 1 ? 'pagina disponibile' : 'pagine disponibili'}</p>
       </div>
     </div>
 
