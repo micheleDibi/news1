@@ -7,7 +7,8 @@
 import Layout from '../../layouts/Layout.astro';
 import PaginazioneLinks from './PaginazioneLinks.astro';
 import Sorelle from './Sorelle.astro';
-import { generateBreadcrumbStructuredData, generateItemListStructuredData } from '../../lib/seo';
+import { datiStrutturatiFiltro } from '../../lib/filtro/dati-strutturati';
+import { configSezione } from '../../config/pagine-filtro';
 import type { MetaFiltro, RigaIntro } from '../../lib/seo-filtro';
 import type { Sezione } from '../../config/pagine-filtro';
 
@@ -78,20 +79,13 @@ const PALETTE = {
   },
 }[sezione];
 
-const breadcrumb = generateBreadcrumbStructuredData(
-  { category: etichettaSezione, category_slug: basePathSezione.replace(/^\//, '') },
-  { nome: etichettaCorrente, url: `https://edunews24.it${base}` },
-);
-
-// Le posizioni dell'ItemList proseguono da una pagina all'altra invece di ripartire da 1.
-const posizioneIniziale = (pagina - 1) * 20 + 1;
-const itemListJson = itemList.length > 0
-  ? generateItemListStructuredData(itemList, meta.h1, meta.canonical, posizioneIniziale)
-  : null;
-
-// rel prev/next: Google non li usa piu' come segnale di paginazione, Bing si'.
-const hrefPrec = pagina > 2 ? `${base}?page=${pagina - 1}` : pagina === 2 ? base : null;
-const hrefSucc = pagina < pagine ? `${base}?page=${pagina + 1}` : null;
+// Breadcrumb, ItemList e rel prev/next: in src/lib/filtro/dati-strutturati.ts,
+// condiviso con le pagine filtro dei bandi.
+const { breadcrumb, itemList: itemListJson, hrefPrec, hrefSucc } = datiStrutturatiFiltro({
+  etichettaSezione, basePathSezione, etichettaCorrente, base, pagina, pagine,
+  perPagina: configSezione(sezione).perPagina,
+  nome: meta.h1, canonical: meta.canonical, itemList,
+});
 ---
 <Layout title={meta.title} description={meta.description} canonicalUrl={meta.canonical}>
   <script type="application/ld+json" set:html={breadcrumb} slot="head" />

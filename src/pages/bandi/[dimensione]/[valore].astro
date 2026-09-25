@@ -3,18 +3,29 @@
  * Pagina filtro dei bandi: /bandi/regione/valle-d-aosta, /bandi/programma/fse-...,
  * /bandi/settore/..., /bandi/tipologia/...
  *
+ * Stesso impianto della lista /bandi (design «Bandi Redesign»): testata scura,
+ * barra dei filtri, card, paginazione. La lista e' /bandi con la voce gia'
+ * scelta, letta da `caricaBandi` (stesso ordinamento). I controlli portano a
+ * /bandi?<dimensione>=<id>&…, che ha lo stesso contenuto; la paginazione resta
+ * invece sugli URL statici di questa pagina, quelli indicizzati.
+ *
  * Regione e settore sono relazioni molti-a-molti: PostgREST richiede l'embed !inner
- * nella select piu' il filtro sulla colonna puntata, non dentro un and().
+ * nella select piu' il filtro sulla colonna puntata (vedi caricaBandi).
  */
 export const prerender = false;
 
-import PaginaFiltro from '../../../components/filtro/PaginaFiltro.astro';
-import CardBando from '../../../components/liste/CardBando.astro';
-import { supabaseBandi, loadCatalogo, lookupNome, BANDO_SELECT_LIST, FONTE_BANDI, type Bando } from '../../../lib/supabase-bandi';
+import Layout from '../../../layouts/Layout.astro';
+import ElencoBandi from '../../../components/bandi/ElencoBandi.astro';
+import Sorelle from '../../../components/filtro/Sorelle.astro';
 import { risolvi, sorelle, incrociate, hrefFiltro, hrefHub } from '../../../lib/pagine-filtro';
-import { leggiPagina, numeroPagine, intervalloRange, rispostaNonTrovata } from '../../../lib/paginazione';
+import { leggiPagina, numeroPagine, rispostaNonTrovata } from '../../../lib/paginazione';
 import { metaFiltro, introFiltro, etichettaBreve } from '../../../lib/seo-filtro';
 import { configSezione } from '../../../config/pagine-filtro';
+import { caricaBandi, conteggiStatoBandi, corpusBandi, gruppiFiltroBandi } from '../../../lib/liste/bandi';
+import { datiStrutturatiFiltro } from '../../../lib/filtro/dati-strutturati';
+import { valoreDiIds } from '../../../lib/bandi/elenco';
+import { todayRomeISO } from '../../../lib/stato-bando';
+import type { Valori } from '../../../lib/liste/parametri';
 
 const SEZIONE = 'bandi' as const;
 const cfg = configSezione(SEZIONE);
@@ -40,56 +51,15 @@ const pag = leggiPagina(Astro.url, base);
 if (pag.tipo === 'redirect') return Astro.redirect(pag.href, 301);
 if (pag.tipo === 'nonTrovata') return nonTrovata();
 
-const pagine = numeroPagine(voce.totale, cfg.perPagina);
-if (pag.pagina > pagine) return nonTrovata();
+// La voce come filtro della lista: tutti i suoi id in un valore solo, lo stesso
+// dell'opzione del pannello (gli alias, es. le due righe di FSE+, sono una voce).
+const valori: Valori = { [dim.slug]: [valoreDiIds(voce.idsDb)] };
+const { righe, totale, errore } = await caricaBandi(valori, pag.pagina);
+const pagine = numeroPagine(totale, cfg.perPagina);
+if (pag.pagina > pagine || (righe.length === 0 && pag.pagina > 1)) return nonTrovata();
 
-const giunzione = dim.slug === 'regione'
-  ? { tabella: 'bando_regioni', colonna: 'regione_id' }
-  : dim.slug === 'settore'
-    ? { tabella: 'bando_settori', colonna: 'settore_id' }
-    : null;
-
-const select = giunzione
-  ? `${BANDO_SELECT_LIST}, ${giunzione.tabella}!inner(${giunzione.colonna})`
-  : BANDO_SELECT_LIST;
-
-// Tabella e condizione di pubblicazione da FONTE_BANDI (src/lib/bandi/pubblicazione.ts).
-// Prima qui c'era solo `.from('bando')` e ci si affidava alla RLS: sulla tabella le
-// operazioni sono in AND con una policy che dice gia' la stessa cosa (nessuna riga in
-// piu' ne' in meno), ma il nome della tabella deve poter cambiare in un posto solo, e i
-// conteggi mostrati arrivano da corpus.ts, che la fonte la legge da li'. Sulla vista
-// `bando_pubblico` le operazioni sono zero: ripetere `stato_processing` darebbe 42703.
-let query = supabaseBandi.from(FONTE_BANDI.tabella).select(select);
-for (const [colonna, operatore, valore] of FONTE_BANDI.operazioni) {
-  query = query.filter(colonna, operatore, valore);
-}
-if (giunzione) {
-  // .filter() e' l'unico metodo che non riscrive il nome puntato della colonna embedded.
-  query = query.filter(`${giunzione.tabella}.${giunzione.colonna}`, 'in', `(${voce.idsDb.join(',')})`);
-} else if (dim.slug === 'programma') {
-  query = query.in('programma_id', voce.idsDb);
-} else {
-  query = query.in('tipologia_bando_id', voce.idsDb);
-}
-
-const { da, a } = intervalloRange(pag.pagina, cfg.perPagina);
-const [{ data }, catalogo] = await Promise.all([
-  query
-    .order('data_pubblicazione', { ascending: false, nullsFirst: false })
-    // Tiebreak indispensabile: data_pubblicazione e' NULL sul 92% dei bandi.
-    .order('id', { ascending: false })
-    .range(da, a),
-  loadCatalogo(),
-]);
-
-const righe = ((data ?? []) as any[]).map((b) => ({
-  ...b,
-  tipologia: lookupNome(catalogo.tipologie, b.tipologia_bando_id),
-  programma: lookupNome(catalogo.programmi, b.programma_id),
-  modalita_erogazione: lookupNome(catalogo.modalita, b.modalita_erogazione_id),
-})) as unknown as Bando[];
-
-if (righe.length === 0 && pag.pagina > 1) return nonTrovata();
+const c = await corpusBandi();
+const gruppi = await gruppiFiltroBandi(valori, c);
 
 const meta = metaFiltro(SEZIONE, dim, voce, pag.pagina, pagine, base);
 
@@ -111,24 +81,65 @@ const blocchi = [
   ...(altre.length ? [{ titolo: `Altre ${dim.etichettaPlurale.toLowerCase()}`, voci: altre.map((v) => ({ etichetta: v.etichetta, href: hrefFiltro(SEZIONE, dim.slug, v.slug), totale: v.totale })), hrefTutti: hrefHub(SEZIONE, dim.slug) }] : []),
 ];
 
-const itemList = righe
-  .filter((b) => b.slug && b.titolo)
-  .map((b) => ({ href: `/bandi/${b.slug}`, title: b.titolo }));
+const etichettaCorrente = etichettaBreve(dim, voce);
+const struttura = datiStrutturatiFiltro({
+  etichettaSezione: cfg.etichetta,
+  basePathSezione: cfg.basePath,
+  etichettaCorrente,
+  base,
+  pagina: pag.pagina,
+  pagine,
+  perPagina: cfg.perPagina,
+  nome: meta.h1,
+  canonical: meta.canonical,
+  itemList: righe.filter((b) => b.slug && b.titolo).map((b) => ({ href: `/bandi/${b.slug}`, title: b.titolo })),
+});
+
+// Testata: la prima riga dell'introduzione (numeri reali) a pagina 1, poi solo
+// «Pagina N di M», come prima. Le altre righe vanno sotto la lista.
+const testoRiga = (riga: (typeof intro)[number]): string => riga.map((s) => s.testo).join('');
+const testoTestata = pag.pagina === 1 && intro.length > 0 ? testoRiga(intro[0]) : `Pagina ${pag.pagina} di ${pagine}`;
+const altreRighe = pag.pagina === 1 ? intro.slice(1) : [];
 ---
-<PaginaFiltro
-  sezione={SEZIONE}
-  meta={meta}
-  intro={intro}
-  base={base}
-  pagina={pag.pagina}
-  pagine={pagine}
-  totale={voce.totale}
-  etichettaSezione={cfg.etichetta}
-  basePathSezione={cfg.basePath}
-  etichettaCorrente={etichettaBreve(dim, voce)}
-  itemList={itemList}
-  blocchi={blocchi}
-  vuota={righe.length === 0}
->
-  {righe.map((bando) => <CardBando bando={bando} />)}
-</PaginaFiltro>
+<Layout title={meta.title} description={meta.description} canonicalUrl={meta.canonical}>
+  <script type="application/ld+json" set:html={struttura.breadcrumb} slot="head" />
+  {struttura.itemList && <script type="application/ld+json" set:html={struttura.itemList} slot="head" />}
+  {struttura.hrefPrec && <link rel="prev" href={`https://edunews24.it${struttura.hrefPrec}`} slot="head" />}
+  {struttura.hrefSucc && <link rel="next" href={`https://edunews24.it${struttura.hrefSucc}`} slot="head" />}
+
+  <main class="font-[Poppins,system-ui,sans-serif] text-[#1a2233] antialiased leading-[normal] [&_input::placeholder]:text-[#7b8494]">
+    <ElencoBandi
+      valori={valori}
+      righe={righe}
+      totale={totale}
+      errore={errore}
+      pagina={pag.pagina}
+      pagine={pagine}
+      basePaginazione={base}
+      gruppi={gruppi}
+      conteggi={conteggiStatoBandi(c, voce)}
+      testata={{
+        briciole: [{ etichetta: 'Home', href: '/' }, { etichetta: 'Bandi', href: cfg.basePath }, { etichetta: etichettaCorrente }],
+        titolo: meta.h1,
+        testo: testoTestata,
+        bandofit: 'filtro-hero',
+      }}
+      oggi={todayRomeISO()}
+    >
+      {altreRighe.length > 0 && (
+        <section class="mt-10 space-y-2 rounded-2xl border border-[#e3e7ee] bg-white p-[22px] text-[14px] leading-[1.6] text-[#3d4657]">
+          {altreRighe.map((riga) => (
+            <p>
+              {riga.map((seg) => seg.tipo === 'link'
+                ? <a href={seg.href} class="text-[#004e9c] underline underline-offset-2">{seg.testo}</a>
+                : <Fragment>{seg.testo}</Fragment>)}
+            </p>
+          ))}
+        </section>
+      )}
+      {blocchi.map((b) => (
+        <Sorelle titolo={b.titolo} voci={b.voci} hrefTutti={b.hrefTutti} variante="bandi" />
+      ))}
+    </ElencoBandi>
+  </main>
+</Layout>

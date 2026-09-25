@@ -38,6 +38,9 @@ test('formati del mock', () => {
   assert.equal(eurBreve(10000000), '10 mln €');
   assert.equal(eurBreve(2000000), '2 mln €');
   assert.equal(eurBreve(432000), '432.000 €');
+  // Oltre il miliardo il punto delle migliaia non diventa una virgola.
+  assert.equal(eurBreve(3292000000), '3.292 mln €');
+  assert.equal(eurBreve(999000000), '999 mln €');
   assert.deepEqual(colonnaData('2026-10-31'), { giorno: '31', meseAnno: 'ott 2026' });
   assert.deepEqual(colonnaData('2027-02-06'), { giorno: '6', meseAnno: 'feb 2027' });
   assert.equal(colonnaData(null), null);

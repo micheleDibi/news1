@@ -43,8 +43,12 @@ export function eur(n: number): string {
 /**
  * «7 mln €», «432.000 €»: la formula del mock alla lettera. Il formattatore non
  * ha decimali, quindi i milioni si arrotondano all'unita' (6.905.000 → «7 mln €»).
+ * Dal miliardo in su il `.replace('.', ',')` del mock trasformerebbe il punto
+ * delle migliaia in una virgola («3,292 mln €» per 3.292.000.000, che si legge
+ * tre milioni): li' il punto resta.
  */
 export function eurBreve(n: number): string {
+  if (n >= 1e9) return `${RAGGRUPPATO.format(Math.round(n / 1e6))} mln €`;
   return n >= 1e6
     ? `${RAGGRUPPATO.format(Math.round(n / 1e5) / 10).replace('.', ',')} mln €`
     : `${RAGGRUPPATO.format(n)} €`;
