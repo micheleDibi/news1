@@ -14,7 +14,6 @@ import ListaBandi from '../components/liste/ListaBandi.astro';
 import PaginazioneLinks from '../components/filtro/PaginazioneLinks.astro';
 import Sorelle from '../components/filtro/Sorelle.astro';
 import BandiExpertCta from '../components/BandiExpertCta.astro';
-import { bandofitCtaUrl } from '../lib/bandofit';
 import { vociPubblicate, hrefFiltro, hrefHub, hubDisponibili } from '../lib/pagine-filtro';
 import { DEF_BANDI, caricaBandi, opzioniFiltroBandi, dimensioneUnicaBandi, MULTISELECT } from '../lib/liste/bandi';
 import { leggiFiltri, filtriAttivi, normalizzazioneRichiesta, seoLista, urlLista } from '../lib/liste/parametri';
@@ -93,119 +92,101 @@ const selezionato = (nome: string, valore: string) => (valori[nome] ?? []).inclu
   {hrefSucc && <link rel="next" href={`https://edunews24.it${hrefSucc}`} slot="head" />}
 
   <main class="bg-gray-50 min-h-screen">
-    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
-      <div class="container mx-auto max-w-6xl">
-        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
-          <ol class="inline-flex items-center space-x-1">
-            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
-            <li class="flex items-center">
-              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <span class="text-white font-medium">Bandi</span>
+    <div class="border-b border-gray-200 bg-white">
+      <div class="container mx-auto max-w-6xl px-4 py-8 sm:py-10">
+        <nav class="text-sm text-gray-600" aria-label="Breadcrumb">
+          <ol class="flex flex-wrap items-center gap-x-1">
+            <li><a href="/" class="-my-3 inline-block rounded-md py-3 underline-offset-2 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Home</a></li>
+            <li class="flex items-center gap-x-1">
+              <svg aria-hidden="true" focusable="false" class="h-4 w-4 text-gray-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <span aria-current="page" class="font-medium text-gray-900">Bandi</span>
             </li>
           </ol>
         </nav>
-        <h1 class="text-3xl md:text-4xl font-bold mb-2">Bandi e finanziamenti pubblici</h1>
-        <p class="text-blue-100 text-lg max-w-2xl leading-relaxed">
-          Bandi europei (FESR, FSE, Interreg, JTF), nazionali e regionali aggiornati ogni giorno.
-          <span class="text-white font-semibold">Non sai quale fa per te?</span> Il nostro staff e i nostri strumenti AI ti accompagnano dalla scelta alla candidatura.
+        <h1 class="mt-4 font-heading text-3xl font-bold leading-tight text-gray-900">Bandi e finanziamenti pubblici</h1>
+        <p class="mt-3 max-w-2xl text-base leading-relaxed text-gray-700">
+          Bandi europei (FESR, FSE+, Interreg), nazionali e regionali, aggiornati ogni giorno.
         </p>
-        <div class="mt-5 flex flex-wrap items-center gap-3 text-sm">
-          <a
-            href={bandofitCtaUrl('lista-hero')}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Parla con un esperto su BandoFit (si apre in una nuova scheda)"
-            class="group inline-flex items-center gap-2 px-5 py-2.5 bg-white text-blue-700 font-semibold rounded-full shadow-lg hover:shadow-xl hover:bg-blue-50 hover:scale-[1.03] active:scale-[0.98] transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-white/40"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
-            <span>Parla con un esperto</span>
-            <svg class="w-4 h-4 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6"></path></svg>
-          </a>
-          <span class="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur-sm px-3 py-1.5 rounded-full text-white/90 ring-1 ring-white/10">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-            <span id="hero-count">{totale}</span> bandi disponibili
-          </span>
+        <p class="mt-2 text-sm text-gray-600">
+          <span id="hero-count" class="font-semibold tabular-nums text-gray-900">{totale}</span> bandi disponibili
+        </p>
+        <div class="mt-4">
+          <BandiExpertCta variante="riga" utmContent="lista-hero" />
         </div>
       </div>
     </div>
 
-    <div class="container mx-auto px-4 max-w-6xl -mt-6">
-      {/* Banner CTA "Hai bisogno di un esperto?" */}
-      <div class="mb-6">
-        <BandiExpertCta variant="full-width" utmContent="lista-banner" />
-      </div>
-
+    <div class="container mx-auto max-w-6xl px-4 py-6">
       {/* Filtri: form GET, funzionante anche senza JavaScript */}
       <form id="filtri" method="get" action="/bandi" data-frammento="/api/lista/bandi" data-lista="bandi-list"
-            class="mb-6 bg-white rounded-xl shadow-md border border-gray-100 overflow-visible">
-        {/* Header (clickable). NB: usiamo div role=button, NON un <button>, perche'
-            il Reset interno e' anch'esso un <button> e nesting di button non e' valido
-            HTML: il browser auto-chiuderebbe il toggle prima del Reset e il body
-            del pannello finirebbe FUORI dalla card. */}
-        <div
-          id="filters-toggle"
-          role="button"
-          tabindex="0"
-          class="w-full flex items-center justify-between gap-3 p-4 sm:p-5 text-left hover:bg-gray-50 transition-colors rounded-t-xl cursor-pointer select-none"
-          aria-expanded="true"
-          aria-controls="filters-body"
-        >
-          <div class="flex items-center gap-3 min-w-0">
-            <span class="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-lg bg-blue-50 text-blue-600">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
-            </span>
-            <div class="min-w-0">
-              <span class="block font-heading font-semibold text-gray-900 leading-tight">Filtri</span>
-              <p class="text-xs text-gray-500 mt-0.5 hidden sm:block">Affina la ricerca tra i bandi disponibili</p>
-            </div>
-            <span id="active-filters-badge" class="hidden ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">
+            class="mb-6 rounded-lg border border-gray-200 bg-white">
+        {/* Ricerca testuale fuori dal pannello collassabile: resta visibile anche a filtri chiusi. */}
+        <div class="p-4 sm:p-5">
+          <label for="search-filter" class="block text-sm font-medium text-gray-900">Cerca un bando</label>
+          <input type="search" id="search-filter" name="q" value={valori.q[0] ?? ''} placeholder="Titolo, ente o parola chiave"
+                 class="mt-1.5 block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base text-gray-900 placeholder:text-gray-500 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
+        </div>
+
+        {/* Header del pannello. NB: il toggle e' un div role=button, NON un <button>:
+            prima conteneva il Reset, anch'esso un <button>, e il nesting di button non e'
+            valido HTML (il browser chiudeva il toggle prima del Reset e il body del
+            pannello finiva FUORI dalla card). Ora il Reset e' un fratello del toggle,
+            fuori dal role=button; il toggle resta un div e Invio/Spazio li gestisce
+            bandi-filtri.ts. */}
+        <div class="flex items-center gap-2 border-t border-gray-200 px-2 sm:px-3">
+          <div
+            id="filters-toggle"
+            role="button"
+            tabindex="0"
+            class="flex min-h-12 flex-1 cursor-pointer select-none items-center gap-3 rounded-md px-2 text-left hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            aria-expanded="true"
+            aria-controls="filters-body"
+          >
+            <span class="font-heading text-base font-semibold text-gray-900">Filtri</span>
+            <span id="active-filters-badge" class="hidden inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
               <span id="active-count">0</span>&nbsp;attiv<span id="active-pluralize">i</span>
             </span>
+            <svg id="filters-chevron" aria-hidden="true" focusable="false" class="ml-auto h-5 w-5 text-gray-500 transition-transform duration-200 motion-reduce:transition-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
           </div>
-          <div class="flex items-center gap-3 shrink-0">
-            <button
-              type="button"
-              id="reset-filters"
-              class="hidden sm:inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-800 transition-colors rounded-md hover:bg-gray-100"
-              data-no-toggle="true"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-              Resetta
-            </button>
-            <svg id="filters-chevron" class="w-5 h-5 text-gray-400 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-          </div>
+          <button
+            type="button"
+            id="reset-filters"
+            class="hidden sm:inline-flex min-h-11 items-center rounded-md px-3 text-sm font-medium text-gray-700 underline-offset-2 hover:text-gray-900 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            data-no-toggle="true"
+          >
+            Resetta
+          </button>
         </div>
 
         {/* Body */}
-        <div id="filters-body" class="border-t border-gray-100 px-4 sm:px-5 pb-5 pt-4 space-y-5">
-          <div>
-            <label for="search-filter" class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Ricerca testuale</label>
-            <div class="relative">
-              <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-              <input type="search" id="search-filter" name="q" value={valori.q[0] ?? ''} placeholder="Cerca per titolo, ente o descrizione..." class="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50 transition-colors">
-            </div>
-          </div>
-
+        <div id="filters-body" class="space-y-6 border-t border-gray-200 px-4 pb-5 pt-5 sm:px-5">
           {/* Sei tendine a scelta multipla. Le opzioni sono checkbox REALI rese dal
               server: prima erano iniettate via JS a partire da un define:vars che
               serializzava tutti i codici ATECO, i settori e i programmi nell'HTML,
-              insieme a URL e chiave anon di Supabase. */}
-          <div>
-            <span class="block font-heading text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Categorie</span>
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {MULTISELECT.map((m) => (
-                <div class="multiselect relative" data-name={m.nome}>
-                  <button type="button" class="ms-trigger w-full flex items-center justify-between gap-2 px-3 py-2.5 border border-gray-200 rounded-lg text-sm bg-gray-50 hover:bg-gray-100 hover:border-gray-300 transition-colors text-left">
-                    <span class="ms-display flex-1 truncate text-gray-500" data-empty={m.etichetta}>{m.etichetta}</span>
-                    <span class="ms-count hidden shrink-0 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 text-[10px] font-bold bg-blue-600 text-white rounded-full">0</span>
-                    <svg class="ms-chevron w-4 h-4 text-gray-400 transition-transform shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+              insieme a URL e chiave anon di Supabase. L'etichetta sta sopra la
+              tendina: dopo una scelta il testo del trigger diventa il valore. */}
+          <fieldset class="min-w-0">
+            <legend class="text-sm font-medium text-gray-900">Categorie</legend>
+            <div class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {MULTISELECT.map((m) => {
+                // Stesso testo che aggiorna() di bandi-filtri.ts scrive dopo: senza JS
+                // (e nel Markdown) la tendina dice gia' cosa filtra.
+                const scelte = (opzioni.multiselect[m.nome] ?? []).filter((o) => selezionato(m.nome, o.value));
+                const testoScelte = scelte.length === 0 ? 'Qualsiasi' : scelte.length === 1 ? scelte[0].label : `${scelte.length} selezionati`;
+                return (
+                <div class="multiselect relative min-w-0" data-name={m.nome}>
+                  <span id={`ms-etichetta-${m.nome}`} class="mb-1 block text-sm text-gray-700">{m.etichetta}</span>
+                  <button type="button" aria-labelledby={`ms-etichetta-${m.nome} ms-valore-${m.nome}`}
+                          class="ms-trigger flex min-h-11 w-full items-center justify-between gap-2 rounded-md border border-gray-500 bg-white px-3 text-left text-sm hover:border-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+                    <span id={`ms-valore-${m.nome}`} class={`ms-display flex-1 truncate ${scelte.length === 0 ? 'text-gray-500' : 'text-gray-900'}`} data-empty="Qualsiasi">{testoScelte}</span>
+                    <span class="ms-count hidden inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-primary px-1.5 text-xs font-semibold tabular-nums text-white">0</span>
+                    <svg class="ms-chevron h-4 w-4 shrink-0 text-gray-500" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                   </button>
-                  <div class="ms-popover hidden absolute z-30 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
-                    <div class="p-2 border-b border-gray-100">
-                      <div class="relative">
-                        <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-                        <input type="text" class="ms-search w-full pl-8 pr-2 py-1.5 text-sm bg-gray-50 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" placeholder="Cerca...">
-                      </div>
+                  <div class="ms-popover hidden absolute left-0 right-0 z-30 mt-1 overflow-hidden rounded-lg border border-gray-300 bg-white shadow-sm">
+                    <div class="border-b border-gray-200 p-2">
+                      <input type="text" aria-label={`Cerca in ${m.etichetta}`}
+                             class="ms-search block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base text-gray-900 placeholder:text-gray-500 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary"
+                             placeholder="Cerca…">
                     </div>
                     <div class="ms-list max-h-64 overflow-y-auto py-1">
                       {(opzioni.multiselect[m.nome] ?? []).map((o) => (
@@ -215,81 +196,79 @@ const selezionato = (nome: string, valore: string) => (valori[nome] ?? []).inclu
                         </label>
                       ))}
                     </div>
-                    <div class="ms-footer p-2 border-t border-gray-100 flex items-center justify-between text-xs">
-                      <button type="button" class="ms-clear text-gray-500 hover:text-gray-800 font-medium">Pulisci</button>
-                      <span class="ms-status text-gray-400">0 selezionati</span>
+                    <div class="ms-footer flex items-center justify-between border-t border-gray-200 p-2 text-sm">
+                      <button type="button" class="ms-clear inline-flex min-h-11 items-center rounded-md px-2 font-medium text-gray-700 underline-offset-2 hover:text-gray-900 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Pulisci</button>
+                      <span class="ms-status text-gray-600">0 selezionati</span>
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
-          </div>
+          </fieldset>
 
           {/* Chip: checkbox mascherate, cosi' funzionano anche senza JavaScript */}
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            <div>
-              <span class="block font-heading text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tipologia</span>
-              <div id="tipologia-chips" class="flex flex-wrap gap-2">
+          <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <fieldset class="min-w-0">
+              <legend class="text-sm font-medium text-gray-900">Tipologia</legend>
+              <div id="tipologia-chips" class="mt-2 flex flex-wrap gap-2">
                 {opzioni.tipologie.map((t) => (
                   <label class="cursor-pointer">
                     <input type="checkbox" name="tipologia" value={t.value} checked={selezionato('tipologia', t.value)} class="peer sr-only">
-                    <span class="block px-3 py-1.5 rounded-full text-xs font-semibold border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500">{t.label}</span>
+                    <span class="inline-flex min-h-11 items-center rounded-md border border-gray-500 bg-white px-3 text-sm text-gray-800 transition-colors hover:border-gray-700 peer-checked:border-primary peer-checked:bg-primary peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-primary motion-reduce:transition-none sm:min-h-9">{t.label}</span>
                   </label>
                 ))}
               </div>
-            </div>
-            <div>
-              <span class="block font-heading text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Stato bando</span>
-              <div id="scadenza-chips" class="flex flex-wrap gap-2">
+            </fieldset>
+            <fieldset class="min-w-0">
+              <legend class="text-sm font-medium text-gray-900">Stato del bando</legend>
+              <div id="scadenza-chips" class="mt-2 flex flex-wrap gap-2">
                 {opzioni.stati.map((s) => (
                   <label class="cursor-pointer">
                     <input type="checkbox" name="stato" value={s.value} checked={selezionato('stato', s.value)} class="peer sr-only">
-                    <span class="block px-3 py-1.5 rounded-full text-xs font-semibold border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors peer-checked:bg-blue-600 peer-checked:text-white peer-checked:border-blue-600 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500">{s.label}</span>
+                    <span class="inline-flex min-h-11 items-center rounded-md border border-gray-500 bg-white px-3 text-sm text-gray-800 transition-colors hover:border-gray-700 peer-checked:border-primary peer-checked:bg-primary peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-primary motion-reduce:transition-none sm:min-h-9">{s.label}</span>
                   </label>
                 ))}
               </div>
-            </div>
+            </fieldset>
           </div>
 
-          <div>
-            <span class="block font-heading text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Importo e scadenza</span>
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <fieldset class="min-w-0">
+            <legend class="text-sm font-medium text-gray-900">Importo e scadenza</legend>
+            <div class="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <div>
-                <label for="importo-min" class="block text-xs text-gray-500 mb-1">Importo min (€)</label>
-                <input type="number" id="importo-min" name="imin" value={valori.imin[0] ?? ''} min="0" step="1000" placeholder="0" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+                <label for="importo-min" class="mb-1 block text-sm text-gray-700">Importo minimo (€)</label>
+                <input type="number" id="importo-min" name="imin" value={valori.imin[0] ?? ''} min="0" step="1000" placeholder="0" class="block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base tabular-nums text-gray-900 placeholder:text-gray-500 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
               </div>
               <div>
-                <label for="importo-max" class="block text-xs text-gray-500 mb-1">Importo max (€)</label>
-                <input type="number" id="importo-max" name="imax" value={valori.imax[0] ?? ''} min="0" step="1000" placeholder="∞" class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+                <label for="importo-max" class="mb-1 block text-sm text-gray-700">Importo massimo (€)</label>
+                <input type="number" id="importo-max" name="imax" value={valori.imax[0] ?? ''} min="0" step="1000" placeholder="Nessun limite" class="block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base tabular-nums text-gray-900 placeholder:text-gray-500 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
               </div>
               <div>
-                <label for="scadenza-da" class="block text-xs text-gray-500 mb-1">Scadenza da</label>
-                <input type="date" id="scadenza-da" name="scad_da" value={valori.scad_da[0] ?? ''} class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+                <label for="scadenza-da" class="mb-1 block text-sm text-gray-700">Scadenza dal</label>
+                <input type="date" id="scadenza-da" name="scad_da" value={valori.scad_da[0] ?? ''} class="block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base tabular-nums text-gray-900 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
               </div>
               <div>
-                <label for="scadenza-a" class="block text-xs text-gray-500 mb-1">Scadenza a</label>
-                <input type="date" id="scadenza-a" name="scad_a" value={valori.scad_a[0] ?? ''} class="w-full px-3 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50">
+                <label for="scadenza-a" class="mb-1 block text-sm text-gray-700">Scadenza al</label>
+                <input type="date" id="scadenza-a" name="scad_a" value={valori.scad_a[0] ?? ''} class="block min-h-11 w-full rounded-md border border-gray-500 bg-white px-3 text-base tabular-nums text-gray-900 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary">
               </div>
             </div>
-          </div>
+          </fieldset>
 
-          <div class="flex flex-col sm:flex-row gap-2 pt-2 border-t border-gray-100">
-            <button type="submit" class="flex-1 px-4 py-2.5 border border-blue-700 rounded-lg text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 transition-colors">Applica filtri</button>
-            <a href="/bandi" class="flex-1 px-4 py-2.5 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 transition-colors flex items-center justify-center gap-1.5">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-              Resetta filtri
-            </a>
+          <div class="flex flex-col gap-2 border-t border-gray-200 pt-5 sm:flex-row">
+            <button type="submit" class="inline-flex min-h-11 items-center justify-center rounded-md bg-primary px-5 text-sm font-semibold text-white hover:bg-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Applica filtri</button>
+            <a href="/bandi" class="inline-flex min-h-11 items-center justify-center rounded-md border border-gray-300 bg-white px-5 text-sm font-medium text-gray-800 hover:border-gray-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Resetta filtri</a>
           </div>
         </div>
       </form>
 
-      <div class="mb-4 flex items-center justify-between">
-        <p id="results-count" class="text-sm text-gray-500">
-          <span id="visible-count" class="font-semibold text-gray-700">{totale}</span> bandi trovati
+      <div class="mb-3 flex items-center justify-between">
+        <p id="results-count" class="text-sm text-gray-700">
+          <span id="visible-count" class="font-semibold tabular-nums text-gray-900">{totale}</span> bandi trovati
         </p>
-        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-blue-600">
-          <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-          Caricamento...
+        <div id="loading-indicator" class="hidden items-center gap-2 text-sm text-gray-700">
+          <svg aria-hidden="true" focusable="false" class="h-4 w-4 animate-spin text-primary motion-reduce:animate-none" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          Caricamento…
         </div>
       </div>
       <p id="stato-risultati" class="sr-only" aria-live="polite"></p>
@@ -315,24 +294,28 @@ const selezionato = (nome: string, valore: string) => (valori[nome] ?? []).inclu
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
-    padding: 0.375rem 0.75rem;
+    padding: 0.5rem 0.75rem;
     font-size: 0.875rem;
     line-height: 1.25rem;
-    color: rgb(55 65 81);
+    color: rgb(31 41 55);
     cursor: pointer;
+  }
+  /* Su mobile ogni voce e' alta 44px: 20px di riga piu' 24px di padding. */
+  @media (max-width: 639px) {
+    .ms-list label { padding-top: 0.75rem; padding-bottom: 0.75rem; }
   }
   .ms-list label:hover { background-color: rgb(249 250 251); }
   .ms-list label[hidden] { display: none; }
   .ms-list input[type='checkbox'] {
     margin-top: 0.125rem;
     flex-shrink: 0;
-    border-radius: 0.25rem;
-    border-color: rgb(209 213 219);
-    color: rgb(37 99 235);
+    width: 1rem;
+    height: 1rem;
+    accent-color: #004e9c;
   }
-  .ms-list input[type='checkbox']:focus {
-    outline: 2px solid transparent;
-    box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgb(59 130 246);
+  .ms-list input[type='checkbox']:focus-visible {
+    outline: 2px solid #004e9c;
+    outline-offset: 2px;
   }
 </style>
 

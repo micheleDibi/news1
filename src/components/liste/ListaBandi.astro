@@ -12,12 +12,11 @@ interface Props {
 
 const { righe, filtrata } = Astro.props;
 ---
-<div id="bandi-list" class="space-y-4">
+<div id="bandi-list" class="space-y-3">
   {righe.length === 0 ? (
-    <div id="no-results-message" class="text-center py-16 bg-white rounded-xl shadow-sm">
-      <svg class="mx-auto w-16 h-16 text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-      <p class="text-gray-500 text-lg font-medium">Nessun bando trovato</p>
-      <p class="text-gray-400 text-sm mt-1">{filtrata ? 'Prova a modificare i filtri di ricerca' : 'Nessun bando disponibile al momento'}</p>
+    <div id="no-results-message" class="rounded-lg border border-gray-200 bg-white px-6 py-12 text-center">
+      <p class="font-heading text-lg font-semibold text-gray-900">Nessun bando trovato</p>
+      <p class="mt-1 text-sm text-gray-600">{filtrata ? 'Prova a modificare i filtri di ricerca.' : 'Nessun bando disponibile al momento.'}</p>
     </div>
   ) : righe.map((bando) => <CardBando bando={bando} />)}
 </div>

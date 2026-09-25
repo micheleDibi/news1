@@ -10,7 +10,10 @@ import {
 import { statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
 import { corpoBando } from '../../lib/bandi/contenuto';
 import { soloPubblicabili } from '../../lib/bandi/domini';
-import { badgeStato, partecipazioneAperta, sottotestoStato, testoFonteUfficiale } from '../../lib/bandi/testi-stato';
+import {
+  BADGE_STATO, badgeStato, giorniAllaScadenza, oraItaliana, partecipazioneAperta, sottotestoStato,
+  testoFonteUfficiale, testoGiorniMancanti,
+} from '../../lib/bandi/testi-stato';
 import { sceltaCta } from '../../lib/bandi/cta';
 import { statoDaEventi, vociAggiornamento } from '../../lib/bandi/aggiornamenti';
 import { jsonLdBando } from '../../lib/bandi/jsonld';
@@ -61,11 +64,48 @@ const storico = lettura.stato === 'ok' && lettura.riga === null
   : { stato: 'non_eseguita' as const };
 const esito = esitoSlug({ scheda: lettura, storico });
 
+/**
+ * HTML delle pagine d'errore della scheda: autosufficiente (niente Layout, che
+ * interroga il DB principale), CSS nel documento, nessuna dipendenza. Produce
+ * SOLO l'HTML: status e header li decide ciascun ramo. `noindex` e' obbligatorio
+ * e senza default, perche' il 503 non deve mai averlo (vedi sotto).
+ */
+const paginaErrore = (pagina: {
+  codice: 404 | 410 | 503;
+  titoloPagina: string;
+  titolo: string;
+  testo: string;
+  noindex: boolean;
+}): string =>
+  '<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8">' +
+  '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+  (pagina.noindex ? '<meta name="robots" content="noindex">' : '') +
+  `<title>${pagina.titoloPagina}</title>` +
+  '<style>' +
+  'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f9fafb;' +
+  'color:#111827;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.5}' +
+  'main{max-width:32rem;padding:2rem 1.5rem}' +
+  '.codice{margin:0;font-size:.875rem;color:#4b5563}' +
+  'h1{margin:.5rem 0 0;font-size:1.5rem;line-height:1.25}' +
+  '.testo{margin:.75rem 0 0;color:#374151}' +
+  'a{display:inline-block;margin-top:1.5rem;padding:.75rem 1.25rem;background:#004e9c;color:#fff;' +
+  'border-radius:.375rem;text-decoration:none;font-weight:600}' +
+  'a:hover{background:#003d7a}a:focus-visible{outline:2px solid #004e9c;outline-offset:3px}' +
+  '</style></head><body><main>' +
+  `<p class="codice">Errore ${pagina.codice}</p><h1>${pagina.titolo}</h1><p class="testo">${pagina.testo}</p>` +
+  '<a href="/bandi">Torna ai bandi</a></main></body></html>';
+
 if (esito.stato === 503) {
   // Mai `noindex` su un guasto temporaneo: sarebbe l'unico modo di trasformare
   // un timeout di PostgREST (anon ha 3 s) in una deindicizzazione.
   return new Response(
-    `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><title>503 - Servizio non disponibile</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#f59e0b;margin:0">503</h1><p style="font-size:1.5rem;font-weight:bold">Servizio momentaneamente non disponibile</p><p>Non riusciamo a leggere questa scheda. Riprova fra qualche istante.</p><a href="/bandi" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#2563eb;color:white;border-radius:0.375rem;text-decoration:none">Torna ai bandi</a></div></body></html>`,
+    paginaErrore({
+      codice: 503,
+      titoloPagina: '503 - Servizio non disponibile',
+      titolo: 'Servizio momentaneamente non disponibile',
+      testo: 'Non riusciamo a leggere questa scheda. Riprova fra qualche istante.',
+      noindex: false,
+    }),
     {
       status: 503,
       headers: {
@@ -81,14 +121,26 @@ if (esito.stato === 301) return Astro.redirect(esito.destinazione, 301);
 
 if (esito.stato === 410) {
   return new Response(
-    `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>410 - Contenuto rimosso</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#ef4444;margin:0">410</h1><p style="font-size:1.5rem;font-weight:bold">Contenuto rimosso</p><p>Questo bando non è più disponibile.</p><a href="/bandi" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#2563eb;color:white;border-radius:0.375rem;text-decoration:none">Torna ai bandi</a></div></body></html>`,
+    paginaErrore({
+      codice: 410,
+      titoloPagina: '410 - Contenuto rimosso',
+      titolo: 'Contenuto rimosso',
+      testo: 'Questo bando non è più disponibile.',
+      noindex: true,
+    }),
     { status: 410, headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' } },
   );
 }
 
 if (esito.stato === 404 || lettura.stato !== 'ok' || lettura.riga === null) {
   return new Response(
-    `<!DOCTYPE html><html lang="it"><head><meta charset="UTF-8"><meta name="robots" content="noindex"><title>404 - Bando non trovato</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:6rem;color:#ef4444;margin:0">404</h1><p style="font-size:1.5rem;font-weight:bold">Bando non trovato</p><p>Il bando richiesto non esiste o e' stato rimosso.</p><a href="/bandi" style="display:inline-block;margin-top:1rem;padding:0.5rem 1rem;background:#2563eb;color:white;border-radius:0.375rem;text-decoration:none">Torna ai bandi</a></div></body></html>`,
+    paginaErrore({
+      codice: 404,
+      titoloPagina: '404 - Bando non trovato',
+      titolo: 'Bando non trovato',
+      testo: 'Il bando richiesto non esiste o è stato rimosso.',
+      noindex: true,
+    }),
     { status: 404, headers: { 'Content-Type': 'text/html', 'X-Robots-Tag': 'noindex' } },
   );
 }
@@ -184,29 +236,16 @@ const fonteUfficiale = F2_DISPONIBILE && campoTesto('fonte_ufficiale_stato') !==
   : null;
 const rigaFonte = testoFonteUfficiale(fonteUfficiale, campoTesto('ultimo_controllo_at'));
 
-const daysToDeadline = (() => {
-  // Giorni rispetto a oggi-Europe/Rome, stesso ancoraggio del badge: col fuso
-  // del server (UTC in prod) badge e conteggio divergerebbero nella finestra
-  // tra la mezzanotte di Roma e quella UTC.
-  if (!bando.data_scadenza) return null;
-  const scad = String(bando.data_scadenza).slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(scad)) return null;
-  return Math.round((Date.parse(scad) - Date.parse(oggi)) / 86400000);
-})();
-
-// Alias compat: il template usa bando.tipologia / bando.programma / bando.beneficiari
-// / bando.codici_ateco / bando.modalita_erogazione come stringhe. Li popolo dai
-// nomi risolti via resolveBandoRelations().
-const alias = bando as unknown as Record<string, unknown>;
-alias.tipologia = bando.tipologia_nome;
-alias.programma = bando.programma_nome;
+// Giorni rispetto a oggi-Europe/Rome, stesso ancoraggio del badge: col fuso
+// del server (UTC in prod) badge e conteggio divergerebbero nella finestra
+// tra la mezzanotte di Roma e quella UTC. La formula sta in testi-stato.ts,
+// condivisa con la card della lista.
+const daysToDeadline = giorniAllaScadenza(bando.data_scadenza, oggi);
 
 // Link verso le pagine filtro, solo dove esistono davvero (mai verso un 404).
 const hrefTipologia = hrefFiltroSePubblicata('bandi', 'tipologia', bando.tipologia_nome);
 const hrefProgramma = hrefFiltroSePubblicata('bandi', 'programma', bando.programma_nome);
-alias.modalita_erogazione = bando.modalita_nome;
-alias.beneficiari = bando.beneficiari_nomi;
-alias.codici_ateco = bando.codici_ateco_resolved.map(c =>
+const codiciAteco = bando.codici_ateco_resolved.map(c =>
   c.descrizione ? `${c.codice} — ${c.descrizione}` : c.codice
 );
 
@@ -222,6 +261,39 @@ const cta = partecipabile
     })
   : null;
 
+// Decisione di resa (25/09/2026): anche un bando chiuso non mostra la CTA ne' il
+// conto alla rovescia, come un sospeso o un revocato. `partecipazioneAperta` e il
+// calcolo di `cta` restano com'erano: il chiuso si esclude solo qui.
+const candidabile = partecipabile && stato !== 'chiuso';
+const ctaVisibile = candidabile ? cta : null;
+// Il conto alla rovescia solo per un aperto: su un «in apertura» farebbe credere
+// che lo sia gia'. Mai «scaduto da N giorni».
+const giorniMancanti = stato === 'aperto' ? testoGiorniMancanti(daysToDeadline) : null;
+const oraScadenza = oraItaliana(campoTesto('ora_scadenza'));
+const messaggioPartecipazione = stato === 'sospeso'
+  ? 'Al momento non è possibile presentare domanda.'
+  : stato === 'revocato' || stato === 'chiuso'
+    ? 'Non è più possibile presentare domanda.'
+    : ctaVisibile === null
+      ? 'Non abbiamo ancora un link ufficiale verificato per la candidatura.'
+      : null;
+
+// Lo stato sconosciuto ha «—» come etichetta: un segnaposto, quindi non si mostra.
+const conBadge = badge !== BADGE_STATO.sconosciuto;
+const mostraApertura = Boolean(bando.data_apertura) && stato === 'in apertura prossimamente';
+// L'area si omette quando il nome dell'ente la contiene gia' («Regione Marche · Marche»).
+const ente = bando.ente_erogatore?.trim() || null;
+const area = bando.area_geografica?.trim() || null;
+const rigaEnte = [ente, area && !(ente ?? '').toLowerCase().includes(area.toLowerCase()) ? area : null]
+  .filter((v): v is string => v !== null);
+const sottotitolo = bando.titolo_breve && bando.titolo_breve.trim().toLowerCase() !== (bando.titolo ?? '').trim().toLowerCase()
+  ? bando.titolo_breve
+  : null;
+const occhiello = [
+  { testo: bando.tipologia_nome, href: hrefTipologia },
+  { testo: bando.programma_nome, href: hrefProgramma },
+].filter((v): v is { testo: string; href: string | null } => typeof v.testo === 'string' && v.testo !== '');
+
 // Allegati: la stessa cintura di ogni altro URL in uscita. Si preferiscono le
 // righe di `bando_link`, che hanno risposto 2xx all'ultimo controllo e portano
 // la prova di essere state trovate nella pagina di riferimento; la colonna
@@ -235,7 +307,7 @@ const allegati = soloPubblicabili(
   a => a?.url,
 );
 
-// Tipo allegato → icona/colore
+// Tipo allegato → etichetta del tag (PDF, DOC…); 'FILE' = tipo ignoto, il tag non si mostra
 const allegatoTipoLabel = (tipo: string): string => {
   if (tipo === 'pdf') return 'PDF';
   if (tipo === 'doc' || tipo === 'docx') return 'DOC';
@@ -245,13 +317,48 @@ const allegatoTipoLabel = (tipo: string): string => {
   return 'FILE';
 };
 
-const allegatoTipoClasses = (tipo: string): string => {
-  if (tipo === 'pdf') return 'bg-red-50 text-red-700';
-  if (tipo === 'doc' || tipo === 'docx' || tipo === 'odt' || tipo === 'rtf') return 'bg-blue-50 text-blue-700';
-  if (tipo === 'xls' || tipo === 'xlsx' || tipo === 'ods') return 'bg-green-50 text-green-700';
-  if (tipo === 'zip') return 'bg-amber-50 text-amber-700';
-  return 'bg-gray-100 text-gray-600';
+// Gli allegati letti da `bando_link` arrivano tutti con tipo 'altro': il tipo si
+// ricava dall'estensione dell'URL e, se resta ignoto, il tag non si mostra (un
+// «FILE» su ogni riga non dice niente). Senza etichetta vale il nome del file.
+const ESTENSIONE_ALLEGATO = /\.(pdf|docx?|xlsx?|ods|odt|rtf|zip)(?:[?#]|$)/i;
+const nomeFile = (url: string): string | null => {
+  try {
+    const ultimo = new URL(url).pathname.split('/').filter(Boolean).pop();
+    return ultimo ? decodeURIComponent(ultimo) : null;
+  } catch {
+    return null;
+  }
 };
+const vociAllegati = allegati.map((a, i) => {
+  const dichiarato = typeof a.tipo === 'string' ? a.tipo.toLowerCase() : '';
+  const tipo = dichiarato !== '' && dichiarato !== 'altro'
+    ? dichiarato
+    : (ESTENSIONE_ALLEGATO.exec(a.url)?.[1]?.toLowerCase() ?? '');
+  const tag = allegatoTipoLabel(tipo);
+  return {
+    url: a.url,
+    tag: tag === 'FILE' ? null : tag,
+    etichetta: (typeof a.label === 'string' ? a.label.trim() : '') || nomeFile(a.url) || `Documento ${i + 1}`,
+  };
+});
+
+// Indice «In questa pagina»: gli id li assegna renderSezioni agli H2 e qui si
+// leggono dall'HTML gia' reso, cosi' l'algoritmo degli id esiste in un posto
+// solo. Il testo catturato e' gia' passato da `scappa`: si rende con set:html.
+const SOGLIA_INDICE = 4;
+const vociIndice = [...corpoHtml.matchAll(/<h2 id="([^"]+)"[^>]*>([^<]*)<\/h2>/g)]
+  .map((m) => ({ id: m[1], testo: m[2] }))
+  .filter((v) => v.testo.trim() !== '');
+const conIndice = vociIndice.length >= SOGLIA_INDICE;
+
+// Importi: su mobile un importo lungo prende la riga intera invece di sconfinare.
+const importoTotale = bando.importo_totale_eur != null ? formatImporto(bando.importo_totale_eur) : null;
+const importoMassimo = bando.importo_max_per_progetto_eur != null ? formatImporto(bando.importo_max_per_progetto_eur) : null;
+const beneficiari = bando.beneficiari_nomi.filter((b) => b.trim() !== '');
+const tematiche = (bando.tematica ?? []).filter((t) => typeof t === 'string' && t.trim() !== '');
+const ATECO_VISIBILI = 5;
+const conSintesi = beneficiari.length > 0 || tematiche.length > 0 || Boolean(bando.programma_nome)
+  || Boolean(bando.modalita_nome) || codiciAteco.length > 0 || Boolean(bando.data_pubblicazione);
 
 // v4: meta_title/meta_description NON sono piu' colonne. Li derivo da titolo/descrizione_breve.
 const titoloDisplay = bando.titolo || 'Bando';
@@ -336,273 +443,274 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData({
     <script type="application/ld+json" set:html={breadcrumbStructuredData} />
   </Fragment>
 
-  <main class="bg-gray-50 min-h-screen">
-    <div class="bg-gradient-to-r from-blue-700 to-indigo-800 text-white py-10 px-4 sm:px-6 lg:px-8">
-      <div class="container mx-auto max-w-6xl">
-        <nav class="flex text-sm text-blue-200 mb-4" aria-label="Breadcrumb">
-          <ol class="inline-flex items-center space-x-1">
-            <li><a href="/" class="hover:text-white transition-colors">Home</a></li>
-            <li class="flex items-center">
-              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <a href="/bandi" class="hover:text-white transition-colors">Bandi</a>
+  <main class="bg-white">
+    {/* Header chiaro: dove siamo, cos'e', e i dati che rispondono a «e' aperto e
+        fino a quando?» e «quanto vale?» prima di qualunque testo. */}
+    <div class="border-b border-gray-200">
+      <div class="container mx-auto max-w-6xl px-4 pb-8 pt-6 sm:pt-8">
+        <nav class="text-sm text-gray-600" aria-label="Breadcrumb">
+          <ol class="flex flex-wrap items-center gap-x-1">
+            <li><a href="/" class="-my-3 inline-block rounded-md py-3 underline-offset-2 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Home</a></li>
+            <li class="flex items-center gap-x-1">
+              <svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0 text-gray-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <a href="/bandi" class="-my-3 inline-block rounded-md py-3 underline-offset-2 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Bandi</a>
             </li>
-            <li class="flex items-center">
-              <svg class="w-4 h-4 mx-1" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <span class="text-white font-medium line-clamp-1">{titoloDisplay}</span>
+            <li class="flex min-w-0 max-w-full items-center gap-x-1">
+              <svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0 text-gray-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
+              <span aria-current="page" class="min-w-0 truncate text-gray-900">{titoloDisplay}</span>
             </li>
           </ol>
         </nav>
-        {bando.titolo_breve && (
-          <p class="text-blue-200 text-sm uppercase tracking-wider mb-2">{bando.titolo_breve}</p>
+
+        {occhiello.length > 0 && (
+          <p class="mt-5 flex flex-wrap items-center gap-x-2 text-sm font-medium text-gray-700">
+            {occhiello.map((voce, i) => (
+              <Fragment>
+                {i > 0 && <span aria-hidden="true" class="text-gray-400">{' · '}</span>}
+                {voce.href
+                  ? <a href={voce.href} class="-my-3 inline-block rounded-md py-3 text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{voce.testo}</a>
+                  : <span>{voce.testo}</span>}
+              </Fragment>
+            ))}
+          </p>
         )}
-        <h1 class="text-2xl md:text-4xl font-bold mb-3 leading-tight">{titoloDisplay}</h1>
-        <div class="flex flex-wrap items-center gap-3 text-sm">
-          {bando.tipologia && (
-            hrefTipologia
-              ? <a href={hrefTipologia} class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold hover:bg-white/30 transition-colors">{bando.tipologia}</a>
-              : <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-white/20 backdrop-blur-sm font-semibold">{bando.tipologia}</span>
+        <h1 class="mt-2 max-w-4xl font-heading text-2xl font-bold leading-tight text-gray-900 sm:text-3xl">{titoloDisplay}</h1>
+        {sottotitolo && <p class="mt-2 max-w-3xl text-lg leading-snug text-gray-700">{sottotitolo}</p>}
+        {rigaEnte.length > 0 && <p class="mt-3 text-base text-gray-700">{rigaEnte.join(' · ')}</p>}
+
+        {/* Dati chiave. Nessun segnaposto: una voce senza dato non c'e'. */}
+        <dl class="mt-6 grid grid-cols-2 gap-x-6 gap-y-5 border-t border-gray-200 pt-5 lg:flex lg:gap-0 lg:divide-x lg:divide-gray-200">
+          <div class="col-span-2 lg:flex-[2] lg:pr-6">
+            <dt class="text-sm text-gray-600">Stato</dt>
+            <dd class="mt-1">
+              {conBadge && (
+                <span class={`inline-flex items-center rounded-md px-2 py-0.5 text-sm font-semibold ${badge.classi}`}>{badge.etichetta}</span>
+              )}
+              {sottotesto && <p class="mt-2 max-w-[45ch] text-sm leading-relaxed text-gray-700">{sottotesto}</p>}
+            </dd>
+          </div>
+          {mostraApertura && (
+            <div class="col-span-2 lg:flex-1 lg:px-6">
+              <dt class="text-sm text-gray-600">Apertura</dt>
+              <dd class="mt-1 text-xl font-semibold leading-tight tabular-nums text-gray-900 sm:text-2xl">{formatDate(bando.data_apertura)}</dd>
+            </div>
           )}
-          {bando.ente_erogatore && (
-            <span class="inline-flex items-center gap-1.5 text-blue-100">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5"/></svg>
-              {bando.ente_erogatore}
-            </span>
+          {bando.data_scadenza && (
+            <div class="col-span-2 lg:flex-1 lg:px-6">
+              <dt class="text-sm text-gray-600">Scadenza</dt>
+              <dd class="mt-1">
+                <span class="block text-xl font-semibold leading-tight tabular-nums text-gray-900 sm:text-2xl">{formatDate(bando.data_scadenza)}</span>
+                {oraScadenza && <span class="mt-0.5 block text-base tabular-nums text-gray-900">ore {oraScadenza}</span>}
+                {giorniMancanti && <span class="mt-1 block text-sm font-medium text-gray-700">{giorniMancanti}</span>}
+              </dd>
+            </div>
           )}
-          {bando.area_geografica && (
-            <span class="inline-flex items-center gap-1.5 text-blue-100">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/></svg>
-              {bando.area_geografica}
-            </span>
+          {importoTotale && (
+            <div class={`${importoTotale.length > 11 ? 'col-span-2 ' : ''}lg:flex-1 lg:px-6`}>
+              <dt class="text-sm text-gray-600">Dotazione totale</dt>
+              <dd class="mt-1 whitespace-nowrap text-xl font-semibold leading-tight tabular-nums text-gray-900 sm:text-2xl">{importoTotale}</dd>
+            </div>
           )}
-          <span class={`inline-flex items-center px-2.5 py-1 rounded-full font-semibold ${badge.classi}`}>{badge.etichetta}</span>
-        </div>
-        {sottotesto && (
-          <p class="text-blue-100 text-sm mt-3 max-w-3xl">{sottotesto}</p>
-        )}
-        <p class="text-blue-200 text-xs mt-1.5">{rigaFonte}</p>
+          {importoMassimo && (
+            <div class={`${importoMassimo.length > 11 ? 'col-span-2 ' : ''}lg:flex-1 lg:px-6`}>
+              <dt class="text-sm text-gray-600">Massimo per progetto</dt>
+              <dd class="mt-1 whitespace-nowrap text-xl font-semibold leading-tight tabular-nums text-gray-900 sm:text-2xl">{importoMassimo}</dd>
+            </div>
+          )}
+        </dl>
+        <p class="mt-4 text-xs text-gray-600">{rigaFonte}</p>
       </div>
     </div>
 
-    <div class="container mx-auto px-4 max-w-6xl py-8">
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Main content */}
-        <article class="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-100 p-6 sm:p-8">
-          {bando.descrizione_breve && (
-            <p class="text-lg text-gray-700 leading-relaxed mb-6 font-medium">{bando.descrizione_breve}</p>
-          )}
-          {avvisoCorpo && (
-            <p class="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-6">{avvisoCorpo}</p>
-          )}
-          <div class="prose prose-blue max-w-none" set:html={corpoHtml} />
-        </article>
+    <div class="container mx-auto max-w-6xl px-4 py-8">
+      {/* Aggiornamenti: gli eventi datati che la fonte ufficiale ha pubblicato
+          dopo la nostra scheda. La frase e' templata dal tipo dell'evento, il
+          link punta alla pagina che lo prova. Sta subito sotto i dati chiave:
+          una proroga cambia la scadenza mostrata sopra. */}
+      {aggiornamenti.length > 0 && (
+        <section aria-labelledby="scheda_aggiornamenti" class="mb-10 border-l-4 border-amber-500 bg-amber-50 px-5 py-4">
+          <div class="max-w-3xl">
+            <h2 id="scheda_aggiornamenti" class="font-heading text-lg font-semibold text-gray-900">Aggiornamenti</h2>
+            <ul class="mt-2 space-y-2">
+              {aggiornamenti.map(voce => (
+                <li class="text-sm leading-relaxed text-gray-900">
+                  <span class="font-medium">{voce.testo}</span>{voce.quando && (
+                    <span class="tabular-nums text-gray-700">{` · ${voce.quando}`}</span>
+                  )}{voce.url && voce.host && (
+                    <Fragment>{' · '}<a
+                        href={voce.url}
+                        target="_blank"
+                        rel="noopener noreferrer nofollow"
+                        class="break-words rounded-md text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      >{voce.host}<span class="sr-only"> (si apre in una nuova scheda)</span></a></Fragment>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p class="mt-3 text-xs text-amber-800">
+              Le date nel testo sono quelle rilevate alla pubblicazione: fanno
+              fede i dati qui sopra e questi aggiornamenti.
+            </p>
+          </div>
+        </section>
+      )}
 
-        {/* Sidebar */}
-        <aside class="space-y-4">
-          {/* CTA — una sola, e solo se la destinazione e' affidabile.
-              Nessun box e' meglio di un box che porta a un aggregatore. */}
-          {cta && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Partecipa al bando</h3>
+      {/* Griglia: il DOM segue l'ordine mobile (partecipazione, corpo, documenti
+          e sintesi), cosi' nessun blocco e' duplicato e l'ordine di lettura
+          coincide con quello visivo. Su desktop partecipazione e sintesi vanno
+          nella colonna destra; la traccia 1fr assorbe l'altezza del corpo. */}
+      <div class="grid grid-cols-1 gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr]">
+        <div class="lg:col-start-2 lg:row-start-1">
+          {/* Partecipazione: una sola CTA, e solo se la destinazione e'
+              affidabile. Nessun bottone e' meglio di un bottone che porta a un
+              aggregatore. */}
+          <section aria-labelledby="scheda_partecipazione">
+            <h2 id="scheda_partecipazione" class="font-heading text-lg font-semibold text-gray-900">Partecipazione</h2>
+            {ctaVisibile && (
               <a
-                href={cta.url}
+                href={ctaVisibile.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                class="block w-full text-center px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
-              >
-                {cta.etichetta}
-                <svg class="inline w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-              </a>
-            </div>
-          )}
-
-          {/* Aggiornamenti: gli eventi datati che la fonte ufficiale ha
-              pubblicato dopo la nostra scheda. La frase e' templata dal tipo
-              dell'evento, il link punta alla pagina che lo prova. Sta sopra gli
-              allegati di proposito: una proroga o una revoca vale piu' di un
-              PDF. */}
-          {aggiornamenti.length > 0 && (
-            <div class="bg-amber-50 rounded-xl shadow-sm border border-amber-200 p-5">
-              <h3 class="text-sm font-semibold text-amber-800 uppercase tracking-wider mb-3">
-                Aggiornamenti
-              </h3>
-              <ul class="space-y-3">
-                {aggiornamenti.map(voce => (
-                  <li class="text-sm text-gray-800">
-                    <span class="font-medium">{voce.testo}</span>
-                    {voce.quando && (
-                      <span class="text-gray-500"> · {voce.quando}</span>
-                    )}
-                    {voce.url && voce.host && (
-                      <>
-                        {' '}
-                        <a
-                          href={voce.url}
-                          target="_blank"
-                          rel="noopener noreferrer nofollow"
-                          class="text-blue-700 hover:underline break-words"
-                        >
-                          {voce.host}
-                        </a>
-                      </>
-                    )}
-                  </li>
-                ))}
+                class="mt-3 flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-3 text-center font-semibold text-white hover:bg-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >{ctaVisibile.etichetta}<svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg><span class="sr-only"> (si apre in una nuova scheda)</span></a>
+            )}
+            {messaggioPartecipazione && (
+              <p class="mt-2 text-sm leading-relaxed text-gray-700">{messaggioPartecipazione}</p>
+            )}
+            {!candidabile && (hrefProgramma || hrefTipologia) && (
+              <ul class="mt-2 text-sm">
+                {hrefProgramma && (
+                  <li><a href={hrefProgramma} class="inline-flex min-h-11 items-center rounded-md text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Bandi dello stesso programma: {bando.programma_nome}</a></li>
+                )}
+                {hrefTipologia && (
+                  <li><a href={hrefTipologia} class="inline-flex min-h-11 items-center rounded-md text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Bandi della stessa tipologia: {bando.tipologia_nome}</a></li>
+                )}
               </ul>
-              <p class="text-xs text-amber-700 mt-3">
-                Le date nel testo sono quelle rilevate alla pubblicazione: fanno
-                fede i riquadri qui sopra e questi aggiornamenti.
-              </p>
-            </div>
-          )}
+            )}
+          </section>
+          <div class="mt-6">
+            <BandiExpertCta variante="scheda" utmContent="dettaglio-sidebar" candidabile={candidabile} />
+          </div>
+        </div>
 
-          {/* Banner CTA "Hai bisogno di un esperto?" */}
-          <BandiExpertCta variant="sidebar" utmContent="dettaglio-sidebar" />
+        <article class="min-w-0 lg:col-start-1 lg:row-span-2 lg:row-start-1">
+          <div class="max-w-[68ch]">
+            {/* Titolo nascosto: senza, lead e corpo finirebbero sotto «Partecipazione»
+                nella struttura dei titoli e nel Markdown per agenti. */}
+            {(bando.descrizione_breve || avvisoCorpo || corpoHtml) && (
+              <h2 id="scheda_descrizione" class="sr-only">Descrizione del bando</h2>
+            )}
+            {bando.descrizione_breve && (
+              <p class="text-lg leading-relaxed text-gray-800">{bando.descrizione_breve}</p>
+            )}
+            {avvisoCorpo && (
+              <p class="mt-6 border-l-4 border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-700">{avvisoCorpo}</p>
+            )}
+            {conIndice && (
+              <nav aria-labelledby="scheda_indice" class="mt-8 border-l border-gray-200 pl-4">
+                <p id="scheda_indice" class="text-sm font-semibold text-gray-900">In questa pagina</p>
+                <ul class="mt-1">
+                  {vociIndice.map((voce) => (
+                    <li><a href={`#${voce.id}`} class="block rounded-md py-2 text-sm text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary" set:html={voce.testo} /></li>
+                  ))}
+                </ul>
+              </nav>
+            )}
+            {corpoHtml && <div class="mt-8" set:html={corpoHtml} />}
+          </div>
+        </article>
 
+        <div class="space-y-8 lg:col-start-2 lg:row-start-2 lg:self-start">
           {/* Documenti e allegati */}
-          {allegati.length > 0 && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Documenti e allegati</h3>
-              <ul class="space-y-2">
-                {allegati.map(a => (
+          {vociAllegati.length > 0 && (
+            <section aria-labelledby="scheda_allegati">
+              <h2 id="scheda_allegati" class="font-heading text-lg font-semibold text-gray-900">Documenti e allegati</h2>
+              <ul class="mt-2 divide-y divide-gray-200 border-y border-gray-200">
+                {vociAllegati.map(a => (
                   <li>
                     <a
                       href={a.url}
                       target="_blank"
                       rel="noopener noreferrer nofollow"
-                      class="flex items-start gap-2.5 text-sm text-gray-700 hover:text-blue-700 transition-colors group"
+                      class="group flex min-h-11 items-start gap-3 rounded-md py-2.5 text-sm text-gray-800 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                     >
-                      <span class={`shrink-0 inline-flex items-center justify-center min-w-[2.25rem] px-1.5 py-0.5 rounded text-[10px] font-bold mt-0.5 ${allegatoTipoClasses(a.tipo)}`}>
-                        {allegatoTipoLabel(a.tipo)}
-                      </span>
-                      <span class="flex-1 leading-snug group-hover:underline">{a.label}</span>
-                      <svg class="shrink-0 w-3.5 h-3.5 text-gray-400 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                      {a.tag && (
+                        <span class="mt-0.5 inline-flex shrink-0 items-center rounded-md bg-gray-100 px-1.5 py-0.5 text-xs font-semibold text-gray-700">{a.tag}</span>
+                      )}
+                      <span class="min-w-0 flex-1 break-words leading-snug underline-offset-2 group-hover:underline">{a.etichetta}<span class="sr-only"> (si apre in una nuova scheda)</span></span>
+                      <span class="mt-0.5 text-gray-500"><svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></span>
                     </a>
                   </li>
                 ))}
               </ul>
-            </div>
+            </section>
           )}
 
-          {/* Pubblicazione (data della fonte, NON la nostra) */}
-          {bando.data_pubblicazione && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Data di pubblicazione</h3>
-              <p class="text-lg font-semibold text-gray-900">
-                {formatDate(bando.data_pubblicazione)}
-              </p>
-            </div>
+          {/* Scheda sintetica: un solo elenco di definizioni, righe divise da hairline. */}
+          {conSintesi && (
+            <section aria-labelledby="scheda_sintesi">
+              <h2 id="scheda_sintesi" class="font-heading text-lg font-semibold text-gray-900">Scheda sintetica</h2>
+              <dl class="mt-2 divide-y divide-gray-200 border-y border-gray-200 text-sm">
+                {beneficiari.length > 0 && (
+                  <div class="py-3">
+                    <dt class="text-gray-600">A chi si rivolge</dt>
+                    <dd class="mt-1 text-gray-900">
+                      {beneficiari.length === 1
+                        ? beneficiari[0]
+                        : <ul class="list-disc space-y-1 pl-5">{beneficiari.map(b => <li>{b}</li>)}</ul>}
+                    </dd>
+                  </div>
+                )}
+                {tematiche.length > 0 && (
+                  <div class="py-3">
+                    <dt class="text-gray-600">Tematica</dt>
+                    <dd class="mt-1 text-gray-900">{tematiche.join(', ')}</dd>
+                  </div>
+                )}
+                {bando.programma_nome && (
+                  <div class="py-3">
+                    <dt class="text-gray-600">Programma</dt>
+                    <dd class="mt-1 text-gray-900">
+                      {hrefProgramma
+                        ? <a href={hrefProgramma} class="-my-3 inline-block rounded-md py-3 text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{bando.programma_nome}</a>
+                        : bando.programma_nome}
+                    </dd>
+                  </div>
+                )}
+                {bando.modalita_nome && (
+                  <div class="py-3">
+                    <dt class="text-gray-600">Modalità di erogazione</dt>
+                    <dd class="mt-1 text-gray-900">{bando.modalita_nome}</dd>
+                  </div>
+                )}
+                {codiciAteco.length > 0 && (
+                  <div class="py-3">
+                    <dt class="text-gray-600">Codici ATECO</dt>
+                    <dd class="mt-1 text-gray-900">
+                      <ul class="space-y-1 tabular-nums">
+                        {codiciAteco.slice(0, ATECO_VISIBILI).map(c => <li class="leading-snug">{c}</li>)}
+                      </ul>
+                      {codiciAteco.length > ATECO_VISIBILI && (
+                        <div class="mt-1"><details>
+                          <summary class="inline-flex min-h-11 cursor-pointer list-none items-center rounded-md font-medium text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden">Mostra tutti ({codiciAteco.length})</summary>
+                          <ul class="space-y-1 tabular-nums">
+                            {codiciAteco.slice(ATECO_VISIBILI).map(c => <li class="leading-snug">{c}</li>)}
+                          </ul>
+                        </details></div>
+                      )}
+                    </dd>
+                  </div>
+                )}
+                {bando.data_pubblicazione && (
+                  <div class="py-3">
+                    <dt class="text-gray-600">Data di pubblicazione</dt>
+                    <dd class="mt-1 tabular-nums text-gray-900">{formatDate(bando.data_pubblicazione)}</dd>
+                  </div>
+                )}
+              </dl>
+            </section>
           )}
-
-          {/* Apertura: la colonna data_apertura era selezionata e non veniva
-              mai resa, e con lei spariva l'unica spiegazione del badge
-              "In apertura". */}
-          {bando.data_apertura && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Apertura</h3>
-              <p class="text-lg font-semibold text-gray-900">{formatDate(bando.data_apertura)}</p>
-              <p class="text-sm text-gray-500 mt-1">Data indicata dalla fonte</p>
-            </div>
-          )}
-
-          {/* Scadenza */}
-          {bando.data_scadenza && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Scadenza</h3>
-              <p class="text-2xl font-bold text-gray-900">{formatDate(bando.data_scadenza)}</p>
-              {partecipabile && daysToDeadline != null && (
-                <p class="text-sm text-gray-500 mt-1">
-                  {daysToDeadline > 0
-                    ? `${daysToDeadline} giorni rimanenti`
-                    : daysToDeadline === 0
-                    ? 'Scade oggi'
-                    : `Scaduto da ${-daysToDeadline} giorni`}
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Importi */}
-          {(bando.importo_totale_eur != null || bando.importo_max_per_progetto_eur != null) && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Importi</h3>
-              {bando.importo_totale_eur != null && (
-                <div class="mb-2">
-                  <p class="text-xs text-gray-500">Totale stanziato</p>
-                  <p class="text-lg font-bold text-gray-900">{formatImporto(bando.importo_totale_eur)}</p>
-                </div>
-              )}
-              {bando.importo_max_per_progetto_eur != null && (
-                <div>
-                  <p class="text-xs text-gray-500">Massimo per progetto</p>
-                  <p class="text-lg font-bold text-gray-900">{formatImporto(bando.importo_max_per_progetto_eur)}</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Beneficiari */}
-          {bando.beneficiari && bando.beneficiari.length > 0 && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">A chi si rivolge</h3>
-              <ul class="space-y-1.5">
-                {bando.beneficiari.map(b => (
-                  <li class="text-sm text-gray-700 flex items-start gap-2">
-                    <svg class="w-4 h-4 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                    {b}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Tematica */}
-          {bando.tematica && bando.tematica.length > 0 && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Tematica</h3>
-              <div class="flex flex-wrap gap-2">
-                {bando.tematica.map(t => (
-                  <span class="inline-flex items-center px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 text-xs font-medium">{t}</span>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Codici ATECO */}
-          {bando.codici_ateco && bando.codici_ateco.length > 0 && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Codici ATECO</h3>
-              <ul class="space-y-1.5">
-                {bando.codici_ateco.map(c => (
-                  <li class="text-sm text-gray-700 flex items-start gap-2">
-                    <svg class="w-4 h-4 text-blue-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-                    <span class="leading-snug">{c}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Programma + Modalita */}
-          {(bando.programma || bando.modalita_erogazione) && (
-            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">Programma e modalita</h3>
-              {bando.programma && (
-                <div class="mb-3">
-                  <p class="text-xs text-gray-500 mb-0.5">Programma</p>
-                  {hrefProgramma
-                    ? <p class="text-sm font-medium"><a href={hrefProgramma} class="text-blue-700 hover:underline">{bando.programma}</a></p>
-                    : <p class="text-sm font-medium text-gray-800">{bando.programma}</p>}
-                </div>
-              )}
-              {bando.modalita_erogazione && (
-                <div>
-                  <p class="text-xs text-gray-500 mb-0.5">Modalita erogazione</p>
-                  <p class="text-sm font-medium text-gray-800">{bando.modalita_erogazione}</p>
-                </div>
-              )}
-            </div>
-          )}
-        </aside>
+        </div>
       </div>
     </div>
   </main>

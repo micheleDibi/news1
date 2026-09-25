@@ -7,7 +7,9 @@
 export const BANDOFIT_URL = 'https://bandofit.edunews24.it';
 
 /** Posizioni dei CTA verso BandoFit: il valore diventa lo utm_content. */
-export type BandofitCtaPosition = 'lista-hero' | 'lista-banner' | 'dettaglio-sidebar';
+// `lista-banner` (il banner a tutta larghezza della lista) e' stato tolto: i
+// valori rimasti non cambiano, cosi' le serie storiche restano confrontabili.
+export type BandofitCtaPosition = 'lista-hero' | 'dettaglio-sidebar';
 
 export function bandofitCtaUrl(position: BandofitCtaPosition): string {
   const url = new URL(BANDOFIT_URL);
