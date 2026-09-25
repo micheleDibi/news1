@@ -3,7 +3,7 @@
 Testata online su scuola, università e formazione (edunews24.it): frontend Astro SSR, backend Python, due database
 Supabase distinti. Produzione su servizi systemd (repo in `~/projects/news1`) dietro Cloudflare + nginx; sviluppo in
 locale su macOS; nessuno staging documentato. Per architettura, pipeline e variabili d'ambiente in dettaglio:
-`README.md` (attenzione: contiene sezioni disallineate dal codice, vedi "Trappole note"). Fonti aggiornate:
+`README.md` (riallineato al codice il 25/09/2026; in caso di contrasto vale il codice). Fonti aggiornate:
 `docs/bandi-monitor/RIPRESA.md` (da leggere per primo nelle sessioni sui bandi), `docs/contratto-db-bandi.md`,
 `docs/api-v1.md`, `.env.example`.
 
@@ -58,14 +58,17 @@ locale su macOS; nessuno staging documentato. Per architettura, pipeline e varia
   chiedere.
 
 ## Comandi
-- Avvio locale: `npm run dev` (porta 80 da `astro.config.mjs`; README e `FRONTEND_URL` di default del backend dicono
-  4321 [DA VERIFICARE]). Build: `npm run build` (pre/post-build copiano le credenziali Google ed escono con errore se
+- Avvio locale: `npm run dev`, sulla porta 80: `server.port` di `astro.config.mjs` vale anche per `astro dev`
+  (verificato nel sorgente di Astro, non avviando il server). Il backend però assume `FRONTEND_URL` =
+  `http://localhost:4321` e in CORS ammette solo `localhost:3000` e `localhost:4321`. Build: `npm run build` (pre/post-build copiano le credenziali Google ed escono con errore se
   manca `src/pages/api/tts/google-credentials.json`; in locale `npx astro build`). Produzione:
   `node dist/server/entry.mjs`.
 - Backend: `cd backend && uvicorn app.main:app --port 8000` (in produzione **senza** `--reload`). In locale così non
   parte: `backend/` non ha un venv e da lì `app` risolve sul package omonimo (vedi "Trappole note").
 - Bandi: `cd scraper_bandi && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app <comando> --dry-run --limit N`
-  (comandi in RIPRESA §6; senza `--dry-run` scrivono sul DB vero, ma senza `--attivo` non toccano colonne pubbliche).
+  (comandi in RIPRESA §6). Senza `--dry-run` scrivono sul DB vero: gli step base (`discover`, `scrape-bandi`,
+  `preprocess`, `enrich`, `seo`) non hanno modalità ombra; i comandi v11 accettano `--ombra`/`--attivo` e, senza,
+  decide la variabile `*_MODALITA` dell'ambiente.
 - Test singolo TS:
   `TZ=Asia/Kathmandu node --experimental-strip-types --disable-warning=ExperimentalWarning --import ./tests/supporto/registra-risolutore.mjs --test <file>`.
   Python: `cd backend && python3 -m unittest tests.test_<nome>`; per scraper_bandi
@@ -185,7 +188,4 @@ Inoltre, sempre (non toccati dalle deroghe):
   `app/db.py`).
 - `src/pages/api/interpelli/refresh.ts` importa un file di tipi inesistente e scrive in `src/data/`, che non esiste:
   endpoint scollegato.
-- Il `README.md` è disallineato su `scraper_bandi/` (descritto "in costruzione", in realtà completo), sui nomi delle
-  junction (al plurale nel DB), sulla RLS, su `/eu-funding` (oggi 410), sul sender bandi (attivo) e su alcuni comandi
-  che non esistono più.
 
