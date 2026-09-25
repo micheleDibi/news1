@@ -1842,8 +1842,8 @@ class _DbEventi:
         self.resi_leggibili: list[tuple] = []
 
     def select_eventi(self, *, tipi=(), dal=None, applicato=None, verificato=None,
-                      bando_id=None, con_riferimento=None, limit=None, offset=0,
-                      colonne=None, **_):
+                      leggibile=None, bando_id=None, con_riferimento=None,
+                      limit=None, offset=0, colonne=None, **_):
         self.colonne_chieste.append(tuple(colonne or ()))
         righe = list(self.eventi)
         if tipi:
@@ -1855,6 +1855,8 @@ class _DbEventi:
             righe = [r for r in righe if bool(r.get("applicato")) is applicato]
         if verificato is not None:
             righe = [r for r in righe if bool(r.get("verificato")) is verificato]
+        if leggibile is not None:
+            righe = [r for r in righe if bool(r.get("leggibile")) is leggibile]
         if bando_id is not None:
             righe = [r for r in righe if r.get("bando_id") == bando_id]
         righe.sort(key=lambda r: r.get("id"))
@@ -3294,4 +3296,67 @@ class TestApplicareVuolDireRendereVisibile(unittest.IsolatedAsyncioTestCase):
     async def test_in_ombra_non_si_scrive_niente(self):
         finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_APPLICATO)
         await self._lancia(finto, attivo=False, limit=3)
+        self.assertEqual(finto.resi_leggibili, [])
+
+
+class TestRiparaGliApplicatiInvisibili(unittest.IsolatedAsyncioTestCase):
+    """Un'attivazione interrotta a meta' deve potersi chiudere.
+
+    `bando_applica_evento` marca l'evento `applicato` e non tocca `leggibile`.
+    Se il secondo UPDATE non parte, l'evento resta applicato alle colonne e
+    assente dal box — e nessun lancio successivo lo ripesca, perche' la
+    selezione cerca `applicato=false`. Misurato il 25/09/2026 su cinque eventi
+    che il comando aveva dichiarato applicati: `applica-eventi` rispondeva
+    `letti: 0` a ogni rilancio, anche con `--riprova-rifiutati`.
+    """
+
+    def _eventi(self):
+        return [
+            {"id": 200, "bando_id": 900, "tipo": "faq", "verificato": True,
+             "applicato": True, "leggibile": False,
+             "rilevato_at": "2026-09-25T09:00:00+00:00", "data_evento": "2026-09-25"},
+            {"id": 201, "bando_id": 901, "tipo": "nuovo_allegato", "verificato": True,
+             "applicato": True, "leggibile": False,
+             "rilevato_at": "2026-09-25T09:00:00+00:00", "data_evento": "2026-09-25"},
+            # Gia' visibile: non si tocca.
+            {"id": 202, "bando_id": 902, "tipo": "faq", "verificato": True,
+             "applicato": True, "leggibile": True,
+             "rilevato_at": "2026-09-25T09:00:00+00:00", "data_evento": "2026-09-25"},
+            # Evento di sistema: applicato e invisibile per costruzione.
+            {"id": 203, "bando_id": 903, "tipo": "pubblicazione", "verificato": True,
+             "applicato": True, "leggibile": False,
+             "rilevato_at": "2026-09-25T09:00:00+00:00", "data_evento": "2026-09-25"},
+        ]
+
+    async def _lancia(self, finto, *, attivo=True, **extra):
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True):
+            return await monitoraggio.run_applica_eventi(
+                dal=date(2026, 9, 25), attivo=attivo, lock=_lock_libero(),
+                impostazioni=_impostazioni(), **extra)
+
+    async def test_gli_applicati_invisibili_diventano_visibili(self):
+        finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_APPLICATO)
+        esito = await self._lancia(finto, limit=50)
+        self.assertEqual(esito["resi_visibili"], 2)
+        ids = sorted(i for i, _ in finto.resi_leggibili)
+        self.assertEqual(ids, [200, 201])
+
+    async def test_non_tocca_i_gia_visibili_ne_quelli_di_sistema(self):
+        finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_APPLICATO)
+        await self._lancia(finto, limit=50)
+        toccati = [i for i, _ in finto.resi_leggibili]
+        self.assertNotIn(202, toccati, "era gia' visibile")
+        self.assertNotIn(203, toccati, "`pubblicazione` non va nel box")
+
+    async def test_in_ombra_non_ripara_niente(self):
+        finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_APPLICATO)
+        esito = await self._lancia(finto, attivo=False, limit=50)
+        self.assertEqual(esito["resi_visibili"], 0)
+        self.assertEqual(finto.resi_leggibili, [])
+
+    async def test_il_dry_run_non_ripara_niente(self):
+        finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_APPLICATO)
+        esito = await self._lancia(finto, dry_run=True, limit=50)
+        self.assertEqual(esito["resi_visibili"], 0)
         self.assertEqual(finto.resi_leggibili, [])

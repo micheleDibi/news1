@@ -2084,6 +2084,11 @@ def select_eventi(
     dal: Any = None,
     applicato: bool | None = None,
     verificato: bool | None = None,
+    #: `leggibile=False` serve a un caso solo: ripescare gli eventi applicati
+    #: che non hanno mai ricevuto il cursore, cioe' quelli di un'attivazione
+    #: interrotta a meta'. Restano invisibili per sempre, perche' la selezione
+    #: normale cerca `applicato=false`.
+    leggibile: bool | None = None,
     bando_id: Any = None,
     con_riferimento: bool | None = None,
     limit: int | None = None,
@@ -2150,6 +2155,8 @@ def select_eventi(
             query = query.eq("applicato", applicato)
         if verificato is not None:
             query = query.eq("verificato", verificato)
+        if leggibile is not None and strumento.ha(TABELLA_EVENTO, "leggibile"):
+            query = query.eq("leggibile", leggibile)
         if con_riferimento is not None and strumento.ha(TABELLA_EVENTO, "riferisce_a"):
             query = (query.not_.is_("riferisce_a", "null") if con_riferimento
                      else query.is_("riferisce_a", "null"))

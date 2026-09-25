@@ -1545,6 +1545,56 @@ def _sospendi_fonte(bando_id: Any) -> None:
             "[monitor] bando {}: fonte_ufficiale_stato non aggiornata: {}", bando_id, e)
 
 
+def _rendi_visibili_gli_applicati(
+    *,
+    tipi: Sequence[str] = (),
+    dal: date_cls | None = None,
+    scrive: bool = False,
+    limite: int = 50,
+) -> int:
+    """Chiude le attivazioni rimaste a meta': applicate e invisibili.
+
+    `bando_applica_evento` marca l'evento `applicato` e non tocca `leggibile`;
+    se il secondo UPDATE non parte — un giro interrotto, un codice senza quella
+    scrittura — l'evento resta applicato alle colonne e assente dal box, e
+    nessun lancio successivo lo ripesca: la selezione cerca `applicato=false`.
+    Misurato il 25/09/2026 su cinque eventi (una `faq` e quattro
+    `nuovo_allegato`) che il comando aveva dichiarato applicati.
+
+    Ritorna quanti sono stati resi visibili. In `--dry-run` e in ombra non
+    scrive e ritorna zero: e' una scrittura come le altre.
+    """
+    if not scrive:
+        return 0
+    from . import db
+    try:
+        righe = db.select_eventi(
+            tipi=tuple(tipi), dal=dal, applicato=True, verificato=True,
+            leggibile=False, limit=max(0, int(limite)),
+        )
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.warning("[applica-eventi] lettura degli applicati invisibili fallita: {}", e)
+        return 0
+    fatti = 0
+    for riga in righe:
+        tipo = str(riga.get("tipo") or "")
+        if tipo not in eventi_mod.TIPI_PROPONIBILI:
+            # Gli eventi di sistema non vanno nel box e non si toccano.
+            continue
+        esito = db.rendi_evento_leggibile(
+            riga.get("id"),
+            in_aggiornamenti=tipo not in ("apertura_automatica", "chiusura_automatica"),
+        )
+        if esito.get("scritto"):
+            fatti += 1
+            logger.info("[applica-eventi] evento {} ({}) reso visibile: "
+                        "era applicato e invisibile", riga.get("id"), tipo)
+        else:
+            logger.warning("[applica-eventi] evento {} resta invisibile: {}",
+                           riga.get("id"), esito.get("motivo"))
+    return fatti
+
+
 def _rifiutato(scrittore: Any, riga: Mapping[str, Any]) -> bool:
     """Vero solo se il database ha **rifiutato** la riga.
 
@@ -3308,6 +3358,16 @@ async def run_applica_eventi(
             rimanenti -= int(esito.get("candidati") or 0)
             per_tipo[nome or "tutti"] = int(esito.get("candidati") or 0)
 
+        # Riparazione: gli eventi **applicati e mai resi visibili**. Nascono
+        # solo da un'attivazione interrotta a meta' — o dal difetto del
+        # 25/09/2026, quando la seconda scrittura non c'era affatto — e la
+        # selezione normale non li vede, perche' cerca `applicato=false`:
+        # restano invisibili per sempre, applicati alle colonne e assenti dal
+        # box. Il recupero e' idempotente e si conta a parte: non e' lavoro
+        # nuovo, e' lavoro finito a meta' che si chiude.
+        resi_visibili = _rendi_visibili_gli_applicati(
+            tipi=tipi, dal=dal, scrive=scrive, limite=blocco_giro)
+
         riepilogo = {
             "status": "ok",
             "step": STEP_APPLICA,
@@ -3336,6 +3396,10 @@ async def run_applica_eventi(
             "bloccati": conto["bloccati"],
             "saltati": conto["saltati"],
             "per_tipo": per_tipo,
+            # Eventi applicati in un giro precedente che non erano mai diventati
+            # visibili: se questo numero non e' zero, un'attivazione era rimasta
+            # a meta' e adesso e' chiusa.
+            "resi_visibili": resi_visibili,
             "saltato_per_lock": False,
             "interrotto_per_tetto": False,
             "durata_s": round(time.monotonic() - avvio, 1),
