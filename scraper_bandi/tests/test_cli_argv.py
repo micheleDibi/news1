@@ -501,7 +501,8 @@ class TestComandiV11(_ConRunnerFinti):
         # restano `None` perche' il modulo finto non espone i costruttori.
         finto.run.assert_awaited_once_with(
             dry_run=True, limit=None, attivo=None, senza_rete=False, rigenerazione=None,
-            lotto=None, contatori=None, seconda_opinione=None, pagine_collegate=None,
+            lotto=None, forza=False, contatori=None, seconda_opinione=None,
+            pagine_collegate=None,
         )
 
     def test_modulo_rotto_non_si_confonde_con_modulo_assente(self):

@@ -97,7 +97,7 @@ async def _nessun_evento(ctx):
 class _FonteSenzaLimite(monitoraggio.FonteDati):
     """Come la base, ma ignora il limite: serve a far mordere il tetto."""
 
-    def candidati(self, *, limite=0, adesso=None):
+    def candidati(self, *, limite=0, adesso=None, forza=False):
         return [dict(r) for r in self.righe]
 
 
@@ -785,7 +785,7 @@ class TestRun(unittest.IsolatedAsyncioTestCase):
 
     async def test_errore_imprevisto_non_risale(self):
         class _Esplosiva(monitoraggio.FonteDati):
-            def candidati(self, *, limite=0, adesso=None):
+            def candidati(self, *, limite=0, adesso=None, forza=False):
                 raise RuntimeError("PostgREST giu'")
 
         esito = await monitoraggio.run(
@@ -795,7 +795,7 @@ class TestRun(unittest.IsolatedAsyncioTestCase):
 
     async def test_lock_rilasciato_anche_in_errore(self):
         class _Esplosiva(monitoraggio.FonteDati):
-            def candidati(self, *, limite=0, adesso=None):
+            def candidati(self, *, limite=0, adesso=None, forza=False):
                 raise RuntimeError("giu'")
 
         finto = _lock_libero()
@@ -2361,7 +2361,7 @@ class TestContatoriEAllarmi(unittest.IsolatedAsyncioTestCase):
         # La coda troncata viveva solo in una riga di log: ora e' un allarme
         # del giro, quindi finisce anche in `pipeline_run.contatori`.
         class _CodaPiena(monitoraggio.FonteDati):
-            def candidati(self, *, limite=0, adesso=None):
+            def candidati(self, *, limite=0, adesso=None, forza=False):
                 self.allarmi = ["coda del monitor troncata a 5000 righe"]
                 return []
 
