@@ -3024,3 +3024,52 @@ class TestRespintiADatabase(unittest.IsolatedAsyncioTestCase):
         _esito, registrati = await self._giro(monitoraggio.RESPINTI_A_DB_PER_BANDO + 6)
         respinti_a_db = [r for r in registrati if not r.get("verificato")]
         self.assertLessEqual(len(respinti_a_db), monitoraggio.RESPINTI_A_DB_PER_BANDO)
+
+
+class TestEventiRifiutatiDalDatabase(unittest.IsolatedAsyncioTestCase):
+    """Un giro che non riesce a scrivere gli eventi non e' un giro riuscito.
+
+    Il 25/09/2026 ogni INSERT di evento veniva rifiutato da Postgres
+    (`confidenza` frazionaria in una colonna `smallint`),
+    `db.registra_evento` ne faceva un warning e il riepilogo diceva
+    `eventi: 0` come se i gate avessero respinto tutto. Due giorni di ombra
+    pagati e buttati, senza un numero che lo dicesse.
+    """
+
+    class _FonteRifiuta(monitoraggio.FonteDati):
+        """Il DB rifiuta ogni evento, come faceva la colonna smallint."""
+
+        def registra_evento(self, riga):
+            return False
+
+    async def _giro(self, fonte):
+        eventi_mod = carica_modulo("eventi")
+        dominio_ufficiale = carica_modulo("dominio_ufficiale")
+        html = ("<h1>Avviso</h1><p>Sono online le FAQ dell'avviso.</p>"
+                "<p><a href='https://www.lazioeuropa.it/faq.pdf'>FAQ</a></p>")
+
+        async def scarica(url, **_k):
+            return _Risposta(html=html)
+
+        async def classifica(_ctx):
+            return [eventi_mod.Evento(
+                tipo="faq", citazione="Sono online le FAQ dell'avviso",
+                url_prova="https://www.lazioeuropa.it/bandi/avviso-1/")]
+
+        tabella = dominio_ufficiale.costruisci(
+            fonti=[{"id": 1, "link": "https://www.lazioeuropa.it/bandi/"}])
+        riga = _bando(testo_norm="Avviso\n\nNessuna novita'.",
+                      impronta_contenuto="diversa-da-quella-nuova")
+        return await monitoraggio.controlla(
+            riga, scarica=scarica, classifica=classifica, fonte_dati=fonte,
+            modalita="ombra", tabella_domini=tabella, adesso=ADESSO,
+            casuale=lambda: 0.5)
+
+    async def test_il_rifiuto_si_conta(self):
+        esito = await self._giro(self._FonteRifiuta())
+        self.assertGreaterEqual(esito.eventi_non_scritti, 1,
+                                "un INSERT rifiutato deve comparire in un contatore")
+
+    async def test_senza_rifiuti_il_contatore_resta_a_zero(self):
+        esito = await self._giro(monitoraggio.FonteDati())
+        self.assertEqual(esito.eventi_non_scritti, 0)

@@ -1000,8 +1000,26 @@ def riga_evento(evento: Evento, ctx: Contesto, giudizio: Giudizio) -> dict[str, 
         # A30: sospensione e revoca restano visibili nel box ma non applicate.
         "in_aggiornamenti": leggibile and evento.tipo != "apertura_automatica",
         "applicato": giudizio.ammesso and not proposto and not ombra,
-        "confidenza": giudizio.confidenza,
-        "gate": giudizio.gate,
+        # `bando_evento.confidenza` e' uno **smallint**, e il resolver ci
+        # scrive un punteggio 0-100 (`int(esito.confidenza)`): il giudizio
+        # degli eventi tiene invece una frazione 0-1, e scriverla cosi' com'e'
+        # faceva rifiutare l'INSERT da Postgres con 22P02 («invalid input
+        # syntax for type smallint: "0.65"»). `db.registra_evento` cattura
+        # l'eccezione e la mette in un warning, quindi il giro si dichiarava
+        # riuscito: misurato il 25/09/2026, **nessun evento del monitor era
+        # mai arrivato a DB** in due giorni di ombra, e il periodo di misura
+        # girava a vuoto. Una colonna, una sola scala: 0-100 come il resolver.
+        "confidenza": int(round(max(0.0, min(1.0, giudizio.confidenza)) * 100)),
+        # Non il nome del G2 applicato ma il **verdetto**: senza i falliti, un
+        # respinto registrato non dice quale gate lo ha respinto, che e' la
+        # sola informazione per cui vale la pena registrarlo. La colonna e'
+        # jsonb e non e' concessa ad anon (§13.5): resta interna.
+        "gate": {
+            "g2": giudizio.gate,
+            "superati": list(giudizio.superati),
+            "falliti": [{"gate": g, "motivo": m} for g, m in giudizio.falliti],
+            "confidenza_gate": giudizio.confidenza,
+        },
     }
 
 

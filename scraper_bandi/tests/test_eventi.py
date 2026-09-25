@@ -817,3 +817,86 @@ class TestAllineaDoppioni(unittest.TestCase):
 
 if __name__ == "__main__":       # pragma: no cover
     unittest.main()
+
+
+class TestTipiDelPayload(unittest.TestCase):
+    """Il payload deve stare nei tipi che la tabella ha davvero.
+
+    Difetto misurato il 25/09/2026, dopo due giorni di ombra a vuoto:
+    `bando_evento.confidenza` e' uno **smallint**, e qui ci finiva la frazione
+    0-1 del giudizio. Postgres rifiutava ogni INSERT con 22P02 («invalid input
+    syntax for type smallint: "0.65"»), `db.registra_evento` ne faceva un
+    warning, e il giro si dichiarava riuscito: **nessun evento del monitor era
+    mai arrivato a DB**. Il resolver scriveva sulla stessa colonna un intero
+    0-100, quindi la tabella aveva due scale e nessuno l'aveva notato.
+
+    I tipi qui sotto sono quelli letti dallo schema OpenAPI del DB di
+    produzione il 25/09/2026: se una migrazione li cambia, questo test va
+    aggiornato **insieme** alla migrazione.
+    """
+
+    #: colonna -> tipi Python ammessi (None e' sempre ammesso)
+    TIPI = {
+        "bando_id": (int,),
+        "tipo": (str,),
+        "origine": (str,),
+        "campo": (str,),
+        "valore_prima": (dict,),
+        "valore_dopo": (dict,),
+        "data_evento": (str,),
+        "citazione": (str,),
+        "url_prova": (str,),
+        "verificato": (bool,),
+        "leggibile": (bool,),
+        "in_aggiornamenti": (bool,),
+        "applicato": (bool,),
+        "confidenza": (int,),          # smallint: NON un float
+        "gate": (dict, str),           # jsonb
+    }
+
+    def _riga(self, **giudizio):
+        valori = {"ammesso": False, "gate": "G2", "superati": ("G1",),
+                  "falliti": (("G6", "senza parola chiave"),), "confidenza": 0.65}
+        valori.update(giudizio)
+        g = eventi.Giudizio(**valori)
+        e = eventi.Evento(
+            tipo="rettifica", campo="data_scadenza", valore="2026-12-01",
+            citazione="il termine e' differito al 1 dicembre 2026",
+            url_prova="https://regione.esempio.it/bando")
+        ctx = eventi.Contesto(bando_id=1, stato_bando="aperto", modalita="ombra")
+        return eventi.riga_evento(e, ctx, g)
+
+    def test_ogni_campo_sta_nel_suo_tipo(self):
+        riga = self._riga()
+        for campo, valore in riga.items():
+            with self.subTest(campo=campo):
+                self.assertIn(campo, self.TIPI,
+                              f"campo nuovo senza tipo dichiarato: {campo}")
+                if valore is None:
+                    continue
+                self.assertIsInstance(valore, self.TIPI[campo])
+
+    def test_la_confidenza_e_un_intero_da_0_a_100(self):
+        # La stessa scala del resolver (`int(esito.confidenza)`), non due.
+        for frazione, atteso in ((0.0, 0), (0.65, 65), (0.999, 100), (1.0, 100)):
+            riga = self._riga(confidenza=frazione)
+            self.assertIsInstance(riga["confidenza"], int)
+            self.assertEqual(riga["confidenza"], atteso)
+
+    def test_la_confidenza_fuori_scala_non_sfonda_lo_smallint(self):
+        # Un giudizio malformato non deve poter scrivere 320 in una colonna che
+        # per contratto tiene 0-100.
+        for frazione in (-3.0, 12.5):
+            riga = self._riga(confidenza=frazione)
+            self.assertGreaterEqual(riga["confidenza"], 0)
+            self.assertLessEqual(riga["confidenza"], 100)
+
+    def test_gate_porta_i_falliti_e_non_solo_il_nome(self):
+        # Senza i falliti, un respinto registrato non dice perche' e' stato
+        # respinto: e' la sola informazione per cui si registra.
+        riga = self._riga()
+        self.assertIsInstance(riga["gate"], dict)
+        self.assertEqual(riga["gate"]["g2"], "G2")
+        self.assertEqual(riga["gate"]["superati"], ["G1"])
+        self.assertEqual(riga["gate"]["falliti"],
+                         [{"gate": "G6", "motivo": "senza parola chiave"}])

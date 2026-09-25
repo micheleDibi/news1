@@ -384,7 +384,16 @@ class TestControlloCompleto(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(riga["leggibile"])
             self.assertTrue(riga["in_aggiornamenti"])
             self.assertTrue(riga["verificato"])
-            self.assertEqual(riga["gate"], "G2'")
+            # `gate` porta il verdetto intero, non il solo nome del G2: senza
+            # i falliti un evento registrato non dice perche' e' passato o no.
+            self.assertEqual(riga["gate"]["g2"], "G2'")
+            self.assertEqual(riga["gate"]["falliti"], [])
+            self.assertIn("G2'", riga["gate"]["superati"])
+            # `confidenza` e' uno smallint 0-100: un float qui fa rifiutare
+            # l'INSERT da Postgres con 22P02, e il giro non se ne accorge.
+            self.assertIsInstance(riga["confidenza"], int)
+            self.assertGreaterEqual(riga["confidenza"], 0)
+            self.assertLessEqual(riga["confidenza"], 100)
             self.assertEqual(riga["url_prova"], URL_BANDO)
             # `dominio_prova` NON sta nella riga: in tabella e' GENERATED
             # ALWAYS (02:581) e un INSERT che la valorizzi risponde 428C9.

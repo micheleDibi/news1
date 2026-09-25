@@ -778,6 +778,13 @@ class EsitoControllo:
     classificato: bool = False
     eventi: tuple[dict[str, Any], ...] = ()
     respinti: tuple[dict[str, Any], ...] = ()
+    #: Quanti INSERT di evento il database ha rifiutato. Non e' una decorazione:
+    #: e' il contatore che mancava il 25/09/2026, quando ogni evento del monitor
+    #: veniva respinto da Postgres (`confidenza` float in una colonna smallint),
+    #: `db.registra_evento` metteva l'errore in un warning e il giro si
+    #: dichiarava riuscito. Due giorni di ombra a vuoto, e nessun numero che lo
+    #: dicesse. Stesso difetto e stessa cura di `link-verifica`/`non_scritte`.
+    eventi_non_scritti: int = 0
     slug: str | None = None
     prossimo: datetime | None = None
     #: Le colonne di **`bando_controllo`**: sono quelle che `_salva` scrive.
@@ -1064,8 +1071,8 @@ async def controlla(
             # identiche nella stessa risposta superano entrambe il G8 e il box
             # «Aggiornamenti» mostra due volte la stessa notizia.
             ctx = _ctx_aggiornato(ctx, applicazione.colonne, applicazione.riga)
-            if scrittore is not None:
-                scrittore.registra_evento(applicazione.riga)
+            if scrittore is not None and not scrittore.registra_evento(applicazione.riga):
+                esito.eventi_non_scritti += 1
         else:
             respinti.append(voce)
             # I respinti vanno **a DB**, non solo nel riepilogo del giro.
@@ -1081,8 +1088,9 @@ async def controlla(
             # `verificato=false` la esclude da `applicabile()`, `leggibile=false`
             # le nega il cursore e quindi la RLS di anon, e `gate` porta quale
             # gate ha respinto — che e' l'unica informazione utile.
-            if scrittore is not None and len(respinti) <= RESPINTI_A_DB_PER_BANDO:
-                scrittore.registra_evento(applicazione.riga)
+            if (scrittore is not None and len(respinti) <= RESPINTI_A_DB_PER_BANDO
+                    and not scrittore.registra_evento(applicazione.riga)):
+                esito.eventi_non_scritti += 1
 
     esito.eventi = tuple(ammessi)
     esito.respinti = tuple(respinti)
@@ -1790,6 +1798,10 @@ async def run(
             "classificazioni": contatori.classificazioni,
             "eventi": contatori.eventi,
             "respinti": sum(len(e.respinti) for e in esiti),
+            # Un giro che propone eventi e non riesce a scriverne nemmeno uno
+            # non e' un giro riuscito, e finche' questo numero non c'era
+            # nessuno poteva accorgersene.
+            "eventi_non_scritti": sum(e.eventi_non_scritti for e in esiti),
             "allegati_aggiornati": sum(len(e.allegati) for e in esiti),
             "interrotto_per_tetto": interrotto,
             "motivo": motivo_tetto,
@@ -1797,6 +1809,18 @@ async def run(
             "slug_modificati": list(slug_modificati),
             "durata_s": round(time.monotonic() - avvio, 1),
         }
+        non_scritti = int(riepilogo["eventi_non_scritti"])
+        if non_scritti:
+            # Allarme e non riga di log: un giro che valuta le pagine, paga il
+            # modello e non riesce a scrivere gli eventi sta girando a vuoto, e
+            # il periodo d'ombra non misura niente. Il 25/09/2026 e' andata
+            # avanti cosi' per due giorni perche' nessuno guardava i warning di
+            # `db.registra_evento`.
+            avviso = (f"{non_scritti} eventi non scritti: il database li ha "
+                      f"rifiutati, l'ombra non sta misurando niente")
+            allarmi.append(avviso)
+            logger.warning("[ALLARME] [monitor] {}", avviso)
+            riepilogo["allarmi"] = allarmi
         _scrivi_telemetria(riepilogo, contatori, giro, slug_modificati, interrotto,
                            tempo=time.monotonic() - avvio, passo=passo)
         logger.info("[monitor] {}", riepilogo)
