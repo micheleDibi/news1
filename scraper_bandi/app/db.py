@@ -2394,6 +2394,31 @@ ESITO_RIFIUTATO = "rifiutato"
 ESITO_NON_TENTATO = "non_tentato"
 
 
+def rendi_evento_leggibile(
+    evento_id: Any,
+    *,
+    in_aggiornamenti: bool = True,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """`leggibile=true` (+ `in_aggiornamenti`) su un evento gia' applicato.
+
+    E' il passo che mancava all'attivazione per tipo. `bando_applica_evento`
+    riversa `valore_dopo` nelle colonne di `bando` e marca l'evento
+    `applicato`, ma **non tocca `leggibile`**: il trigger del cursore scatta su
+    `UPDATE OF leggibile` quando diventa vero, quindi finche' nessuno lo scrive
+    l'evento resta senza cursore, la RLS di anon lo nasconde e il box
+    «Aggiornamenti» non lo mostra. Misurato il 25/09/2026: `applica-eventi`
+    riferiva `applicati: 5` e le cinque righe erano `leggibile=false,
+    cursore=NULL`, cioe' invisibili — il comando dichiarava un lavoro che a
+    metà non aveva fatto.
+
+    Le due colonne si scrivono **in un solo UPDATE** (§16.3 punto 3) e sono
+    fra le poche che `z_evento_immutabile` ammette di cambiare.
+    """
+    payload = {"leggibile": True, "in_aggiornamenti": bool(in_aggiornamenti)}
+    return _controllo(strumento).aggiorna(TABELLA_EVENTO, evento_id, payload)
+
+
 def applica_evento_esito(
     evento_id: Any,
     *,

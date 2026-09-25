@@ -3248,8 +3248,32 @@ async def run_applica_eventi(
                 ombra la RPC non e' nemmeno raggiungibile. Restituisce l'esito
                 e non un booleano: chi annota il rifiuto deve poter distinguere
                 «la RPC ha detto no» da «la RPC non c'era».
+
+                **Due scritture, non una.** La RPC riversa `valore_dopo` nelle
+                colonne di `bando` e marca l'evento `applicato`, ma non tocca
+                `leggibile`: senza il secondo UPDATE il trigger del cursore non
+                scatta, la RLS di anon nasconde la riga e il box
+                «Aggiornamenti» resta vuoto. Misurato il 25/09/2026:
+                `applica-eventi` riferiva `applicati: 5` su cinque righe
+                rimaste invisibili — attivare un tipo significa renderlo
+                **visibile**, non solo scriverne le colonne.
                 """
-                return db.applica_evento_esito(riga.get("id"))
+                esito = db.applica_evento_esito(riga.get("id"))
+                if esito == ESITO_APPLICATO:
+                    visibile = db.rendi_evento_leggibile(
+                        riga.get("id"),
+                        # Le transizioni automatiche del cron non vanno nel box
+                        # (§13.5): quelle non passano da qui, ma la regola
+                        # resta scritta dove si decide.
+                        in_aggiornamenti=str(riga.get("tipo") or "") not in (
+                            "apertura_automatica", "chiusura_automatica"),
+                    )
+                    if not visibile.get("scritto"):
+                        logger.warning(
+                            "[applica-eventi] evento {} applicato ma NON reso "
+                            "leggibile ({}): il box non lo mostrera'",
+                            riga.get("id"), visibile.get("motivo"))
+                return esito
 
             if segnala is None:
                 # Chi inietta il proprio `applica` (i test, la pipeline) porta

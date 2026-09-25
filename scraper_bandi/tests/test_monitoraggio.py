@@ -1838,6 +1838,8 @@ class _DbEventi:
         # `db.controllo`: lo schema com'e' oggi, senza rete.
         self.controllo = SimpleNamespace(
             ha=lambda _tabella, colonna: colonna != "riferisce_a" or ha_riferisce_a)
+        # Le due scritture dell'attivazione sono due: la RPC e la visibilita'.
+        self.resi_leggibili: list[tuple] = []
 
     def select_eventi(self, *, tipi=(), dal=None, applicato=None, verificato=None,
                       bando_id=None, con_riferimento=None, limit=None, offset=0,
@@ -1863,6 +1865,12 @@ class _DbEventi:
 
     def applica_evento_esito(self, evento_id, **_):
         return self.esito_rpc
+
+    def rendi_evento_leggibile(self, evento_id, *, in_aggiornamenti=True, **_):
+        # La seconda scrittura dell'attivazione: senza, l'evento resta senza
+        # cursore e il box «Aggiornamenti» non lo mostra.
+        self.resi_leggibili.append((evento_id, in_aggiornamenti))
+        return {"scritto": True, "ignorate": (), "motivo": ""}
 
     def applica_evento(self, evento_id, **_):
         return self.esito_rpc == self.ESITO_APPLICATO
@@ -3232,3 +3240,58 @@ class TestPopolazioneDelReport(unittest.IsolatedAsyncioTestCase):
             await monitoraggio.run_report_ombra(
                 uscita=io.StringIO(), campione=50, tipo="proroga", dal=date(2026, 9, 25))
         self.assertEqual(tuple(visti["tipi"]), ("proroga",))
+
+
+class TestApplicareVuolDireRendereVisibile(unittest.IsolatedAsyncioTestCase):
+    """Attivare un tipo significa renderlo **visibile**, non solo applicarlo.
+
+    Misurato in produzione il 25/09/2026: `applica-eventi --tipo faq --attivo`
+    e `--tipo nuovo_allegato --attivo` hanno riferito `applicati: 1` e
+    `applicati: 4`, e le cinque righe erano `leggibile=false, cursore=NULL` —
+    cioe' invisibili al pubblico, box «Aggiornamenti» vuoto. La RPC
+    `bando_applica_evento` riversa `valore_dopo` nelle colonne di `bando` e
+    marca l'evento `applicato`, ma non tocca `leggibile`, e il trigger del
+    cursore scatta su `UPDATE OF leggibile`. Servono due scritture.
+    """
+
+    def _eventi(self, quanti=3, tipo="faq"):
+        return [{"id": 100 + i, "bando_id": 900 + i, "tipo": tipo,
+                 "verificato": True, "applicato": False, "leggibile": False,
+                 "rilevato_at": "2026-09-25T09:00:00+00:00",
+                 "data_evento": "2026-09-25"}
+                for i in range(quanti)]
+
+    async def _lancia(self, finto, *, attivo=True, **extra):
+        # Due patch e non uno: `monitoraggio` fa `from . import db` dentro le
+        # funzioni, e nella suite completa il package ha gia' l'attributo.
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True):
+            return await monitoraggio.run_applica_eventi(
+                dal=date(2026, 9, 25), attivo=attivo, lock=_lock_libero(),
+                impostazioni=_impostazioni(), **extra)
+
+    async def test_ogni_applicato_diventa_leggibile(self):
+        finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_APPLICATO)
+        esito = await self._lancia(finto, limit=3, tipi=("faq",))
+        self.assertEqual(esito["applicati"], 3)
+        self.assertEqual(len(finto.resi_leggibili), 3,
+                         "applicato ma invisibile: il box resta vuoto")
+        for _id, in_aggiornamenti in finto.resi_leggibili:
+            self.assertTrue(in_aggiornamenti, "una faq deve andare nel box")
+
+    async def test_un_evento_non_applicato_non_si_rende_visibile(self):
+        # Se la RPC ha detto no, l'evento non deve comparire nel box: sarebbe
+        # una notizia data al lettore senza che le colonne la sostengano.
+        finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_RIFIUTATO)
+        await self._lancia(finto, limit=3, tipi=("faq",))
+        self.assertEqual(finto.resi_leggibili, [])
+
+    async def test_una_rpc_assente_non_rende_visibile_niente(self):
+        finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_NON_TENTATO)
+        await self._lancia(finto, limit=3, tipi=("faq",))
+        self.assertEqual(finto.resi_leggibili, [])
+
+    async def test_in_ombra_non_si_scrive_niente(self):
+        finto = _DbEventi(self._eventi(), esito_rpc=_DbEventi.ESITO_APPLICATO)
+        await self._lancia(finto, attivo=False, limit=3)
+        self.assertEqual(finto.resi_leggibili, [])
