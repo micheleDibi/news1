@@ -497,7 +497,7 @@ const classiNumero = 'font-heading text-[24px] font-bold leading-[1.05] tabular-
         <nav aria-label="Breadcrumb" class="flex min-w-0 items-center gap-2 text-[13px] text-[#5b6576]">
           <a href="/" class="flex-none text-[#5b6576] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Home</a>
           <span aria-hidden="true" class="text-[#9aa3b2]">/</span>
-          <a href="/bandi" class="flex-none text-[#5b6576] no-underline hover:text-[#004e9c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Bandi</a>
+          <a href="/bandi" data-torna-lista class="flex-none text-[#5b6576] no-underline hover:text-[#004e9c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Bandi</a>
           <span aria-hidden="true" class="text-[#9aa3b2]">/</span>
           <span aria-current="page" class="overflow-hidden text-ellipsis whitespace-nowrap text-[#1a2233]">{titoloDisplay}</span>
         </nav>
@@ -690,7 +690,7 @@ const classiNumero = 'font-heading text-[24px] font-bold leading-[1.05] tabular-
 
           <BandiExpertCta variante="scheda" utmContent="dettaglio-sidebar" candidabile={candidabile} />
 
-          <a href="/bandi" class="flex items-center gap-2 px-0.5 py-1 text-[13.5px] font-medium text-[#004e9c] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"><svg aria-hidden="true" focusable="false" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 12H5M11 6l-6 6 6 6"></path></svg>Torna all'elenco dei bandi</a>
+          <a href="/bandi" data-torna-lista class="flex items-center gap-2 px-0.5 py-1 text-[13.5px] font-medium text-[#004e9c] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"><svg aria-hidden="true" focusable="false" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 12H5M11 6l-6 6 6 6"></path></svg>Torna all'elenco dei bandi</a>
         </div>
 
         <article class="min-w-0 max-w-[700px] lg:col-start-1 lg:row-start-1">
@@ -811,3 +811,21 @@ const classiNumero = 'font-heading text-[24px] font-bold leading-[1.05] tabular-
     </div>
   </main>
 </Layout>
+
+<script>
+  // «Torna all'elenco» e «Bandi» del breadcrumb riportano alla lista da cui si
+  // e' arrivati, con i suoi filtri, ordinamento e vista: nel mock il ritorno
+  // conserva lo stato della lista. Senza una lista di provenienza (arrivo da
+  // Google, link diretto) resta /bandi, che e' anche l'href reso dal server.
+  const LISTA = /^\/bandi(\/(regione|settore|programma|tipologia)(\/[^/]+)?)?\/?$/;
+  try {
+    const provenienza = new URL(document.referrer);
+    if (provenienza.origin === window.location.origin && LISTA.test(provenienza.pathname)) {
+      for (const link of document.querySelectorAll<HTMLAnchorElement>('a[data-torna-lista]')) {
+        link.href = provenienza.pathname + provenienza.search;
+      }
+    }
+  } catch {
+    // Referrer assente o illeggibile: i link restano su /bandi.
+  }
+</script>

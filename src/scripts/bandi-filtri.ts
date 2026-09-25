@@ -119,7 +119,8 @@ export function attivaFiltriBandi(): void {
 
   function filtraTendina(radice: HTMLElement): void {
     const cerca = radice.querySelector<HTMLInputElement>('[data-tendina-cerca]');
-    const testo = (cerca?.value ?? '').trim().toLowerCase();
+    // Senza trim, come `dropQ.toLowerCase()` del mock.
+    const testo = (cerca?.value ?? '').toLowerCase();
     for (const riga of radice.querySelectorAll<HTMLElement>('.riga-tendina')) {
       const etichetta = riga.querySelector('.riga-testo')?.textContent?.toLowerCase() ?? '';
       riga.hidden = testo !== '' && !etichetta.includes(testo);
@@ -214,6 +215,12 @@ export function attivaFiltriBandi(): void {
   // parte dalla fine della testata, cosi' vale anche con testate piu' alte.
   // «Mostra N bandi» chiude soltanto il pannello, la pagina resta dov'e'.
   const testata = modulo.querySelector<HTMLElement>('[data-testata-lista]');
+  // Invio in un campo non invia il form: nel mock i campi aggiornano la lista
+  // mentre si scrive e Invio non fa nulla. Senza questo, l'invio implicito
+  // userebbe «Cerca» (il primo bottone del form) e farebbe scorrere la pagina.
+  modulo.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target instanceof HTMLInputElement) e.preventDefault();
+  });
   modulo.addEventListener('submit', (e) => {
     const invio = (e as SubmitEvent).submitter;
     if (invio?.hasAttribute('data-mostra')) {

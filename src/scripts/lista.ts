@@ -53,6 +53,13 @@ export function attivaLista({ idLista }: Opzioni): void {
     const s = qs.toString();
     return form.getAttribute('action') + (s ? `?${s}` : '');
   };
+  // Lo stato che la lista mostra, letto dal form: all'avvio quello reso dal
+  // server, poi quello dell'ultimo caricamento. Un invio o un cambio che non lo
+  // modificano non ricaricano nulla. Il confronto e' col form e non con l'URL
+  // della pagina: una pagina filtro (/bandi/regione/…) mostra lo stesso stato
+  // di /bandi?regione=…, e premere «Mostra» senza cambiare niente non deve
+  // portarla altrove.
+  let statoCaricato = urlDaForm();
 
   const mostraCaricamento = (attivo: boolean) => {
     if (!indicatore) return;
@@ -120,8 +127,9 @@ export function attivaLista({ idLista }: Opzioni): void {
       if (contatore) contatore.textContent = totale;
       if (stato) stato.textContent = `${totale} risultati, pagina ${meta.dataset.pagina} di ${meta.dataset.pagine}`;
 
-      if (opzioni.push !== false) window.history.pushState(null, '', url);
+      if (opzioni.push !== false && url !== window.location.pathname + window.location.search) window.history.pushState(null, '', url);
       if (opzioni.sincronizza && form) sincronizzaForm(form);
+      statoCaricato = urlDaForm();
       if (opzioni.focus) document.getElementById(idLista)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       document.dispatchEvent(new CustomEvent(EVENTO_AGGIORNATA));
     } catch (errore) {
@@ -134,7 +142,9 @@ export function attivaLista({ idLista }: Opzioni): void {
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    void vaiA(urlDaForm());
+    const url = urlDaForm();
+    if (url === statoCaricato) return;
+    void vaiA(url);
   });
   // Solo i controlli con un `name` cambiano la lista: la ricerca dentro una
   // tendina o la casella che apre un pannello no. E se l'URL non cambia non si
@@ -145,7 +155,7 @@ export function attivaLista({ idLista }: Opzioni): void {
   };
   const aggiorna = (): void => {
     const url = urlDaForm();
-    if (url === window.location.pathname + window.location.search) return;
+    if (url === statoCaricato) return;
     void vaiA(url);
   };
   const aggiornaControlli = ritarda(aggiorna, ATTESA_CONTROLLI);
