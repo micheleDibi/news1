@@ -11,9 +11,11 @@ import { statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
 import { corpoBando } from '../../lib/bandi/contenuto';
 import { soloPubblicabili } from '../../lib/bandi/domini';
 import {
-  BADGE_STATO, badgeStato, giorniAllaScadenza, oraItaliana, partecipazioneAperta, sottotestoStato,
+  giorniAllaScadenza, oraItaliana, partecipazioneAperta, rigaScadenza, sottotestoStato,
   testoFonteUfficiale, testoGiorniMancanti,
 } from '../../lib/bandi/testi-stato';
+import { aspettoStato, inScadenza, PALETTE_SCADENZA } from '../../lib/bandi/aspetto';
+import { calendario } from '../../lib/bandi/calendario';
 import { sceltaCta } from '../../lib/bandi/cta';
 import { statoDaEventi, vociAggiornamento } from '../../lib/bandi/aggiornamenti';
 import { jsonLdBando } from '../../lib/bandi/jsonld';
@@ -207,7 +209,7 @@ const statoRegistrato = typeof statoDalDb === 'string' && statoDalDb !== ''
       ora_scadenza: campoTesto('ora_scadenza'),
     });
 const stato = statoDaEventi(eventi) ?? statoRegistrato;
-const badge = badgeStato(stato);
+const aspetto = aspettoStato(stato);
 const sottotesto = sottotestoStato({
   stato,
   data_apertura: bando.data_apertura,
@@ -278,14 +280,10 @@ const messaggioPartecipazione = stato === 'sospeso'
       ? 'Non abbiamo ancora un link ufficiale verificato per la candidatura.'
       : null;
 
-// Lo stato sconosciuto ha «—» come etichetta: un segnaposto, quindi non si mostra.
-const conBadge = badge !== BADGE_STATO.sconosciuto;
 const mostraApertura = Boolean(bando.data_apertura) && stato === 'in apertura prossimamente';
 // L'area si omette quando il nome dell'ente la contiene gia' («Regione Marche · Marche»).
 const ente = bando.ente_erogatore?.trim() || null;
 const area = bando.area_geografica?.trim() || null;
-const rigaEnte = [ente, area && !(ente ?? '').toLowerCase().includes(area.toLowerCase()) ? area : null]
-  .filter((v): v is string => v !== null);
 const sottotitolo = bando.titolo_breve && bando.titolo_breve.trim().toLowerCase() !== (bando.titolo ?? '').trim().toLowerCase()
   ? bando.titolo_breve
   : null;
@@ -427,6 +425,52 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData({
   slug: bando.slug,
   title: titoloDisplay,
 });
+
+// --- Design «Bandi Redesign»: valori derivati per il template ---------------
+
+// Pillola dei giorni e colori «urgente»: aperto con scadenza entro 15 giorni.
+const paletteScadenza = inScadenza(stato, daysToDeadline) ? PALETTE_SCADENZA.urgente : PALETTE_SCADENZA.normale;
+// Calendario e barra di avanzamento: dalla pubblicazione, o dall'apertura se
+// manca (src/lib/bandi/calendario.ts). Senza date utili non ci sono.
+const cal = calendario({
+  stato,
+  pubblicazione: bando.data_pubblicazione,
+  apertura: bando.data_apertura,
+  scadenza: bando.data_scadenza,
+  oggi,
+});
+const TRASLAZIONE = { '0%': 'translate-x-0', '-50%': '-translate-x-1/2', '-100%': '-translate-x-full' } as const;
+// La riga del pannello Partecipazione: «Scade il…», «Scaduto il…», o nessuna data.
+const rigaPartecipazione = rigaScadenza(stato, bando.data_scadenza, oggi)?.testo ?? 'Scadenza non indicata';
+// Sotto la CTA: dove porta. L'host e' quello dell'URL della CTA stessa.
+const hostCta = (() => {
+  if (!ctaVisibile) return null;
+  try {
+    return new URL(ctaVisibile.url).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+})();
+const notaCta = hostCta
+  ? `${ctaVisibile?.etichetta === 'Consulta il bando sul portale pubblico' ? 'Si apre il portale pubblico' : 'Si apre il sito ufficiale'}: ${hostCta}`
+  : null;
+// Pallino della riga fonte: verde con una fonte ufficiale trovata, arancio altrimenti.
+const fonteTrovata = fonteUfficiale?.stato === 'trovata';
+// Riga sotto il titolo: sottotitolo, ente e (se aggiunge qualcosa) l'area geografica.
+const areaUtile = area && !(ente ?? '').toLowerCase().includes(area.toLowerCase()) ? area : null;
+const rigaSotto = [
+  sottotitolo ? { testo: sottotitolo, forte: false } : null,
+  ente ? { testo: ente, forte: true } : null,
+  areaUtile ? { testo: areaUtile, forte: false } : null,
+].filter((v): v is { testo: string; forte: boolean } => v !== null);
+// Colori delle tessere dei documenti, come nel mock (ZIP e i tipi senza colore in grigio).
+const COLORE_ALLEGATO: Record<string, string> = {
+  PDF: 'bg-[#fdecec] text-[#a61b1b]',
+  DOC: 'bg-[#e8f0fb] text-[#0a3d7a]',
+  XLS: 'bg-[#e2f4ea] text-[#0b6b45]',
+};
+const classiCella = 'px-[26px] py-[22px] border-t border-[#eef1f5] lg:flex-1 lg:border-l lg:border-t-0';
+const classiNumero = 'font-heading text-[24px] font-bold leading-[1.05] tabular-nums text-[#0a2244] lg:text-[30px]';
 ---
 
 <Layout
@@ -443,274 +487,324 @@ const breadcrumbStructuredData = generateBreadcrumbStructuredData({
     <script type="application/ld+json" set:html={breadcrumbStructuredData} />
   </Fragment>
 
-  <main class="bg-white">
-    {/* Header chiaro: dove siamo, cos'e', e i dati che rispondono a «e' aperto e
-        fino a quando?» e «quanto vale?» prima di qualunque testo. */}
-    <div class="border-b border-gray-200">
-      <div class="container mx-auto max-w-6xl px-4 pb-8 pt-6 sm:pt-8">
-        <nav class="text-sm text-gray-600" aria-label="Breadcrumb">
-          <ol class="flex flex-wrap items-center gap-x-1">
-            <li><a href="/" class="-my-3 inline-block rounded-md py-3 underline-offset-2 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Home</a></li>
-            <li class="flex items-center gap-x-1">
-              <svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0 text-gray-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <a href="/bandi" class="-my-3 inline-block rounded-md py-3 underline-offset-2 hover:text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Bandi</a>
-            </li>
-            <li class="flex min-w-0 max-w-full items-center gap-x-1">
-              <svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0 text-gray-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"></path></svg>
-              <span aria-current="page" class="min-w-0 truncate text-gray-900">{titoloDisplay}</span>
-            </li>
-          </ol>
+  <main class="bg-white font-[Poppins,system-ui,sans-serif] text-[#1a2233] antialiased leading-[normal]">
+    {/* Testata: dove siamo, cos'e', e i dati che rispondono a «e' aperto e fino
+        a quando?» e «quanto vale?» prima di qualunque testo. */}
+    <section class="border-b border-[#e3e7ee] bg-[#f4f6f9]">
+      <div class="mx-auto max-w-[1200px] px-4 pb-8 pt-7 sm:px-8">
+        <nav aria-label="Breadcrumb" class="flex min-w-0 items-center gap-2 text-[13px] text-[#5b6576]">
+          <a href="/" class="flex-none text-[#5b6576] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Home</a>
+          <span aria-hidden="true" class="text-[#9aa3b2]">/</span>
+          <a href="/bandi" class="flex-none text-[#5b6576] no-underline hover:text-[#004e9c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Bandi</a>
+          <span aria-hidden="true" class="text-[#9aa3b2]">/</span>
+          <span aria-current="page" class="overflow-hidden text-ellipsis whitespace-nowrap text-[#1a2233]">{titoloDisplay}</span>
         </nav>
 
         {occhiello.length > 0 && (
-          <p class="mt-5 flex flex-wrap items-center gap-x-2 text-sm font-medium text-gray-700">
-            {occhiello.map((voce, i) => (
+          <div class="mt-[22px] flex flex-wrap gap-2">
+            {occhiello.map((voce) => voce.href
+              ? <a href={voce.href} class="max-w-full whitespace-nowrap rounded-full border border-[#c7d6ea] bg-white px-[11px] py-1 text-[12.5px] font-medium text-[#003d7a] no-underline hover:border-[#004e9c] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">{voce.testo}</a>
+              : <span class="max-w-full whitespace-nowrap rounded-full border border-[#c7d6ea] bg-white px-[11px] py-1 text-[12.5px] font-medium text-[#003d7a]">{voce.testo}</span>)}
+          </div>
+        )}
+        <h1 class={`${occhiello.length > 0 ? 'mt-3.5' : 'mt-[22px]'} max-w-[900px] text-balance font-heading text-[32px] font-bold leading-[1.04] tracking-[-.015em] text-[#0a2244] sm:text-[40px] lg:text-[46px]`}>{titoloDisplay}</h1>
+        {rigaSotto.length > 0 && (
+          <div class="mt-3.5 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-[15.5px] text-[#3d4657]">
+            {rigaSotto.map((voce, i) => (
               <Fragment>
-                {i > 0 && <span aria-hidden="true" class="text-gray-400">{' · '}</span>}
-                {voce.href
-                  ? <a href={voce.href} class="-my-3 inline-block rounded-md py-3 text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{voce.testo}</a>
-                  : <span>{voce.testo}</span>}
+                {i > 0 && <span aria-hidden="true" class="h-1 w-1 flex-none rounded-full bg-[#9aa3b2]"></span>}
+                <span class={`max-w-full flex-none ${voce.forte ? 'font-semibold text-[#0a2244]' : ''}`}>{voce.testo}</span>
               </Fragment>
             ))}
-          </p>
-        )}
-        <h1 class="mt-2 max-w-4xl font-heading text-2xl font-bold leading-tight text-gray-900 sm:text-3xl">{titoloDisplay}</h1>
-        {sottotitolo && <p class="mt-2 max-w-3xl text-lg leading-snug text-gray-700">{sottotitolo}</p>}
-        {rigaEnte.length > 0 && <p class="mt-3 text-base text-gray-700">{rigaEnte.join(' · ')}</p>}
-
-        {/* Dati chiave. Nessun segnaposto: una voce senza dato non c'e'. */}
-        <dl class="mt-6 grid grid-cols-2 gap-x-6 gap-y-5 border-t border-gray-200 pt-5 lg:flex lg:gap-0 lg:divide-x lg:divide-gray-200">
-          <div class="col-span-2 lg:flex-[2] lg:pr-6">
-            <dt class="text-sm text-gray-600">Stato</dt>
-            <dd class="mt-1">
-              {conBadge && (
-                <span class={`inline-flex items-center rounded-md px-2 py-0.5 text-sm font-semibold ${badge.classi}`}>{badge.etichetta}</span>
-              )}
-              {sottotesto && <p class="mt-2 max-w-[45ch] text-sm leading-relaxed text-gray-700">{sottotesto}</p>}
-            </dd>
           </div>
-          {mostraApertura && (
-            <div class="col-span-2 lg:flex-1 lg:px-6">
-              <dt class="text-sm text-gray-600">Apertura</dt>
-              <dd class="mt-1 text-xl font-semibold leading-tight tabular-nums text-gray-900 sm:text-2xl">{formatDate(bando.data_apertura)}</dd>
-            </div>
-          )}
-          {bando.data_scadenza && (
-            <div class="col-span-2 lg:flex-1 lg:px-6">
-              <dt class="text-sm text-gray-600">Scadenza</dt>
-              <dd class="mt-1">
-                <span class="block text-xl font-semibold leading-tight tabular-nums text-gray-900 sm:text-2xl">{formatDate(bando.data_scadenza)}</span>
-                {oraScadenza && <span class="mt-0.5 block text-base tabular-nums text-gray-900">ore {oraScadenza}</span>}
-                {giorniMancanti && <span class="mt-1 block text-sm font-medium text-gray-700">{giorniMancanti}</span>}
+        )}
+
+        {/* Dati chiave e calendario. Nessun segnaposto: una voce senza dato non c'e'. */}
+        <div class="mt-7 rounded-[20px] border border-[#e3e7ee] bg-white shadow-[0_18px_40px_-30px_rgba(10,34,68,.4)]">
+          <dl class="grid grid-cols-2 lg:flex">
+            <div class="col-span-2 min-w-0 px-[26px] py-[22px] lg:flex-[1.7]">
+              <dt class="text-[12.5px] text-[#5b6576]">Stato</dt>
+              <dd class="mt-2">
+                {aspetto && (
+                  <span class={`inline-flex items-center gap-2 whitespace-nowrap rounded-full py-[5px] pl-[11px] pr-[13px] text-[15px] font-semibold ${aspetto.pillola}`}>
+                    <span class={`h-[9px] w-[9px] rounded-full ${aspetto.punto}`}></span><span class={aspetto.extraEtichetta}>{aspetto.etichetta}</span>
+                  </span>
+                )}
+                {sottotesto && <p class="mt-2.5 max-w-[44ch] text-[13.5px] leading-[1.55] text-[#3d4657]">{sottotesto}</p>}
               </dd>
             </div>
-          )}
-          {importoTotale && (
-            <div class={`${importoTotale.length > 11 ? 'col-span-2 ' : ''}lg:flex-1 lg:px-6`}>
-              <dt class="text-sm text-gray-600">Dotazione totale</dt>
-              <dd class="mt-1 whitespace-nowrap text-xl font-semibold leading-tight tabular-nums text-gray-900 sm:text-2xl">{importoTotale}</dd>
-            </div>
-          )}
-          {importoMassimo && (
-            <div class={`${importoMassimo.length > 11 ? 'col-span-2 ' : ''}lg:flex-1 lg:px-6`}>
-              <dt class="text-sm text-gray-600">Massimo per progetto</dt>
-              <dd class="mt-1 whitespace-nowrap text-xl font-semibold leading-tight tabular-nums text-gray-900 sm:text-2xl">{importoMassimo}</dd>
-            </div>
-          )}
-        </dl>
-        <p class="mt-4 text-xs text-gray-600">{rigaFonte}</p>
-      </div>
-    </div>
+            {mostraApertura && (
+              <div class={classiCella}>
+                <dt class="text-[12.5px] text-[#5b6576]">Apertura</dt>
+                <dd class={`mt-2 ${classiNumero}`}>{formatDate(bando.data_apertura)}</dd>
+              </div>
+            )}
+            {bando.data_scadenza && (
+              <div class={classiCella}>
+                <dt class="text-[12.5px] text-[#5b6576]">Scadenza</dt>
+                <dd class="mt-2">
+                  <span class={`block ${classiNumero}`}>{formatDate(bando.data_scadenza)}</span>
+                  {oraScadenza && <span class="mt-1 block text-[13px] tabular-nums text-[#3d4657]">ore {oraScadenza}</span>}
+                  {giorniMancanti && <span class={`mt-2.5 inline-block rounded-[7px] px-2.5 py-1 text-[13px] font-semibold ${paletteScadenza.pillolaGiorni}`}>{giorniMancanti}</span>}
+                </dd>
+              </div>
+            )}
+            {importoTotale && (
+              <div class={classiCella}>
+                <dt class="text-[12.5px] text-[#5b6576]">Dotazione totale</dt>
+                <dd class={`mt-2 whitespace-nowrap ${classiNumero}`}>{importoTotale}</dd>
+              </div>
+            )}
+            {importoMassimo && (
+              <div class={classiCella}>
+                <dt class="text-[12.5px] text-[#5b6576]">Massimo per progetto</dt>
+                <dd class={`mt-2 whitespace-nowrap ${classiNumero}`}>{importoMassimo}</dd>
+              </div>
+            )}
+          </dl>
 
-    <div class="container mx-auto max-w-6xl px-4 py-8">
+          {cal && (
+            <div class="border-t border-[#eef1f5] px-[26px] pb-[22px] pt-5">
+              <div class="flex flex-wrap items-baseline justify-between gap-x-4">
+                <span class="font-heading text-[16px] font-semibold text-[#0a2244]">Calendario</span>
+                <span class="text-[13px] text-[#4b5565]">{cal.nota}</span>
+              </div>
+              <div class="relative mt-3.5 h-[22px]">
+                <div class={`absolute top-0 flex flex-col items-start ${TRASLAZIONE[cal.oggiTx]}`} style={`left:${cal.oggiX}`}>
+                  <span class="whitespace-nowrap rounded-[5px] bg-[#e07b00] px-2 py-0.5 text-[11.5px] font-semibold text-white">{cal.oggiEtichetta}</span>
+                </div>
+              </div>
+              <div class="relative h-5">
+                {cal.sopra.map((m) => (
+                  <span class={`absolute top-0 whitespace-nowrap text-[12px] text-[#3d4657] ${TRASLAZIONE[m.tx]}`} style={`left:${m.x}`}><strong class="font-semibold text-[#0a2244]">{m.etichetta}</strong> {m.data}</span>
+                ))}
+              </div>
+              <div aria-hidden="true" class="relative mt-1 h-2.5 rounded-[5px] bg-[#e6eaf0]">
+                <div class="absolute bottom-0 left-0 top-0 rounded-[5px] bg-[#004e9c]" style={`width:${cal.oggiX}`}></div>
+                <span class="absolute -top-1.5 h-[22px] w-[3px] -translate-x-1/2 rounded-sm bg-[#e07b00]" style={`left:${cal.oggiX}`}></span>
+                {cal.punti.map((x) => (
+                  <span class="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-[#0a2244] bg-white" style={`left:${x}`}></span>
+                ))}
+              </div>
+              <div class="relative mt-2 h-5">
+                {cal.sotto.map((m) => (
+                  <span class={`absolute top-0 whitespace-nowrap text-[12px] text-[#3d4657] ${TRASLAZIONE[m.tx]}`} style={`left:${m.x}`}><strong class="font-semibold text-[#0a2244]">{m.etichetta}</strong> {m.data}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <p class="mt-3.5 flex items-center gap-2 text-[12.5px] text-[#4b5565]"><span aria-hidden="true" class={`h-2 w-2 flex-none rounded-full ${fonteTrovata ? 'bg-[#12a36a]' : 'bg-[#e07b00]'}`}></span>{rigaFonte}</p>
+      </div>
+    </section>
+
+    <div class="mx-auto max-w-[1200px] px-4 pb-[72px] pt-9 sm:px-8">
       {/* Aggiornamenti: gli eventi datati che la fonte ufficiale ha pubblicato
           dopo la nostra scheda. La frase e' templata dal tipo dell'evento, il
           link punta alla pagina che lo prova. Sta subito sotto i dati chiave:
           una proroga cambia la scadenza mostrata sopra. */}
       {aggiornamenti.length > 0 && (
-        <section aria-labelledby="scheda_aggiornamenti" class="mb-10 border-l-4 border-amber-500 bg-amber-50 px-5 py-4">
-          <div class="max-w-3xl">
-            <h2 id="scheda_aggiornamenti" class="font-heading text-lg font-semibold text-gray-900">Aggiornamenti</h2>
-            <ul class="mt-2 space-y-2">
-              {aggiornamenti.map(voce => (
-                <li class="text-sm leading-relaxed text-gray-900">
-                  <span class="font-medium">{voce.testo}</span>{voce.quando && (
-                    <span class="tabular-nums text-gray-700">{` · ${voce.quando}`}</span>
-                  )}{voce.url && voce.host && (
+        <section aria-labelledby="scheda_aggiornamenti" class="mb-10 grid grid-cols-1 gap-5 rounded-2xl border border-[#f1d7a6] bg-[#fff8ec] px-[22px] py-[18px] md:grid-cols-[180px_minmax(0,1fr)]">
+          <div>
+            <h2 id="scheda_aggiornamenti" class="font-heading text-[19px] font-semibold text-[#5a3300]">Aggiornamenti</h2>
+            <p class="mt-1 text-[12.5px] text-[#8a4b00]">{aggiornamenti.length === 1 ? '1 novità dalla fonte' : `${aggiornamenti.length} novità dalla fonte`}</p>
+          </div>
+          <div>
+            <ul class="flex flex-col">
+              {aggiornamenti.map((voce) => (
+                <li class="grid grid-cols-1 gap-x-3 border-b border-[#f3e2c2] py-2 text-[14px] leading-[1.5] sm:grid-cols-[140px_minmax(0,1fr)]">
+                  <span class="tabular-nums text-[#8a4b00]">{voce.quando ?? ''}</span>
+                  <span class="text-[#1a2233]"><strong class="font-semibold">{voce.testo}</strong>{voce.url && voce.host && (
                     <Fragment>{' · '}<a
                         href={voce.url}
                         target="_blank"
                         rel="noopener noreferrer nofollow"
-                        class="break-words rounded-md text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                        class="break-words text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
                       >{voce.host}<span class="sr-only"> (si apre in una nuova scheda)</span></a></Fragment>
-                  )}
+                  )}</span>
                 </li>
               ))}
             </ul>
-            <p class="mt-3 text-xs text-amber-800">
-              Le date nel testo sono quelle rilevate alla pubblicazione: fanno
-              fede i dati qui sopra e questi aggiornamenti.
-            </p>
+            <p class="mt-2.5 text-[12.5px] text-[#8a4b00]">Le date nel testo sono quelle rilevate alla pubblicazione: fanno fede i dati qui sopra e questi aggiornamenti.</p>
           </div>
         </section>
       )}
 
-      {/* Griglia: il DOM segue l'ordine mobile (partecipazione, corpo, documenti
-          e sintesi), cosi' nessun blocco e' duplicato e l'ordine di lettura
-          coincide con quello visivo. Su desktop partecipazione e sintesi vanno
-          nella colonna destra; la traccia 1fr assorbe l'altezza del corpo. */}
-      <div class="grid grid-cols-1 gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr]">
-        <div class="lg:col-start-2 lg:row-start-1">
+      {/* Griglia: nel DOM la colonna azione viene prima dell'articolo, cosi' su
+          mobile partecipazione e BandoFit arrivano prima del testo e nessun
+          blocco e' duplicato; su desktop la colonna va a destra ed e' sticky. */}
+      <div class="grid grid-cols-1 items-start gap-10 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-16">
+        <div class="flex flex-col gap-4 lg:sticky lg:top-5 lg:col-start-2 lg:row-start-1">
           {/* Partecipazione: una sola CTA, e solo se la destinazione e'
               affidabile. Nessun bottone e' meglio di un bottone che porta a un
               aggregatore. */}
-          <section aria-labelledby="scheda_partecipazione">
-            <h2 id="scheda_partecipazione" class="font-heading text-lg font-semibold text-gray-900">Partecipazione</h2>
+          <section aria-labelledby="scheda_partecipazione" class="rounded-[20px] border border-[#e3e7ee] bg-white p-[22px] shadow-[0_18px_40px_-30px_rgba(10,34,68,.45)]">
+            <h2 id="scheda_partecipazione" class="font-heading text-[18px] font-semibold text-[#0a2244]">Partecipazione</h2>
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              {aspetto && (
+                <span class={`inline-flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full py-[3px] pl-2 pr-[9px] text-[12px] font-semibold ${aspetto.pillola}`}>
+                  <span class={`h-[7px] w-[7px] rounded-full ${aspetto.punto}`}></span><span class={aspetto.extraEtichetta}>{aspetto.etichetta}</span>
+                </span>
+              )}
+              <span class="text-[13.5px] text-[#3d4657]">{rigaPartecipazione}</span>
+            </div>
+            {giorniMancanti && daysToDeadline !== null && (
+              <div class="mt-4">
+                <div class="flex items-baseline gap-2">
+                  <span class="font-heading text-[40px] font-bold leading-none tabular-nums text-[#0a2244]">{daysToDeadline}</span>
+                  <span class="text-[14px] text-[#3d4657]">{daysToDeadline === 1 ? 'giorno alla scadenza' : 'giorni alla scadenza'}</span>
+                </div>
+                {cal && (
+                  <div aria-hidden="true" class="mt-2.5 h-1.5 overflow-hidden rounded-[3px] bg-[#e6eaf0]"><div class="h-full rounded-[3px] bg-[#004e9c]" style={`width:${cal.trascorso}`}></div></div>
+                )}
+              </div>
+            )}
             {ctaVisibile && (
-              <a
-                href={ctaVisibile.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="mt-3 flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-3 text-center font-semibold text-white hover:bg-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-              >{ctaVisibile.etichetta}<svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg><span class="sr-only"> (si apre in una nuova scheda)</span></a>
+              <Fragment>
+                <a
+                  href={ctaVisibile.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="mt-[18px] flex min-h-[54px] items-center justify-center gap-2.5 rounded-xl bg-[#004e9c] px-[18px] py-3 text-center text-[15.5px] font-semibold leading-[1.3] text-white no-underline hover:bg-[#003d7a] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
+                >{ctaVisibile.etichetta}<svg aria-hidden="true" focusable="false" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="flex-none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg><span class="sr-only"> (si apre in una nuova scheda)</span></a>
+                {notaCta && <p class="mt-2.5 text-center text-[12.5px] text-[#5b6576]">{notaCta}</p>}
+              </Fragment>
             )}
             {messaggioPartecipazione && (
-              <p class="mt-2 text-sm leading-relaxed text-gray-700">{messaggioPartecipazione}</p>
+              <p class="mt-4 text-[13.5px] leading-[1.55] text-[#3d4657]">{messaggioPartecipazione}</p>
             )}
             {!candidabile && (hrefProgramma || hrefTipologia) && (
-              <ul class="mt-2 text-sm">
+              <ul class="mt-2 flex flex-col text-[13.5px]">
                 {hrefProgramma && (
-                  <li><a href={hrefProgramma} class="inline-flex min-h-11 items-center rounded-md text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Bandi dello stesso programma: {bando.programma_nome}</a></li>
+                  <li><a href={hrefProgramma} class="inline-flex min-h-11 items-center text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Bandi dello stesso programma: {bando.programma_nome}</a></li>
                 )}
                 {hrefTipologia && (
-                  <li><a href={hrefTipologia} class="inline-flex min-h-11 items-center rounded-md text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">Bandi della stessa tipologia: {bando.tipologia_nome}</a></li>
+                  <li><a href={hrefTipologia} class="inline-flex min-h-11 items-center text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">Bandi della stessa tipologia: {bando.tipologia_nome}</a></li>
                 )}
               </ul>
             )}
           </section>
-          <div class="mt-6">
-            <BandiExpertCta variante="scheda" utmContent="dettaglio-sidebar" candidabile={candidabile} />
-          </div>
+
+          <BandiExpertCta variante="scheda" utmContent="dettaglio-sidebar" candidabile={candidabile} />
+
+          <a href="/bandi" class="flex items-center gap-2 px-0.5 py-1 text-[13.5px] font-medium text-[#004e9c] no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"><svg aria-hidden="true" focusable="false" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 12H5M11 6l-6 6 6 6"></path></svg>Torna all'elenco dei bandi</a>
         </div>
 
-        <article class="min-w-0 lg:col-start-1 lg:row-span-2 lg:row-start-1">
-          <div class="max-w-[68ch]">
-            {/* Titolo nascosto: senza, lead e corpo finirebbero sotto «Partecipazione»
-                nella struttura dei titoli e nel Markdown per agenti. */}
-            {(bando.descrizione_breve || avvisoCorpo || corpoHtml) && (
-              <h2 id="scheda_descrizione" class="sr-only">Descrizione del bando</h2>
-            )}
-            {bando.descrizione_breve && (
-              <p class="text-lg leading-relaxed text-gray-800">{bando.descrizione_breve}</p>
-            )}
-            {avvisoCorpo && (
-              <p class="mt-6 border-l-4 border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-700">{avvisoCorpo}</p>
-            )}
-            {conIndice && (
-              <nav aria-labelledby="scheda_indice" class="mt-8 border-l border-gray-200 pl-4">
-                <p id="scheda_indice" class="text-sm font-semibold text-gray-900">In questa pagina</p>
-                <ul class="mt-1">
-                  {vociIndice.map((voce) => (
-                    <li><a href={`#${voce.id}`} class="block rounded-md py-2 text-sm text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary" set:html={voce.testo} /></li>
-                  ))}
-                </ul>
-              </nav>
-            )}
-            {corpoHtml && <div class="mt-8" set:html={corpoHtml} />}
-          </div>
-        </article>
+        <article class="min-w-0 max-w-[700px] lg:col-start-1 lg:row-start-1">
+          {/* Titolo nascosto: senza, lead e corpo finirebbero sotto «Partecipazione»
+              nella struttura dei titoli e nel Markdown per agenti. */}
+          {(bando.descrizione_breve || avvisoCorpo || corpoHtml) && (
+            <h2 id="scheda_descrizione" class="sr-only">Descrizione del bando</h2>
+          )}
+          {bando.descrizione_breve && (
+            <p class="text-pretty text-[20px] leading-[1.6] text-[#1a2233]">{bando.descrizione_breve}</p>
+          )}
+          {avvisoCorpo && (
+            <p class={`${bando.descrizione_breve ? 'mt-6' : ''} rounded-xl border border-[#e3e7ee] bg-[#f7f9fb] px-4 py-3 text-[14px] leading-[1.55] text-[#4b5565]`}>{avvisoCorpo}</p>
+          )}
 
-        <div class="space-y-8 lg:col-start-2 lg:row-start-2 lg:self-start">
-          {/* Documenti e allegati */}
+          {/* In sintesi: un solo elenco di definizioni, due colonne come nel mock. */}
+          {conSintesi && (
+            <section aria-labelledby="scheda_sintesi" class={`${bando.descrizione_breve || avvisoCorpo ? 'mt-8' : ''} overflow-hidden rounded-2xl border border-[#e3e7ee]`}>
+              <h2 id="scheda_sintesi" class="border-b border-[#e3e7ee] bg-[#f7f9fb] px-5 py-3.5 font-heading text-[16px] font-semibold text-[#0a2244]">In sintesi</h2>
+              <dl class="grid grid-cols-1 sm:grid-cols-2">
+                {beneficiari.length > 0 && (
+                  <div class="border-b border-r border-[#eef1f5] px-5 py-3.5">
+                    <dt class="text-[12.5px] text-[#5b6576]">A chi si rivolge</dt>
+                    <dd class="mt-1 text-[14.5px] font-medium leading-[1.45] text-[#1a2233]">{beneficiari.join(', ')}</dd>
+                  </div>
+                )}
+                {tematiche.length > 0 && (
+                  <div class="border-b border-r border-[#eef1f5] px-5 py-3.5">
+                    <dt class="text-[12.5px] text-[#5b6576]">Tematica</dt>
+                    <dd class="mt-1 text-[14.5px] font-medium leading-[1.45] text-[#1a2233]">{tematiche.join(', ')}</dd>
+                  </div>
+                )}
+                {bando.programma_nome && (
+                  <div class="border-b border-r border-[#eef1f5] px-5 py-3.5">
+                    <dt class="text-[12.5px] text-[#5b6576]">Programma</dt>
+                    <dd class="mt-1 text-[14.5px] font-medium leading-[1.45]">
+                      {hrefProgramma
+                        ? <a href={hrefProgramma} class="text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]">{bando.programma_nome}</a>
+                        : <span class="text-[#1a2233]">{bando.programma_nome}</span>}
+                    </dd>
+                  </div>
+                )}
+                {bando.modalita_nome && (
+                  <div class="border-b border-r border-[#eef1f5] px-5 py-3.5">
+                    <dt class="text-[12.5px] text-[#5b6576]">Modalità di erogazione</dt>
+                    <dd class="mt-1 text-[14.5px] font-medium leading-[1.45] text-[#1a2233]">{bando.modalita_nome}</dd>
+                  </div>
+                )}
+                {codiciAteco.length > 0 && (
+                  <div class="border-b border-r border-[#eef1f5] px-5 py-3.5">
+                    <dt class="text-[12.5px] text-[#5b6576]">Codici ATECO</dt>
+                    <dd class="mt-1 text-[14.5px] font-medium leading-[1.45] text-[#1a2233]">
+                      <ul class="flex flex-col gap-1 tabular-nums">
+                        {codiciAteco.slice(0, ATECO_VISIBILI).map((c) => <li>{c}</li>)}
+                      </ul>
+                      {codiciAteco.length > ATECO_VISIBILI && (
+                        <details class="mt-1">
+                          <summary class="inline-flex min-h-11 cursor-pointer list-none items-center text-[13.5px] font-medium text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c] [&::-webkit-details-marker]:hidden">Mostra tutti ({codiciAteco.length})</summary>
+                          <ul class="flex flex-col gap-1 tabular-nums">
+                            {codiciAteco.slice(ATECO_VISIBILI).map((c) => <li>{c}</li>)}
+                          </ul>
+                        </details>
+                      )}
+                    </dd>
+                  </div>
+                )}
+                {bando.data_pubblicazione && (
+                  <div class="border-b border-r border-[#eef1f5] px-5 py-3.5">
+                    <dt class="text-[12.5px] text-[#5b6576]">Data di pubblicazione</dt>
+                    <dd class="mt-1 text-[14.5px] font-medium leading-[1.45] tabular-nums text-[#1a2233]">{formatDate(bando.data_pubblicazione)}</dd>
+                  </div>
+                )}
+              </dl>
+            </section>
+          )}
+
+          {conIndice && (
+            <nav aria-labelledby="scheda_indice" class="mt-8 border-l-2 border-[#e3e7ee] pl-4">
+              <p id="scheda_indice" class="text-[13px] font-semibold text-[#0a2244]">In questa pagina</p>
+              <ul class="mt-1">
+                {vociIndice.map((voce) => (
+                  <li><a href={`#${voce.id}`} class="block py-1.5 text-[14px] text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]" set:html={voce.testo} /></li>
+                ))}
+              </ul>
+            </nav>
+          )}
+
+          {corpoHtml && (
+            <div class="mt-9 text-[16px] leading-[1.75] text-[#2b3342] [counter-reset:sezione] [&_li]:pl-1 [&_strong]:text-[#0a2244]" set:html={corpoHtml} />
+          )}
+
+          {/* Documenti e allegati: la tessera dice il tipo di file. */}
           {vociAllegati.length > 0 && (
-            <section aria-labelledby="scheda_allegati">
-              <h2 id="scheda_allegati" class="font-heading text-lg font-semibold text-gray-900">Documenti e allegati</h2>
-              <ul class="mt-2 divide-y divide-gray-200 border-y border-gray-200">
-                {vociAllegati.map(a => (
+            <section aria-labelledby="scheda_allegati" class="mt-12">
+              <h2 id="scheda_allegati" class="mb-3 font-heading text-[22px] font-bold text-[#0a2244]">Documenti e allegati</h2>
+              <ul class="flex flex-col gap-2">
+                {vociAllegati.map((a) => (
                   <li>
                     <a
                       href={a.url}
                       target="_blank"
                       rel="noopener noreferrer nofollow"
-                      class="group flex min-h-11 items-start gap-3 rounded-md py-2.5 text-sm text-gray-800 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      class="flex items-center gap-3.5 rounded-xl border border-[#e3e7ee] px-4 py-3.5 text-[#1a2233] no-underline hover:border-[#9fb3d1] hover:bg-[#f9fbfd] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
                     >
-                      {a.tag && (
-                        <span class="mt-0.5 inline-flex shrink-0 items-center rounded-md bg-gray-100 px-1.5 py-0.5 text-xs font-semibold text-gray-700">{a.tag}</span>
-                      )}
-                      <span class="min-w-0 flex-1 break-words leading-snug underline-offset-2 group-hover:underline">{a.etichetta}<span class="sr-only"> (si apre in una nuova scheda)</span></span>
-                      <span class="mt-0.5 text-gray-500"><svg aria-hidden="true" focusable="false" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></span>
+                      <span aria-hidden="true" class={`flex h-[42px] w-[42px] flex-none items-center justify-center rounded-[9px] text-[11px] font-bold tracking-[.02em] ${(a.tag && COLORE_ALLEGATO[a.tag]) || 'bg-[#eef1f5] text-[#3d4657]'}`}>
+                        {a.tag ?? <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 3h7l5 5v13H7zM14 3v5h5"></path></svg>}
+                      </span>
+                      <span class="min-w-0 flex-1 break-words text-[14.5px] leading-[1.45]">{a.etichetta}{a.tag && <span class="sr-only"> ({a.tag})</span>}<span class="sr-only"> (si apre in una nuova scheda)</span></span>
+                      <svg aria-hidden="true" focusable="false" width="18" height="18" fill="none" stroke="#5b6576" viewBox="0 0 24 24" class="flex-none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
                     </a>
                   </li>
                 ))}
               </ul>
             </section>
           )}
-
-          {/* Scheda sintetica: un solo elenco di definizioni, righe divise da hairline. */}
-          {conSintesi && (
-            <section aria-labelledby="scheda_sintesi">
-              <h2 id="scheda_sintesi" class="font-heading text-lg font-semibold text-gray-900">Scheda sintetica</h2>
-              <dl class="mt-2 divide-y divide-gray-200 border-y border-gray-200 text-sm">
-                {beneficiari.length > 0 && (
-                  <div class="py-3">
-                    <dt class="text-gray-600">A chi si rivolge</dt>
-                    <dd class="mt-1 text-gray-900">
-                      {beneficiari.length === 1
-                        ? beneficiari[0]
-                        : <ul class="list-disc space-y-1 pl-5">{beneficiari.map(b => <li>{b}</li>)}</ul>}
-                    </dd>
-                  </div>
-                )}
-                {tematiche.length > 0 && (
-                  <div class="py-3">
-                    <dt class="text-gray-600">Tematica</dt>
-                    <dd class="mt-1 text-gray-900">{tematiche.join(', ')}</dd>
-                  </div>
-                )}
-                {bando.programma_nome && (
-                  <div class="py-3">
-                    <dt class="text-gray-600">Programma</dt>
-                    <dd class="mt-1 text-gray-900">
-                      {hrefProgramma
-                        ? <a href={hrefProgramma} class="-my-3 inline-block rounded-md py-3 text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{bando.programma_nome}</a>
-                        : bando.programma_nome}
-                    </dd>
-                  </div>
-                )}
-                {bando.modalita_nome && (
-                  <div class="py-3">
-                    <dt class="text-gray-600">Modalità di erogazione</dt>
-                    <dd class="mt-1 text-gray-900">{bando.modalita_nome}</dd>
-                  </div>
-                )}
-                {codiciAteco.length > 0 && (
-                  <div class="py-3">
-                    <dt class="text-gray-600">Codici ATECO</dt>
-                    <dd class="mt-1 text-gray-900">
-                      <ul class="space-y-1 tabular-nums">
-                        {codiciAteco.slice(0, ATECO_VISIBILI).map(c => <li class="leading-snug">{c}</li>)}
-                      </ul>
-                      {codiciAteco.length > ATECO_VISIBILI && (
-                        <div class="mt-1"><details>
-                          <summary class="inline-flex min-h-11 cursor-pointer list-none items-center rounded-md font-medium text-primary underline underline-offset-2 hover:text-primary-dark focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden">Mostra tutti ({codiciAteco.length})</summary>
-                          <ul class="space-y-1 tabular-nums">
-                            {codiciAteco.slice(ATECO_VISIBILI).map(c => <li class="leading-snug">{c}</li>)}
-                          </ul>
-                        </details></div>
-                      )}
-                    </dd>
-                  </div>
-                )}
-                {bando.data_pubblicazione && (
-                  <div class="py-3">
-                    <dt class="text-gray-600">Data di pubblicazione</dt>
-                    <dd class="mt-1 tabular-nums text-gray-900">{formatDate(bando.data_pubblicazione)}</dd>
-                  </div>
-                )}
-              </dl>
-            </section>
-          )}
-        </div>
+        </article>
       </div>
     </div>
   </main>

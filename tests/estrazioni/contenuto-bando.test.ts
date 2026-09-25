@@ -73,7 +73,7 @@ test('FAQ rese: accordion con la domanda e la risposta, link filtrati', () => {
       items: [{ question: 'Come si presenta?', answer: 'Dal portale.' }],
     }],
   });
-  assert.ok(html.includes('<details class="group border-b border-gray-200">'));
+  assert.ok(html.includes('<details class="group border-b border-[#e3e7ee]">'));
   assert.ok(html.includes('Come si presenta?'));
   assert.ok(html.includes('Dal portale.'));
   // Nessun FAQPage e nessun marcatore di dati strutturati nel corpo.
@@ -145,16 +145,16 @@ test('corpo: markup e classi delle sezioni', () => {
     ],
   });
   assert.ok(html.includes(
-    '<h2 id="requisiti-limiti" class="font-heading text-xl font-semibold leading-snug text-gray-900 mt-10 mb-3 scroll-mt-4">' +
+    '<h2 id="requisiti-limiti" class="mt-11 mb-3 flex scroll-mt-4 items-baseline gap-3 font-heading text-[26px] font-bold tracking-[-.01em] text-[#0a2244] first:mt-0 [counter-increment:sezione] before:font-semibold before:text-[14px] before:tabular-nums before:text-[#004e9c] before:content-[counter(sezione,decimal-leading-zero)]">' +
     'Requisiti &amp; limiti</h2>',
   ));
-  assert.ok(html.includes('<h3 class="font-heading text-lg font-semibold leading-snug text-gray-900 mt-6 mb-2">Sottotitolo</h3>'));
-  assert.ok(html.includes('<p class="text-gray-700 leading-relaxed mb-4">Paragrafo.</p>'));
+  assert.ok(html.includes('<h3 class="mt-8 mb-2 font-heading text-[20px] font-semibold text-[#0a2244] first:mt-0">Sottotitolo</h3>'));
+  assert.ok(html.includes('<p class="mt-4 first:mt-0 [h2+&]:mt-0 [h3+&]:mt-0">Paragrafo.</p>'));
   assert.ok(html.includes(
-    '<ul class="list-disc list-outside pl-5 space-y-2 mb-4 text-gray-700 leading-relaxed"><li>Primo</li></ul>',
+    '<ul class="mt-3 flex list-disc flex-col gap-2 pl-[22px] first:mt-0"><li>Primo</li></ul>',
   ));
   assert.ok(html.includes(
-    '<ol class="list-decimal list-outside pl-6 space-y-2 mb-4 text-gray-700 leading-relaxed"><li>Uno</li></ol>',
+    '<ol class="mt-3 flex list-decimal flex-col gap-2 pl-[22px] first:mt-0"><li>Uno</li></ol>',
   ));
   assert.equal(html.includes('ignorata'), false);
 });
@@ -185,7 +185,7 @@ test('corpo: id degli H2 per l\'indice, con accenti, collisioni e testo vuoto', 
     'valle-d-aosta-vallee-d-aoste',
   ]);
   // Gli H3 non hanno ancora e non consumano suffissi.
-  assert.ok(html.includes('<h3 class="font-heading text-lg font-semibold leading-snug text-gray-900 mt-6 mb-2">FAQ</h3>'));
+  assert.ok(html.includes('<h3 class="mt-8 mb-2 font-heading text-[20px] font-semibold text-[#0a2244] first:mt-0">FAQ</h3>'));
   // Ogni id è un segmento valido: niente da scappare nell'attributo.
   for (const valore of id) assert.match(valore, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
   // Due rese dello stesso contenuto danno gli stessi id: l'indice può contarci.

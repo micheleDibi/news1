@@ -120,7 +120,7 @@ export function vociFaq(items: unknown): VoceFaq[] {
 }
 
 const FRECCIA_FAQ =
-  '<svg class="shrink-0 w-5 h-5 text-gray-500 group-open:rotate-180 transition-transform motion-reduce:transition-none" fill="none" ' +
+  '<svg class="shrink-0 w-5 h-5 text-[#5b6576] group-open:rotate-180 transition-transform motion-reduce:transition-none" fill="none" ' +
   'stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" ' +
   'stroke-width="2" d="M19 9l-7 7-7-7"/></svg>';
 
@@ -128,15 +128,15 @@ function renderFaq(items: unknown): string {
   const voci = vociFaq(items);
   if (voci.length === 0) return '';
   const dettagli = voci.map((voce) =>
-    '<details class="group border-b border-gray-200">' +
-    '<summary class="flex min-h-11 cursor-pointer list-none items-center justify-between gap-4 py-4 font-semibold ' +
-    'text-gray-900 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ' +
+    '<details class="group border-b border-[#e3e7ee]">' +
+    '<summary class="flex min-h-11 cursor-pointer list-none items-center justify-between gap-4 py-4 font-heading text-[18px] ' +
+    'font-semibold text-[#0a2244] hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ' +
     'focus-visible:outline-primary [&::-webkit-details-marker]:hidden">' +
     scappa(voce.q) + FRECCIA_FAQ + '</summary>' +
-    `<p class="pb-4 text-gray-700 leading-relaxed">${renderSegmenti(voce.a.segments)}</p>` +
+    `<p class="pb-4">${renderSegmenti(voce.a.segments)}</p>` +
     '</details>',
   ).join('');
-  return `<div class="mt-6 border-t border-gray-200">${dettagli}</div>`;
+  return `<div class="mt-8 border-t border-[#e3e7ee]">${dettagli}</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,18 +181,18 @@ export function renderSezioni(contenuto: unknown): string {
     if (sezione.type === 'h2') {
       const testo = testoDi(sezione.text);
       pezzi.push(
-        `<h2 id="${ancora(testo)}" class="font-heading text-xl font-semibold leading-snug text-gray-900 mt-10 mb-3 scroll-mt-4">` +
+        `<h2 id="${ancora(testo)}" class="mt-11 mb-3 flex scroll-mt-4 items-baseline gap-3 font-heading text-[26px] font-bold tracking-[-.01em] text-[#0a2244] first:mt-0 [counter-increment:sezione] before:font-semibold before:text-[14px] before:tabular-nums before:text-[#004e9c] before:content-[counter(sezione,decimal-leading-zero)]">` +
         `${scappa(testo)}</h2>`,
       );
     } else if (sezione.type === 'h3') {
-      pezzi.push(`<h3 class="font-heading text-lg font-semibold leading-snug text-gray-900 mt-6 mb-2">${scappa(testoDi(sezione.text))}</h3>`);
+      pezzi.push(`<h3 class="mt-8 mb-2 font-heading text-[20px] font-semibold text-[#0a2244] first:mt-0">${scappa(testoDi(sezione.text))}</h3>`);
     } else if (sezione.type === 'paragraph') {
       const corpo = renderSegmenti(sezione.segments);
-      if (corpo !== '') pezzi.push(`<p class="text-gray-700 leading-relaxed mb-4">${corpo}</p>`);
+      if (corpo !== '') pezzi.push(`<p class="mt-4 first:mt-0 [h2+&]:mt-0 [h3+&]:mt-0">${corpo}</p>`);
     } else if (sezione.type === 'bullet_list') {
-      pezzi.push(renderVoci(sezione.items, 'ul', 'list-disc list-outside pl-5 space-y-2 mb-4 text-gray-700 leading-relaxed'));
+      pezzi.push(renderVoci(sezione.items, 'ul', 'mt-3 flex list-disc flex-col gap-2 pl-[22px] first:mt-0'));
     } else if (sezione.type === 'numbered_list') {
-      pezzi.push(renderVoci(sezione.items, 'ol', 'list-decimal list-outside pl-6 space-y-2 mb-4 text-gray-700 leading-relaxed'));
+      pezzi.push(renderVoci(sezione.items, 'ol', 'mt-3 flex list-decimal flex-col gap-2 pl-[22px] first:mt-0'));
     } else if (sezione.type === 'faq') {
       pezzi.push(renderFaq(sezione.items));
     }
