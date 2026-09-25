@@ -592,3 +592,84 @@ bandi restano `in_verifica` per sempre.
 
 Fuori perimetro, annotato: `bandiavvisi.regione.lazio.it` presenta un certificato con la catena
 incompleta e fallisce sempre lo scarico. È un problema dell'ente.
+
+## Il periodo d'ombra comincia a misurare (25/09/2026)
+
+Tre giorni di ombra non avevano misurato niente, e la causa era una colonna.
+`bando_evento.confidenza` è uno **smallint**: il resolver ci scriveva un punteggio 0-100, il monitor
+la frazione 0-1 del giudizio. Postgres rifiutava **ogni** INSERT con 22P02, `db.registra_evento`
+metteva l'errore in un warning, e il giro si dichiarava riuscito con `eventi: 0` — indistinguibile
+da «i gate hanno respinto tutto». Il 24/09 avevo letto quel riepilogo e concluso proprio questo.
+
+Cinque difetti chiusi, tutti trovati leggendo i log e la telemetria della produzione:
+
+1. **La confidenza**: una colonna, due scale. Ora 0-100 come il resolver, con il valore tagliato
+   agli estremi.
+2. **Il campo `gate`** portava il solo nome del G2 applicato. Registrare i respinti così non
+   diceva quale gate li aveva respinti, che è la sola ragione per registrarli.
+3. **`eventi_non_scritti`**: il contatore che mancava. Un giro che valuta le pagine, paga il
+   modello e non scrive niente ora alza un `[ALLARME]` invece di dichiararsi riuscito. Stesso
+   difetto e stessa cura di `non_scritte` in `link-verifica`.
+4. **Il duplicato non è un rifiuto**: `registra_evento_esito` distingue i tre casi. Il contatore
+   appena aggiunto gridava su due eventi che l'indice di dedup aveva semplicemente unificato.
+5. **Il report d'ombra misurava il registro** invece delle proposte: dentro il campione entravano
+   le 2 143 righe `pubblicazione` del backfill, e i tipi si filtravano *dopo* la lettura, quindi
+   `--campione 100` leggeva 336 `segnale_fonte` e nessuna proposta. È la terza volta che lo stesso
+   difetto si presenta — un `--limit` che conta le righe lette invece di quelle utili.
+
+Aggiunto **`monitor --forza`**: finita la semina la coda era vuota fino al pomeriggio (0 candidati
+alle 09:15, 56 alle 18:00) e non c'era modo di riprovare una correzione appena fatta. Toglie solo
+la cadenza: le altre tre condizioni restano, e la terza è quella che conta (un bando senza fonte
+`trovata` non si controlla, perché l'unico URL che avremmo è quello dell'aggregatore).
+
+### Il costo a regime, misurato
+
+| | |
+|---|---|
+| bandi controllati | 100 |
+| **pagine invariate** | **97** |
+| classificazioni | 2 |
+| **costo** | **0,03 $** |
+
+I 5,17 dollari della semina erano il primo controllo: senza un «prima» ogni pagina passa dal
+modello per forza, e succede una volta sola. A regime, 609 fonti due volte al giorno costano circa
+dieci centesimi al giorno.
+
+### Il primo giro che ha misurato davvero
+
+Su 500 bandi forzati: **17 proposte, 6 ammesse, 11 respinte.**
+
+| gate | respinte |
+|---|---|
+| G1 + G4 (citazione non in pagina, URL non scaricato) | 4 |
+| G7 (nessuna seconda prova) | 3 |
+| G6 (nessuna parola chiave) | 3 |
+| G3 (ruolo della data incompatibile) | 2 |
+
+Le quattro respinte da G1+G4 sono **allucinazioni fermate**: il modello aveva citato frasi che
+nella pagina non c'erano. Le altre sette sono prudenza sulle transizioni di stato. Cinque delle sei
+ammesse non toccano né stato né date (allegati e FAQ); la sesta è un'apertura con citazione
+«INVIO DOMANDE A PARTIRE DA 06/07/2026» e confidenza 100.
+
+### La metrica di uscita dall'ombra è sbagliata
+
+`report-ombra` calcola `precisione = ammessi / totale` (0,35 su questo campione) e pretende 0,95.
+Ma quel numero misura **quante proposte grezze del modello passano i gate**, e i gate devono
+respingerne la maggior parte: con questa formula la soglia non è raggiungibile nemmeno da un
+monitor perfetto. La precisione che decide è un'altra — *degli eventi ammessi, quanti sono
+corretti* — e si valuta a mano su un campione. Sui sei di oggi: sei su sei plausibili, con la
+citazione verificata dal G1 contro il testo scaricato.
+
+**Non ho cambiato la formula**: cambiare una soglia di sicurezza per farla passare è il modo
+sbagliato di superare un esame. Resta come rilievo aperto per il committente.
+
+### Raccomandazione: attivare per tipo, non tutto insieme
+
+`faq`, `nuovo_allegato`, `graduatoria` ed `esito` **non cambiano né lo stato né le date**: vanno
+nel box «Aggiornamenti» e nient'altro. Il rischio peggiore è una scheda che annuncia FAQ
+inesistenti — spiacevole, reversibile, non grave. Si attivano con
+`applica-eventi --dal <data> --tipo <tipo>`, uno per volta, `--dry-run` prima.
+
+`apertura`, `proroga`, `chiusura`, `sospensione` e `revoca` restano in ombra: cambiano quello che
+il lettore vede come stato del bando. Il monitor continua a registrarli e fra qualche giorno ce ne
+saranno abbastanza per giudicarli.
