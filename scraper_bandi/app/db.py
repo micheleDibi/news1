@@ -2305,8 +2305,16 @@ def consumo_oggi(
     except Exception as e:
         logger.warning("[db] consumo_oggi fallita: {}", e)
         return {}
+    # I lotti una tantum (`step='backfill:Lx'`) hanno tetti propri e non
+    # consumano quelli di regime (bilancio, M19). Sommarli qui voleva dire che
+    # un lotto lanciato a mano la mattina fermava il monitor di regime per il
+    # resto della giornata: il 25/09/2026 il giro delle 18:00 si e' fermato a
+    # «tetto giornaliero classificazioni raggiunto (201/30)».
+    from .bilancio import e_backfill
     somma = {voce: 0.0 for voce in VOCI_CONSUMO}
     for riga in righe:
+        if e_backfill(str(riga.get("step") or "")):
+            continue
         contatori = riga.get("contatori")
         if not isinstance(contatori, Mapping):
             continue

@@ -259,6 +259,24 @@ class ConsumoOggi(unittest.TestCase):
         self.assertEqual(somma["classificazioni"], 3.0)
         self.assertEqual(somma["ricerche"], 0.0)
 
+    def test_i_lotti_di_backfill_non_consumano_i_tetti_di_regime(self):
+        """Il 25/09/2026 i lotti `backfill:L6` della mattina avevano esaurito il
+        tetto giornaliero delle classificazioni e il monitor delle 18:00 si e'
+        fermato a «201/30». I lotti hanno tetti propri (M19)."""
+        client = self._Client([
+            {"id": 1, "step": "monitor", "contatori": {"classificazioni": 20, "usd": 0.4}},
+            {"id": 2, "step": "backfill:L6", "contatori": {"classificazioni": 171, "usd": 2.2}},
+            {"id": 3, "step": "resolver", "contatori": {"crediti": 7, "ricerche": 2}},
+            {"id": 4, "step": "backfill:L5", "contatori": {"crediti": 900, "ricerche": 40}},
+            {"id": 5, "step": None, "contatori": {"crediti": 1}},
+        ])
+        somma = db.consumo_oggi(
+            adesso=ADESSO, client=client, strumento=self._Strumento())
+        self.assertEqual(somma["classificazioni"], 20.0)
+        self.assertEqual(somma["usd"], 0.4)
+        self.assertEqual(somma["crediti"], 8.0)
+        self.assertEqual(somma["ricerche"], 2.0)
+
     def test_senza_pipeline_run_nessun_consumo(self):
         class Assente:
             def tabella_esiste(self, _nome):
