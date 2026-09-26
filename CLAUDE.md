@@ -144,17 +144,18 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > solo dopo la sua migrazione al contratto `docs/contratto-db-bandi.md`). Finché non sono applicate, il codice nuovo
 > degrada da solo (`db.controllo` rileva le colonne assenti) e monitor e resolver restano in modalità ombra.
 
-> Stato al 25/09/2026 (RIPRESA §1, che resta la fonte aggiornata): applicate 01, 02, seed, 03, 04, 05, 08, 09, 10;
-> mancano 06 e 07; resolver attivo, monitor in ombra salvo due tipi di evento attivati a mano.
+> Stato al 26/09/2026 (RIPRESA §1, che resta la fonte aggiornata): applicate 01, 02, seed, 03, 04, 05, 08, 09, 10;
+> mancano 06 e 07; resolver attivo, monitor in ombra (faq e nuovo_allegato resi visibili una sola volta, a mano,
+> il 25/09).
 
 > **Deroga registrata (intervento "documentazione allineata al codice", 25/09/2026).** Su richiesta esplicita
 > dell'utente è stato modificato solo il commento in testa a `scripts/migrate-slugs.ts` (il lancio documentato non
 > esisteva), senza toccare il codice. Fuori da questo elenco la regola sopra resta in vigore.
 
 > **Deroga registrata (intervento "controlli sui bandi", 26/09/2026).** Su richiesta esplicita dell'utente sono stati
-> modificati `scraper_bandi/app/{db,telemetria,__main__}.py` e i loro test (`consumo_oggi` senza i lotti di backfill;
-> `salute` che misura il DB) e `src/lib/corpus.ts` (ordine univoco sulle junction), più `docs/bandi-monitor/RIPRESA.md`
-> e `docs/api-v1.md`. Fuori da questo elenco la regola sopra resta in vigore.
+> modificati `scraper_bandi/app/{bilancio,db,telemetria,__main__}.py` e i loro test (`consumo_oggi` senza i lotti di
+> backfill né la riga del giro; `salute` che misura il DB) e `src/lib/corpus.ts` (ordine univoco sulle junction),
+> più `docs/bandi-monitor/RIPRESA.md` e `docs/api-v1.md`. Fuori da questo elenco la regola sopra resta in vigore.
 
 Inoltre, sempre (non toccati dalle deroghe):
 - Credenziali mai in file tracciati (vivono in `.env`, `scraper_bandi/.env`,

@@ -14,7 +14,9 @@ verso BandoFit: `docs/contratto-db-bandi.md`. Il piano completo dell'intervento 
 ## 1. Dove siamo
 
 L'intervento è **in esercizio**. Il resolver e i ricontrolli scrivono in produzione; il monitor
-registra ma non applica (modalità ombra), tranne i due tipi di evento attivati a mano.
+registra ma non applica e non rende visibile niente, di nessun tipo (modalità ombra). Il 25/09 gli
+eventi `faq` e `nuovo_allegato` già raccolti sono stati resi visibili una volta, a mano, con
+`applica-eventi` (vedi sotto).
 
 | | valore al 26/09/2026 | al 25/09 |
 |---|---|---|
@@ -41,7 +43,8 @@ Le verifiche visive le ha fatte il committente.
 
 - La **06** (cinque stati del bando, cioè `sospeso` e `revocato`) richiede prima il rilascio
   difensivo R0 di BandoFit. Finché non c'è, gli eventi di sospensione e revoca restano
-  `applicato=false` ma leggibili: la scheda lo dice nel box e disattiva il pulsante.
+  `applicato=false`. Sarebbero leggibili (box sulla scheda, pulsante disattivato) solo con
+  `MONITOR_MODALITA=attivo`: oggi, in ombra, nascono `leggibile=false`.
 - La **07** (fase d: REVOKE di colonna, RLS stretta) richiede che BandoFit sia passato al contratto.
 
 ### Configurazione in produzione (`scraper_bandi/.env`)
@@ -64,7 +67,8 @@ resterà invisibile finché qualcuno non rilancia `applica-eventi --tipo faq,nuo
 
 **`RESOLVER_MODALITA=attivo` vale anche per i comandi lanciati a mano.** Senza `--dry-run` o
 `--ombra` scritti per esteso, `risolvi-fonte`, `oe-dettaglio`, `link-verifica`, `fondi-doppioni` e
-`domini --import` scrivono sul DB (vedi §6).
+`domini --import` scrivono sul DB (vedi §6). E `--ombra` non vuol dire «senza effetti»: non tocca
+le colonne pubbliche, ma scrive le tabelle di servizio.
 
 ---
 
@@ -109,7 +113,8 @@ Exit 1 con `[ALLARME]` se:
 - consumo del mese, senza i lotti, oltre l'80% del tetto;
 - più del 30% di `in_verifica` sui pubblicati degli ultimi 7 giorni (solo se sono almeno 10);
 - `controlli_falliti ≥ 5` su più del 2% dei bandi vivi;
-- un lock valido tenuto da oltre 180 minuti (sopra i 60 è un avviso);
+- un lock valido tenuto da oltre due terzi del suo TTL (monitor 120', resolver 80', pipeline
+  160'); oltre un terzo del TTL, e comunque oltre i 60', è un avviso;
 - il DB non risponde.
 
 Login OE, residuo Firecrawl e schede OE **non si misurano dal DB**: `salute` lo dice negli avvisi
@@ -172,13 +177,15 @@ select count(*) from bando_evento
    and tipo in ('proroga','rettifica','apertura','chiusura','sospensione','revoca',
                 'riapertura','faq','graduatoria','esito','nuovo_allegato');
 
--- 5. Nessun evento leggibile senza cursore su un bando pubblicato. Atteso: 0
---    Sui bandi non pubblicati il cursore manca per costruzione: l'evento resta
---    «in attesa» e lo promuove la pubblicazione (trigger a_evento_cursore, 02).
---    Senza il join la query dava 79 il 26/09: tutti `fonte_ufficiale_verificata`
---    del 24/09 su bandi `processed`, non un difetto.
+-- 5. Nessun evento leggibile senza cursore su un bando che deve averlo
+--    (pubblicato, fuso o ritirato: la condizione del trigger a_evento_cursore, 02).
+--    Atteso: 0. Sugli altri bandi non pubblicati il cursore manca per costruzione:
+--    l'evento resta «in attesa» e lo promuove la pubblicazione. Senza il join la
+--    query dava 79 il 26/09: tutti `fonte_ufficiale_verificata` del 24/09 su
+--    bandi `processed`, non un difetto.
 select count(*) from bando_evento e join bando b on b.id = e.bando_id
- where e.leggibile and e.cursore is null and b.pubblicato;
+ where e.leggibile and e.cursore is null
+   and (b.pubblicato or b.bando_master_id is not null or b.ritirato_at is not null);
 
 -- 6. Un pubblicato non è mai uscito da `completed`. Atteso: 0
 select count(*) from bando where pubblicato and (stato_processing <> 'completed' or slug is null);
@@ -209,7 +216,7 @@ select p.oid::regprocedure as funzione
  order by 1;
 
 -- 10. Nessun lock orfano: un proprietario che non esiste più tiene fermo tutto.
---     Dal 26/09 lo segnala anche `salute` (avviso oltre 60', allarme oltre 180').
+--     Dal 26/09 lo segnala anche `salute` (soglie in proporzione al TTL, §3.1).
 select nome, proprietario, acquisito_at, scade_at, scade_at > now() as ancora_valido
   from pipeline_lock;
 
@@ -219,18 +226,33 @@ select count(*) from bando
  where pubblicato and stato_bando <> 'chiuso'
    and data_scadenza < (now() at time zone 'Europe/Rome')::date;
 
--- 12. «In apertura» con la data di apertura già passata. Non è un difetto del
---     cron (apre solo con data_apertura_verificata): sono date non verificate
+-- 12. «In apertura» con una data di apertura NON verificata già raggiunta. Non è
+--     un difetto del cron, che apre solo con data_apertura_verificata: sono date
 --     che solo un evento `apertura` del monitor può correggere. 19 il 26/09.
 select count(*) from bando
  where pubblicato and stato_bando = 'in apertura prossimamente'
+   and not data_apertura_verificata
    and data_apertura <= (now() at time zone 'Europe/Rome')::date;
+
+-- 12b. Il cron orario apre i bandi con data di apertura verificata. Atteso: 0
+--      (fuori dalla prima ora dopo la mezzanotte di Roma).
+select count(*) from bando
+ where pubblicato and stato_bando = 'in apertura prossimamente'
+   and data_apertura_verificata
+   and data_apertura < (now() at time zone 'Europe/Rome')::date;
 ```
 
-**Se la 10 mostra un lock valido da ore e nessun processo sta girando**
-(`ps aux | grep -E "bandi_sender|-m app" | grep -v grep`: il giro del sender sta dentro il
-processo di `bandi_sender.py`, che il vecchio `grep "m app"` non vedeva), è orfano: succede a ogni
-`systemctl restart` durante un giro. Si rilascia così:
+**Se la 10 mostra un lock valido da molto tempo**, si guarda il proprietario, sul server. Il
+processo del sender è sempre vivo, quindi `ps` sul suo nome non dice niente del giro.
+
+- `bandi_pipeline@<pid>` e `resolver@<pid>`: è orfano se `ps -p <pid> >/dev/null || echo
+  orfano` stampa «orfano» (c'è un piccolo rischio che il pid sia stato riusato).
+- `monitor:<giro>`: è orfano se il sender è ripartito dopo `acquisito_at`
+  (`systemctl show -p ActiveEnterTimestamp edunews-bandi-sender`).
+- `…:cli`: è orfano se non c'è nessun comando in corso
+  (`ps aux | grep -- "-m app" | grep -v grep` vuoto).
+
+Succede a ogni `systemctl restart` durante un giro. Si rilascia così:
 
 ```sql
 select public.lock_rilascia('<nome>', '<proprietario>');
@@ -246,12 +268,16 @@ che su macOS esce con errore e fa sembrare pulito un ciclo che non ha letto nien
 
 ```bash
 # nessun link agli aggregatori su un campione di schede
-curl -s https://edunews24.it/sitemap-bandi/1.xml | grep -oE '<loc>[^<]+</loc>' \
+# (elenco da tenere allineato a src/config/domini-aggregatori.ts; i social restano fuori
+# perché le schede hanno link di condivisione legittimi)
+curl -sf https://edunews24.it/sitemap-bandi/1.xml | grep -oE '<loc>[^<]+</loc>' \
   | sed -E 's#</?loc>##g' | head -30 | while read -r s; do
-  n=$(curl -s --max-time 20 "$s" | grep -oiE 'obiettivoeuropa|fasi\.eu|europafacile|contributiregione|finanziamentinews|infobandi|ticonsiglio|//(www\.)?bandi\.it' | wc -l | tr -d ' ')
+  if ! p=$(curl -sf --max-time 20 "$s") || [ -z "$p" ]; then echo "$s: NON LETTA"; continue; fi
+  n=$(printf '%s' "$p" | grep -oiE 'obiettivoeuropa|fasi\.eu|europafacile|contributiregione|finanziamentinews|infobandi|ticonsiglio|contributieuropa|first\.aster\.it|//(www\.)?bandi\.it' | wc -l | tr -d ' ')
   echo "$s: $n"
 done
-# atteso: 0 su tutte. Il campione sono le prime 30 URL del primo blocco, non un campione casuale.
+# atteso: 30 righe, tutte con 0. Una «NON LETTA», o meno di 30 righe, e la verifica non vale.
+# Il campione sono le prime 30 URL del primo blocco, non un campione casuale.
 ```
 
 ```bash
@@ -272,7 +298,7 @@ curl -s https://edunews24.it/bandi/abruzzo-competenze-linguistiche-certificazion
 
 ```bash
 cd ~/projects/news1
-npm run test:py:bandi     # atteso: 1480 test, OK (erano 1461 prima del 26/09)
+npm run test:py:bandi     # atteso: 1485 test, OK (erano 1461 prima del 26/09)
 npm test                  # atteso: 433 test, 0 falliti, 0 skipped (erano 404 prima del ridisegno)
 npm run test:py           # atteso: 26 test, OK
 npx tsc --noEmit -p tsconfig.json   # atteso: 51 errori, tutti preesistenti, 0 nei file dei bandi
@@ -302,9 +328,11 @@ in cache). I comandi a mano (`salute`, `report-ombra`, `applica-eventi`) partono
 zero e non ne hanno bisogno. Dopo un pull che tocca `src/` serve invece la build del frontend
 (`npm run build`) e il riavvio della sua unit.
 
-**Non riavviare il sender nei minuti prima delle 00, 06, 12 o 18.** All'avvio esegue un giro
-«boot» e registra gli orari solo alla fine: se il boot finisce dopo l'orario, quel giro salta al
-giorno dopo, monitor e ricontrolli compresi (la libreria `schedule` rimanda un'ora già passata).
+**Non riavviare il sender nell'ora e mezza prima delle 00, 06, 12 o 18.** All'avvio esegue un
+giro «boot» intero e registra gli orari solo alla fine: se il boot finisce dopo l'orario, quel giro
+salta al giorno dopo, monitor e ricontrolli compresi (la libreria `schedule` rimanda un'ora già
+passata). Il giro più lento misurato dura circa 80'. Il momento sicuro è subito dopo la fine di un
+giro: un riavvio a giro in corso lascia invece il lock fino al TTL (§3.2 punto 10).
 Verifica: `journalctl -u edunews-bandi-sender --since "<ora del riavvio>" | grep -E "Pipeline
 iniziale completata|Pipeline schedulata"`, con la prima riga prima del giro successivo.
 
@@ -364,6 +392,9 @@ Tre limiti della misura:
 
 - `pipeline_run` **non registra** i costi di preprocess, enrich e SEO (le righe `pipeline` hanno
   `usd: 0`): il dato completo sta nelle console di Firecrawl e Anthropic;
+- la riga `pipeline` di ogni giro **risomma** i crediti del resolver, che hanno già la propria riga:
+  nelle somme a mano va esclusa (`where step not like 'backfill:%' and step <> 'pipeline'`).
+  `consumo_oggi` e `salute` la escludono dal 26/09; prima i crediti del resolver contavano doppio;
 - la chiave Firecrawl è condivisa con news e interpelli;
 - il **tetto mensile** oggi non lo applica nessuno, perché `bilancio.verifica()` non riceve mai
   `crediti_mese`/`usd_mese`. Lo misura soltanto `salute` (§3.1).
@@ -494,8 +525,13 @@ esiste solo come modifiche non committate nel repo di BandoFit (12 file), e in H
 accetta ancora solo tre stati. Poi, in ordine:
 
 1. la conferma scritta che R0-a è in produzione;
-2. la 06;
-3. `applica-eventi --tipo sospensione,revoca`;
+2. la 06, poi `MONITOR_STATI_ESTESI=true` e il riavvio verificato del sender (§3.5);
+3. `applica-eventi --tipo sospensione,revoca`, **ma prima va chiuso un punto aperto dalla
+   revisione del 26/09**: gli eventi di sospensione e revoca raccolti in ombra portano
+   `valore_dopo = {"stato_proposto": …}` e non `stato_bando` (`eventi.py`, `riga_evento`).
+   Secondo la revisione `bando_applica_evento` scrive solo le colonne che riconosce, quindi li
+   segnerebbe applicati senza cambiare lo stato. Serve una traduzione `stato_proposto` →
+   `stato_bando` (nella RPC o nella CLI). Da verificare e sistemare prima di questo passo;
 4. la fase (c);
 5. la 07.
 
@@ -556,7 +592,8 @@ predicato storico.
     tocca niente» era falso: con `RESOLVER_MODALITA=attivo`, `risolvi-fonte`, `oe-dettaglio`,
     `link-verifica`, `fondi-doppioni` e `domini --import` scrivono. Lo stesso varrà per
     `archivia-processed`, `pulisci-contenuto`, `rigenera` e `applica-eventi` il giorno in cui
-    `MONITOR_MODALITA=attivo`. **Scrivere sempre `--dry-run` o `--ombra` per esteso.**
+    `MONITOR_MODALITA=attivo`. **Scrivere sempre per esteso `--dry-run` (per provare) o `--ombra`
+    (che non tocca le colonne pubbliche ma scrive comunque le tabelle di servizio).**
 
 ---
 
@@ -593,12 +630,22 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app domini --import --attivo [--en
 
 Ogni comando che scrive accetta `--dry-run` e `--limit`. **Senza `--attivo` e senza `--ombra`
 decide `RESOLVER_MODALITA` (o `MONITOR_MODALITA` per monitor, eventi e lotti)**, e in produzione il
-resolver è attivo: per provare, scrivere sempre `--dry-run` o `--ombra` (§5.12). Anche in
-`--dry-run`, `risolvi-fonte`, `monitor`, `applica-eventi` e i lotti prendono un lock e scrivono una
-riga in `pipeline_run`. `monitor` spende anche in `--dry-run` (scarichi e classificazioni), quindi
-non si lancia dal Mac. `salute`, `report-ombra` e `link-verifica --dry-run` sono in sola lettura.
-I comandi lunghi si lanciano con `nohup … &` e un file di log. Il percorso `~/projects/news1` è
-quello del server; sul Mac il repo sta in `~/Developer/news1`.
+resolver è attivo. Per provare senza effetti serve `--dry-run` (§5.12). `--ombra` non tocca le
+colonne pubbliche ma scrive `bando_controllo` (ultimo e prossimo controllo, tentativi) ed eventi
+muti, oltre a lock e `pipeline_run`: un esito `in_verifica` o `non_trovata` fa uscire il bando
+dalla coda del resolver per 14 o 60 giorni.
+
+Anche in `--dry-run`:
+
+- `risolvi-fonte`, `monitor` e `applica-eventi` prendono un lock e scrivono una riga in
+  `pipeline_run`;
+- i lotti (`pulisci-contenuto`, `rigenera`, `archivia-processed`) scrivono la riga ma non prendono
+  nessun lock, quindi non vanno lanciati mentre gira un giro del sender;
+- `monitor` spende (scarichi e classificazioni), quindi non si lancia dal Mac.
+
+`salute`, `report-ombra` e `link-verifica --dry-run` sono in sola lettura. I comandi lunghi si
+lanciano con `nohup … &` e un file di log. Il percorso `~/projects/news1` è quello del server; sul
+Mac il repo sta in `~/Developer/news1`.
 
 ---
 
