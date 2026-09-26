@@ -399,12 +399,17 @@ async function costruisciBandi(): Promise<Corpus> {
   const visibili = new Map(righe.map((r) => [r.id, r]));
 
   // Le junction non sono soggette alla RLS di `bando`: si filtrano sui bandi visibili.
+  // Il secondo ordinamento rende l'ordine univoco: sul solo bando_id le coppie
+  // dello stesso bando a cavallo di due blocchi potevano saltare (entrambe le
+  // tabelle superano le 1000 righe), come in leggiJunction.
   const [legamiRegioni, legamiSettori] = await Promise.all([
     leggiTutto<{ bando_id: number; regione_id: number }>((da, a) =>
-      supabaseBandi.from('bando_regioni').select('bando_id, regione_id').order('bando_id', { ascending: true }).range(da, a),
+      supabaseBandi.from('bando_regioni').select('bando_id, regione_id')
+        .order('bando_id', { ascending: true }).order('regione_id', { ascending: true }).range(da, a),
     ),
     leggiTutto<{ bando_id: number; settore_id: number }>((da, a) =>
-      supabaseBandi.from('bando_settori').select('bando_id, settore_id').order('bando_id', { ascending: true }).range(da, a),
+      supabaseBandi.from('bando_settori').select('bando_id, settore_id')
+        .order('bando_id', { ascending: true }).order('settore_id', { ascending: true }).range(da, a),
     ),
   ]);
 
