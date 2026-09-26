@@ -146,6 +146,13 @@ class TestBackfill(unittest.TestCase):
         self.assertFalse(bilancio.e_backfill("monitor"))
         self.assertFalse(bilancio.e_backfill(""))
 
+    def test_consumi_di_regime_senza_lotti_ne_riga_del_giro(self):
+        # La riga `pipeline` risomma gli step: contarla raddoppia il resolver.
+        self.assertTrue(bilancio.conta_nel_regime("monitor"))
+        self.assertTrue(bilancio.conta_nel_regime("resolver"))
+        self.assertFalse(bilancio.conta_nel_regime("pipeline"))
+        self.assertFalse(bilancio.conta_nel_regime("backfill:L6"))
+
     def test_il_backfill_risponde_solo_ai_suoi_tetti(self):
         # M19: con i tetti di regime un lotto si fermerebbe al primo giro.
         tetti = bilancio.Tetti(fetch_giro=10, crediti_giorno=10, backfill_crediti=8000)

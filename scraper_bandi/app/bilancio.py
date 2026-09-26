@@ -180,6 +180,23 @@ def e_backfill(step: str) -> bool:
     return (step or "").startswith(PREFISSO_BACKFILL)
 
 
+#: La riga del giro del sender (`bandi_pipeline._consumo`): somma i crediti e i
+#: dollari degli step, che hanno gia' ciascuno la propria riga.
+STEP_GIRO = "pipeline"
+
+
+def conta_nel_regime(step: str) -> bool:
+    """Una riga di `pipeline_run` entra nei consumi di regime?
+
+    No i lotti (M19), e no la riga del giro: e' un riassunto delle righe degli
+    step, e sommarla con loro contava due volte i crediti del resolver. Si
+    tengono le righe degli step perche' sono le sole che esistono anche per i
+    lanci da riga di comando.
+    """
+    passo = step or ""
+    return passo != STEP_GIRO and not e_backfill(passo)
+
+
 def _supera(valore: float, tetto: float) -> bool:
     return tetto > 0 and valore >= tetto
 

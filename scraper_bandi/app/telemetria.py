@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from .bilancio import conta_nel_regime
 from .logger import logger
 
 TABELLA_RUN = "pipeline_run"
@@ -250,6 +251,9 @@ def riepilogo(run: PipelineRun) -> str:
 #: Un lock di esecuzione tenuto piu' a lungo di cosi' merita uno sguardo; oltre
 #: la seconda soglia e' quasi certamente orfano (un giro di regime dura minuti,
 #: e un `systemctl restart` durante un giro lascia il lock fino alla scadenza).
+#: Le soglie valgono anche in proporzione al TTL del lock (un terzo e due terzi):
+#: un lock valido e' sempre piu' giovane del suo TTL, e con i TTL veri (monitor
+#: 180', resolver 120') una soglia fissa a 180' non sarebbe mai scattata.
 LOCK_AVVISO_MIN = 60
 LOCK_ALLARME_MIN = 180
 #: «Nuovi» per la quota di `in_verifica`: pubblicati negli ultimi N giorni, e
@@ -272,6 +276,8 @@ class LockTenuto:
     nome: str
     proprietario: str
     minuti: float
+    #: `scade_at - acquisito_at`: la durata che chi l'ha preso si era dato.
+    ttl_min: float | None = None
 
 
 @dataclass(frozen=True)
@@ -335,9 +341,13 @@ def salute(stato: Stato) -> Salute:
         # fino alla scadenza, e fino al 26/09/2026 nessun controllo lo vedeva.
         testo = (f"lock «{lock.nome}» tenuto da «{lock.proprietario}» da "
                  f"{lock.minuti:.0f} min")
-        if lock.minuti >= LOCK_ALLARME_MIN:
+        soglia_allarme, soglia_avviso = LOCK_ALLARME_MIN, LOCK_AVVISO_MIN
+        if lock.ttl_min:
+            soglia_allarme = min(soglia_allarme, lock.ttl_min * 2 / 3)
+            soglia_avviso = min(soglia_avviso, lock.ttl_min / 3)
+        if lock.minuti >= soglia_allarme:
             allarmi.append(f"{testo}: probabilmente orfano (lock_rilascia se nessun processo gira)")
-        elif lock.minuti >= LOCK_AVVISO_MIN:
+        elif lock.minuti >= soglia_avviso:
             avvisi.append(testo)
     if stato.crediti_residui_quota is not None and stato.crediti_residui_quota < 0.15:
         allarmi.append(f"crediti residui {stato.crediti_residui_quota:.0%} (< 15%)")
@@ -411,6 +421,16 @@ def _motivo_del_tetto(riga: Mapping[str, Any]) -> str:
     return ""
 
 
+def _giri_a_tetto(righe: list[Mapping[str, Any]]) -> int:
+    """Quante righe, dalla piu' recente, sono state fermate da un tetto."""
+    consecutivi = 0
+    for riga in righe:
+        if not (riga.get("interrotto_per_tetto") or riga.get("esito") == ESITO_INTERROTTO):
+            break
+        consecutivi += 1
+    return consecutivi
+
+
 def stato_da_misure(
     misure: Mapping[str, Any],
     *,
@@ -453,16 +473,17 @@ def stato_da_misure(
     else:
         non_misurati.append("monitor di regime (nessun giro registrato)")
 
+    # Giri a tetto: sulle righe del giro e su quelle del monitor di regime. Il
+    # monitor gira solo alle 06 e alle 18, quindi fra i suoi due giri a tetto del
+    # 25/09 il giro delle 12 (senza monitor) azzerava il conto sulle righe `pipeline`.
     pipeline = misure.get("pipeline")
-    if pipeline is not None:
-        consecutivi = 0
-        for riga in pipeline:
-            if not riga.get("interrotto_per_tetto"):
-                break
-            consecutivi += 1
+    if pipeline is not None or monitor is not None:
+        serie = [s for s in (pipeline or [], monitor or []) if s]
+        migliore = max(serie, key=_giri_a_tetto, default=[])
+        consecutivi = _giri_a_tetto(migliore)
         campi["giri_consecutivi_a_tetto"] = consecutivi
         if consecutivi:
-            campi["motivo_ultimo_tetto"] = _motivo_del_tetto(pipeline[0])
+            campi["motivo_ultimo_tetto"] = _motivo_del_tetto(migliore[0])
     else:
         non_misurati.append("giri a tetto")
 
@@ -485,8 +506,8 @@ def stato_da_misure(
 
     mese = misure.get("mese")
     if mese is not None and (tetto_crediti_mese > 0 or tetto_usd_mese > 0):
-        # I lotti hanno tetti propri e non consumano il mensile di regime (M19).
-        regime = [r for r in mese if not str(r.get("step") or "").startswith("backfill:")]
+        # Fuori i lotti (M19) e la riga del giro, che risomma gli step.
+        regime = [r for r in mese if conta_nel_regime(str(r.get("step") or ""))]
         quote = []
         if tetto_crediti_mese > 0:
             quote.append(sum(_numero(r.get("crediti")) for r in regime) / tetto_crediti_mese)
@@ -507,6 +528,7 @@ def stato_da_misure(
                 nome=str(riga.get("nome") or ""),
                 proprietario=str(riga.get("proprietario") or ""),
                 minuti=round((adesso - preso).total_seconds() / 60, 1),
+                ttl_min=round((scade - preso).total_seconds() / 60, 1),
             ))
         campi["lock_tenuti"] = tuple(tenuti)
     else:

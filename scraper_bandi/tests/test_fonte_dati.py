@@ -277,6 +277,19 @@ class ConsumoOggi(unittest.TestCase):
         self.assertEqual(somma["crediti"], 8.0)
         self.assertEqual(somma["ricerche"], 2.0)
 
+    def test_la_riga_del_giro_non_raddoppia_i_crediti(self):
+        """La riga `pipeline` risomma i crediti del resolver e dei ricontrolli,
+        che hanno gia' la propria riga `resolver`."""
+        client = self._Client([
+            {"id": 1, "step": "resolver", "contatori": {"crediti": 40}},
+            {"id": 2, "step": "resolver", "contatori": {"crediti": 20}},
+            {"id": 3, "step": "monitor", "contatori": {"crediti": 0, "classificazioni": 4}},
+            {"id": 4, "step": "pipeline", "contatori": {"crediti": 60, "usd": 0}},
+        ])
+        somma = db.consumo_oggi(adesso=ADESSO, client=client, strumento=self._Strumento())
+        self.assertEqual(somma["crediti"], 60.0)
+        self.assertEqual(somma["classificazioni"], 4.0)
+
     def test_senza_pipeline_run_nessun_consumo(self):
         class Assente:
             def tabella_esiste(self, _nome):

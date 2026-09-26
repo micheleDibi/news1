@@ -176,16 +176,30 @@ class TestSalute(unittest.TestCase):
         self.assertNotIn("fetch", esito.allarmi[0])
         self.assertIn("201/30", esito.allarmi[0])
 
-    def test_lock_tenuto_avviso_poi_allarme(self):
-        lock = telemetria.LockTenuto
-        breve = telemetria.salute(telemetria.Stato(lock_tenuti=(lock("pipeline", "sender", 12),)))
-        self.assertEqual((breve.allarmi, breve.avvisi), ((), ()))
-        lungo = telemetria.salute(telemetria.Stato(lock_tenuti=(lock("pipeline", "sender", 90),)))
-        self.assertEqual(lungo.allarmi, ())
-        self.assertIn("«pipeline»", lungo.avvisi[0])
-        orfano = telemetria.salute(telemetria.Stato(lock_tenuti=(lock("monitor", "cli", 200),)))
-        self.assertEqual(orfano.exit_code, 1)
-        self.assertIn("orfano", orfano.allarmi[0])
+    def _lock(self, nome, minuti, ttl):
+        esito = telemetria.salute(telemetria.Stato(
+            lock_tenuti=(telemetria.LockTenuto(nome, "sender", minuti, ttl),)))
+        return len(esito.allarmi), len(esito.avvisi)
+
+    def test_lock_giudicato_rispetto_al_suo_ttl(self):
+        # I TTL veri: monitor 180' (blocco.TTL_PREDEFINITO_S), resolver 120',
+        # pipeline 240'. Un lock valido e' sempre piu' giovane del suo TTL:
+        # con la sola soglia fissa a 180' monitor e resolver non davano mai allarme.
+        self.assertEqual(self._lock("monitor", 30, 180), (0, 0))
+        self.assertEqual(self._lock("monitor", 70, 180), (0, 1))
+        self.assertEqual(self._lock("monitor", 125, 180), (1, 0))
+        self.assertEqual(self._lock("bandi_resolver", 45, 120), (0, 1))
+        self.assertEqual(self._lock("bandi_resolver", 85, 120), (1, 0))
+        self.assertEqual(self._lock("bandi_pipeline", 150, 240), (0, 1))
+        self.assertEqual(self._lock("bandi_pipeline", 165, 240), (1, 0))
+
+    def test_lock_senza_ttl_usa_le_soglie_fisse(self):
+        self.assertEqual(self._lock("pipeline", 12, None), (0, 0))
+        self.assertEqual(self._lock("pipeline", 90, None), (0, 1))
+        self.assertEqual(self._lock("monitor", 200, None), (1, 0))
+        esito = telemetria.salute(telemetria.Stato(
+            lock_tenuti=(telemetria.LockTenuto("monitor", "cli", 200),)))
+        self.assertIn("orfano", esito.allarmi[0])
 
     def test_db_non_leggibile_e_un_allarme(self):
         esito = telemetria.salute(telemetria.Stato(misure_db_errore="ConnectError: timeout"))
@@ -260,6 +274,43 @@ class TestStatoDaMisure(unittest.TestCase):
                                            tetto_crediti_mese=5000, tetto_usd_mese=16.0)
         self.assertAlmostEqual(campi["consumo_mensile_quota"], 2.0 / 16.0)
 
+    def test_la_riga_del_giro_non_raddoppia_i_crediti(self):
+        # `bandi_pipeline._consumo` scrive nella riga `pipeline` la somma dei
+        # crediti degli step, che hanno gia' la propria riga: 2 000 + 2 000
+        # davano 80% e un allarme con un consumo reale del 40%.
+        mese = [
+            {"step": "resolver", "crediti": "1500", "usd": "0"},
+            {"step": "resolver", "crediti": "500", "usd": "0"},
+            {"step": "monitor", "crediti": "0", "usd": "0.4"},
+            {"step": "pipeline", "crediti": "2000", "usd": "0"},
+        ]
+        campi = telemetria.stato_da_misure(self._misure(mese=mese), adesso=self.ADESSO,
+                                           tetto_crediti_mese=5000)
+        self.assertAlmostEqual(campi["consumo_mensile_quota"], 0.4)
+        self.assertEqual(telemetria.salute(telemetria.Stato(**campi)).allarmi, ())
+
+    def test_il_25_settembre_il_monitor_era_a_tetto_due_giri_di_fila(self):
+        # Giro delle 12 senza monitor e senza tetto fra i due del monitor: sulle
+        # sole righe `pipeline` il conto si azzerava e l'allarme non scattava.
+        campi = telemetria.stato_da_misure(self._misure(
+            pipeline=[{"interrotto_per_tetto": True}, {"interrotto_per_tetto": False},
+                      {"interrotto_per_tetto": True}],
+            monitor=[
+                {"esito": "interrotto_per_tetto", "interrotto_per_tetto": True,
+                 "avviato_at": "2026-09-25T16:11:33+00:00",
+                 "motivo": "tetto giornaliero classificazioni raggiunto (201/30)"},
+                {"esito": "interrotto_per_tetto", "interrotto_per_tetto": True,
+                 "avviato_at": "2026-09-25T04:12:17+00:00",
+                 "motivo": "tetto giornaliero classificazioni raggiunto (30/30)"},
+                {"esito": "ok", "avviato_at": "2026-09-24T04:06:42+00:00",
+                 "concluso_at": "2026-09-24T04:10:00+00:00"},
+            ],
+        ), adesso=datetime(2026, 9, 25, 16, 30, tzinfo=timezone.utc))
+        self.assertEqual(campi["giri_consecutivi_a_tetto"], 2)
+        self.assertIn("201/30", campi["motivo_ultimo_tetto"])
+        allarmi = telemetria.salute(telemetria.Stato(**campi)).allarmi
+        self.assertTrue(any("2 giri consecutivi" in a for a in allarmi))
+
     def test_senza_tetti_il_consumo_non_si_misura(self):
         campi = telemetria.stato_da_misure(self._misure(mese=[{"step": "monitor", "usd": "9"}]),
                                            adesso=self.ADESSO)
@@ -267,13 +318,15 @@ class TestStatoDaMisure(unittest.TestCase):
         self.assertIn("consumo mensile", campi["non_misurati"])
 
     def test_lock_scaduti_ignorati_quelli_validi_misurati(self):
+        # TTL veri: pipeline 240' (gia' scaduto alle 08:00), monitor 180'.
         campi = telemetria.stato_da_misure(self._misure(lock=[
-            {"nome": "pipeline", "proprietario": "sender",
+            {"nome": "bandi_pipeline", "proprietario": "bandi_pipeline@4242",
              "acquisito_at": "2026-09-26T04:00:00+00:00", "scade_at": "2026-09-26T08:00:00+00:00"},
-            {"nome": "monitor", "proprietario": "cli",
-             "acquisito_at": "2026-09-26T04:30:00+00:00", "scade_at": "2026-09-26T09:30:00+00:00"},
+            {"nome": "monitor", "proprietario": "monitor:06:00",
+             "acquisito_at": "2026-09-26T06:00:00+00:00", "scade_at": "2026-09-26T09:00:00+00:00"},
         ]), adesso=self.ADESSO)
-        self.assertEqual(campi["lock_tenuti"], (telemetria.LockTenuto("monitor", "cli", 210.0),))
+        self.assertEqual(campi["lock_tenuti"],
+                         (telemetria.LockTenuto("monitor", "monitor:06:00", 120.0, 180.0),))
         self.assertEqual(telemetria.salute(telemetria.Stato(**campi)).exit_code, 1)
 
     def test_tabelle_assenti_finiscono_nei_non_misurati_senza_allarmi(self):

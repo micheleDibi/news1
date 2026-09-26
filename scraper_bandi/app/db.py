@@ -2309,11 +2309,13 @@ def consumo_oggi(
     # consumano quelli di regime (bilancio, M19). Sommarli qui voleva dire che
     # un lotto lanciato a mano la mattina fermava il monitor di regime per il
     # resto della giornata: il 25/09/2026 il giro delle 18:00 si e' fermato a
-    # «tetto giornaliero classificazioni raggiunto (201/30)».
-    from .bilancio import e_backfill
+    # «tetto giornaliero classificazioni raggiunto (201/30)». Resta fuori anche
+    # la riga del giro (`step='pipeline'`), che risomma i crediti del resolver
+    # gia' presenti nella sua riga: contata due volte (`bilancio.conta_nel_regime`).
+    from .bilancio import conta_nel_regime
     somma = {voce: 0.0 for voce in VOCI_CONSUMO}
     for riga in righe:
-        if e_backfill(str(riga.get("step") or "")):
+        if not conta_nel_regime(str(riga.get("step") or "")):
             continue
         contatori = riga.get("contatori")
         if not isinstance(contatori, Mapping):
@@ -2362,8 +2364,10 @@ def misure_salute(
 
     if strumento.tabella_esiste(TABELLA_RUN):
         # Solo il monitor di regime: `giro` e' vuoto sui lanci a mano.
+        # Il motivo di un giro fermato dal tetto sta nei contatori, non nella colonna.
         misure["monitor"] = list((
-            sb.table(TABELLA_RUN).select("avviato_at,concluso_at,esito,giro")
+            sb.table(TABELLA_RUN)
+            .select("avviato_at,concluso_at,esito,giro,interrotto_per_tetto,motivo:contatori->>motivo")
             .eq("step", "monitor").not_.is_("giro", "null")
             .order("avviato_at", desc=True).limit(60).execute()
         ).data or [])
