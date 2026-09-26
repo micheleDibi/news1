@@ -931,21 +931,34 @@ def _cmd_domini(argv: list[str]) -> int:
 
 
 def _stato_salute():
-    """Fotografia che `salute` giudica.
+    """Fotografia che `salute` giudica: la configurazione piu' le misure sul DB.
 
-    Per ora contiene solo cio' che si sa senza toccare il DB: le misure su
-    `pipeline_run`/`fonte_run` (ultimo monitor OK, giri a tetto, crediti
-    residui) si aggiungono qui quando la migrazione 02 sara' applicata e il
-    monitor scrivera' le righe. Cosi' `salute` e' gia' utile — segnala una
-    configurazione incoerente — e non mente su cio' che non ha misurato.
+    Fino al 26/09/2026 conteneva solo la configurazione, e un exit 0 non
+    diceva niente del monitor, dei tetti o dei lock. Le misure sono sole
+    letture (`db.misure_salute`); se il DB non risponde non si solleva: diventa
+    un allarme, con il messaggio passato da `redigi`.
     """
+    from datetime import datetime, timezone
+    from .logger import redigi
     from .settings import get_settings
-    from .telemetria import Stato
+    from .telemetria import Stato, stato_da_misure
     impostazioni = get_settings()
+    try:
+        from .db import misure_salute
+        adesso = datetime.now(tz=timezone.utc)
+        campi = stato_da_misure(
+            misure_salute(adesso=adesso),
+            adesso=adesso,
+            tetto_crediti_mese=impostazioni.tetto_crediti_mese,
+            tetto_usd_mese=impostazioni.tetto_usd_mese,
+        )
+    except Exception as e:
+        campi = {"misure_db_errore": redigi(f"{type(e).__name__}: {e}")[:240]}
     return Stato(
         modalita_monitor=impostazioni.monitor_modalita,
         indexnow_configurata=bool(impostazioni.indexnow_api_key),
         monitor_giri_validi=impostazioni.monitor_giri_validi,
+        **campi,
     )
 
 

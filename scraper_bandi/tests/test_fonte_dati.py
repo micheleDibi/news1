@@ -284,6 +284,77 @@ class ConsumoOggi(unittest.TestCase):
 
         self.assertEqual(db.consumo_oggi(strumento=Assente()), {})
 
+
+class MisureSalute(unittest.TestCase):
+    """`db.misure_salute` legge soltanto, e solo cio' che `salute` giudica."""
+
+    class _Catena:
+        """Query finta: registra ogni chiamata e restituisce le righe della tabella."""
+
+        def __init__(self, registro, tabella, righe):
+            self._registro, self._tabella, self._righe = registro, tabella, righe
+            self.chiamate: list[tuple] = []
+            registro.append((tabella, self.chiamate))
+
+        @property
+        def not_(self):
+            self.chiamate.append(("not_",))
+            return self
+
+        def __getattr__(self, nome):
+            if nome in ("insert", "update", "upsert", "delete", "rpc"):
+                raise AssertionError(f"misure_salute non deve scrivere ({nome})")
+
+            def _passo(*args, **kwargs):
+                self.chiamate.append((nome, args, kwargs))
+                return self
+            return _passo
+
+        def execute(self):
+            return type("R", (), {"data": list(self._righe)})()
+
+    class _Client:
+        def __init__(self, righe_per_tabella):
+            self.registro: list = []
+            self._righe = righe_per_tabella
+
+        def table(self, nome):
+            return MisureSalute._Catena(self.registro, nome, self._righe.get(nome, []))
+
+    class _Strumento:
+        def __init__(self, tabelle=("bando", "pipeline_run", "pipeline_lock", "bando_controllo")):
+            self._tabelle = set(tabelle)
+
+        def tabella_esiste(self, nome):
+            return nome in self._tabelle
+
+        def ha(self, tabella, _colonna):
+            return tabella in self._tabelle
+
+    def test_legge_il_monitor_di_regime_e_non_scrive(self):
+        client = self._Client({"pipeline_lock": [{"nome": "pipeline"}]})
+        misure = db.misure_salute(adesso=ADESSO, client=client, strumento=self._Strumento())
+        self.assertEqual(set(misure), {"monitor", "pipeline", "mese", "nuovi", "vivi", "falliti", "lock"})
+        self.assertEqual(misure["lock"], [{"nome": "pipeline"}])
+        prima = client.registro[0]
+        self.assertEqual(prima[0], "pipeline_run")
+        self.assertIn(("eq", ("step", "monitor"), {}), prima[1])
+        # Solo il monitor di regime: `giro` vuoto vuol dire lancio a mano.
+        self.assertIn(("not_",), prima[1])
+        self.assertIn(("is_", ("giro", "null"), {}), prima[1])
+
+    def test_tabelle_assenti_valgono_none(self):
+        misure = db.misure_salute(adesso=ADESSO, client=self._Client({}),
+                                  strumento=self._Strumento(tabelle=("bando",)))
+        self.assertIsNone(misure["monitor"])
+        self.assertIsNone(misure["lock"])
+        self.assertIsNone(misure["falliti"])
+
+    def test_schema_illeggibile_solleva(self):
+        with self.assertRaises(RuntimeError):
+            db.misure_salute(adesso=ADESSO, client=self._Client({}),
+                             strumento=self._Strumento(tabelle=()))
+
     def test_la_giornata_e_quella_di_roma(self):
         """Il filtro parte da mezzanotte **italiana**, non da quella UTC.
 

@@ -2326,6 +2326,89 @@ def consumo_oggi(
     return somma
 
 
+#: Tabella dei lock di esecuzione (`blocco.py`): la legge solo `salute`.
+TABELLA_LOCK = "pipeline_lock"
+
+
+def misure_salute(
+    *,
+    adesso: Any = None,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """Le righe che `salute` giudica (`telemetria.stato_da_misure`). Solo letture.
+
+    Fino al 26/09/2026 `salute` guardava tre valori di configurazione e diceva
+    «nessun allarme» senza aver letto niente: il monitor fermo, i tetti, i lock
+    orfani non potevano mai scattare. Qui si leggono.
+
+    Una tabella o una colonna che lo schema non espone vale `None` (misura non
+    disponibile, e `salute` lo dice negli avvisi). Se lo schema non e' leggibile
+    affatto si solleva: «non so niente» non deve somigliare a «tutto bene».
+    Ogni lettura che puo' superare le 1 000 righe passa da `_scorri`.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        raise RuntimeError("schema del DB bandi non leggibile: la tabella `bando` non risulta")
+    from datetime import timedelta
+    from .stato_bando import adesso_roma
+    from .telemetria import GIORNI_NUOVI, SOGLIA_CONTROLLI_FALLITI
+    momento = adesso_roma(adesso if isinstance(adesso, datetime_cls) else None)
+    sb = _client(client)
+    misure: dict[str, Any] = {
+        "monitor": None, "pipeline": None, "mese": None, "nuovi": None,
+        "vivi": None, "falliti": None, "lock": None,
+    }
+
+    if strumento.tabella_esiste(TABELLA_RUN):
+        # Solo il monitor di regime: `giro` e' vuoto sui lanci a mano.
+        misure["monitor"] = list((
+            sb.table(TABELLA_RUN).select("avviato_at,concluso_at,esito,giro")
+            .eq("step", "monitor").not_.is_("giro", "null")
+            .order("avviato_at", desc=True).limit(60).execute()
+        ).data or [])
+        misure["pipeline"] = list((
+            sb.table(TABELLA_RUN).select("avviato_at,esito,interrotto_per_tetto,motivo,contatori")
+            .eq("step", "pipeline").order("avviato_at", desc=True).limit(10).execute()
+        ).data or [])
+        # Mese del calendario di Roma, come `consumo_oggi`. Solo le due voci
+        # che servono, estratte dal jsonb: le righe `pipeline` sono grandi.
+        inizio_mese = momento.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        misure["mese"] = _scorri(lambda quanto, salto: _pagina(
+            sb.table(TABELLA_RUN)
+            .select("id,step,crediti:contatori->>crediti,usd:contatori->>usd")
+            .gte("avviato_at", inizio_mese.isoformat()).order("id"),
+            quanto, salto))
+
+    if all(strumento.ha("bando", c) for c in ("pubblicato", "pubblicato_at", "fonte_ufficiale_stato")):
+        dal = (momento - timedelta(days=GIORNI_NUOVI)).isoformat()
+        misure["nuovi"] = _scorri(lambda quanto, salto: _pagina(
+            sb.table("bando").select("id,fonte_ufficiale_stato")
+            .eq("pubblicato", True).gte("pubblicato_at", dal).order("id"),
+            quanto, salto))
+
+    if (strumento.ha("bando", "pubblicato")
+            and strumento.ha("bando_controllo", "controlli_falliti")):
+        vivi = _scorri(lambda quanto, salto: _pagina(
+            sb.table("bando").select("id")
+            .eq("pubblicato", True).not_.in_("stato_bando", ["chiuso", "revocato"]).order("id"),
+            quanto, salto))
+        misure["vivi"] = [r["id"] for r in vivi]
+        falliti = _scorri(lambda quanto, salto: _pagina(
+            sb.table("bando_controllo").select("bando_id")
+            .gte("controlli_falliti", SOGLIA_CONTROLLI_FALLITI).order("bando_id"),
+            quanto, salto))
+        misure["falliti"] = [r["bando_id"] for r in falliti]
+
+    if strumento.tabella_esiste(TABELLA_LOCK):
+        misure["lock"] = list((
+            sb.table(TABELLA_LOCK).select("nome,proprietario,acquisito_at,scade_at")
+            .order("nome").execute()
+        ).data or [])
+
+    return misure
+
+
 def select_bandi_pubblicati_contenuto(
     *,
     limit: int | None = None,

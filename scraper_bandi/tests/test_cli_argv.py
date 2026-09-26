@@ -1141,11 +1141,33 @@ class TestSalute(_ConRunnerFinti):
         self.assertEqual(len(avvisi), 1)
         self.assertIn("--offset", avvisi[0][-1])
 
-    def test_salute_non_tocca_ne_db_ne_rete(self):
-        # `_stato_salute` legge solo le impostazioni: se toccasse il DB, questo
-        # test fallirebbe con le credenziali fittizie di tests/supporto.py.
-        stato = cli._stato_salute()
+    def test_salute_unisce_configurazione_e_misure_sul_db(self):
+        # Fino al 26/09/2026 `_stato_salute` leggeva solo le impostazioni e un
+        # exit 0 non diceva niente del monitor, dei tetti o dei lock.
+        db = carica_modulo("db")
+        misure = {"monitor": [], "pipeline": [{"interrotto_per_tetto": True, "motivo": "x"},
+                                              {"interrotto_per_tetto": True, "motivo": "x"}],
+                  "mese": None, "nuovi": None, "vivi": None, "falliti": None, "lock": []}
+        with patch.object(db, "misure_salute", return_value=misure) as letture:
+            stato = cli._stato_salute()
+        letture.assert_called_once()
         self.assertIn(stato.modalita_monitor, ("ombra", "attivo"))
+        self.assertEqual(stato.giri_consecutivi_a_tetto, 2)
+        self.assertIsNone(stato.misure_db_errore)
+        self.assertIn("login Obiettivo Europa", stato.non_misurati)
+
+    def test_un_db_che_non_risponde_e_un_allarme_redatto(self):
+        db = carica_modulo("db")
+
+        def esplode(**_kwargs):
+            raise ConnectionError("rifiutata: apikey=segretissima")
+
+        with patch.object(db, "misure_salute", esplode):
+            stato = cli._stato_salute()
+        self.assertIn("ConnectionError", stato.misure_db_errore)
+        self.assertNotIn("segretissima", stato.misure_db_errore)
+        telemetria = carica_modulo("telemetria")
+        self.assertEqual(telemetria.salute(stato).exit_code, 1)
 
 
 if __name__ == "__main__":

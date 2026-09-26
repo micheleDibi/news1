@@ -6,6 +6,7 @@ Nessuna rete: il client Supabase e l'adattatore `db.controllo` sono finti, e
 """
 import json
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from tests.supporto import carica_modulo
@@ -164,6 +165,140 @@ class TestSalute(unittest.TestCase):
     def test_righe_allarme_con_prefisso(self):
         esito = telemetria.salute(telemetria.Stato(login_oe_ok=False))
         self.assertTrue(telemetria.righe_allarme(esito)[0].startswith(telemetria.PREFISSO_ALLARME))
+
+    def test_il_tetto_riporta_il_motivo_e_non_dice_piu_fetch(self):
+        # Il 25/09/2026 i due giri a tetto erano per le classificazioni, non
+        # per il fetch: il testo di prima avrebbe mandato a cercare altrove.
+        esito = telemetria.salute(telemetria.Stato(
+            giri_consecutivi_a_tetto=2,
+            motivo_ultimo_tetto="tetto giornaliero classificazioni raggiunto (201/30)"))
+        self.assertEqual(len(esito.allarmi), 1)
+        self.assertNotIn("fetch", esito.allarmi[0])
+        self.assertIn("201/30", esito.allarmi[0])
+
+    def test_lock_tenuto_avviso_poi_allarme(self):
+        lock = telemetria.LockTenuto
+        breve = telemetria.salute(telemetria.Stato(lock_tenuti=(lock("pipeline", "sender", 12),)))
+        self.assertEqual((breve.allarmi, breve.avvisi), ((), ()))
+        lungo = telemetria.salute(telemetria.Stato(lock_tenuti=(lock("pipeline", "sender", 90),)))
+        self.assertEqual(lungo.allarmi, ())
+        self.assertIn("«pipeline»", lungo.avvisi[0])
+        orfano = telemetria.salute(telemetria.Stato(lock_tenuti=(lock("monitor", "cli", 200),)))
+        self.assertEqual(orfano.exit_code, 1)
+        self.assertIn("orfano", orfano.allarmi[0])
+
+    def test_db_non_leggibile_e_un_allarme(self):
+        esito = telemetria.salute(telemetria.Stato(misure_db_errore="ConnectError: timeout"))
+        self.assertEqual(esito.exit_code, 1)
+        self.assertIn("misure sul DB non disponibili", esito.allarmi[0])
+
+    def test_cio_che_non_si_misura_si_dice_negli_avvisi(self):
+        esito = telemetria.salute(telemetria.Stato(non_misurati=("login Obiettivo Europa",)))
+        self.assertEqual(esito.exit_code, 0)
+        self.assertEqual(esito.avvisi, ("non misurato da salute: login Obiettivo Europa",))
+
+
+class TestStatoDaMisure(unittest.TestCase):
+    """Le misure di `salute` dalle righe del DB: funzione pura, nessuna rete."""
+
+    ADESSO = datetime(2026, 9, 26, 8, 0, tzinfo=timezone.utc)
+
+    def _misure(self, **kwargs):
+        base = {"monitor": [], "pipeline": [], "mese": [], "nuovi": [],
+                "vivi": [], "falliti": [], "lock": []}
+        base.update(kwargs)
+        return base
+
+    def test_ore_dall_ultimo_monitor_ok(self):
+        campi = telemetria.stato_da_misure(self._misure(monitor=[
+            {"esito": "interrotto_per_tetto", "avviato_at": "2026-09-25T16:11:00+00:00"},
+            {"esito": "ok", "avviato_at": "2026-09-25T04:00:00+00:00",
+             "concluso_at": "2026-09-25T06:00:00+00:00"},
+        ]), adesso=self.ADESSO)
+        self.assertEqual(campi["ore_dall_ultimo_monitor_ok"], 26.0)
+        self.assertTrue(telemetria.salute(telemetria.Stato(**campi)).allarmi)
+
+    def test_nessun_monitor_ok_fra_le_righe_lette(self):
+        campi = telemetria.stato_da_misure(self._misure(monitor=[
+            {"esito": "errore", "avviato_at": "2026-09-25T16:00:00+00:00"},
+            {"esito": "errore", "avviato_at": "2026-09-24T04:00:00+00:00"},
+        ]), adesso=self.ADESSO)
+        self.assertEqual(campi["ore_dall_ultimo_monitor_ok"], 52.0)
+
+    def test_giri_consecutivi_a_tetto_e_motivo_annidato(self):
+        tetto = {"interrotto_per_tetto": True, "motivo": "",
+                 "contatori": {"seo": {"selected": 3},
+                               "monitor": {"motivo": "tetto giornaliero classificazioni raggiunto (201/30)"}}}
+        campi = telemetria.stato_da_misure(self._misure(pipeline=[
+            tetto, dict(tetto), {"interrotto_per_tetto": False}, dict(tetto),
+        ]), adesso=self.ADESSO)
+        self.assertEqual(campi["giri_consecutivi_a_tetto"], 2)
+        self.assertIn("201/30", campi["motivo_ultimo_tetto"])
+
+    def test_in_verifica_sui_nuovi_solo_con_abbastanza_bandi(self):
+        pochi = [{"fonte_ufficiale_stato": "in_verifica"}] * 4 + [{"fonte_ufficiale_stato": "trovata"}] * 5
+        campi = telemetria.stato_da_misure(self._misure(nuovi=pochi), adesso=self.ADESSO)
+        self.assertNotIn("quota_in_verifica_nuovi", campi)
+        self.assertTrue(any("in verifica sui nuovi" in v for v in campi["non_misurati"]))
+        abbastanza = pochi + [{"fonte_ufficiale_stato": "non_trovata"}] * 3
+        campi = telemetria.stato_da_misure(self._misure(nuovi=abbastanza), adesso=self.ADESSO)
+        self.assertAlmostEqual(campi["quota_in_verifica_nuovi"], 4 / 12)
+
+    def test_controlli_falliti_contano_solo_i_vivi(self):
+        campi = telemetria.stato_da_misure(self._misure(
+            vivi=list(range(1, 101)), falliti=[3, 4, 500]), adesso=self.ADESSO)
+        self.assertAlmostEqual(campi["quota_controlli_falliti"], 0.02)
+        self.assertEqual(telemetria.salute(telemetria.Stato(**campi)).allarmi, ())
+
+    def test_consumo_mensile_senza_i_lotti(self):
+        mese = [
+            {"step": "monitor", "crediti": "100", "usd": "1.5"},
+            {"step": "resolver", "crediti": None, "usd": "0.5"},
+            {"step": "backfill:L5", "crediti": "4000", "usd": "30"},
+        ]
+        campi = telemetria.stato_da_misure(self._misure(mese=mese), adesso=self.ADESSO,
+                                           tetto_crediti_mese=5000, tetto_usd_mese=16.0)
+        self.assertAlmostEqual(campi["consumo_mensile_quota"], 2.0 / 16.0)
+
+    def test_senza_tetti_il_consumo_non_si_misura(self):
+        campi = telemetria.stato_da_misure(self._misure(mese=[{"step": "monitor", "usd": "9"}]),
+                                           adesso=self.ADESSO)
+        self.assertNotIn("consumo_mensile_quota", campi)
+        self.assertIn("consumo mensile", campi["non_misurati"])
+
+    def test_lock_scaduti_ignorati_quelli_validi_misurati(self):
+        campi = telemetria.stato_da_misure(self._misure(lock=[
+            {"nome": "pipeline", "proprietario": "sender",
+             "acquisito_at": "2026-09-26T04:00:00+00:00", "scade_at": "2026-09-26T08:00:00+00:00"},
+            {"nome": "monitor", "proprietario": "cli",
+             "acquisito_at": "2026-09-26T04:30:00+00:00", "scade_at": "2026-09-26T09:30:00+00:00"},
+        ]), adesso=self.ADESSO)
+        self.assertEqual(campi["lock_tenuti"], (telemetria.LockTenuto("monitor", "cli", 210.0),))
+        self.assertEqual(telemetria.salute(telemetria.Stato(**campi)).exit_code, 1)
+
+    def test_tabelle_assenti_finiscono_nei_non_misurati_senza_allarmi(self):
+        campi = telemetria.stato_da_misure(
+            {"monitor": None, "pipeline": None, "mese": None, "nuovi": None,
+             "vivi": None, "falliti": None, "lock": None}, adesso=self.ADESSO)
+        esito = telemetria.salute(telemetria.Stato(**campi))
+        self.assertEqual(esito.allarmi, ())
+        self.assertEqual(len(esito.avvisi), 1)
+        for voce in ("login Obiettivo Europa", "giri a tetto", "lock di esecuzione",
+                     "controlli falliti", "consumo mensile"):
+            self.assertIn(voce, esito.avvisi[0])
+
+    def test_uno_stato_sano_non_ha_allarmi(self):
+        # La fotografia del 26/09/2026 alle 10: monitor delle 06 OK, ultimo giro
+        # senza tetto, nessun lock.
+        campi = telemetria.stato_da_misure(self._misure(
+            monitor=[{"esito": "ok", "avviato_at": "2026-09-26T04:08:03+00:00",
+                      "concluso_at": "2026-09-26T04:09:05+00:00"}],
+            pipeline=[{"interrotto_per_tetto": False}, {"interrotto_per_tetto": False},
+                      {"interrotto_per_tetto": True, "motivo": "x"}],
+        ), adesso=self.ADESSO)
+        esito = telemetria.salute(telemetria.Stato(**campi))
+        self.assertEqual(esito.allarmi, ())
+        self.assertEqual(campi["giri_consecutivi_a_tetto"], 0)
 
 
 class TestScrittura(unittest.TestCase):

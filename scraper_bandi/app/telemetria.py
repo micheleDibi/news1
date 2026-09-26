@@ -247,6 +247,33 @@ def riepilogo(run: PipelineRun) -> str:
 
 # --- salute ----------------------------------------------------------------
 
+#: Un lock di esecuzione tenuto piu' a lungo di cosi' merita uno sguardo; oltre
+#: la seconda soglia e' quasi certamente orfano (un giro di regime dura minuti,
+#: e un `systemctl restart` durante un giro lascia il lock fino alla scadenza).
+LOCK_AVVISO_MIN = 60
+LOCK_ALLARME_MIN = 180
+#: «Nuovi» per la quota di `in_verifica`: pubblicati negli ultimi N giorni, e
+#: solo se sono almeno M (con 4 bandi su 13 la quota e' rumore, non un segnale).
+GIORNI_NUOVI = 7
+MINIMO_NUOVI = 10
+#: `controlli_falliti` da cui un bando conta come «bloccato» (piano §6.2).
+SOGLIA_CONTROLLI_FALLITI = 5
+#: Cio' che `salute` non puo' sapere dal DB: lo dice, invece di tacerlo.
+NON_MISURABILI_DAL_DB: tuple[str, ...] = (
+    "login Obiettivo Europa",
+    "crediti residui Firecrawl",
+    "schede OE con sezione «Link e Documenti»",
+)
+
+
+@dataclass(frozen=True)
+class LockTenuto:
+    """Un lock di `pipeline_lock` ancora valido e da quanto e' tenuto."""
+    nome: str
+    proprietario: str
+    minuti: float
+
+
 @dataclass(frozen=True)
 class Stato:
     """Fotografia che `salute` giudica. Chi la costruisce legge il DB; qui no."""
@@ -263,6 +290,12 @@ class Stato:
     indexnow_configurata: bool = True
     monitor_giri_validi: bool = True
     modelli_fuori_listino: tuple[str, ...] = ()
+    motivo_ultimo_tetto: str = ""
+    lock_tenuti: tuple[LockTenuto, ...] = ()
+    #: Le misure sul DB non si sono potute fare: e' un allarme, non un silenzio.
+    misure_db_errore: str | None = None
+    #: Voci che questa esecuzione non ha misurato: finiscono negli avvisi.
+    non_misurati: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -290,10 +323,22 @@ def salute(stato: Stato) -> Salute:
 
     if stato.ore_dall_ultimo_monitor_ok is not None and stato.ore_dall_ultimo_monitor_ok >= 24:
         allarmi.append(f"nessun monitor OK da {stato.ore_dall_ultimo_monitor_ok:.0f} h")
+    if stato.misure_db_errore:
+        allarmi.append(f"misure sul DB non disponibili: {stato.misure_db_errore}")
     if not stato.login_oe_ok:
         allarmi.append("login Obiettivo Europa fallito")
     if stato.giri_consecutivi_a_tetto >= 2:
-        allarmi.append(f"tetto fetch raggiunto in {stato.giri_consecutivi_a_tetto} giri consecutivi")
+        motivo = f" (l'ultimo: {stato.motivo_ultimo_tetto})" if stato.motivo_ultimo_tetto else ""
+        allarmi.append(f"tetto raggiunto in {stato.giri_consecutivi_a_tetto} giri consecutivi{motivo}")
+    for lock in stato.lock_tenuti:
+        # RIPRESA §3.2 punto 10: un lock orfano ferma tutti i giri successivi
+        # fino alla scadenza, e fino al 26/09/2026 nessun controllo lo vedeva.
+        testo = (f"lock «{lock.nome}» tenuto da «{lock.proprietario}» da "
+                 f"{lock.minuti:.0f} min")
+        if lock.minuti >= LOCK_ALLARME_MIN:
+            allarmi.append(f"{testo}: probabilmente orfano (lock_rilascia se nessun processo gira)")
+        elif lock.minuti >= LOCK_AVVISO_MIN:
+            avvisi.append(testo)
     if stato.crediti_residui_quota is not None and stato.crediti_residui_quota < 0.15:
         allarmi.append(f"crediti residui {stato.crediti_residui_quota:.0%} (< 15%)")
     if stato.consumo_mensile_quota is not None and stato.consumo_mensile_quota >= 0.80:
@@ -324,8 +369,151 @@ def salute(stato: Stato) -> Salute:
 
     for modello in stato.modelli_fuori_listino:
         avvisi.append(f"modello non a listino: {modello}")
+    if stato.non_misurati:
+        avvisi.append("non misurato da salute: " + ", ".join(stato.non_misurati))
 
     return Salute(tuple(allarmi), tuple(avvisi))
+
+
+def _istante(valore: Any) -> datetime | None:
+    """`timestamptz` di PostgREST -> datetime aware (None se illeggibile)."""
+    if isinstance(valore, datetime):
+        return valore if valore.tzinfo else valore.replace(tzinfo=timezone.utc)
+    if not valore:
+        return None
+    try:
+        letto = datetime.fromisoformat(str(valore).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return letto if letto.tzinfo else letto.replace(tzinfo=timezone.utc)
+
+
+def _numero(valore: Any) -> float:
+    try:
+        return float(valore or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _motivo_del_tetto(riga: Mapping[str, Any]) -> str:
+    """Il motivo di un giro a tetto: la colonna, o quello dello step che l'ha preso.
+
+    La riga `pipeline` di un giro fermato dal monitor ha `motivo` vuoto e il
+    motivo vero dentro `contatori.monitor.motivo`.
+    """
+    if riga.get("motivo"):
+        return str(riga["motivo"])
+    contatori = riga.get("contatori")
+    if isinstance(contatori, Mapping):
+        for valore in contatori.values():
+            if isinstance(valore, Mapping) and valore.get("motivo"):
+                return str(valore["motivo"])
+    return ""
+
+
+def stato_da_misure(
+    misure: Mapping[str, Any],
+    *,
+    adesso: datetime,
+    tetto_crediti_mese: float = 0,
+    tetto_usd_mese: float = 0.0,
+) -> dict[str, Any]:
+    """Campi di `Stato` dalle righe lette da `db.misure_salute`. Funzione pura.
+
+    Una chiave assente o `None` in `misure` vuol dire «tabella non disponibile»:
+    il campo resta `None` (nessun allarme) e la voce finisce in `non_misurati`,
+    cosi' un exit 0 non promette piu' di quello che ha controllato.
+
+    - `monitor`: righe del monitor **di regime** (`giro` valorizzato), recenti
+      prima. Un giro lanciato a mano con `--forza` non prova che lo scheduler
+      funzioni;
+    - `pipeline`: righe `step='pipeline'`, recenti prima;
+    - `nuovi`: pubblicati negli ultimi `GIORNI_NUOVI` giorni, con lo stato della fonte;
+    - `vivi`: id dei pubblicati non chiusi; `falliti`: id con `controlli_falliti`
+      oltre soglia;
+    - `mese`: `step`, `crediti`, `usd` delle righe del mese di calendario romano;
+    - `lock`: righe di `pipeline_lock`.
+    """
+    campi: dict[str, Any] = {}
+    non_misurati: list[str] = list(NON_MISURABILI_DAL_DB)
+
+    monitor = misure.get("monitor")
+    if monitor:
+        ok = next((r for r in monitor if r.get("esito") == ESITO_OK), None)
+        if ok is not None:
+            quando = _istante(ok.get("concluso_at")) or _istante(ok.get("avviato_at"))
+        else:
+            # Nessun OK fra le righe lette: il monitor e' fermo almeno da
+            # quando parte la finestra.
+            quando = min((t for t in (_istante(r.get("avviato_at")) for r in monitor) if t),
+                         default=None)
+        if quando is not None:
+            campi["ore_dall_ultimo_monitor_ok"] = round(
+                max(0.0, (adesso - quando).total_seconds() / 3600), 1)
+    else:
+        non_misurati.append("monitor di regime (nessun giro registrato)")
+
+    pipeline = misure.get("pipeline")
+    if pipeline is not None:
+        consecutivi = 0
+        for riga in pipeline:
+            if not riga.get("interrotto_per_tetto"):
+                break
+            consecutivi += 1
+        campi["giri_consecutivi_a_tetto"] = consecutivi
+        if consecutivi:
+            campi["motivo_ultimo_tetto"] = _motivo_del_tetto(pipeline[0])
+    else:
+        non_misurati.append("giri a tetto")
+
+    nuovi = misure.get("nuovi")
+    if nuovi is not None and len(nuovi) >= MINIMO_NUOVI:
+        in_verifica = sum(1 for r in nuovi if r.get("fonte_ufficiale_stato") == "in_verifica")
+        campi["quota_in_verifica_nuovi"] = in_verifica / len(nuovi)
+    else:
+        non_misurati.append(
+            f"fonti in verifica sui nuovi (meno di {MINIMO_NUOVI} pubblicati "
+            f"in {GIORNI_NUOVI} giorni)" if nuovi is not None else "fonti in verifica sui nuovi")
+
+    vivi, falliti = misure.get("vivi"), misure.get("falliti")
+    if vivi and falliti is not None:
+        insieme_vivi = set(vivi)
+        bloccati = sum(1 for bando_id in set(falliti) if bando_id in insieme_vivi)
+        campi["quota_controlli_falliti"] = bloccati / len(insieme_vivi)
+    else:
+        non_misurati.append("controlli falliti")
+
+    mese = misure.get("mese")
+    if mese is not None and (tetto_crediti_mese > 0 or tetto_usd_mese > 0):
+        # I lotti hanno tetti propri e non consumano il mensile di regime (M19).
+        regime = [r for r in mese if not str(r.get("step") or "").startswith("backfill:")]
+        quote = []
+        if tetto_crediti_mese > 0:
+            quote.append(sum(_numero(r.get("crediti")) for r in regime) / tetto_crediti_mese)
+        if tetto_usd_mese > 0:
+            quote.append(sum(_numero(r.get("usd")) for r in regime) / tetto_usd_mese)
+        campi["consumo_mensile_quota"] = max(quote)
+    else:
+        non_misurati.append("consumo mensile")
+
+    lock = misure.get("lock")
+    if lock is not None:
+        tenuti = []
+        for riga in lock:
+            scade, preso = _istante(riga.get("scade_at")), _istante(riga.get("acquisito_at"))
+            if scade is None or preso is None or scade <= adesso:
+                continue
+            tenuti.append(LockTenuto(
+                nome=str(riga.get("nome") or ""),
+                proprietario=str(riga.get("proprietario") or ""),
+                minuti=round((adesso - preso).total_seconds() / 60, 1),
+            ))
+        campi["lock_tenuti"] = tuple(tenuti)
+    else:
+        non_misurati.append("lock di esecuzione")
+
+    campi["non_misurati"] = tuple(non_misurati)
+    return campi
 
 
 def righe_allarme(salute_corrente: Salute) -> tuple[str, ...]:
@@ -397,9 +585,11 @@ def _inserisci(
 
 __all__ = [
     "ESITO_ERRORE", "ESITO_INTERROTTO", "ESITO_OK", "ESITO_SALTATO", "FonteRun",
+    "GIORNI_NUOVI", "LOCK_ALLARME_MIN", "LOCK_AVVISO_MIN", "LockTenuto",
+    "MINIMO_NUOVI", "NON_MISURABILI_DAL_DB",
     "PREFISSO_ALLARME", "PipelineRun", "RISPECCHIATI_PIPELINE_RUN", "Salute",
-    "Stato", "TABELLA_FONTE_RUN",
+    "SOGLIA_CONTROLLI_FALLITI", "Stato", "TABELLA_FONTE_RUN",
     "QUOTA_ERRORI_GUASTO", "TABELLA_RUN", "esito_da_contatori", "riepilogo",
-    "righe_allarme", "salute",
+    "righe_allarme", "salute", "stato_da_misure",
     "scrivi_fonte_run", "scrivi_pipeline_run",
 ]
