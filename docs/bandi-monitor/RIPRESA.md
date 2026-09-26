@@ -1,7 +1,9 @@
 # Bandi — punto di ripresa e verifiche
 
 Questo file serve a riprendere il lavoro sui bandi dopo una pausa di giorni o di settimane, senza
-rileggere il piano né ricostruire il contesto. È aggiornato al **25 settembre 2026, ore 12**.
+rileggere il piano né ricostruire il contesto. È aggiornato al **26 settembre 2026, ore 12**
+(controllo completo sul DB, sul sito pubblico e sui test; la versione precedente era del 25/09
+alle 12).
 
 Per la cronaca di come ci siamo arrivati: `AVANZAMENTO.md`, nella stessa cartella. Per il contratto
 verso BandoFit: `docs/contratto-db-bandi.md`. Il piano completo dell'intervento sta in
@@ -14,18 +16,24 @@ verso BandoFit: `docs/contratto-db-bandi.md`. Il piano completo dell'intervento 
 L'intervento è **in esercizio**. Il resolver e i ricontrolli scrivono in produzione; il monitor
 registra ma non applica (modalità ombra), tranne i due tipi di evento attivati a mano.
 
-| | valore al 25/09/2026 |
-|---|---|
-| bandi pubblicati | 2 147 |
-| **fonti ufficiali trovate** | **609** (erano 66 il 24/09 alle 9) |
-| fonti in verifica | 1 027 |
-| fonti non trovate | 511 |
-| pagine con fotografia di partenza (baseline) | **609 su 609** |
-| link pubblicabili | 6 174 su 10 107 |
-| **CTA verso un aggregatore** | **0 su 2 147** |
-| schede con un pulsante verso l'ente | 653 |
-| proposte del monitor registrate | 17 (6 ammesse, 5 visibili sulle schede) |
-| domini in whitelist | 109 |
+| | valore al 26/09/2026 | al 25/09 |
+|---|---|---|
+| bandi pubblicati | 2 162 | 2 147 |
+| **fonti ufficiali trovate** (pubblicati) | **614** — 693 contando 79 bandi `processed` mai pubblicati | 609 |
+| fonti in verifica (pubblicati) | 1 031 | 1 027 |
+| fonti non trovate (pubblicati) | 517 | 511 |
+| fonti trovate con link non leggibile | 0 su 693 | — |
+| **CTA verso un aggregatore** | **0** (query 1 a DB e 30 schede lette) | 0 su 2 147 |
+| proposte del monitor registrate dal 24/09 | 24 (6 ammesse, 5 visibili sulle schede) | 17 |
+| domini in whitelist | 109 (non rimisurato) | 109 |
+
+Il numero «653 schede con un pulsante verso l'ente» del 25/09 non si confronta più: dal
+ridisegno (vedi sotto) i bandi chiusi non mostrano nessun pulsante.
+
+**Frontend.** Dal 25/09 sera in produzione c'è il ridisegno di lista, pagine filtro, hub e
+scheda (commit `4c48e1a..5203602`); la lettura passa dalla vista `bando_pubblico` (F2 acceso,
+API v1.1). Per i bandi chiusi, sospesi e revocati la scheda non mostra la CTA ma un messaggio.
+Le verifiche visive le ha fatte il committente.
 
 ### Migrazioni applicate
 
@@ -46,6 +54,17 @@ RESOLVER_MODALITA=attivo      ← messo il 25/09: prima valeva `ombra` per difet
 `MONITOR_MODALITA` **non è impostata**, quindi vale `ombra`: il monitor registra le proposte e non
 tocca stato né date. È voluto. `MONITOR_GIRI` e `MONITOR_SCENARIO` non sono impostate e i default
 (`06:00,18:00`, `bilanciato`) sono quelli giusti.
+
+**L'attivazione di `faq` e `nuovo_allegato` del 25/09 è valsa una volta sola.** Un'attivazione per
+tipo non esiste nel codice: in ombra ogni evento nuovo nasce `leggibile=false`, qualunque sia il
+tipo, e la pipeline non rilancia `applica-eventi`. Il 26/09 nessun evento ammesso di quei due tipi
+era rimasto nascosto (l'unico nuovo, del 26/09, non ha passato i gate), ma il prossimo ammesso
+resterà invisibile finché qualcuno non rilancia `applica-eventi --tipo faq,nuovo_allegato
+--attivo`. Vedi §4.1 a.
+
+**`RESOLVER_MODALITA=attivo` vale anche per i comandi lanciati a mano.** Senza `--dry-run` o
+`--ombra` scritti per esteso, `risolvi-fonte`, `oe-dettaglio`, `link-verifica`, `fondi-doppioni` e
+`domini --import` scrivono sul DB (vedi §6).
 
 ---
 
@@ -80,33 +99,66 @@ cd ~/projects/news1/scraper_bandi
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app salute --json
 ```
 
-Exit code 0 = tutto bene. Exit 1 con `[ALLARME]` se: nessun monitor riuscito da 24 ore, login
-Obiettivo Europa fallito, tetto raggiunto in due giri consecutivi, crediti Firecrawl sotto il 15%,
-consumo mensile oltre l'80%, più del 30% di `in_verifica` sui nuovi, schede OE con sezione sotto
-l'80%, `controlli_falliti ≥ 5` su più del 2% dei bandi vivi.
+**Fino al 26/09 `salute` guardava solo tre valori di configurazione** (`MONITOR_MODALITA`, chiave
+IndexNow, `MONITOR_GIRI`): gli allarmi elencati qui sotto non potevano scattare e un exit 0 non
+provava niente. Dal commit `53c1897` legge il DB (solo letture) e si può lanciare anche dal Mac.
+Exit 1 con `[ALLARME]` se:
+
+- nessun monitor **di regime** riuscito da 24 ore;
+- tetto raggiunto in due giri consecutivi (col motivo);
+- consumo del mese, senza i lotti, oltre l'80% del tetto;
+- più del 30% di `in_verifica` sui pubblicati degli ultimi 7 giorni (solo se sono almeno 10);
+- `controlli_falliti ≥ 5` su più del 2% dei bandi vivi;
+- un lock valido tenuto da oltre 180 minuti (sopra i 60 è un avviso);
+- il DB non risponde.
+
+Login OE, residuo Firecrawl e schede OE **non si misurano dal DB**: `salute` lo dice negli avvisi
+(«non misurato da salute: …»), e si controllano come sotto.
+
+**Esito atteso oggi: exit 1**, con un solo allarme: «fonti in verifica sui nuovi 34% (> 30%)» (22
+su 64 al 26/09). È un allarme vero secondo la soglia del piano, e resterà finché non si decide il
+§4.1 c (il terzo segnale del resolver).
 
 ```bash
 systemctl is-active edunews-bandi-sender
-journalctl -u edunews-bandi-sender --since today | grep -E "STEP (resolver|ricontrolli|monitor)"
+journalctl -u edunews-bandi-sender --since today \
+  | grep -E "STEP (resolver|ricontrolli|monitor)|FAILED|NON PARTITO|\[ALLARME\]"
 ```
 
 **Cosa deve comparire**: `attivo: True` sul resolver; una riga `STEP ricontrolli`; il monitor solo
-alle 06:00 e 18:00 (negli altri giri `SALTATO (giro non previsto)`, che è corretto).
+alle 06:00 e 18:00 (negli altri giri `SALTATO (giro non previsto)`, che è corretto); nessun
+`FAILED`, `NON PARTITO` o `[ALLARME]` scritto dagli step. Il login OE si vede qui: nessuna riga
+`obiettivo_europa/auth`, `sessione non autenticata` o `SessioneOEError`.
+
+Le stesse cose si leggono anche da `pipeline_run` (§3.7), da qualunque macchina abbia la service
+key: un giro per ogni orario, `esito`, `interrotto_per_tetto`, `contatori`.
+
+**Ricontrolli.** A ogni giro «esaminati 0, saltate ~1 550» è corretto finché nessuna data è dovuta.
+L'ondata arriva l'**08/10/2026**: 1 252 righe di `bando_controllo` con il prossimo controllo quel
+giorno (pubblicati e no; per i pubblicati `in_verifica` è il primo dei tre tentativi a 14 giorni),
+al ritmo di 60 per giro solo alle 06 e alle 18 (120 al giorno): una decina di giorni. In quei giorni guardare
+`interrotto_per_tetto` sulle righe `resolver` e il consumo (§3.7).
 
 ### 3.2 Verifica dell'integrità del contratto (dopo ogni intervento sui bandi)
 
 Sono le promesse fatte a chi legge il database, e vanno controllate **sui dati**, non sui contatori.
 
+Tutte tranne la 9 si possono fare anche dal Mac via PostgREST con la service key (solo GET), come
+il 26/09; la 9 legge `pg_proc` e vuole il SQL Editor.
+
 ```sql
 -- nel SQL Editor di Supabase. Tutte in sola lettura.
 
 -- 1. Nessuna fonte ufficiale su un aggregatore. Atteso: 0
+--    La funzione del DB copre tutti gli aggregatori della whitelist, i social e
+--    quelli aggiunti dopo, senza il falso positivo di '%bandi.it%' (che prende
+--    anche infobandi.it). Il 26/09 la versione con i pattern dava 0.
 select count(*) from bando
- where fonte_ufficiale_host ilike any (array['%obiettivoeuropa%','%fasi.eu%','%europafacile%',
-       '%contributiregione%','%finanziamentinews%','%bandi.it%','%infobandi%','%ticonsiglio%']);
+ where fonte_ufficiale_host is not null and public.bando_host_aggregatore(fonte_ufficiale_host);
 
 -- 2. Nessun evento con la prova su un aggregatore. Atteso: 0
-select count(*) from bando_evento where url_prova ilike '%obiettivoeuropa%';
+select count(*) from bando_evento
+ where dominio_prova is not null and public.bando_host_aggregatore(dominio_prova);
 
 -- 3. Ogni fonte trovata ha un link leggibile. Atteso: 0 righe
 select b.id, b.slug from bando b
@@ -120,8 +172,13 @@ select count(*) from bando_evento
    and tipo in ('proroga','rettifica','apertura','chiusura','sospensione','revoca',
                 'riapertura','faq','graduatoria','esito','nuovo_allegato');
 
--- 5. Nessun evento leggibile senza cursore. Atteso: 0
-select count(*) from bando_evento where leggibile and cursore is null;
+-- 5. Nessun evento leggibile senza cursore su un bando pubblicato. Atteso: 0
+--    Sui bandi non pubblicati il cursore manca per costruzione: l'evento resta
+--    «in attesa» e lo promuove la pubblicazione (trigger a_evento_cursore, 02).
+--    Senza il join la query dava 79 il 26/09: tutti `fonte_ufficiale_verificata`
+--    del 24/09 su bandi `processed`, non un difetto.
+select count(*) from bando_evento e join bando b on b.id = e.bando_id
+ where e.leggibile and e.cursore is null and b.pubblicato;
 
 -- 6. Un pubblicato non è mai uscito da `completed`. Atteso: 0
 select count(*) from bando where pubblicato and (stato_processing <> 'completed' or slug is null);
@@ -136,20 +193,44 @@ select count(*) from bando
  where stato_bando is not null
    and stato_bando not in ('aperto','chiuso','in apertura prossimamente');
 
--- 9. Le RPC non sono eseguibili da anon. Atteso: false su tutte
-select p.proname, has_function_privilege('anon', p.oid, 'EXECUTE') as anon_puo
+-- 9. Anon esegue solo le tre funzioni della vista (più quelle di pg_trgm).
+--    Atteso: esattamente 3 righe, bando_stato_effettivo, dominio_di,
+--    bando_host_aggregatore (Verifica 6 della migrazione 05). Nessuna RPC di
+--    scrittura (bando_fondi, bando_separa, bando_registra_evento,
+--    bando_applica_evento, lock_*) deve comparire.
+select p.oid::regprocedure as funzione
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
- where n.nspname='public' and p.proname in
-       ('bando_fondi','bando_separa','bando_registra_evento','bando_applica_evento',
-        'lock_acquisisci','lock_rilascia');
+ where n.nspname='public'
+   and has_function_privilege('anon', p.oid, 'EXECUTE')
+   and p.proname not like '%trgm%' and p.proname not like 'gtrgm%'
+   and p.proname not like 'similarity%' and p.proname not like 'word_similarity%'
+   and p.proname not like 'strict_word_similarity%' and p.proname not like 'set_limit%'
+   and p.proname not like 'show_limit%' and p.proname not like 'show_trgm%'
+ order by 1;
 
 -- 10. Nessun lock orfano: un proprietario che non esiste più tiene fermo tutto.
+--     Dal 26/09 lo segnala anche `salute` (avviso oltre 60', allarme oltre 180').
 select nome, proprietario, acquisito_at, scade_at, scade_at > now() as ancora_valido
   from pipeline_lock;
+
+-- 11. Il cron orario chiude i bandi scaduti. Atteso: 0 (fuori dalla prima ora
+--     dopo la mezzanotte di Roma; sospesi e revocati esclusi dopo la 06).
+select count(*) from bando
+ where pubblicato and stato_bando <> 'chiuso'
+   and data_scadenza < (now() at time zone 'Europe/Rome')::date;
+
+-- 12. «In apertura» con la data di apertura già passata. Non è un difetto del
+--     cron (apre solo con data_apertura_verificata): sono date non verificate
+--     che solo un evento `apertura` del monitor può correggere. 19 il 26/09.
+select count(*) from bando
+ where pubblicato and stato_bando = 'in apertura prossimamente'
+   and data_apertura <= (now() at time zone 'Europe/Rome')::date;
 ```
 
-**Se la 10 mostra un lock valido da ore e nessun processo sta girando** (`ps aux | grep "m app"`),
-è orfano — succede a ogni `systemctl restart` durante un giro. Si rilascia così:
+**Se la 10 mostra un lock valido da ore e nessun processo sta girando**
+(`ps aux | grep -E "bandi_sender|-m app" | grep -v grep`: il giro del sender sta dentro il
+processo di `bandi_sender.py`, che il vecchio `grep "m app"` non vedeva), è orfano: succede a ogni
+`systemctl restart` durante un giro. Si rilascia così:
 
 ```sql
 select public.lock_rilascia('<nome>', '<proprietario>');
@@ -159,36 +240,46 @@ select public.lock_rilascia('<nome>', '<proprietario>');
 
 I contatori dicono cosa il codice ha tentato. Solo la pagina dice cosa il lettore vede.
 
+I comandi funzionano con il `grep` di macOS (BSD) e con quello del server (GNU): niente `grep -P`,
+che su macOS esce con errore e fa sembrare pulito un ciclo che non ha letto niente; niente
+`grep -c`, che conta le righe e non le occorrenze. Provati il 26/09 con `/usr/bin/grep`.
+
 ```bash
-# nessun link all'aggregatore su un campione di schede
-for s in $(curl -s https://edunews24.it/sitemap-bandi/1.xml | grep -oP '(?<=<loc>)[^<]+' | head -30); do
-  curl -s --max-time 20 "$s" | grep -ci "obiettivoeuropa" | sed "s|^|$s: |"
+# nessun link agli aggregatori su un campione di schede
+curl -s https://edunews24.it/sitemap-bandi/1.xml | grep -oE '<loc>[^<]+</loc>' \
+  | sed -E 's#</?loc>##g' | head -30 | while read -r s; do
+  n=$(curl -s --max-time 20 "$s" | grep -oiE 'obiettivoeuropa|fasi\.eu|europafacile|contributiregione|finanziamentinews|infobandi|ticonsiglio|//(www\.)?bandi\.it' | wc -l | tr -d ' ')
+  echo "$s: $n"
 done
-# atteso: 0 su tutte
+# atteso: 0 su tutte. Il campione sono le prime 30 URL del primo blocco, non un campione casuale.
 ```
 
 ```bash
-# una scheda con fonte ufficiale deve avere il pulsante e la riga della fonte
-curl -s https://edunews24.it/bandi/<uno-slug-con-fonte-trovata> \
-  | grep -oE "Apri la pagina ufficiale del bando|Consulta il bando sul portale pubblico|Fonte ufficiale[^<]{0,80}"
+# una scheda APERTA con fonte ufficiale deve avere il pulsante e la riga della fonte
+# (dal ridisegno i chiusi, i sospesi e i revocati non hanno pulsante)
+curl -s https://edunews24.it/bandi/<uno-slug-aperto-con-fonte-trovata> \
+  | grep -oE 'Vai al modulo di candidatura|Apri la pagina ufficiale del bando|Consulta il bando sul portale pubblico|Fonte ufficiale[^<]{0,80}'
 ```
 
 ```bash
 # una scheda con un evento visibile deve mostrare il box
 curl -s https://edunews24.it/bandi/abruzzo-competenze-linguistiche-certificazione-fondo-perduto \
-  | grep -ci "aggiornamenti"
-# atteso: ≥ 2
+  | grep -o 'id="scheda_aggiornamenti"' | wc -l
+# atteso: 1
 ```
 
 ### 3.4 Verifica dopo ogni modifica al codice
 
 ```bash
 cd ~/projects/news1
-npm run test:py:bandi     # atteso: 1461 test, OK
-npm test                  # atteso: 404 test, 0 falliti
+npm run test:py:bandi     # atteso: 1480 test, OK (erano 1461 prima del 26/09)
+npm test                  # atteso: 433 test, 0 falliti, 0 skipped (erano 404 prima del ridisegno)
 npm run test:py           # atteso: 26 test, OK
 npx tsc --noEmit -p tsconfig.json   # atteso: 51 errori, tutti preesistenti, 0 nei file dei bandi
 ```
+
+`tsc` non legge i file `.astro` e `astro check` non è installato: per le pagine l'unico controllo
+automatico è la build.
 
 **Non committare con test rossi.** È successo due volte il 25/09 e ha fatto perdere tempo.
 
@@ -205,6 +296,18 @@ silenzio — filtra via le colonne nuove senza un errore e senza una riga di log
 Poi, dall'esterno, verificare che il codice veda le colonne nuove: un giro di `--dry-run` del
 comando interessato deve mostrare contatori diversi da zero.
 
+**Lo stesso riavvio serve dopo ogni pull che tocca `scraper_bandi/app/` o `backend/app/`**: il
+sender importa `scraper_bandi` nel proprio processo e legge `.env` una volta sola (`get_settings`
+in cache). I comandi a mano (`salute`, `report-ombra`, `applica-eventi`) partono ogni volta da
+zero e non ne hanno bisogno. Dopo un pull che tocca `src/` serve invece la build del frontend
+(`npm run build`) e il riavvio della sua unit.
+
+**Non riavviare il sender nei minuti prima delle 00, 06, 12 o 18.** All'avvio esegue un giro
+«boot» e registra gli orari solo alla fine: se il boot finisce dopo l'orario, quel giro salta al
+giorno dopo, monitor e ricontrolli compresi (la libreria `schedule` rimanda un'ora già passata).
+Verifica: `journalctl -u edunews-bandi-sender --since "<ora del riavvio>" | grep -E "Pipeline
+iniziale completata|Pipeline schedulata"`, con la prima riga prima del giro successivo.
+
 ### 3.6 Verifica prima di attivare un tipo di evento
 
 ```bash
@@ -214,6 +317,12 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app report-ombra \
 
 Il CSV elenca ogni proposta con i gate superati e falliti. **Leggere le citazioni a mano**: sono
 frasi che devono esistere nella pagina dell'ente (il gate G1 lo garantisce, ma il senso no).
+`report-ombra` è in sola lettura e si può lanciare dal Mac (`> file.csv`: il CSV va su stdout).
+
+**Al 26/09** (`--dal 2026-09-24`): 24 proposte, 6 ammesse e 18 respinte, per una «precisione»
+di 0,25 secondo la formula di §4.1 b. Per tipo: `apertura` 11 (1 ammessa), `nuovo_allegato` 7
+(4), `graduatoria` 2, `faq` 1 (1), `proroga` 1, `chiusura` 1, `rettifica` 1. Le 6 ammesse stanno su
+tre bandi (53179, 17598, 255052).
 
 Poi, per ogni tipo, prima in prova e poi davvero:
 
@@ -246,35 +355,104 @@ select date_trunc('day', avviato_at) as giorno, step,
 sono vicine al numero dei `controllati`, il diff non sta funzionando e ogni pagina passa dal
 modello: è normale solo durante una semina.
 
+**Fino al 26/09 i lotti consumavano i tetti giornalieri del regime** (`db.consumo_oggi` sommava
+anche le righe `backfill:*`): il 25/09 i lotti L6 della mattina hanno fermato il monitor delle
+18:00 a «201/30 classificazioni». Corretto nel commit `d31db9f`, che richiede il riavvio del
+sender (§3.5).
+
+Tre limiti della misura:
+
+- `pipeline_run` **non registra** i costi di preprocess, enrich e SEO (le righe `pipeline` hanno
+  `usd: 0`): il dato completo sta nelle console di Firecrawl e Anthropic;
+- la chiave Firecrawl è condivisa con news e interpelli;
+- il **tetto mensile** oggi non lo applica nessuno, perché `bilancio.verifica()` non riceve mai
+  `crediti_mese`/`usd_mese`. Lo misura soltanto `salute` (§3.1).
+
+Al 26/09 il mese vale 0,88 $ su 16 $ di tetto di regime.
+
 ---
 
 ## 4. Cosa resta da fare
 
 ### 4.1 Decisioni aperte (non sono lavoro arretrato: sono scelte)
 
-**a) Gli altri cinque tipi di evento.** `apertura`, `proroga`, `chiusura`, `sospensione`, `revoca`
-sono in ombra. Cambiano quello che il lettore vede come stato del bando. Il monitor li registra a
-ogni giro: quando ce ne saranno un centinaio, guardarli e decidere. Attivarli è
-`applica-eventi --tipo <tipo> --attivo`, uno per volta.
+**a) I tipi di evento.**
+
+- `apertura`, `proroga`, `chiusura`, `sospensione` e `revoca` sono in ombra. Cambiano quello che il
+  lettore vede come stato del bando. Il monitor li registra a ogni giro: quando saranno un
+  centinaio, si guardano e si decide (al 26/09 sono 13, vedi §3.6). Attivarli è
+  `applica-eventi --tipo <tipo> --attivo`, uno per volta.
+- **`apertura` ha già un costo visibile**: 19 bandi pubblicati risultano «in apertura» con la data
+  di apertura passata (query 12 di §3.2; il più vecchio è del 31/05). Le date non sono verificate,
+  quindi il cron non li apre, e solo un evento `apertura` può correggerli.
+- **Da decidere anche per `faq` e `nuovo_allegato`**, già «attivati»: l'attivazione vale una volta
+  sola (§1). Le strade sono tre:
+  1. rilanciare `applica-eventi --dal <data> --tipo faq,nuovo_allegato --attivo` dopo i giri
+     delle 06 e delle 18;
+  2. aggiungere al codice un'attivazione per tipo (serve una deroga su `scraper_bandi/`);
+  3. `MONITOR_MODALITA=attivo`, che però attiva tutti i tipi e cambia il default dei lotti
+     (vedi §5.12).
+- `graduatoria` ed `esito` vanno solo nel box «Aggiornamenti» e AVANZAMENTO ne raccomandava
+  l'attivazione insieme a `faq` e `nuovo_allegato`: non risultano attivati.
 
 **b) La soglia di uscita dall'ombra misura la cosa sbagliata.** `report-ombra` calcola
 `precisione = ammessi / totale` e pretende 0,95. Ma quel numero dice *quante proposte grezze del
 modello passano i gate*, e i gate devono respingerne la maggior parte: con questa formula la soglia
-non è raggiungibile nemmeno da un monitor perfetto (misurato: 0,35 su 17 eventi, con i 6 ammessi
-tutti corretti). La precisione che decide è *degli eventi ammessi, quanti sono giusti*, e si valuta
-a mano. **La formula non è stata cambiata**: abbassare una soglia di sicurezza perché non passa è
-il modo sbagliato di superare un esame.
+non è raggiungibile nemmeno da un monitor perfetto (misurato: 0,35 su 17 eventi il 25/09, 0,25 su
+24 il 26/09, con i 6 ammessi tutti corretti). La precisione che decide è *degli eventi ammessi,
+quanti sono giusti*, e si valuta a mano. **La formula non è stata cambiata**: abbassare una soglia
+di sicurezza perché non passa è il modo sbagliato di superare un esame.
 
-**c) Il terzo segnale del resolver è il limite dei 1 027 `in_verifica`.** Delle quattro strade
+**c) Il terzo segnale del resolver è il limite dei 1 031 `in_verifica`.** Delle quattro strade
 previste per il segnale «contenuto», due non hanno mai prodotto niente (`numero d'atto` e
 `identificatore`: zero su tutte le righe con una fonte), quindi poggia solo su scadenza e importo.
 E **116 bandi non hanno a database né l'una né l'altro**: per loro è irraggiungibile qualunque
 pagina si scarichi. Sbloccarli richiede di decidere se due prove di contenuto indipendenti
-(scadenza esatta *e* importo coerente) valgano quanto la terna dominio+titolo+contenuto.
+(scadenza esatta *e* importo coerente) valgano quanto la terna dominio+titolo+contenuto. È anche
+l'unico allarme di `salute` al 26/09 (34% di `in_verifica` sui nuovi).
 
 **d) IndicePA non è importato.** `domini --import` ha caricato i 109 host delle fonti; il foglio
 `enti.xlsx` di IndicePA aggiungerebbe ~23 000 enti (comuni, scuole, università) e si passa con
-`--enti PATH`. Utile soprattutto per i bandi di comuni e GAL.
+`--enti PATH`. Utile soprattutto per i bandi di comuni e GAL. Dopo l'import va rifatta la Verifica
+7 della 05 (prestazioni della vista come anon).
+
+**e) Lotto L8 (chiusi mai pubblicati): con il criterio del piano oggi non c'è niente da
+lavorare.** I 561 `processed` sono tutti chiusi. Il piano ammette solo i chiusi da ≤ 90 giorni
+**con fonte trovata**, e al 26/09 sono zero: i 79 con fonte trovata sono chiusi da più di 90
+giorni, i 46 dentro la finestra sono tutti `in_verifica` ed escono dalla finestra giorno per
+giorno. Le strade sono due:
+
+- archiviarli tutti (`archivia-processed`, stato terminale: fatelo dopo un backup, vedi f);
+- far passare il resolver sui 46 prima che escano dalla finestra (lavoro tecnico su
+  `scraper_bandi/`).
+
+**f) Operazioni irreversibili in coda, senza un backup documentato.** Non si annullano con una riga
+di SQL:
+
+- la 06 (una volta che ci sono eventi applicati);
+- `applica-eventi --attivo` (le righe di `bando_evento` non si cancellano);
+- `archivia-processed --attivo`;
+- le fusioni di `fondi-doppioni` (si annullano con `bando_separa`, ma gli eventi restano).
+
+Prima di queste, controllare nel pannello Supabase del progetto bandi (Database → Backups) che ci
+sia un backup recente o il PITR.
+
+**g) Doppioni visibili ai lettori.** Il lotto L4 (`fondi-doppioni`) non è mai stato eseguito. Al
+26/09 si vedono, fra gli altri:
+
+- tre schede `scelta-sociale-buono-domiciliarita-piemonte-2026-2027` (una con il suffisso `-2`,
+  una scritta «domiciliarieta»);
+- due IFTS Piemonte 2026-2029;
+- due audiovisivi FESR Liguria.
+
+Il dry-run elenca le coppie; le fusioni solo con il criterio esatto e dopo l'ok.
+
+**h) IndexNow è rotto in produzione per tutto il sito.** `https://edunews24.it/api/indexnow-key`
+risponde 404 «IndexNow key not configured», quindi anche il file chiave `/<chiave>.txt` dà 404 e
+IndexNow non può verificare le notifiche di interpelli e selezione. La chiave si legge con
+`import.meta.env`: va messa nel `.env` della root **prima** di `npm run build` sul server, poi si
+ricostruisce. Inoltre i bandi nuovi non vengono mai notificati: lo step SEO non chiama IndexNow,
+e oggi l'unico produttore di `slug_modificati` è il monitor in modalità attiva.
 
 ### 4.2 Lavoro tecnico proposto e non fatto
 
@@ -282,13 +460,48 @@ pagina si scarichi. Sbloccarli richiede di decidere se due prove di contenuto in
   payload di `bando_evento` con i tipi reali della tabella: è la guardia che avrebbe evitato due
   giorni di ombra a vuoto. Le stesse insidie possono stare in `bando_link`, `bando_controllo` e
   `bando`. Mezz'ora di lavoro.
-- **`salute` non rileva un lock orfano.** Dopo un `systemctl restart` durante un giro, il lock resta
-  fino alla scadenza (quattro ore per la pipeline) e blocca tutti i giri successivi. `salute`
-  dovrebbe dirlo, e il sender dovrebbe rilasciare all'avvio i lock di cui era proprietario.
+- **Il sender non rilascia all'avvio i lock di cui era proprietario.** Dal 26/09 `salute` vede
+  un lock tenuto a lungo; il rilascio automatico dopo un `systemctl restart` resta da fare.
+- **Il tetto mensile non è applicato** (§3.7): `bilancio.verifica()` non riceve mai i consumi
+  del mese.
 - **Nessun tetto di tempo per singolo bando nel resolver.** Su host morti un solo bando ha
   impiegato fino a 247 secondi.
+- **Il logger del sender rimette `diagnose=True`.** `backend/app/logger.py` sostituisce i sink di
+  `scraper_bandi` e i traceback possono contenere i valori delle variabili locali (per esempio la
+  password OE a `obiettivo_europa.py:211`): il filtro `redigi` agisce solo sul messaggio. È
+  dedotto dal codice, non osservato. Sul server:
+  `grep -c Traceback ~/projects/news1/logs/backend-*.log | grep -v ':0$'`.
+- **La lista in errore risponde 200 indicizzabile** a pagina 1 («Elenco momentaneamente non
+  disponibile»), mentre la scheda risponde 503. Proposta: 503 con `Retry-After` anche qui.
+- **Il pulsante «Vai al modulo di candidatura» compare anche sui bandi in apertura.** Può essere
+  voluto, perché il modulo può esistere prima dell'apertura: da confermare.
 - **`bandiavvisi.regione.lazio.it`** presenta un certificato con la catena incompleta e fallisce
   sempre lo scarico. È un problema dell'ente, non nostro: annotato.
+
+### 4.3 Calendario
+
+| quando | cosa |
+|---|---|
+| ogni giorno | §3.1 (journal o `salute`) |
+| **02/10** | settimo giorno d'ombra: `report-ombra --dal 2026-09-24`, lettura a mano delle citazioni degli ammessi |
+| **prima del 05/10** | leggere il residuo di Firecrawl: il 05/10 si rinnova il periodo del piano (200 000 crediti al mese; il 22/09 ne restavano 180 286), ed è l'unico dato che conta anche preprocess, enrich e SEO |
+| **08/10** | ondata dei ricontrolli (§3.1): una decina di giorni con 120 righe al giorno |
+| **09/10** | quattordicesimo giorno d'ombra: nuovo `report-ombra`, poi le decisioni di §4.1 a e b |
+| **verso il 24/10** | `domini --import` mensile (§6) |
+
+**BandoFit.** La migrazione 06 aspetta il rilascio R0-a di BandoFit. Al 26/09 il lavoro R0-a
+esiste solo come modifiche non committate nel repo di BandoFit (12 file), e in HEAD il filtro
+accetta ancora solo tre stati. Poi, in ordine:
+
+1. la conferma scritta che R0-a è in produzione;
+2. la 06;
+3. `applica-eventi --tipo sospensione,revoca`;
+4. la fase (c);
+5. la 07.
+
+Le otto richieste di BandoFit (§12 del contratto) rispondono tutte, con la chiave anonima, in meno
+di mezzo secondo al 26/09. Il conteggio della vista come anon (2 162) è uguale a quello del
+predicato storico.
 
 ---
 
@@ -325,6 +538,26 @@ pagina si scarichi. Sbloccarli richiede di decidere se due prove di contenuto in
 8. **Applicare un evento non lo rende visibile.** `bando_applica_evento` marca `applicato` e non
    tocca `leggibile`; il trigger del cursore scatta su `UPDATE OF leggibile`. Servono due scritture.
 
+9. **Un controllo che non legge niente dice sempre «tutto bene».** Fino al 26/09 `salute` giudicava
+   tre valori di configurazione: exit 0 a ogni esecuzione, anche con il monitor fermato dal tetto
+   due giri di fila il 25/09. Prima di fidarsi di un controllo, guardare **che cosa legge**.
+
+10. **Due contatori «separati» possono sommarsi in un terzo punto.** I lotti avevano tetti propri in
+    `bilancio.verifica()`, ma `db.consumo_oggi()` li sommava al consumo del regime: un lotto la
+    mattina fermava il monitor la sera. Quando una regola dice «X non conta per Y», cercare
+    **tutte** le somme di Y.
+
+11. **I comandi di verifica devono girare anche sul Mac.** `grep -P` non esiste nel grep di macOS:
+    il ciclo di §3.3 non stampava niente e sembrava pulito. `grep -c` conta le righe, non le
+    occorrenze, e sul box «Aggiornamenti» dava un falso allarme. I comandi di §3.3 ora usano solo
+    `grep -oE` e `wc -l`.
+
+12. **Senza flag decide l'ambiente, e in produzione il resolver è attivo.** «Senza `--attivo` non
+    tocca niente» era falso: con `RESOLVER_MODALITA=attivo`, `risolvi-fonte`, `oe-dettaglio`,
+    `link-verifica`, `fondi-doppioni` e `domini --import` scrivono. Lo stesso varrà per
+    `archivia-processed`, `pulisci-contenuto`, `rigenera` e `applica-eventi` il giorno in cui
+    `MONITOR_MODALITA=attivo`. **Scrivere sempre `--dry-run` o `--ombra` per esteso.**
+
 ---
 
 ## 6. Comandi utili, in ordine di frequenza
@@ -358,8 +591,14 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app applica-eventi --dal <data> --
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app domini --import --attivo [--enti enti.xlsx]
 ```
 
-Ogni comando che scrive accetta `--dry-run` e `--limit`, e senza `--attivo` non tocca nessuna
-colonna pubblica. I comandi lunghi si lanciano con `nohup … &` e un file di log.
+Ogni comando che scrive accetta `--dry-run` e `--limit`. **Senza `--attivo` e senza `--ombra`
+decide `RESOLVER_MODALITA` (o `MONITOR_MODALITA` per monitor, eventi e lotti)**, e in produzione il
+resolver è attivo: per provare, scrivere sempre `--dry-run` o `--ombra` (§5.12). Anche in
+`--dry-run`, `risolvi-fonte`, `monitor`, `applica-eventi` e i lotti prendono un lock e scrivono una
+riga in `pipeline_run`. `monitor` spende anche in `--dry-run` (scarichi e classificazioni), quindi
+non si lancia dal Mac. `salute`, `report-ombra` e `link-verifica --dry-run` sono in sola lettura.
+I comandi lunghi si lanciano con `nohup … &` e un file di log. Il percorso `~/projects/news1` è
+quello del server; sul Mac il repo sta in `~/Developer/news1`.
 
 ---
 

@@ -386,7 +386,7 @@ Aggiornare anche le liste di `openapi.test.ts` e `documentazione.test.ts`.
 ## 6. Test e tipi
 
 ```bash
-npm test     # 404 test al 25/09/2026 (279 in tests/api-v1/); controllare anche "# skipped 0"
+npm test     # 433 test al 26/09/2026 (279 in tests/api-v1/); controllare anche "# skipped 0"
 TZ=Asia/Kathmandu node --experimental-strip-types --disable-warning=ExperimentalWarning \
   --import ./tests/supporto/registra-risolutore.mjs --test tests/api-v1/<file>.test.ts
 npx --no-install tsc --noEmit -p tsconfig.json   # 51 errori preesistenti al 25/09/2026, nessuno in api-v1
