@@ -114,7 +114,8 @@ Exit 1 con `[ALLARME]` se:
 - più del 30% di `in_verifica` sui pubblicati degli ultimi 7 giorni (solo se sono almeno 10);
 - `controlli_falliti ≥ 5` su più del 2% dei bandi vivi;
 - un lock valido tenuto da oltre due terzi del suo TTL (monitor 120', resolver 80', pipeline
-  160'); oltre un terzo del TTL, e comunque oltre i 60', è un avviso;
+  160'); oltre un terzo del TTL, con un massimo di 60' (monitor e pipeline 60', resolver 40'), è
+  un avviso;
 - il DB non risponde.
 
 Login OE, residuo Firecrawl e schede OE **non si misurano dal DB**: `salute` lo dice negli avvisi
@@ -132,8 +133,9 @@ journalctl -u edunews-bandi-sender --since today \
 
 **Cosa deve comparire**: `attivo: True` sul resolver; una riga `STEP ricontrolli`; il monitor solo
 alle 06:00 e 18:00 (negli altri giri `SALTATO (giro non previsto)`, che è corretto); nessun
-`FAILED`, `NON PARTITO` o `[ALLARME]` scritto dagli step. Il login OE si vede qui: nessuna riga
-`obiettivo_europa/auth`, `sessione non autenticata` o `SessioneOEError`.
+`FAILED`, `NON PARTITO` o `[ALLARME]` scritto dagli step. Il login OE si controlla a parte:
+`journalctl -u edunews-bandi-sender --since today | grep -E "sessione non autenticata|SessioneOEError"`
+deve essere vuoto.
 
 Le stesse cose si leggono anche da `pipeline_run` (§3.7), da qualunque macchina abbia la service
 key: un giro per ogni orario, `esito`, `interrotto_per_tetto`, `contatori`.
