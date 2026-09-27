@@ -2032,6 +2032,13 @@ def fondi_bandi(
 
 RPC_APPLICA_EVENTO = "bando_applica_evento"
 
+#: Il marcatore della migrazione 11 e le sue due chiavi. `applica-eventi` lo
+#: legge prima di mandare alla RPC un evento con `stato_proposto`, che la
+#: versione della 04 brucerebbe (lo marca applicato senza toccare lo stato).
+RPC_CAPACITA_EVENTI = "bando_capacita_eventi"
+CAPACITA_TRADUZIONE = "traduce_stato_proposto"
+CAPACITA_STATI_CINQUE = "stati_cinque"
+
 #: Ramo terminale dei `processed` chiusi che nessuno lavorera' piu' (L8).
 #: Lo ammette il CHECK riscritto dalla migrazione 01: prima di quella un
 #: UPDATE con questo valore risponde 23514 e va evitato, non tentato.
@@ -2569,6 +2576,40 @@ def applica_evento(
     """
     return applica_evento_esito(
         evento_id, client=client, strumento=strumento) == ESITO_APPLICATO
+
+
+def capacita_eventi(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, bool]:
+    """Che cosa sa fare il DB con gli eventi, dal marcatore della migrazione 11.
+
+    `CAPACITA_TRADUZIONE`: il corpo vivo di `bando_applica_evento` traduce
+    `stato_proposto` in `stato_bando`. `CAPACITA_STATI_CINQUE`: il CHECK di
+    `stato_bando` ammette `sospeso` e `revocato` (migrazione 06). Né il corpo
+    di una funzione né un CHECK sono visibili via PostgREST: per questo passano
+    da una RPC in sola lettura.
+
+    Nel dubbio tutto falso: RPC assente (11 non applicata), chiamata fallita,
+    risposta che non sia un oggetto con `true` letterali. Un falso qui fa solo
+    aspettare un evento; un vero sbagliato lo brucerebbe per sempre.
+    """
+    esito = {CAPACITA_TRADUZIONE: False, CAPACITA_STATI_CINQUE: False}
+    strumento = _controllo(strumento)
+    if not strumento.rpc_disponibile(RPC_CAPACITA_EVENTI):
+        logger.info("[db] RPC {} assente: migrazione 11 non applicata", RPC_CAPACITA_EVENTI)
+        return esito
+    try:
+        risposta = _client(client).rpc(RPC_CAPACITA_EVENTI, {}).execute()
+    except Exception as e:
+        logger.warning("[db] {} fallita: {}", RPC_CAPACITA_EVENTI, e)
+        return esito
+    dati = getattr(risposta, "data", None)
+    if isinstance(dati, Mapping):
+        for chiave in esito:
+            esito[chiave] = dati.get(chiave) is True
+    return esito
 
 
 def archivia_bando(

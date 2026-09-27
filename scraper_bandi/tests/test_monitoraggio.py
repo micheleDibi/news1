@@ -1830,9 +1830,19 @@ class _DbEventi:
     ESITO_RIFIUTATO = "rifiutato"
     ESITO_NON_TENTATO = "non_tentato"
 
-    def __init__(self, eventi, *, esito_rpc="rifiutato", ha_riferisce_a=True):
+    #: Le chiavi del marcatore della migrazione 11, come in `db`.
+    CAPACITA_TRADUZIONE = "traduce_stato_proposto"
+    CAPACITA_STATI_CINQUE = "stati_cinque"
+
+    def __init__(self, eventi, *, esito_rpc="rifiutato", ha_riferisce_a=True,
+                 traduzione=False, stati_cinque=False):
         self.eventi = [dict(e) for e in eventi]
         self.esito_rpc = esito_rpc
+        # Il DB di default e' quello di oggi: niente 11, niente 06.
+        self.capacita = {self.CAPACITA_TRADUZIONE: traduzione,
+                         self.CAPACITA_STATI_CINQUE: stati_cinque}
+        # Gli id mandati alla RPC: la guardia della 11 si vede da qui.
+        self.chiamate_rpc: list = []
         self.inseriti: list[dict] = []
         self.colonne_chieste: list[tuple] = []
         # `db.controllo`: lo schema com'e' oggi, senza rete.
@@ -1866,7 +1876,11 @@ class _DbEventi:
         return [dict(r) for r in righe]
 
     def applica_evento_esito(self, evento_id, **_):
+        self.chiamate_rpc.append(evento_id)
         return self.esito_rpc
+
+    def capacita_eventi(self, **_):
+        return dict(self.capacita)
 
     def rendi_evento_leggibile(self, evento_id, *, in_aggiornamenti=True, **_):
         # La seconda scrittura dell'attivazione: senza, l'evento resta senza
@@ -2223,20 +2237,45 @@ class TestRifiutiNonDefinitivi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(secondo["bloccati"], 0)
 
     async def test_dopo_la_06_la_revoca_rifiutata_si_annota(self):
-        finto = _DbEventi(self._eventi(tipo="revoca"))
+        # «Dopo la 06» vuol dire flag acceso E CHECK a cinque stati a DB: il
+        # marcatore della 11 lo dice.
+        finto = _DbEventi(self._eventi(tipo="revoca"), stati_cinque=True)
         esito = await self._lancia(
             finto, attivo=True, limit=5, tipi=("revoca",),
             impostazioni=_impostazioni(monitor_stati_estesi=True))
         self.assertEqual(esito["rifiutati"], 5)
         self.assertEqual(esito["segnalati"], 5)
+        self.assertTrue(esito["stati_estesi"])
+
+    async def test_il_flag_senza_la_06_non_annota(self):
+        """MONITOR_STATI_ESTESI=true con il CHECK ancora a tre valori.
+
+        Succede alzando il flag prima della 06, o annullando la 06 senza
+        spegnerlo. La RPC risponde `false` per costruzione (check_violation),
+        e annotarlo toglierebbe per sempre dalla coda gli eventi che la 06
+        serve ad applicare. Nel dubbio il DB vince sull'ambiente.
+        """
+        finto = _DbEventi(self._eventi(tipo="revoca"), stati_cinque=False)
+        esito = await self._lancia(
+            finto, attivo=True, limit=5, tipi=("revoca",),
+            impostazioni=_impostazioni(monitor_stati_estesi=True))
+        self.assertEqual(esito["rifiutati"], 5)
+        self.assertEqual(esito["segnalati"], 0)
+        self.assertEqual(finto.inseriti, [])
+        self.assertFalse(esito["stati_estesi"])
 
     async def test_la_rettifica_che_propone_uno_stato_nuovo_aspetta_la_06(self):
+        """La RPC non traduce `stato_proposto` di una rettifica, nemmeno con la
+        11: mandargliela la brucerebbe (`campi = {}` → applicata a vuoto)."""
         righe = self._eventi(quanti=1, tipo="rettifica")
         righe[0]["valore_dopo"] = {"stato_proposto": "sospeso"}
-        finto = _DbEventi(righe)
+        finto = _DbEventi(righe, traduzione=True, stati_cinque=True)
         esito = await self._lancia(finto, attivo=True, limit=1, tipi=("rettifica",))
-        self.assertEqual(esito["rifiutati"], 1)
+        self.assertEqual(esito["rifiutati"], 0)
         self.assertEqual(esito["segnalati"], 0)
+        self.assertEqual(esito["in_attesa_traduzione"], 1)
+        self.assertEqual(finto.chiamate_rpc, [])
+
 
     async def test_riprova_rifiutati_rimette_in_coda_le_annotazioni(self):
         """La via di rientro: le annotazioni non si possono cancellare."""
@@ -2263,6 +2302,218 @@ class TestRifiutiNonDefinitivi(unittest.IsolatedAsyncioTestCase):
                          monitoraggio.ESITO_RIFIUTATO)
         self.assertEqual(monitoraggio._esito_applicazione(True),
                          monitoraggio.ESITO_APPLICATO)
+
+
+
+class TestGuardiaStatoProposto(unittest.IsolatedAsyncioTestCase):
+    """Senza la migrazione 11 un evento con `stato_proposto` non va alla RPC.
+
+    `bando_applica_evento` della 04 tiene solo sei chiavi di `valore_dopo`:
+    su `{"stato_proposto": "sospeso"}` trova `campi = {}`, marca l'evento
+    applicato e restituisce true con la colonna intatta. `applica-eventi` lo
+    renderebbe poi leggibile, e non tornerebbe più in coda. La guardia lo salta,
+    lo conta e non lo annota: l'annotazione è irreversibile, e dopo la 11 quegli
+    eventi devono poter essere applicati.
+    """
+
+    def setUp(self):
+        zitto = patch.object(monitoraggio, "_scrivi_run", MagicMock())
+        zitto.start()
+        self.addCleanup(zitto.stop)
+
+    @staticmethod
+    def _proposti(ids, tipo="sospensione", stato="sospeso"):
+        return [{"id": i, "bando_id": 700 + i, "tipo": tipo, "campo": None,
+                 "verificato": True, "applicato": False,
+                 "valore_dopo": {"stato_proposto": stato},
+                 "rilevato_at": "2026-09-01T06:00:00+00:00"}
+                for i in ids]
+
+    @staticmethod
+    def _proroghe(ids):
+        return [{"id": i, "bando_id": 700 + i, "tipo": "proroga",
+                 "campo": "data_scadenza", "verificato": True, "applicato": False,
+                 "valore_dopo": {"data_scadenza": "2026-12-01"},
+                 "rilevato_at": "2026-09-01T06:00:00+00:00"}
+                for i in ids]
+
+    async def _lancia(self, finto, **kwargs):
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True):
+            kwargs.setdefault("lock", _lock_libero())
+            kwargs.setdefault("impostazioni", _impostazioni())
+            return await monitoraggio.run_applica_eventi(**kwargs)
+
+    async def test_senza_la_11_non_li_manda_alla_rpc(self):
+        finto = _DbEventi(self._proposti([1, 2, 3]), esito_rpc=_DbEventi.ESITO_APPLICATO)
+        esito = await self._lancia(finto, attivo=True, limit=5,
+                                   tipi=("sospensione", "revoca"))
+        self.assertEqual(finto.chiamate_rpc, [], "evento bruciato dalla RPC della 04")
+        self.assertEqual(finto.resi_leggibili, [])
+        self.assertEqual(finto.inseriti, [], "un'attesa e' stata annotata come rifiuto")
+        self.assertEqual(esito["applicati"], 0)
+        self.assertEqual(esito["rifiutati"], 0)
+        self.assertEqual(esito["candidati"], 0)
+        self.assertEqual(esito["in_attesa_traduzione"], 3)
+        self.assertFalse(esito["traduzione_stato_proposto"])
+
+    async def test_senza_la_11_non_consumano_il_blocco(self):
+        """Tre proposti agli id piu' bassi e --limit 2: si applicano le proroghe."""
+        finto = _DbEventi(self._proposti([1, 2, 3]) + self._proroghe([4, 5]),
+                          esito_rpc=_DbEventi.ESITO_APPLICATO)
+        esito = await self._lancia(finto, attivo=True, limit=2)
+        self.assertEqual(sorted(finto.chiamate_rpc), [4, 5])
+        self.assertEqual(esito["applicati"], 2)
+        self.assertEqual(esito["in_attesa_traduzione"], 3)
+
+    async def test_con_la_11_vanno_alla_rpc(self):
+        finto = _DbEventi(self._proposti([1]) + self._proposti([2], "revoca", "revocato"),
+                          esito_rpc=_DbEventi.ESITO_APPLICATO,
+                          traduzione=True, stati_cinque=True)
+        esito = await self._lancia(finto, attivo=True, limit=5,
+                                   tipi=("sospensione", "revoca"))
+        self.assertEqual(sorted(finto.chiamate_rpc), [1, 2])
+        self.assertEqual(esito["applicati"], 2)
+        self.assertEqual(esito["in_attesa_traduzione"], 0)
+        self.assertTrue(esito["traduzione_stato_proposto"])
+
+    async def test_la_coppia_incrociata_resta_in_attesa_anche_con_la_11(self):
+        # La 11 traduce solo sospensione/sospeso e revoca/revocato.
+        finto = _DbEventi(self._proposti([1], "sospensione", "revocato"),
+                          esito_rpc=_DbEventi.ESITO_APPLICATO, traduzione=True)
+        esito = await self._lancia(finto, attivo=True, limit=5, tipi=("sospensione",))
+        self.assertEqual(finto.chiamate_rpc, [])
+        self.assertEqual(esito["in_attesa_traduzione"], 1)
+
+    async def test_il_dry_run_li_esclude_dai_candidati(self):
+        finto = _DbEventi(self._proposti([1, 2]) + self._proroghe([3]))
+        esito = await self._lancia(finto, dry_run=True, limit=5)
+        self.assertEqual(esito["candidati"], 1)
+        self.assertEqual(esito["in_attesa_traduzione"], 2)
+        self.assertEqual(finto.chiamate_rpc, [])
+
+    async def test_con_le_righe_iniettate_nel_dubbio_attende(self):
+        """Senza DB da interrogare non si sa se la 11 c'e': si salta."""
+        chiamati = []
+        esito = await monitoraggio.run_applica_eventi(
+            righe=self._proposti([1]), attivo=True, lock=_lock_libero(),
+            impostazioni=_impostazioni(), tipi=("sospensione",),
+            applica=lambda riga: chiamati.append(riga["id"]) or True,
+            segnala=lambda riga: True)
+        self.assertEqual(chiamati, [])
+        self.assertEqual(esito["in_attesa_traduzione"], 1)
+        self.assertEqual(esito["segnalati"], 0)
+
+    async def test_un_marcatore_illeggibile_vale_assente(self):
+        class _Guasto(_DbEventi):
+            def capacita_eventi(self, **_):
+                raise RuntimeError("rete giu'")
+
+        finto = _Guasto(self._proposti([1]), esito_rpc=_DbEventi.ESITO_APPLICATO,
+                        traduzione=True, stati_cinque=True)
+        esito = await self._lancia(finto, attivo=True, limit=5,
+                                   impostazioni=_impostazioni(monitor_stati_estesi=True))
+        self.assertEqual(finto.chiamate_rpc, [])
+        self.assertEqual(esito["in_attesa_traduzione"], 1)
+        self.assertFalse(esito["stati_estesi"])
+
+
+class TestAttendeTraduzione(unittest.TestCase):
+    """La tabella di verita' della guardia: gemella del blocco v11_11."""
+
+    def _riga(self, tipo, valore_dopo):
+        return {"id": 1, "tipo": tipo, "valore_dopo": valore_dopo}
+
+    def test_senza_stato_proposto_non_attende_mai(self):
+        for dopo in (None, {}, "2026-12-01", [], {"stato_bando": "sospeso"},
+                     {"data_scadenza": "2026-12-01"}, {"valore": "x"}):
+            for traduzione in (False, True):
+                self.assertFalse(monitoraggio.attende_traduzione(
+                    self._riga("sospensione", dopo), traduzione=traduzione), dopo)
+
+    def test_senza_la_11_attende(self):
+        self.assertTrue(monitoraggio.attende_traduzione(
+            self._riga("sospensione", {"stato_proposto": "sospeso"}), traduzione=False))
+        self.assertTrue(monitoraggio.attende_traduzione(
+            self._riga("revoca", {"stato_proposto": "revocato", "valore": "x"}),
+            traduzione=False))
+
+    def test_con_la_11_le_due_coppie_passano(self):
+        self.assertFalse(monitoraggio.attende_traduzione(
+            self._riga("sospensione", {"stato_proposto": "sospeso"}), traduzione=True))
+        self.assertFalse(monitoraggio.attende_traduzione(
+            self._riga("revoca", {"stato_proposto": "revocato", "valore": "x"}),
+            traduzione=True))
+
+    def test_con_la_11_il_resto_attende(self):
+        for tipo, stato in (("rettifica", "sospeso"), ("sospensione", "revocato"),
+                            ("revoca", "sospeso"), ("riapertura", "aperto")):
+            self.assertTrue(monitoraggio.attende_traduzione(
+                self._riga(tipo, {"stato_proposto": stato}), traduzione=True),
+                (tipo, stato))
+
+    def test_uno_stato_esplicito_vince(self):
+        # La RPC applica `stato_bando` e ignora `stato_proposto`: niente si brucia.
+        self.assertFalse(monitoraggio.attende_traduzione(
+            self._riga("rettifica", {"stato_proposto": "sospeso", "stato_bando": "aperto"}),
+            traduzione=False))
+
+
+class TestCapacitaEventi(unittest.TestCase):
+    """`db.capacita_eventi`: il marcatore della 11. Nel dubbio, tutto falso."""
+
+    def setUp(self):
+        self.db = carica_modulo("db")
+        self.chiamate = []
+
+    def _client(self, dati=None, errore=None):
+        chiamate = self.chiamate
+
+        class _Rpc:
+            def __init__(self, nome, parametri):
+                chiamate.append((nome, parametri))
+
+            def execute(self):
+                if errore is not None:
+                    raise errore
+                return SimpleNamespace(data=dati)
+
+        return SimpleNamespace(rpc=lambda nome, parametri: _Rpc(nome, parametri))
+
+    @staticmethod
+    def _strumento(disponibile=True):
+        return SimpleNamespace(rpc_disponibile=lambda _nome: disponibile)
+
+    def test_rpc_assente_nessuna_chiamata(self):
+        esito = self.db.capacita_eventi(
+            client=self._client({"traduce_stato_proposto": True}),
+            strumento=self._strumento(False))
+        self.assertEqual(esito, {"traduce_stato_proposto": False, "stati_cinque": False})
+        self.assertEqual(self.chiamate, [])
+
+    def test_legge_le_due_chiavi(self):
+        esito = self.db.capacita_eventi(
+            client=self._client({"traduce_stato_proposto": True, "stati_cinque": True}),
+            strumento=self._strumento())
+        self.assertEqual(esito, {"traduce_stato_proposto": True, "stati_cinque": True})
+        self.assertEqual(self.chiamate, [("bando_capacita_eventi", {})])
+
+    def test_solo_true_vale_vero(self):
+        for dati in (None, {}, [], "true",
+                     {"traduce_stato_proposto": "true", "stati_cinque": 1}):
+            esito = self.db.capacita_eventi(
+                client=self._client(dati), strumento=self._strumento())
+            self.assertEqual(esito, {"traduce_stato_proposto": False,
+                                     "stati_cinque": False}, dati)
+
+    def test_un_errore_vale_assente(self):
+        esito = self.db.capacita_eventi(
+            client=self._client(errore=RuntimeError("503")), strumento=self._strumento())
+        self.assertEqual(esito, {"traduce_stato_proposto": False, "stati_cinque": False})
+
+    def test_le_chiavi_coincidono_con_il_finto(self):
+        self.assertEqual(self.db.CAPACITA_TRADUZIONE, _DbEventi.CAPACITA_TRADUZIONE)
+        self.assertEqual(self.db.CAPACITA_STATI_CINQUE, _DbEventi.CAPACITA_STATI_CINQUE)
 
 
 class TestRifiutiNoti(unittest.TestCase):
