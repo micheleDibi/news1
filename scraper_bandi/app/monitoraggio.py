@@ -2643,9 +2643,11 @@ def attende_traduzione(riga: Mapping[str, Any], *, traduzione: bool) -> bool:
     intatta. Poi `applica-eventi` lo rende leggibile, e l'evento non torna piu'
     in coda (`valore_dopo` e' immutabile).
 
-    `traduzione` dice se il corpo vivo della RPC contiene il blocco della 11:
-    con la 11 passano solo le coppie di `TRADUZIONI_STATO_PROPOSTO`, perche'
-    solo quelle la RPC traduce. Uno `stato_bando` esplicito vince: la RPC
+    `traduzione` dice se la RPC puo' applicare la traduzione: il corpo vivo
+    contiene il blocco della 11 e il CHECK ha i cinque stati della 06 (senza,
+    l'evento tradotto verrebbe respinto e ripresentato a ogni lancio). Anche
+    allora passano solo le coppie di `TRADUZIONI_STATO_PROPOSTO`, perche' solo
+    quelle la RPC traduce. Uno `stato_bando` esplicito vince: la RPC
     applica quello e `stato_proposto` non conta.
     """
     dopo = riga.get("valore_dopo")
@@ -3347,6 +3349,11 @@ async def run_applica_eventi(
         # lettura). Con le righe iniettate non c'e' un DB da interrogare: nel
         # dubbio, niente traduzione e niente cinque stati.
         traduzione, stati_cinque = _capacita_eventi() if righe is None else (False, False)
+        # Prima della 06 anche un evento tradotto viene respinto dal CHECK a tre
+        # valori: mandarlo alla RPC non applicherebbe niente e riconsumerebbe il
+        # blocco a ogni lancio. Gli eventi con `stato_proposto` passano solo
+        # quando ci sono tutte e due, la traduzione (11) e i cinque stati (06).
+        proposti_applicabili = traduzione and stati_cinque
         # Il `--limit` conta gli eventi da applicare, non le righe lette: la
         # selezione si scorre a pagine e gli eventi gia' rifiutati dalla RPC
         # (che restano `applicato=false` all'id piu' basso, per sempre) non
@@ -3364,7 +3371,7 @@ async def run_applica_eventi(
                        if righe is None and blocco_giro > 0
                        and not riprova_rifiutati else frozenset()),
             conto=conto,
-            traduzione=traduzione,
+            traduzione=proposti_applicabili,
         )
         if applica is None and scrive:
             from . import db
@@ -3426,7 +3433,8 @@ async def run_applica_eventi(
         if stati_estesi_richiesti and not stati_cinque:
             logger.warning(
                 "[applica-eventi] MONITOR_STATI_ESTESI=true ma il DB non dichiara il "
-                "CHECK a cinque stati (migrazioni 06 e 11): i rifiuti non vengono annotati")
+                "CHECK a cinque stati (migrazioni 06 e 11): i rifiuti di sospensione "
+                "e revoca non vengono annotati")
         in_attesa_traduzione = conto["in_attesa_traduzione"]
         per_tipo: dict[str, int] = {}
         for nome in gruppi:
@@ -3435,7 +3443,7 @@ async def run_applica_eventi(
             esito = applica_eventi(
                 candidati, dal=dal, tipo=nome, limit=rimanenti,
                 dry_run=not scrive, applica=applica, segnala=segnala,
-                stati_estesi=stati_estesi, traduzione=traduzione,
+                stati_estesi=stati_estesi, traduzione=proposti_applicabili,
             )
             candidati_totali += int(esito.get("candidati") or 0)
             applicati += int(esito.get("applicati") or 0)
@@ -3484,7 +3492,8 @@ async def run_applica_eventi(
             "bloccati": conto["bloccati"],
             "saltati": conto["saltati"],
             # Eventi con `stato_proposto` che la RPC senza la migrazione 11
-            # brucerebbe: non applicati, non annotati, restano in coda.
+            # brucerebbe, o che senza la 06 respingerebbe: non applicati, non
+            # annotati, restano in coda.
             "in_attesa_traduzione": in_attesa_traduzione,
             "traduzione_stato_proposto": traduzione,
             "stati_estesi": stati_estesi,
@@ -3499,8 +3508,8 @@ async def run_applica_eventi(
         }
         if in_attesa_traduzione:
             logger.warning(
-                "[applica-eventi] {} eventi con stato_proposto in attesa della "
-                "migrazione 11: non applicati, non annotati", in_attesa_traduzione)
+                "[applica-eventi] {} eventi con stato_proposto in attesa delle "
+                "migrazioni 11 e 06: non applicati, non annotati", in_attesa_traduzione)
         _scrivi_run(STEP_APPLICA, riepilogo, tempo=time.monotonic() - avvio)
         logger.info("[applica-eventi] {}", riepilogo)
         return riepilogo

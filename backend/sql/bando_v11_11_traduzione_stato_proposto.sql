@@ -49,7 +49,10 @@
 --   toglie la traduzione. Il marcatore legge il corpo vivo della funzione,
 --   quindi in quel caso risponde `traduce_stato_proposto: false` e la guardia
 --   torna a saltare gli eventi con `stato_proposto`: niente si brucia, ma va
---   riapplicata la 11.
+--   riapplicata la 11. Con una condizione: che nessun `applica-eventi` sia in
+--   corso. La guardia legge il marcatore una volta sola, all'avvio, e un lancio
+--   partito prima continuerebbe a mandare quegli eventi alla RPC della 04. Lo
+--   stesso vale per il rollback della 11, che lo controlla da sé.
 --
 -- COSA NON È REVERSIBILE
 --   Niente di questo file. Gli eventi «bruciati» PRIMA della 11 (applicato=true
@@ -386,10 +389,14 @@ COMMIT;
 --        FROM bando_evento e JOIN bando b ON b.id = e.bando_id
 --       WHERE jsonb_typeof(e.valore_dopo) = 'object' AND e.valore_dopo ? 'stato_proposto'
 --         AND e.applicato AND b.stato_bando_evento_id IS DISTINCT FROM e.id;
---      -- atteso: 0 righe (0 anche il 27/09/2026). Se ce ne sono: NON si
---      --   rimettono in coda da soli; è una decisione del committente
---      --   (`applicato` e `applicato_at` sono fra le colonne che
---      --   z_evento_immutabile lascia cambiare, il cursore invece resta).
+--      -- atteso: 0 righe (0 anche il 27/09/2026). Vale solo PRIMA del primo
+--      --   `applica-eventi --attivo` su sospensioni e revoche. Dopo, un evento
+--      --   di stato successivo sullo stesso bando (una revoca, una riapertura)
+--      --   sposta `stato_bando_evento_id`, e una sospensione applicata a dovere
+--      --   comparirebbe qui come «bruciata». Se ce ne sono: NON si rimettono in
+--      --   coda da soli; è una decisione del committente (`applicato` e
+--      --   `applicato_at` sono fra le colonne che z_evento_immutabile lascia
+--      --   cambiare, il cursore invece resta).
 --
 -- 6) Coda che la 11 sblocca (informativa).
 --      SELECT tipo, valore_dopo ->> 'stato_proposto' AS proposto, leggibile, count(*)
@@ -405,25 +412,49 @@ COMMIT;
 --        FROM bando_evento e JOIN bando b ON b.id = e.bando_id
 --       WHERE e.tipo IN ('sospensione', 'revoca') AND e.verificato AND NOT e.applicato
 --         AND b.pubblicato
+--         AND jsonb_typeof(e.valore_dopo) = 'object'
+--         AND coalesce(e.valore_dopo ->> 'stato_bando',
+--                      e.valore_dopo ->> 'stato_proposto') IS NOT NULL
 --         AND b.stato_bando IS DISTINCT FROM coalesce(e.valore_dopo ->> 'stato_bando',
 --                                                     e.valore_dopo ->> 'stato_proposto')
 --         AND NOT public.bando_transizione_ammessa(
 --               b.stato_bando,
 --               coalesce(e.valore_dopo ->> 'stato_bando', e.valore_dopo ->> 'stato_proposto'),
 --               e.origine);
---      -- atteso: 0
+--      -- atteso: 0. Le sospensioni che non propongono uno stato (una
+--      --   sospensione su un bando già chiuso nasce con `{}` o `{"valore": …}`)
+--      --   restano fuori: la RPC le marca applicate senza sollevare niente.
 --
--- 8) Prova facoltativa su una riga vera, in una transazione da ANNULLARE e a
---    traffico basso (la riga del bando resta bloccata fino al ROLLBACK). :b è
---    un bando pubblicato e aperto; :id è l'id restituito dalla prima SELECT.
---      BEGIN;
---        SELECT public.bando_registra_evento(:b, 'sospensione', 'worker', NULL,
+-- 8) Prova facoltativa su una riga vera, a traffico basso. Un solo blocco che
+--    si annulla da sé: finisce SEMPRE con un errore, che riporta i valori
+--    letti, e il SQL Editor annulla l'evento e la modifica al bando. Mettere
+--    al posto di 0 l'id di un bando pubblicato e aperto; la sua riga resta
+--    bloccata solo per la durata del blocco.
+--      DO $$
+--      DECLARE b integer := 0; j jsonb; r boolean; s text; a boolean;
+--      BEGIN
+--        j := public.bando_registra_evento(b, 'sospensione', 'worker', NULL,
 --               '{"stato_proposto": "sospeso"}'::jsonb, NULL, NULL, current_date,
 --               false, false, false);
---        SELECT public.bando_applica_evento(:id);
---        SELECT stato_bando FROM bando WHERE id = :b;
---        SELECT applicato FROM bando_evento WHERE id = :id;
---        -- atteso prima della 06: false, 'aperto', false
---        -- atteso dopo la 06:     true,  'sospeso', true
---      ROLLBACK;
+--        r := public.bando_applica_evento((j ->> 'id')::bigint);
+--        SELECT stato_bando INTO s FROM public.bando WHERE id = b;
+--        SELECT applicato INTO a FROM public.bando_evento WHERE id = (j ->> 'id')::bigint;
+--        RAISE EXCEPTION 'prova 8 annullata: ritorno=% stato=% applicato=% (nuovo=%)',
+--          r, s, a, j ->> 'nuovo';
+--      END $$;
+--      -- atteso prima della 06: «ritorno=f stato=aperto applicato=f (nuovo=true)»
+--      -- atteso dopo la 06:     «ritorno=t stato=sospeso applicato=t (nuovo=true)»
+--
+-- 9) Sospensioni e revoche in coda superate da un evento di stato successivo
+--    sullo stesso bando (una riapertura registrata dopo, per esempio).
+--    Applicarle riporterebbe a `sospeso` o `revocato` un bando che l'ente ha
+--    già riaperto (RIPRESA §4.1 i, punto 5). Da guardare a mano prima di ogni
+--    `applica-eventi --attivo` su sospensioni e revoche.
+--      SELECT s.id, s.bando_id, s.tipo, d.id AS dopo, d.tipo AS tipo_dopo
+--        FROM bando_evento s
+--        JOIN bando_evento d ON d.bando_id = s.bando_id AND d.id > s.id AND d.verificato
+--       WHERE s.tipo IN ('sospensione', 'revoca') AND s.verificato AND NOT s.applicato
+--         AND d.tipo IN ('riapertura', 'annullamento_revoca', 'apertura', 'proroga',
+--                        'chiusura', 'correzione_redazionale');
+--      -- atteso: 0
 -- ============================================================================

@@ -312,7 +312,7 @@ curl -s https://edunews24.it/bandi/abruzzo-competenze-linguistiche-certificazion
 
 ```bash
 cd ~/projects/news1
-npm run test:py:bandi     # atteso: 1532 test, OK (1485 il 26/09, prima della 11)
+npm run test:py:bandi     # atteso: 1533 test, OK (1485 il 26/09, prima della 11)
 npm test                  # atteso: 433 test, 0 falliti, 0 skipped (erano 404 prima del ridisegno)
 npm run test:py           # atteso: 26 test, OK
 npx tsc --noEmit -p tsconfig.json   # atteso: 51 errori, tutti preesistenti, 0 nei file dei bandi
@@ -540,8 +540,8 @@ progetto, e nessuno è stato toccato.
    vero (`monitoraggio.py`). Si pagano GET, crediti Firecrawl e classificazioni su un bando
    terminale. Lo stesso buco c'è già oggi per i chiusi oltre i 12 mesi.
 5. **Una sospensione applicata a posteriori riporta a sospeso un bando riaperto nel frattempo**:
-   la riapertura registrata dopo non la annulla (query 8 della Verifica della 11 per
-   controllarlo prima).
+   la riapertura registrata dopo non la annulla. Prima di applicare si controlla con la query 9
+   della Verifica della 11.
 6. **Stallo su una transizione non più ammessa**: se il cron ha chiuso il bando dopo la
    sospensione, la RPC solleva 23514. `applica_evento_esito` lo conta come `non_tentato` e
    l'evento torna in coda a ogni lancio (query 7 della Verifica della 11). Riprodotto sul banco
@@ -569,7 +569,8 @@ niente preme.
   (`monitoraggio.py:1091-1106`, `eventi.py:1063-1073`). Se la RPC è fallita (5xx, 23514),
   l'evento risulta pubblico e applicato con la colonna intatta, e parte anche la rigenerazione
   della prosa. Da correggere prima di `MONITOR_MODALITA=attivo`.
-- **Il 23514 della lista bianca diventa `non_tentato`** (`db.py:2544-2549`): va trattato come
+- **Il 23514 della lista bianca diventa `non_tentato`** (`db.applica_evento_esito`, ramo
+  `except Exception`): va trattato come
   rifiuto, nella RPC (`RETURN false`) o in Python (SQLSTATE 23514 → `rifiutato`). Vedi §4.1 i
   punto 6.
 - L'intestazione del rollback della 06 dice che dopo il rientro news1 «torna a mostrare lo stato
@@ -650,9 +651,10 @@ di BandoFit («rilascio difensivo R0-a per gli stati sospeso/revocato», 12 file
    - il marcatore risponde `{"stati_cinque": false, "traduce_stato_proposto": true}`;
    - le due funzioni le esegue solo `service_role`;
    - c'è una sola `bando_applica_evento`;
-   - le query 5 e 7 danno 0 righe.
+   - le query 5, 7 e 9 danno 0 righe (la prova 8 è facoltativa e si annulla da sola).
 
-   Non serve riavviare il sender. Può andare anche dopo la 06, purché prima del passo 7;
+   Non serve riavviare il sender. Va **prima** della 06: i controlli dei passi 4 e 6 leggono il
+   suo marcatore, e senza la 11 `applica-eventi` non vede nemmeno il CHECK della 06;
 4. **la 06**, fra un giro e l'altro: file intero, poi le sue Verifiche 1-5. Il marcatore della 11
    ora deve dire `"stati_cinque": true`. La query 8 di §3.2 con i cinque valori deve dare 0;
 5. **`MONITOR_STATI_ESTESI=true`** in `scraper_bandi/.env` sul server, poi il riavvio verificato
@@ -660,16 +662,24 @@ di BandoFit («rilascio difensivo R0-a per gli stati sospeso/revocato», 12 file
    - le sospensioni e le revoche nuove nascono con `stato_bando` invece di `stato_proposto`;
    - con il monitor in ombra restano `leggibile=false, applicato=false`: per i lettori non
      cambia niente;
-   - `applica-eventi` annota i rifiuti solo se il flag è acceso **e** il marcatore dice
-     `stati_cinque: true`;
+   - `applica-eventi` annota i rifiuti di sospensione e revoca solo se il flag è acceso **e** il
+     marcatore dice `stati_cinque: true`. I rifiuti degli altri tipi li annota sempre, come
+     prima;
 6. **prova a secco**: `applica-eventi --tipo sospensione,revoca --dry-run`. Nel riepilogo devono
    comparire `traduzione_stato_proposto: true`, `stati_estesi: true` e `in_attesa_traduzione: 0`;
    i candidati il 27/09 sarebbero 0;
 7. **fermarsi qui finché non sono decisi i punti di §4.1 i**. Poi, e solo allora:
-   - `applica-eventi --tipo sospensione,revoca --attivo --limit <piccolo>`;
+   - le query 7 e 9 della Verifica della 11 (0 righe), poi
+     `applica-eventi --tipo sospensione,revoca --attivo --limit <piccolo>`;
    - le verifiche 4 e 5 di §3.2 e la scheda pubblica;
-   - se ci sono bandi sospesi o revocati, `BANDI_STATI_ESTESI=true` nel `.env` della root, per
-     offrire i due stati nel filtro della lista (con `PUBLIC_…` serve la build);
+   - se ci sono bandi sospesi o revocati, accendere il flag del frontend che fa accettare
+     `?stato=sospeso|revocato` come filtro (senza, il valore viene ignorato e la lista non si
+     filtra). Due strade:
+     - `BANDI_STATI_ESTESI=true` nell'ambiente dell'unit del frontend, poi il riavvio
+       dell'unit, come per `BANDI_FONTE_LETTURA` (AVANZAMENTO, F2). Si legge solo da
+       `process.env` e nessuno carica il `.env` della root;
+     - `PUBLIC_BANDI_STATI_ESTESI=true` nel `.env` della root prima di `npm run build`, poi il
+       riavvio;
 8. la fase (c);
 9. la 07.
 
@@ -692,6 +702,22 @@ estratti dalla 04; poi i file 11, 06 e rollback della 11 così come sono nel rep
 - rieseguendo la RPC della 04 sopra la 11, il marcatore risponde `traduce_stato_proposto: false`;
 - la 11 due volte di fila passa;
 - con i privilegi di default di Supabase, anon non esegue niente di nuovo.
+
+Una seconda serie ha provato le correzioni della revisione del 27/09:
+- la query 7 non conta più le sospensioni senza stato;
+- la query 9 trova una sospensione superata da una riapertura;
+- la prova 8 si annulla da sola e lascia il bando com'era;
+- il rollback della 11 è rifiutato finché il lock `monitor` è tenuto.
+
+Il banco non è nel repo, ma si ricostruisce in pochi minuti:
+- Postgres 17 di Homebrew (`/opt/homebrew/opt/postgresql@17/bin`), `initdb` in una cartella
+  temporanea;
+- TCP su 127.0.0.1 con una porta alta e `unix_socket_directories=''`;
+- avvio e `stop` nello stesso comando;
+- ruoli `anon`, `authenticated` e `service_role`, con i privilegi di default di Supabase;
+- tabelle `bando` e `bando_evento` ridotte alle colonne che la RPC tocca;
+- dalla 04 si copiano la lista bianca, il trigger dello stato e la RPC;
+- poi si eseguono i file 11, 06 e rollback così come sono.
 
 Le otto richieste di BandoFit (§12 del contratto) rispondono tutte, con la chiave anonima, in meno
 di mezzo secondo al 26/09. Il conteggio della vista come anon (2 162) è uguale a quello del

@@ -15,9 +15,12 @@
 -- Effetto sul codice
 --   Senza il marcatore la guardia di `applica-eventi` torna a SALTARE gli
 --   eventi con `stato_proposto` (li conta come `in_attesa_traduzione`, non li
---   manda alla RPC e non li annota): nessuno li brucia. Torna anche a
---   considerare assente il CHECK a cinque stati, quindi i rifiuti non vengono
---   annotati nemmeno con MONITOR_STATI_ESTESI=true.
+--   manda alla RPC e non li annota): nessuno li brucia, purché nessun
+--   `applica-eventi` sia in corso (legge il marcatore una volta sola,
+--   all'avvio: la guardia qui sotto rifiuta il rollback se il lock `monitor` è
+--   tenuto). Torna anche a considerare assente il CHECK a cinque stati, quindi
+--   i rifiuti di sospensione e revoca non vengono annotati nemmeno con
+--   MONITOR_STATI_ESTESI=true (quelli degli altri tipi sì, come sempre).
 --
 -- COSA NON È REVERSIBILE
 --   I bandi già portati a `sospeso` o `revocato` da eventi tradotti restano
@@ -25,7 +28,9 @@
 --   decisione del committente (vedi il rollback della 06).
 --
 -- Come si applica
---   SQL Editor → incollare ed eseguire l'INTERO file, poi il blocco «Verifica».
+--   Fuori dai giri del monitor (06:00 e 18:00) e senza `applica-eventi` in
+--   corso: SQL Editor → incollare ed eseguire l'INTERO file, poi il blocco
+--   «Verifica».
 -- ============================================================================
 
 BEGIN;
@@ -37,6 +42,18 @@ BEGIN
   IF to_regprocedure('public.bando_applica_evento(bigint)') IS NULL THEN
     RAISE EXCEPTION
       'manca bando_applica_evento: la 04 non è applicata, non c''è niente da rimettere';
+  END IF;
+  -- `applica-eventi` e il monitor tengono il lock `monitor`. Un lancio in
+  -- corso ha letto il marcatore all'avvio e continuerebbe a mandare gli eventi
+  -- con `stato_proposto` alla RPC della 04, che li brucia. Due IF annidati e
+  -- non un AND: PL/pgSQL pianifica l'intera espressione, e la SELECT su una
+  -- tabella assente fallirebbe anche dopo il `to_regclass`.
+  IF to_regclass('public.pipeline_lock') IS NOT NULL THEN
+    IF EXISTS (SELECT 1 FROM public.pipeline_lock
+                WHERE nome = 'monitor' AND scade_at > now()) THEN
+      RAISE EXCEPTION
+        'il lock «monitor» è tenuto (applica-eventi o il monitor sono in corso): riprovare a lock libero';
+    END IF;
   END IF;
 END $$;
 

@@ -709,3 +709,16 @@ subisce la stessa sorte. A DB c'è già un evento di quella forma. Poi ha trovat
 di progetto sugli stati nuovi: niente uscite dal sospeso, niente correzioni, `statoDaEventi` come
 seconda fonte, revocati riscaricati per sempre. Sono decisioni del committente: RIPRESA §4.1 a e i.
 La scaletta passo per passo sta in RIPRESA §4.3.
+
+La revisione avversariale del diff (tre revisori, due verificatori per rilievo) non ha trovato
+difetti nella traduzione. Ha trovato undici imprecisioni di contorno, tutte corrette:
+- la guardia lasciava passare prima della 06 gli eventi tradotti, che consumavano il blocco a ogni
+  lancio;
+- la query 7 contava le sospensioni senza stato;
+- la prova 8 non si poteva eseguire nel SQL Editor;
+- il rollback non si accorgeva di un `applica-eventi` in corso;
+- alcuni rimandi e frasi di RIPRESA erano sbagliati.
+
+La guardia del lock aggiunta al rollback aveva a sua volta un difetto, trovato dal banco effimero
+e non dai test testuali: un `IF … AND EXISTS (SELECT … FROM pipeline_lock)` fallisce se la tabella
+manca, perché PL/pgSQL pianifica l'intera espressione.

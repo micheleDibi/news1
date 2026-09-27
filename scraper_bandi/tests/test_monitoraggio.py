@@ -2377,6 +2377,21 @@ class TestGuardiaStatoProposto(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(esito["in_attesa_traduzione"], 0)
         self.assertTrue(esito["traduzione_stato_proposto"])
 
+    async def test_con_la_11_senza_la_06_restano_in_attesa(self):
+        """Prima della 06 anche un evento tradotto viene respinto dal CHECK.
+
+        Mandarlo alla RPC non applicherebbe niente e riconsumerebbe il blocco a
+        ogni lancio: le proroghe dietro di lui non passerebbero mai.
+        """
+        finto = _DbEventi(self._proposti([1, 2, 3]) + self._proroghe([4, 5]),
+                          esito_rpc=_DbEventi.ESITO_APPLICATO,
+                          traduzione=True, stati_cinque=False)
+        esito = await self._lancia(finto, attivo=True, limit=2)
+        self.assertEqual(sorted(finto.chiamate_rpc), [4, 5])
+        self.assertEqual(esito["applicati"], 2)
+        self.assertEqual(esito["in_attesa_traduzione"], 3)
+        self.assertTrue(esito["traduzione_stato_proposto"])
+
     async def test_la_coppia_incrociata_resta_in_attesa_anche_con_la_11(self):
         # La 11 traduce solo sospensione/sospeso e revoca/revocato.
         finto = _DbEventi(self._proposti([1], "sospensione", "revocato"),
