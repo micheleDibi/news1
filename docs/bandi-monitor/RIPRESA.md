@@ -1,9 +1,10 @@
 # Bandi — punto di ripresa e verifiche
 
 Questo file serve a riprendere il lavoro sui bandi dopo una pausa di giorni o di settimane, senza
-rileggere il piano né ricostruire il contesto. È aggiornato al **26 settembre 2026, ore 12**
-(controllo completo sul DB, sul sito pubblico e sui test; la versione precedente era del 25/09
-alle 12).
+rileggere il piano né ricostruire il contesto. È aggiornato al **27 settembre 2026**: conferma
+di R0-a, migrazione 11 scritta e scaletta della 06 (§4.3). Il controllo completo sul DB, sul sito
+pubblico e sui test resta quello del 26/09 alle 12; il 27/09 si sono rimisurati solo gli eventi e
+gli stati (§4.3).
 
 Per la cronaca di come ci siamo arrivati: `AVANZAMENTO.md`, nella stessa cartella. Per il contratto
 verso BandoFit: `docs/contratto-db-bandi.md`. Il piano completo dell'intervento sta in
@@ -39,13 +40,18 @@ Le verifiche visive le ha fatte il committente.
 
 ### Migrazioni applicate
 
-`01, 02, seed, 03, 04, 05, 08, 09, 10`. **Mai applicate: la 06 e la 07.**
+`01, 02, seed, 03, 04, 05, 08, 09, 10`. **Mai applicate: la 06, la 07 e la 11** (la 11 è
+scritta dal 27/09).
 
 - La **06** (cinque stati del bando, cioè `sospeso` e `revocato`) richiedeva prima il rilascio
   difensivo R0-a di BandoFit: **confermato per iscritto dal committente il 27/09/2026** (commit
   `a9d520a` di BandoFit, vedi §4.3). Finché la 06 non è applicata, gli eventi di sospensione e revoca restano
   `applicato=false`. Sarebbero leggibili (box sulla scheda, pulsante disattivato) solo con
   `MONITOR_MODALITA=attivo`: oggi, in ombra, nascono `leggibile=false`.
+- La **11** (`bando_v11_11_traduzione_stato_proposto.sql`) fa tradurre a `bando_applica_evento`
+  lo `stato_proposto` degli eventi raccolti in ombra. Senza la 11 la RPC della 04 li marca
+  applicati senza cambiare lo stato. Va applicata **prima** di qualunque `applica-eventi` su
+  sospensioni e revoche, e conviene prima della 06 (è innocua anche da sola). Scaletta in §4.3.
 - La **07** (fase d: REVOKE di colonna, RLS stretta) richiede che BandoFit sia passato al contratto.
 
 ### Configurazione in produzione (`scraper_bandi/.env`)
@@ -199,6 +205,8 @@ select count(*) filter (where stato_processing='completed' and slug is not null)
        count(*) filter (where pubblicato) as flag_nuovo from bando;
 
 -- 8. Nessuno stato fuori vocabolario prima della migrazione 06. Atteso: 0
+--    (0 anche il 27/09). Dopo la 06 il vocabolario ha cinque valori: aggiungere
+--    'sospeso','revocato' alla lista, e l'atteso resta 0.
 select count(*) from bando
  where stato_bando is not null
    and stato_bando not in ('aperto','chiuso','in apertura prossimamente');
@@ -224,10 +232,13 @@ select nome, proprietario, acquisito_at, scade_at, scade_at > now() as ancora_va
   from pipeline_lock;
 
 -- 11. Il cron orario chiude i bandi scaduti. Atteso: 0 (fuori dalla prima ora
---     dopo la mezzanotte di Roma; sospesi e revocati esclusi dopo la 06).
+--     dopo la mezzanotte di Roma). Il cron non chiude mai sospesi e revocati
+--     (04:1209-1210): senza l'ultima riga, dopo la 06 la query conterebbe come
+--     guasto ogni sospeso o revocato già scaduto.
 select count(*) from bando
  where pubblicato and stato_bando <> 'chiuso'
-   and data_scadenza < (now() at time zone 'Europe/Rome')::date;
+   and data_scadenza < (now() at time zone 'Europe/Rome')::date
+   and stato_bando not in ('sospeso','revocato');
 
 -- 12. «In apertura» con una data di apertura NON verificata già raggiunta. Non è
 --     un difetto del cron, che apre solo con data_apertura_verificata: sono date
@@ -301,7 +312,7 @@ curl -s https://edunews24.it/bandi/abruzzo-competenze-linguistiche-certificazion
 
 ```bash
 cd ~/projects/news1
-npm run test:py:bandi     # atteso: 1485 test, OK (erano 1461 prima del 26/09)
+npm run test:py:bandi     # atteso: 1532 test, OK (1485 il 26/09, prima della 11)
 npm test                  # atteso: 433 test, 0 falliti, 0 skipped (erano 404 prima del ridisegno)
 npm run test:py           # atteso: 26 test, OK
 npx tsc --noEmit -p tsconfig.json   # atteso: 51 errori, tutti preesistenti, 0 nei file dei bandi
@@ -419,6 +430,17 @@ Al 26/09 il mese vale 0,88 $ su 16 $ di tetto di regime.
 - **`apertura` ha già un costo visibile**: 19 bandi pubblicati risultano «in apertura» con la data
   di apertura passata (query 12 di §3.2; il più vecchio è del 31/05). Le date non sono verificate,
   quindi il cron non li apre, e solo un evento `apertura` può correggerli.
+- **Prima di attivare `proroga`, `apertura` e `riapertura`: la chiave `valore`.** Quando il
+  modello omette `campo`, la data finisce in `valore_dopo = {"valore": …}` (`eventi.py`,
+  `riga_evento`) e `bando_applica_evento` scarta quella chiave: l'evento risulta applicato e la
+  data non cambia. Una proroga su un bando aperto verrebbe così annunciata nel box («Scadenza
+  prorogata al …») e il cron chiuderebbe il bando alla scadenza vecchia. Provato il 27/09 su un
+  Postgres effimero (proroga `{"valore": "2026-12-01"}`: la RPC risponde true e `data_scadenza`
+  resta com'era). A DB la forma esiste già: evento 9786, una proroga non verificata con
+  `{"valore": "2026-11-08"}` e `campo` nullo. La 11 non la corregge, perché era fuori dalla scelta
+  del 27/09. Servono una traduzione `valore` → colonna per tipo nella RPC (una 12 sullo schema
+  della 11), la chiave giusta in `riga_evento` per gli eventi nuovi o almeno una guardia come
+  quella di `stato_proposto`.
 - **Da decidere anche per `faq` e `nuovo_allegato`**, già «attivati»: l'attivazione vale una volta
   sola (§1). Le strade sono tre:
   1. rilanciare `applica-eventi --dal <data> --tipo faq,nuovo_allegato --attivo` dopo i giri
@@ -488,7 +510,71 @@ IndexNow non può verificare le notifiche di interpelli e selezione. La chiave s
 ricostruisce. Inoltre i bandi nuovi non vengono mai notificati: lo step SEO non chiama IndexNow,
 e oggi l'unico produttore di `slug_modificati` è il monitor in modalità attiva.
 
+**i) Sospensione e revoca: cosa decidere prima di applicarle.** La 06 e la 11 sono sicure. La 06
+allarga un CHECK. La 11 è innocua prima della 06 e ricopia la 04 (provate entrambe il 27/09 su un
+Postgres effimero, §4.3). Il rischio sta nel passo dopo, quando un bando diventa davvero
+`sospeso` o `revocato`. La verifica del 27/09 ha trovato questi buchi: un workflow in sola
+lettura su news1, BandoFit e SQL, con ogni rilievo confermato da due verificatori. Sono tutti di
+progetto, e nessuno è stato toccato.
+
+1. **Un sospeso non ha uscite realistiche** (`src/lib/stato-bando.ts:63-68`, 04:198-205):
+   - non esiste `sospeso → chiuso`;
+   - una riapertura datata al passato è respinta dal G5 (`eventi.py:612-614`);
+   - `annullamento_revoca` è respinta dal G9, anche se il contratto la promette come uscita dal
+     revocato.
+
+   Un bando sospeso e poi chiuso dall'ente resta «Sospeso» per sempre.
+2. **Nessun percorso di correzione** per un sospeso o un revocato sbagliato. La lista bianca non
+   ha righe `redazione`, e il trigger della 04 non ha l'eccezione di ruolo che il commento di
+   `stato-bando.ts:66-68` promette. Oggi l'unico rientro è il blocco 0 del rollback della 06.
+3. **`statoDaEventi` resta una seconda fonte dello stato** (`src/lib/bandi/aggiornamenti.ts:151-172`,
+   `src/pages/bandi/[slug].astro:212`):
+   - gli eventi hanno la precedenza sulla colonna;
+   - non riconosce come uscite `correzione_redazionale` o una `chiusura`;
+   - a parità di data vince l'evento più vecchio.
+
+   Dopo una correzione la scheda direbbe ancora «Sospeso», mentre lista, API e BandoFit dicono
+   «Aperto».
+4. **Il monitor riscarica un revocato a ogni giro, per sempre**. Per la fase revocato la
+   frequenza è `None`, quindi `prossimo_controllo_at` non si aggiorna e `selezionabile` resta
+   vero (`monitoraggio.py`). Si pagano GET, crediti Firecrawl e classificazioni su un bando
+   terminale. Lo stesso buco c'è già oggi per i chiusi oltre i 12 mesi.
+5. **Una sospensione applicata a posteriori riporta a sospeso un bando riaperto nel frattempo**:
+   la riapertura registrata dopo non la annulla (query 8 della Verifica della 11 per
+   controllarlo prima).
+6. **Stallo su una transizione non più ammessa**: se il cron ha chiuso il bando dopo la
+   sospensione, la RPC solleva 23514. `applica_evento_esito` lo conta come `non_tentato` e
+   l'evento torna in coda a ogni lancio (query 7 della Verifica della 11). Riprodotto sul banco
+   del 27/09.
+7. Minori:
+   - il feed RSS/JSON non riporta lo stato di un revocato (`api-v1/feed.ts:191-197`);
+   - la documentazione dell'API consiglia di ricalcolare lo stato da `deadline_on`, cosa falsa
+     per `suspended` (`api-v1/testi-doc.ts:236-249`);
+   - con `?stato=sospeso` compare la chip «Stato: Sospeso» sopra una lista non filtrata finché
+     `BANDI_STATI_ESTESI` è spento (`bandi/elenco.ts:279-281`);
+   - il G9 lascia passare eventi incompatibili con sospeso e revocato (`eventi.py:822-829`);
+   - il G8 non deduplica la forma `stato_proposto`;
+   - in BandoFit, conto alla rovescia e CTA su sospesi e revocati, e chip incoerenti con
+     `?stato=`. Non sono precondizioni della 06.
+
+Il 27/09 a DB non c'è nessun evento `sospensione`, `revoca`, `riapertura` o `annullamento_revoca`:
+niente preme.
+
 ### 4.2 Lavoro tecnico proposto e non fatto
+
+**Emersi dalla verifica del 27/09**, fuori dal perimetro dell'intervento:
+
+- **Monitor attivo: un INSERT diretto dopo una RPC fallita.** In modalità attiva `controlla` fa
+  sempre l'INSERT diretto della riga con `applicato=true` dopo `bando_registra_evento`
+  (`monitoraggio.py:1091-1106`, `eventi.py:1063-1073`). Se la RPC è fallita (5xx, 23514),
+  l'evento risulta pubblico e applicato con la colonna intatta, e parte anche la rigenerazione
+  della prosa. Da correggere prima di `MONITOR_MODALITA=attivo`.
+- **Il 23514 della lista bianca diventa `non_tentato`** (`db.py:2544-2549`): va trattato come
+  rifiuto, nella RPC (`RETURN false`) o in Python (SQLSTATE 23514 → `rifiutato`). Vedi §4.1 i
+  punto 6.
+- L'intestazione del rollback della 06 dice che dopo il rientro news1 «torna a mostrare lo stato
+  dagli eventi `applicato=false`»: non è vero, gli eventi saranno già applicati. Non corretta.
+- `BANDI_STATI_ESTESI` / `PUBLIC_BANDI_STATI_ESTESI` non è in `.env.example`.
 
 **Due difetti emersi il 26/09 con il credito Anthropic esaurito** (giro delle 18:00; le quattro
 classificazioni fallite con «Your credit balance is too low»). Il committente ha deciso di tenerli
@@ -555,16 +641,57 @@ Sul server: `journalctl -u edunews-bandi-sender --since today | grep 772894`.
 committente ha confermato per iscritto che R0-a è in produzione: è il commit `a9d520a` sul `main`
 di BandoFit («rilascio difensivo R0-a per gli stati sospeso/revocato», 12 file). Poi, in ordine:
 
-1. ~~la conferma scritta che R0-a è in produzione~~ — data il 27/09/2026;
-2. la 06, poi `MONITOR_STATI_ESTESI=true` e il riavvio verificato del sender (§3.5);
-3. `applica-eventi --tipo sospensione,revoca`, **ma prima va chiuso un punto aperto dalla
-   revisione del 26/09**: gli eventi di sospensione e revoca raccolti in ombra portano
-   `valore_dopo = {"stato_proposto": …}` e non `stato_bando` (`eventi.py`, `riga_evento`).
-   Secondo la revisione `bando_applica_evento` scrive solo le colonne che riconosce, quindi li
-   segnerebbe applicati senza cambiare lo stato. Serve una traduzione `stato_proposto` →
-   `stato_bando` (nella RPC o nella CLI). Da verificare e sistemare prima di questo passo;
-4. la fase (c);
-5. la 07.
+1. ~~la conferma scritta che R0-a è in produzione~~: data il 27/09/2026;
+2. **backup** (§4.1 f): nel pannello Supabase del progetto bandi (Database → Backups) un backup
+   recente o il PITR. La 06 e la 11 hanno un rollback, gli eventi applicati dopo no;
+3. **la 11**, fra un giro e l'altro (non nell'ora e mezza prima delle 00, 06, 12 e 18): SQL Editor
+   → `backend/sql/bando_v11_11_traduzione_stato_proposto.sql` intero, poi il suo blocco
+   «Verifica post-deploy». Valori attesi:
+   - il marcatore risponde `{"stati_cinque": false, "traduce_stato_proposto": true}`;
+   - le due funzioni le esegue solo `service_role`;
+   - c'è una sola `bando_applica_evento`;
+   - le query 5 e 7 danno 0 righe.
+
+   Non serve riavviare il sender. Può andare anche dopo la 06, purché prima del passo 7;
+4. **la 06**, fra un giro e l'altro: file intero, poi le sue Verifiche 1-5. Il marcatore della 11
+   ora deve dire `"stati_cinque": true`. La query 8 di §3.2 con i cinque valori deve dare 0;
+5. **`MONITOR_STATI_ESTESI=true`** in `scraper_bandi/.env` sul server, poi il riavvio verificato
+   del sender (§3.5), subito dopo la fine di un giro. Effetti:
+   - le sospensioni e le revoche nuove nascono con `stato_bando` invece di `stato_proposto`;
+   - con il monitor in ombra restano `leggibile=false, applicato=false`: per i lettori non
+     cambia niente;
+   - `applica-eventi` annota i rifiuti solo se il flag è acceso **e** il marcatore dice
+     `stati_cinque: true`;
+6. **prova a secco**: `applica-eventi --tipo sospensione,revoca --dry-run`. Nel riepilogo devono
+   comparire `traduzione_stato_proposto: true`, `stati_estesi: true` e `in_attesa_traduzione: 0`;
+   i candidati il 27/09 sarebbero 0;
+7. **fermarsi qui finché non sono decisi i punti di §4.1 i**. Poi, e solo allora:
+   - `applica-eventi --tipo sospensione,revoca --attivo --limit <piccolo>`;
+   - le verifiche 4 e 5 di §3.2 e la scheda pubblica;
+   - se ci sono bandi sospesi o revocati, `BANDI_STATI_ESTESI=true` nel `.env` della root, per
+     offrire i due stati nel filtro della lista (con `PUBLIC_…` serve la build);
+8. la fase (c);
+9. la 07.
+
+**Misurato il 27/09** (PostgREST, solo GET):
+- nessun evento `sospensione`, `revoca`, `riapertura` o `annullamento_revoca`;
+- nessun evento con `stato_proposto` (il filtro JSON è stato controprovato su un evento con
+  `stato_bando`);
+- query 8 di §3.2 a 0;
+- `stato_bando`: 1 256 aperto, 1 284 chiuso, 184 in apertura, 2 426 NULL, 0 sospeso e 0
+  revocato.
+
+**Provato il 27/09 su un Postgres 17 effimero** (tabelle minime, con lista bianca, trigger e RPC
+estratti dalla 04; poi i file 11, 06 e rollback della 11 così come sono nel repo):
+- con la 04 la sospensione `{"stato_proposto": "sospeso"}` risponde true, resta «aperto» ed è
+  applicata (il difetto);
+- con la 11 e senza la 06 risponde false e l'evento non è applicato;
+- con 11 e 06 lo stato diventa `sospeso` (e `revocato` per la revoca), con evento e flag di
+  provenienza;
+- il rollback rimette la funzione della 04 con lo stesso md5;
+- rieseguendo la RPC della 04 sopra la 11, il marcatore risponde `traduce_stato_proposto: false`;
+- la 11 due volte di fila passa;
+- con i privilegi di default di Supabase, anon non esegue niente di nuovo.
 
 Le otto richieste di BandoFit (§12 del contratto) rispondono tutte, con la chiave anonima, in meno
 di mezzo secondo al 26/09. Il conteggio della vista come anon (2 162) è uguale a quello del

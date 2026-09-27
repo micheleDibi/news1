@@ -673,3 +673,39 @@ inesistenti — spiacevole, reversibile, non grave. Si attivano con
 `apertura`, `proroga`, `chiusura`, `sospensione` e `revoca` restano in ombra: cambiano quello che
 il lettore vede come stato del bando. Il monitor continua a registrarli e fra qualche giorno ce ne
 saranno abbastanza per giudicarli.
+
+## R0-a confermato e migrazione 11 (27/09/2026)
+
+Il committente ha confermato per iscritto che R0-a di BandoFit è in produzione (commit `a9d520a`
+sul `main` di BandoFit). La 06 non è più bloccata dal consumatore. Una lettura del commit contro i
+quattro requisiti di §7 del contratto li trova tutti: badge neutro, esclusione da entrambi i
+segmenti e dagli alert, niente 400 sul filtro `stato`, preferiti tolleranti. I 191 test di
+BandoFit sui bandi girano verdi. Che il commit sia davvero in produzione lo dice solo la conferma
+scritta: da qui non si può verificare.
+
+**Il punto aperto del 26/09 era un difetto vero, e peggiore di come era descritto.** Le
+sospensioni e le revoche raccolte in ombra portano `{"stato_proposto": …}`. La RPC della 04 non
+le respinge: le marca applicate con lo stato intatto e restituisce true. Poi `applica-eventi` le
+rende leggibili, e `valore_dopo` è immutabile. Le difese Python (`TIPI_IN_ATTESA_DI_MIGRAZIONE`,
+`rifiuto_definitivo`) e il finto dei test davano per scontato un rifiuto che la RPC reale non
+produce. Lo stesso comando era prescritto dalla «Riconciliazione» della 06, per di più senza
+`--attivo`. Al 27/09 non c'era nessun evento di quella forma a DB, quindi niente è andato perso.
+
+Correttivo, scelto dal committente fra quattro strade (branch `claude/r0a-migrazione-06`):
+
+- **migrazione 11**: la RPC della 04 più un solo blocco che traduce le due coppie
+  sospensione/sospeso e revoca/revocato, più il marcatore `bando_capacita_eventi()`, che legge
+  il corpo vivo della RPC e il CHECK dello stato;
+- **guardia di `applica-eventi`**: gli eventi che la RPC brucerebbe non le arrivano
+  (`in_attesa_traduzione`), e `MONITOR_STATI_ESTESI` conta solo se anche il DB ha il CHECK a
+  cinque stati.
+
+Provata su un Postgres 17 effimero con le tabelle minime e i pezzi veri della 04: il difetto si
+riproduce, la 11 è innocua prima della 06 e scrive lo stato dopo, il rollback ridà la 04 con lo
+stesso md5.
+
+La stessa verifica ha trovato che la **chiave `valore`** (proroghe e aperture senza `campo`)
+subisce la stessa sorte. A DB c'è già un evento di quella forma. Poi ha trovato una serie di buchi
+di progetto sugli stati nuovi: niente uscite dal sospeso, niente correzioni, `statoDaEventi` come
+seconda fonte, revocati riscaricati per sempre. Sono decisioni del committente: RIPRESA §4.1 a e i.
+La scaletta passo per passo sta in RIPRESA §4.3.

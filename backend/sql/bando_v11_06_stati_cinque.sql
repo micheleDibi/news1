@@ -28,14 +28,20 @@
 --     nuovi (li scrive solo `bando_registra_evento`). Non è bloccante: il
 --     CHECK più largo è innocuo anche da solo.
 --
--- Rompe BandoFit? SÌ prima di R0-a. NO dopo.
---   news1 è già tollerante: `statoDaEventi()` mostra sospeso/revocato
---   leggendo gli eventi `applicato=false` fin dalla fase (b).
+-- Rompe BandoFit? SÌ prima di R0-a. NO dopo (R0-a confermato per iscritto il
+--   27/09/2026: commit a9d520a di BandoFit).
+--   news1 regge i cinque valori (badge, CTA, vista, API). `statoDaEventi()`
+--   mostra sospeso/revocato dagli eventi verificati e LEGGIBILI, applicati o
+--   no: in ombra nascono `leggibile=false`, quindi oggi non mostra niente.
+--   Dopo questo file resta una seconda fonte dello stato accanto alla colonna
+--   (RIPRESA §4.1 i).
 --
 -- Cosa cambia per il resto del sistema
 --   Dopo questo file gli eventi `sospensione` e `revoca` possono essere
 --   applicati alla colonna (`MONITOR_STATI_ESTESI=true`,
---   `applica-eventi --tipo sospensione,revoca`). Prima restano
+--   `applica-eventi --tipo sospensione,revoca --attivo`), ma SOLO DOPO la
+--   migrazione 11: senza, la RPC della 04 marca applicati gli eventi raccolti
+--   in ombra (`stato_proposto`) senza cambiare lo stato. Prima restano
 --   `applicato=false` con la colonna intatta.
 --   La funzione `bando_stato_effettivo` (migrazione 02) gestisce già i due
 --   valori: non va ritoccata.
@@ -116,10 +122,16 @@ COMMIT;
 -- Applica alla colonna gli eventi verificati di sospensione/revoca rimasti
 -- in attesa fra la fase (b) e R0. NON si fa con un UPDATE diretto: il
 -- trigger `trg_bando_stato_solo_via_evento` (migrazione 04) lo rifiuterebbe,
--- e giustamente. Si fa dalla CLI, a blocchi, con il dry-run per primo:
+-- e giustamente. Si fa dalla CLI, a blocchi, con il dry-run per primo, e
+-- SOLO DOPO la migrazione 11 e le decisioni di RIPRESA §4.1 i:
 --
 --   python -m app applica-eventi --tipo sospensione,revoca --dry-run --limit 50
---   python -m app applica-eventi --tipo sospensione,revoca --limit 50
+--   python -m app applica-eventi --tipo sospensione,revoca --attivo --limit 50
+--
+-- `--attivo` va scritto: senza, decide MONITOR_MODALITA, che in produzione
+-- vale `ombra`, e il secondo comando non applicherebbe niente. Nel riepilogo
+-- del dry-run devono comparire `traduzione_stato_proposto: true`,
+-- `stati_estesi: true` e `in_attesa_traduzione: 0`.
 --
 -- Eventi ancora in attesa:
 --   SELECT tipo, count(*) FROM bando_evento
