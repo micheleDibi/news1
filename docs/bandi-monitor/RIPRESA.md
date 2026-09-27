@@ -489,6 +489,34 @@ e oggi l'unico produttore di `slug_modificati` è il monitor in modalità attiva
 
 ### 4.2 Lavoro tecnico proposto e non fatto
 
+**Due difetti emersi il 26/09 con il credito Anthropic esaurito** (giro delle 18:00; le quattro
+classificazioni fallite con «Your credit balance is too low»). Il committente ha deciso di tenerli
+per un intervento futuro:
+
+- **Monitor: una classificazione fallita vale come riuscita e consuma la modifica.** In
+  `scraper_bandi/app/monitoraggio.py:1073-1078` l'eccezione della chiamata al modello diventa
+  `proposte = []` con un warning, poi `esito.classificato = True`. Il giro conta la
+  classificazione, riporta `errori: 0` e nessun allarme, e salva comunque la nuova impronta e il
+  nuovo `testo_norm` (`_colonne_invariato(..., cambiato=True)`). Così la modifica non si
+  ripresenta al giro dopo: il 26/09 si sono perse quelle dei bandi 366543, 356672, 156520 e
+  804007. Correzione: contare l'errore, non far avanzare l'impronta (il giro dopo riprova) e
+  alzare un allarme che `salute` possa leggere. L'unico indizio di oggi è una riga `monitor` con
+  `classificazioni > 0` e `usd = 0`.
+- **Preprocess: un errore dell'API manda il bando in `rejected` per sempre.** Se la pagina del
+  bando è troppo corta, il preprocess passa al ripiego `resolve_bando`. Quando la chiamata a Sonnet
+  fallisce, `scraper_bandi/app/bando_resolver.py:359-372` restituisce `is_valid_bando: False` con
+  `rejection_reason = 'fallback fallito: Sonnet API error'`, e `bando_preprocess_runner._build_update`
+  lo scrive come `rejected`. Nessun codice ritenta quegli scarti. Correzione: trattarlo come
+  l'errore del percorso principale, lasciando il bando `scraped` per il giro dopo. Fino alla
+  correzione, dopo un periodo senza credito controllare (atteso 0; il 26-27/09 era 0):
+  `select id, updated_at from bando where stato_processing = 'rejected' and rejection_reason =
+  'fallback fallito: Sonnet API error';`
+
+**Da guardare: un bando fermo nello step SEO.** Il bando 772894 (fonte OE, `enriched` dal 22/08,
+senza titolo né slug) fallisce la SEO a ogni giro (`seo.payload_failed: 1`). Non si sa se ogni
+tentativo costi una chiamata a Claude, perché la riga del giro non registra il costo della SEO.
+Sul server: `journalctl -u edunews-bandi-sender --since today | grep 772894`.
+
 - **Estendere il controllo dei tipi a tutte le tabelle.** `tests/test_eventi.py` confronta il
   payload di `bando_evento` con i tipi reali della tabella: è la guardia che avrebbe evitato due
   giorni di ombra a vuoto. Le stesse insidie possono stare in `bando_link`, `bando_controllo` e
