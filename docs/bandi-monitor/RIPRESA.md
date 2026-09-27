@@ -41,8 +41,9 @@ Le verifiche visive le ha fatte il committente.
 
 `01, 02, seed, 03, 04, 05, 08, 09, 10`. **Mai applicate: la 06 e la 07.**
 
-- La **06** (cinque stati del bando, cioè `sospeso` e `revocato`) richiede prima il rilascio
-  difensivo R0 di BandoFit. Finché non c'è, gli eventi di sospensione e revoca restano
+- La **06** (cinque stati del bando, cioè `sospeso` e `revocato`) richiedeva prima il rilascio
+  difensivo R0-a di BandoFit: **confermato per iscritto dal committente il 27/09/2026** (commit
+  `a9d520a` di BandoFit, vedi §4.3). Finché la 06 non è applicata, gli eventi di sospensione e revoca restano
   `applicato=false`. Sarebbero leggibili (box sulla scheda, pulsante disattivato) solo con
   `MONITOR_MODALITA=attivo`: oggi, in ombra, nascono `leggibile=false`.
 - La **07** (fase d: REVOKE di colonna, RLS stretta) richiede che BandoFit sia passato al contratto.
@@ -550,11 +551,11 @@ Sul server: `journalctl -u edunews-bandi-sender --since today | grep 772894`.
 | **09/10** | quattordicesimo giorno d'ombra: nuovo `report-ombra`, poi le decisioni di §4.1 a e b |
 | **verso il 24/10** | `domini --import` mensile (§6) |
 
-**BandoFit.** La migrazione 06 aspetta il rilascio R0-a di BandoFit. Al 26/09 il lavoro R0-a
-esiste solo come modifiche non committate nel repo di BandoFit (12 file), e in HEAD il filtro
-accetta ancora solo tre stati. Poi, in ordine:
+**BandoFit.** La migrazione 06 aspettava il rilascio R0-a di BandoFit. Il 27/09/2026 il
+committente ha confermato per iscritto che R0-a è in produzione: è il commit `a9d520a` sul `main`
+di BandoFit («rilascio difensivo R0-a per gli stati sospeso/revocato», 12 file). Poi, in ordine:
 
-1. la conferma scritta che R0-a è in produzione;
+1. ~~la conferma scritta che R0-a è in produzione~~ — data il 27/09/2026;
 2. la 06, poi `MONITOR_STATI_ESTESI=true` e il riavvio verificato del sender (§3.5);
 3. `applica-eventi --tipo sospensione,revoca`, **ma prima va chiuso un punto aperto dalla
    revisione del 26/09**: gli eventi di sospensione e revoca raccolti in ombra portano
