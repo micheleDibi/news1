@@ -194,7 +194,8 @@ def select_bandi_scraped(limit: int | None = None) -> list[dict[str, Any]]:
         try:
             res = (
                 sb.table("bando")
-                .select("id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link")
+                .select("id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link, "
+                        "created_at")
                 .eq("stato_processing", "scraped")
                 .order("id")
                 .range(offset, offset + page_size - 1)

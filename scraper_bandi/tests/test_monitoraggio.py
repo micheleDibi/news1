@@ -2744,7 +2744,7 @@ class TestSecondaOpinione(unittest.IsolatedAsyncioTestCase):
         self.assertIn(monitoraggio.MODELLO_SECONDA_OPINIONE,
                       impostazioni_vere._LISTINO_DEFAULT)
 
-    async def test_un_errore_vale_none_e_non_si_ritenta(self):
+    async def test_un_errore_risale_e_non_si_ritenta(self):
         bilancio = carica_modulo("bilancio")
         cliente = _ClienteFinto(errore=RuntimeError("rete giu'"))
         _con_cliente(self, cliente)
@@ -2752,9 +2752,13 @@ class TestSecondaOpinione(unittest.IsolatedAsyncioTestCase):
         seconda = monitoraggio.seconda_opinione_da_impostazioni(
             self._impostazioni_con_chiave(), contatori)
 
-        self.assertIsNone(await seconda(eventi.Contesto(bando_id=1, oggi=OGGI)))
-        # Un solo tentativo: il G7 ha l'altra strada, e un retry per bando
-        # moltiplicherebbe il conto proprio quando la rete va male.
+        # Dal 28/09/2026 l'errore risale: valere «nessuna concordanza» faceva
+        # respingere gli eventi al G7 e salvare l'impronta, cioe' perdere la
+        # modifica. `controlla` lascia la pagina da rifare al giro dopo.
+        with self.assertRaises(RuntimeError):
+            await seconda(eventi.Contesto(bando_id=1, oggi=OGGI))
+        # Un solo tentativo: un retry per bando moltiplicherebbe il conto
+        # proprio quando la rete va male.
         self.assertEqual(len(cliente.chiamate), 1)
         self.assertEqual(contatori.modelli, {})
 
@@ -3659,6 +3663,8 @@ class TestClassificazioneFallita(unittest.IsolatedAsyncioTestCase):
             fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
         self.assertEqual(esito.esito, "errore")
         self.assertTrue(esito.classificazione_fallita)
+        # Non riuscita: non conta fra le classificazioni, che alimentano i tetti.
+        self.assertFalse(esito.classificato)
         self.assertIn("classificazione fallita", esito.motivo)
         # Nessuna colonna: impronta, testo e prossimo controllo restano quelli
         # di prima, quindi il bando torna nella coda del giro dopo.
@@ -3704,5 +3710,63 @@ class TestClassificazioneFallita(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(esito["classificazioni_fallite"], 3)
         self.assertEqual(esito["errori"], 3)
-        # Tentate: contano per i tetti, perche' la chiamata e' partita.
+        # Le fallite NON consumano il tetto giornaliero: con giorni di credito
+        # a zero avrebbero fermato anche i controlli gratuiti (304, invariati).
+        self.assertEqual(esito["classificazioni"], 0)
+        self.assertTrue(any("classificazioni fallite" in a for a in esito["allarmi"]))
+
+    async def test_dopo_tre_fallimenti_di_fila_niente_piu_chiamate(self):
+        chiamate = []
+
+        async def fallisce(ctx):
+            chiamate.append(ctx.bando_id)
+            raise RuntimeError("Your credit balance is too low")
+
+        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(6)])
+        with patch.object(monitoraggio, "_scarico_predefinito", lambda: self._scarica), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(), fonte_dati=dati, classifica=fallisce,
+                lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            )
+        self.assertEqual(len(chiamate), monitoraggio.FALLIMENTI_MODELLO_DI_FILA)
+        # Tutte le pagine cambiate restano da rifare: nessuna salva l'impronta.
+        self.assertEqual(esito["classificazioni_fallite"], 6)
+
+    async def test_un_successo_azzera_il_conto(self):
+        chiamate = []
+
+        async def a_volte(ctx):
+            chiamate.append(ctx.bando_id)
+            if len(chiamate) % 2:
+                raise RuntimeError("529 overloaded")
+            return []
+
+        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(6)])
+        with patch.object(monitoraggio, "_scarico_predefinito", lambda: self._scarica), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(), fonte_dati=dati, classifica=a_volte,
+                lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            )
+        self.assertEqual(len(chiamate), 6)
+        self.assertEqual(esito["classificazioni_fallite"], 3)
         self.assertEqual(esito["classificazioni"], 3)
+
+    async def test_seconda_opinione_fallita_non_perde_la_modifica(self):
+        async def propone(ctx):
+            return [eventi.Evento(tipo="proroga", citazione="prorogato al 1 dicembre 2026",
+                                  valore="2026-12-01", url_prova="https://www.lazioeuropa.it/x")]
+
+        async def seconda(ctx):
+            raise RuntimeError("529 overloaded")
+
+        esito = await monitoraggio.controlla(
+            _bando(), scarica=self._scarica, classifica=propone, seconda_opinione=seconda,
+            fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(esito.esito, "errore")
+        self.assertTrue(esito.classificazione_fallita)
+        # Haiku ha risposto e si paga: e' una classificazione.
+        self.assertTrue(esito.classificato)
+        self.assertEqual(esito.colonne, {})
+        self.assertEqual(esito.eventi, ())

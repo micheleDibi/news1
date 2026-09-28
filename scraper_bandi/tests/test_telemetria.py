@@ -456,7 +456,7 @@ class TestClassificazioniFallite(unittest.TestCase):
     def test_le_fallite_dell_ultimo_monitor(self):
         campi = telemetria.stato_da_misure(self._misure([
             {"esito": "ok", "avviato_at": "2026-09-28T04:08:00+00:00",
-             "classificazioni": "3", "classificazioni_fallite": "3", "usd": "0"},
+             "classificazioni": "0", "classificazioni_fallite": "3", "usd": "0"},
             {"esito": "ok", "avviato_at": "2026-09-27T16:09:00+00:00",
              "classificazioni": "2", "classificazioni_fallite": "0", "usd": "0.03"},
         ]), adesso=self.ADESSO)
@@ -472,6 +472,27 @@ class TestClassificazioniFallite(unittest.TestCase):
              "classificazioni": "3", "classificazioni_fallite": None, "usd": "0"},
         ]), adesso=self.ADESSO)
         self.assertEqual(campi["classificazioni_fallite_ultimo_monitor"], 3)
+        self.assertEqual(campi["classificazioni_riuscite_ultimo_monitor"], 0)
+
+    def test_un_giro_fermo_prima_di_classificare_non_spegne_l_allarme(self):
+        # Il giro piu' recente non ha tentato niente (tetto, nessuna pagina
+        # cambiata): vale l'ultimo che ha provato.
+        campi = telemetria.stato_da_misure(self._misure([
+            {"esito": "interrotto_per_tetto", "avviato_at": "2026-09-28T16:00:00+00:00",
+             "classificazioni": "0", "classificazioni_fallite": "0", "usd": "0"},
+            {"esito": "ok", "avviato_at": "2026-09-28T04:08:00+00:00",
+             "classificazioni": "0", "classificazioni_fallite": "4", "usd": "0"},
+        ]), adesso=self.ADESSO)
+        self.assertEqual(campi["classificazioni_fallite_ultimo_monitor"], 4)
+
+    def test_un_errore_isolato_e_un_avviso(self):
+        campi = telemetria.stato_da_misure(self._misure([
+            {"esito": "ok", "avviato_at": "2026-09-28T04:08:00+00:00",
+             "classificazioni": "5", "classificazioni_fallite": "1", "usd": "0.08"},
+        ]), adesso=self.ADESSO)
+        esito = telemetria.salute(telemetria.Stato(**campi))
+        self.assertEqual(esito.allarmi, ())
+        self.assertTrue(any("classificazioni fallite" in a for a in esito.avvisi))
 
     def test_giro_sano_nessun_allarme(self):
         for riga in (

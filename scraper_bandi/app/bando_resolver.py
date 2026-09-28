@@ -25,6 +25,7 @@ from typing import Any
 
 from .date_validation import (
     check_dates_coherence,
+    parse_iso,
     reconcile_stato_bando,
     validate_date_candidate,
 )
@@ -280,6 +281,40 @@ def _stato_passeggero(stato: int | None) -> bool:
     return stato is None or stato >= 500 or stato in STATI_PASSEGGERI
 
 
+#: Oltre questi giorni dalla nascita del bando, una fonte ancora irraggiungibile
+#: non e' piu' un guasto passeggero: il bando diventa un rifiuto. Senza un
+#: limite un host morto (DNS rotto) lascerebbe il bando `scraped` per sempre, a
+#: rifare ogni giro lo stesso scarico.
+GIORNI_RINVIO_FONTE = 7
+
+
+def _giorni_in_attesa(bando: dict[str, Any]) -> int | None:
+    """Giorni dalla nascita della riga; None se `created_at` non c'e'."""
+    creato = bando.get("created_at")
+    if not creato:
+        return None
+    giorno = parse_iso(str(creato)[:10])
+    if giorno is None:
+        return None
+    return (oggi_roma() - giorno).days
+
+
+def _rifiuto_ripiego(motivo: str) -> dict[str, Any]:
+    """Rifiuto definitivo del ripiego: il runner lo scrive come `rejected`."""
+    return {
+        "is_valid_bando": False,
+        "confidence_score": 0.0,
+        "rejection_reason": motivo[:300],
+        "stato_bando": None,
+        "data_pubblicazione": None,
+        "data_apertura": None,
+        "data_scadenza": None,
+        "_needs_fallback": False,
+        "_fallback_used": True,
+        "_fallback_failed": True,
+    }
+
+
 def _rinviato(motivo: str) -> dict[str, Any]:
     """Esito del ripiego che il runner NON scrive: il bando resta `scraped`.
 
@@ -358,9 +393,22 @@ async def resolve_bando(
     try:
         risposta = await scarico_corrente().scarica(fonte_link, principale=True)
     except Exception as e:
-        logger.warning("[resolver/{}] scarico della fonte fallito, si riprova: {}", bando_id, e)
-        return _rinviato(f"scarico della fonte fallito: {e}")
-    if not risposta.ok and _stato_passeggero(risposta.stato):
+        # Lo Scarico non solleva per la rete caduta (la restituisce come stato
+        # None): qui arrivano redirect infiniti, URL non valide, corpi non
+        # decodificabili, che riprovando non passano. Resta un rifiuto.
+        logger.warning("[resolver/{}] fonte non scaricabile: {}", bando_id, e)
+        return _rifiuto_ripiego(f"fallback fallito: fonte non scaricabile ({type(e).__name__})")
+    passeggero = (not risposta.ok and _stato_passeggero(risposta.stato)) \
+        or getattr(risposta, "ripiego_fallito", False)
+    if passeggero:
+        giorni = _giorni_in_attesa(bando)
+        if giorni is not None and giorni > GIORNI_RINVIO_FONTE:
+            logger.warning(
+                "[resolver/{}] fonte non disponibile da {} giorni (stato {}): rifiuto",
+                bando_id, giorni, risposta.stato)
+            return _rifiuto_ripiego(
+                f"fallback fallito: fonte non disponibile da oltre {GIORNI_RINVIO_FONTE} "
+                f"giorni (stato {risposta.stato})")
         logger.warning(
             "[resolver/{}] fonte non disponibile (stato {}), si riprova al giro dopo",
             bando_id, risposta.stato)

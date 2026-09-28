@@ -108,6 +108,10 @@ class Risposta:
     last_modified: str | None = None
     troncata: bool = False
     da_cache: bool = False
+    #: Il ripiego Firecrawl serviva ed e' fallito (credito, errore, risposta
+    #: vuota): la risposta e' quella di httpx, che non basta. Chi deve decidere
+    #: se una pagina «non c'e'» o «non si e' potuta leggere oggi» guarda qui.
+    ripiego_fallito: bool = False
 
     @property
     def vuota(self) -> bool:
@@ -352,6 +356,8 @@ class Scarico:
             ripiego = await self._via_firecrawl(url)
             if ripiego is not None and not ripiego.vuota:
                 risposta = ripiego
+            else:
+                risposta = replace(risposta, ripiego_fallito=True)
 
         # Sottopagine e allegati sono httpx-only: se non si prendono si saltano
         # e basta, ma il salto si conta (§6.2). Il 304 non e' un salto: e' la

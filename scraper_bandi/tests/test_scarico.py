@@ -341,6 +341,16 @@ class TestRipiegoFirecrawl(unittest.TestCase):
         # Il credito si conta comunque: una chiamata fallita puo' essere stata
         # fatturata e il tetto deve restare pessimista.
         self.assertEqual(s.contatori.crediti_firecrawl, 1)
+        # E la risposta lo dice: per il ripiego del preprocess una pagina «non
+        # letta oggi» non e' una pagina che non c'e' (28/09/2026).
+        self.assertTrue(risposta.ripiego_fallito)
+
+    def test_ripiego_riuscito_o_non_servito_non_segna_niente(self):
+        fatte: list[str] = []
+        s, _ = _costruisci([httpx.Response(403)], firecrawl=self._firecrawl_finto(fatte))
+        self.assertFalse(_esegui(s.scarica("https://ente.it/bando", principale=True)).ripiego_fallito)
+        s, _ = _costruisci([httpx.Response(200, text="<p>" + "testo " * 200 + "</p>")])
+        self.assertFalse(_esegui(s.scarica("https://ente.it/bando", principale=True)).ripiego_fallito)
 
     def test_304_non_ripiega(self):
         fatte: list[str] = []

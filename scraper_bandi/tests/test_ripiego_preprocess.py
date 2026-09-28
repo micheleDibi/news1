@@ -17,6 +17,7 @@ esiste piu' (404), resta un rifiuto.
     cd scraper_bandi && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_ripiego_preprocess
 """
 import unittest
+from datetime import date
 from unittest.mock import patch
 
 from tests.supporto import carica_modulo
@@ -64,9 +65,27 @@ class RipiegoDelResolver(unittest.IsolatedAsyncioTestCase):
                              modello or _modello_fallito):
             return await bando_resolver.resolve_bando(dict(BANDO), dict(FONTE))
 
-    async def test_rete_caduta_e_un_errore_passeggero(self):
-        esito = await self._risolvi(_Scarico(errore=RuntimeError("ConnectError")))
+    async def test_un_eccezione_dello_scarico_e_un_rifiuto(self):
+        # Lo Scarico vero non solleva per la rete caduta (la restituisce come
+        # stato None, sotto): arrivano qui solo redirect infiniti, URL non
+        # valide, corpi non decodificabili, che non passano riprovando.
+        esito = await self._risolvi(_Scarico(errore=RuntimeError("TooManyRedirects")))
+        self.assertFalse(esito.get("_errore_transitorio"))
+        self.assertFalse(esito["is_valid_bando"])
+        self.assertTrue(esito["rejection_reason"].startswith("fallback fallito:"))
+
+    async def test_ripiego_firecrawl_fallito_e_un_errore_passeggero(self):
+        risposta = scarico.Risposta(url=FONTE["link"], stato=200, testo="app", ripiego_fallito=True)
+        esito = await self._risolvi(_Scarico(risposta))
         self.assertTrue(esito.get("_errore_transitorio"))
+
+    async def test_fonte_giu_da_troppi_giorni_diventa_un_rifiuto(self):
+        vecchio = dict(BANDO, created_at="2026-09-01T10:00:00+00:00")
+        with patch.object(scarico, "scarico_corrente", lambda: _Scarico(_risposta(503))), \
+                patch.object(bando_resolver, "oggi_roma", lambda: date(2026, 9, 28)):
+            esito = await bando_resolver.resolve_bando(vecchio, dict(FONTE))
+        self.assertFalse(esito.get("_errore_transitorio"))
+        self.assertIn("da oltre", esito["rejection_reason"])
 
     async def test_stati_passeggeri(self):
         for stato in (None, 403, 406, 429, 500, 502, 503):

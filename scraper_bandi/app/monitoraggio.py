@@ -1074,7 +1074,6 @@ async def controlla(
         modalita=modalita,
     )
 
-    esito.classificato = True
     try:
         proposte = list(await classifica(ctx))
     except Exception as e:
@@ -1087,17 +1086,19 @@ async def controlla(
         # la rivede. Niente `controlli_falliti`: la pagina non ha colpa, e
         # cinque giri senza credito non devono bloccare il bando.
         logger.warning("[monitor] classificazione fallita per {}: {}", riga.get("id"), e)
-        esito.esito = "errore"
-        esito.classificazione_fallita = True
-        esito.motivo = f"classificazione fallita: {e}"[:300]
-        esito.colonne = {}
-        return esito
+        return _classificazione_fallita(esito, f"classificazione fallita: {e}")
+    esito.classificato = True
 
     if proposte and seconda_opinione is not None:
         try:
             ctx = replace_contesto(ctx, seconda_opinione=await seconda_opinione(ctx))
         except Exception as e:
-            logger.debug("[monitor] seconda opinione fallita per {}: {}", riga.get("id"), e)
+            # Stessa regola: senza la seconda opinione gli eventi che chiedono
+            # la concordanza verrebbero respinti al G7 e l'impronta nuova
+            # salvata, cioe' la modifica persa. Si rifa' tutto al giro dopo
+            # (Haiku si ripaga, la notizia no).
+            logger.warning("[monitor] seconda opinione fallita per {}: {}", riga.get("id"), e)
+            return _classificazione_fallita(esito, f"seconda opinione fallita: {e}")
 
     ammessi: list[dict[str, Any]] = []
     respinti: list[dict[str, Any]] = []
@@ -1626,6 +1627,49 @@ def _rifiutato(scrittore: Any, riga: Mapping[str, Any]) -> bool:
     return esito(riga) == db.EVENTO_RIFIUTATO
 
 
+def _classificazione_fallita(esito: EsitoControllo, motivo: str) -> EsitoControllo:
+    """Il modello non ha risposto: errore, e nessuna colonna salvata.
+
+    Impronta, `testo_norm` e prossimo controllo restano quelli di prima, quindi
+    la pagina risulta ancora cambiata e il giro dopo il modello la rivede.
+    Niente `controlli_falliti`: la pagina non ha colpa, e qualche giro senza
+    credito non deve bloccare il bando.
+    """
+    esito.esito = "errore"
+    esito.classificazione_fallita = True
+    esito.motivo = motivo[:300]
+    esito.colonne = {}
+    return esito
+
+
+#: Dopo tanti fallimenti del modello di fila, nel resto del giro non lo si
+#: chiama piu'. Col credito esaurito ogni chiamata fallisce: continuare non
+#: salva niente, e le pagine cambiate restano comunque in coda per il giro dopo.
+FALLIMENTI_MODELLO_DI_FILA = 3
+
+
+def _con_interruttore(stato: dict[str, int], funzione: Callable[..., Awaitable[Any]]):
+    """Avvolge una chiamata al modello con l'interruttore del giro.
+
+    `stato` e' condiviso fra classificatore e seconda opinione: il credito e'
+    uno solo. Un successo azzera il conto, quindi un errore isolato (un 529)
+    non spegne niente.
+    """
+    async def chiama(*args: Any, **kwargs: Any) -> Any:
+        if stato["di_fila"] >= FALLIMENTI_MODELLO_DI_FILA:
+            raise RuntimeError(
+                f"chiamate al modello sospese per il resto del giro dopo "
+                f"{FALLIMENTI_MODELLO_DI_FILA} fallimenti di fila")
+        try:
+            risultato = await funzione(*args, **kwargs)
+        except Exception:
+            stato["di_fila"] += 1
+            raise
+        stato["di_fila"] = 0
+        return risultato
+    return chiama
+
+
 def _salva(fonte_dati: FonteDati | None, esito: EsitoControllo) -> None:
     if fonte_dati is None or not esito.colonne:
         return
@@ -1825,6 +1869,15 @@ async def run(
                 return dict(base, saltato="scarico_non_configurato",
                             candidati=len(righe), controllati=0, allarmi=allarmi)
 
+        # Un solo interruttore per classificatore e seconda opinione: dopo
+        # FALLIMENTI_MODELLO_DI_FILA errori di fila il giro smette di chiamare
+        # il modello e prosegue con i controlli che non ne hanno bisogno.
+        interruttore = {"di_fila": 0}
+        if classificatore is not None:
+            classificatore = _con_interruttore(interruttore, classificatore)
+        if seconda_opinione is not None:
+            seconda_opinione = _con_interruttore(interruttore, seconda_opinione)
+
         # La whitelist dei domini si costruisce UNA volta per giro, e solo se
         # c'e' davvero qualcosa da controllare. Senza, `eventi.g4_prova`
         # ripiega sul seed compilato — 20 host e 7 pattern — e respinge quasi
@@ -1913,8 +1966,10 @@ async def run(
             "non_modificati": sum(1 for e in esiti if e.esito in ("304", "invariato")),
             "errori": contatori.errori,
             "classificazioni": contatori.classificazioni,
-            # Comprese in `classificazioni`. Maggiori di zero vuol dire credito
-            # esaurito o API giu': `salute` lo legge da qui.
+            # Controlli rimasti a meta' perche' il modello non ha risposto: NON
+            # sono in `classificazioni`, che conta le chiamate riuscite e
+            # alimenta i tetti. Maggiori di zero vuol dire credito esaurito o
+            # API giu': `salute` lo legge da qui.
             "classificazioni_fallite": contatori.classificazioni_fallite,
             "eventi": contatori.eventi,
             "respinti": sum(len(e.respinti) for e in esiti),
@@ -1938,6 +1993,14 @@ async def run(
             # `db.registra_evento`.
             avviso = (f"{non_scritti} eventi non scritti: il database li ha "
                       f"rifiutati, l'ombra non sta misurando niente")
+            allarmi.append(avviso)
+            logger.warning("[ALLARME] [monitor] {}", avviso)
+            riepilogo["allarmi"] = allarmi
+        if contatori.classificazioni_fallite:
+            # Il controllo quotidiano di RIPRESA §3.1 cerca «[ALLARME]» nel
+            # journal: senza questa riga il credito esaurito passava di li'.
+            avviso = (f"{contatori.classificazioni_fallite} classificazioni fallite: credito "
+                      f"Anthropic esaurito o API giu' (le pagine si rifanno al giro dopo)")
             allarmi.append(avviso)
             logger.warning("[ALLARME] [monitor] {}", avviso)
             riepilogo["allarmi"] = allarmi
@@ -2055,10 +2118,12 @@ def seconda_opinione_da_impostazioni(
        una domanda suggestiva («confermi?»), che un modello conferma quasi
        sempre. Per questo `Contesto.seconda_opinione` resta a `None` mentre
        questa funzione lavora: e' `controlla` a riempirlo DOPO;
-    3. **un solo tentativo.** Un errore vale `None` (cioe' «nessuna
-       concordanza»), non un ritentativo: il G7 ha la seconda strada della
-       prova indipendente, e un retry per bando moltiplicherebbe il conto
-       proprio sui giri in cui la rete va male.
+    3. **un solo tentativo.** Niente ritentativi qui: un retry per bando
+       moltiplicherebbe il conto proprio sui giri in cui la rete va male.
+       L'errore pero' risale a `controlla` (dal 28/09/2026: prima valeva
+       `None`, cioe' «nessuna concordanza», e con Sonnet giu' gli eventi
+       venivano respinti al G7 mentre l'impronta nuova si salvava), che lascia
+       la pagina da rifare al giro dopo.
 
     Ritorna `None` — e il comportamento resta quello di oggi, cioe' G7
     soddisfacibile solo con una prova indipendente — se la chiave o il
@@ -2099,11 +2164,11 @@ def seconda_opinione_da_impostazioni(
                 messages=[{"role": "user", "content": eventi_mod.prompt_utente(ctx)}],
             )
         except Exception as e:
-            # Nessun ritentativo: vedi il punto 3 del docstring.
+            # Nessun ritentativo, ma l'errore risale: vedi il punto 3.
             logger.warning(
                 "[monitor] seconda opinione non ottenuta per il bando {}: {}",
                 ctx.bando_id, e)
-            return None
+            raise
         bilancio.registra_chiamata(
             contatori, modello, getattr(risposta, "usage", None), listino)
         return eventi_mod.leggi_eventi(risposta) or None
@@ -3561,7 +3626,7 @@ def _scrivi_run(step: str, riepilogo: Mapping[str, Any], *, tempo: float) -> Non
 
 __all__ = [
     "ALLARME_RIFIUTI_TRONCATI", "BLOCCO_APPLICAZIONE", "CAMPIONE_MINIMO",
-    "COLONNE_RIFIUTO", "INTESTAZIONI_REPORT", "MOTIVO_RIFIUTO",
+    "COLONNE_RIFIUTO", "FALLIMENTI_MODELLO_DI_FILA", "INTESTAZIONI_REPORT", "MOTIVO_RIFIUTO",
     "TETTO_RIFIUTI_NOTI", "TRADUZIONI_STATO_PROPOSTO",
     "PAGINA_SELEZIONE_EVENTI", "SOGLIA_PRECISIONE", "STEP_APPLICA",
     "applicabile", "attende_traduzione", "eventi_gia_rifiutati", "precisione", "report_ombra_da_eventi",

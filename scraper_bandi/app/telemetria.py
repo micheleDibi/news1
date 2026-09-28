@@ -301,6 +301,9 @@ class Stato:
     #: Classificazioni fallite nell'ultimo giro di monitor di regime: credito
     #: Anthropic esaurito o API giu'. Ogni giro cosi' e' lavoro da rifare.
     classificazioni_fallite_ultimo_monitor: int | None = None
+    #: Le riuscite dello stesso giro: un errore isolato (un 529) fra tante
+    #: riuscite e' un avviso, non un allarme sul credito.
+    classificazioni_riuscite_ultimo_monitor: int | None = None
     #: Le misure sul DB non si sono potute fare: e' un allarme, non un silenzio.
     misure_db_errore: str | None = None
     #: Voci che questa esecuzione non ha misurato: finiscono negli avvisi.
@@ -334,10 +337,12 @@ def salute(stato: Stato) -> Salute:
         allarmi.append(f"nessun monitor OK da {stato.ore_dall_ultimo_monitor_ok:.0f} h")
     if stato.misure_db_errore:
         allarmi.append(f"misure sul DB non disponibili: {stato.misure_db_errore}")
-    if stato.classificazioni_fallite_ultimo_monitor:
-        allarmi.append(
-            f"classificazioni fallite nell'ultimo monitor: "
-            f"{stato.classificazioni_fallite_ultimo_monitor} (credito Anthropic esaurito o API giu')")
+    fallite = stato.classificazioni_fallite_ultimo_monitor or 0
+    riuscite = stato.classificazioni_riuscite_ultimo_monitor or 0
+    if fallite:
+        testo = (f"classificazioni fallite nell'ultimo monitor: {fallite} su "
+                 f"{fallite + riuscite} (credito Anthropic esaurito o API giu')")
+        (allarmi if fallite >= riuscite else avvisi).append(testo)
     if not stato.login_oe_ok:
         allarmi.append("login Obiettivo Europa fallito")
     if stato.giri_consecutivi_a_tetto >= 2:
@@ -428,21 +433,22 @@ def _motivo_del_tetto(riga: Mapping[str, Any]) -> str:
     return ""
 
 
-def _classificazioni_fallite(riga: Mapping[str, Any]) -> int:
-    """Le classificazioni fallite di un giro di monitor.
+def _classificazioni(riga: Mapping[str, Any]) -> tuple[int, int]:
+    """(fallite, riuscite) di un giro di monitor.
 
-    Il contatore esiste dal 28/09/2026. Sulle righe precedenti vale la firma
-    che RIPRESA §4.2 indicava come unico indizio: classificazioni tentate e
-    costo zero, perche' una chiamata riuscita a un modello a listino costa
+    Il contatore delle fallite esiste dal 28/09/2026, e da allora
+    `classificazioni` conta solo le riuscite. Sulle righe precedenti vale la
+    firma che RIPRESA §4.2 indicava come unico indizio: classificazioni tentate
+    e costo zero, perche' una chiamata riuscita a un modello a listino costa
     sempre qualcosa.
     """
+    classificazioni = int(_numero(riga.get("classificazioni")))
     fallite = riga.get("classificazioni_fallite")
     if fallite is not None:
-        return int(_numero(fallite))
-    tentate = int(_numero(riga.get("classificazioni")))
-    if tentate > 0 and riga.get("usd") is not None and _numero(riga.get("usd")) == 0:
-        return tentate
-    return 0
+        return int(_numero(fallite)), classificazioni
+    if classificazioni > 0 and riga.get("usd") is not None and _numero(riga.get("usd")) == 0:
+        return classificazioni, 0
+    return 0, classificazioni
 
 
 def _giri_a_tetto(righe: list[Mapping[str, Any]]) -> int:
@@ -494,7 +500,13 @@ def stato_da_misure(
         if quando is not None:
             campi["ore_dall_ultimo_monitor_ok"] = round(
                 max(0.0, (adesso - quando).total_seconds() / 3600), 1)
-        campi["classificazioni_fallite_ultimo_monitor"] = _classificazioni_fallite(monitor[0])
+        # L'ultimo giro che ha provato a classificare: uno fermato dal tetto o
+        # senza pagine cambiate non dice niente sul credito, e leggerlo
+        # spegnerebbe l'allarme senza che niente sia cambiato.
+        provato = next((r for r in monitor if sum(_classificazioni(r)) > 0), None)
+        fallite, riuscite = _classificazioni(provato) if provato is not None else (0, 0)
+        campi["classificazioni_fallite_ultimo_monitor"] = fallite
+        campi["classificazioni_riuscite_ultimo_monitor"] = riuscite
     else:
         non_misurati.append("monitor di regime (nessun giro registrato)")
 
