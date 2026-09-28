@@ -1,10 +1,13 @@
 # Bandi — punto di ripresa e verifiche
 
 Questo file serve a riprendere il lavoro sui bandi dopo una pausa di giorni o di settimane, senza
-rileggere il piano né ricostruire il contesto. È aggiornato al **27 settembre 2026**: conferma
-di R0-a, migrazione 11 scritta e scaletta della 06 (§4.3). Il controllo completo sul DB, sul sito
-pubblico e sui test resta quello del 26/09 alle 12; il 27/09 si sono rimisurati solo gli eventi e
-gli stati (§4.3).
+rileggere il piano né ricostruire il contesto. È aggiornato al **28 settembre 2026**:
+- il 27/09: conferma di R0-a e migrazione 11 scritta;
+- il 28/09 mattina: 11 e 06 applicate, `MONITOR_STATI_ESTESI=true`, sender riavviato (§4.3,
+  passi 2-6).
+
+Il controllo completo sul DB, sul sito pubblico e sui test resta quello del 26/09 alle 12; dopo si
+sono rimisurati solo eventi, stati e marcatore (§4.3).
 
 Per la cronaca di come ci siamo arrivati: `AVANZAMENTO.md`, nella stessa cartella. Per il contratto
 verso BandoFit: `docs/contratto-db-bandi.md`. Il piano completo dell'intervento sta in
@@ -40,18 +43,17 @@ Le verifiche visive le ha fatte il committente.
 
 ### Migrazioni applicate
 
-`01, 02, seed, 03, 04, 05, 08, 09, 10`. **Mai applicate: la 06, la 07 e la 11** (la 11 è
-scritta dal 27/09).
+`01, 02, seed, 03, 04, 05, 08, 09, 10`, più **11 e 06 applicate il 28/09/2026**, in quest'ordine.
+**Mai applicata: la 07.**
 
-- La **06** (cinque stati del bando, cioè `sospeso` e `revocato`) richiedeva prima il rilascio
-  difensivo R0-a di BandoFit: **confermato per iscritto dal committente il 27/09/2026** (commit
-  `a9d520a` di BandoFit, vedi §4.3). Finché la 06 non è applicata, gli eventi di sospensione e revoca restano
-  `applicato=false`. Sarebbero leggibili (box sulla scheda, pulsante disattivato) solo con
-  `MONITOR_MODALITA=attivo`: oggi, in ombra, nascono `leggibile=false`.
+- La **06** (cinque stati del bando, cioè `sospeso` e `revocato`) aspettava il rilascio difensivo
+  R0-a di BandoFit, confermato per iscritto dal committente il 27/09/2026 (commit `a9d520a` di
+  BandoFit). Dal 28/09 la colonna ammette i cinque valori. Oggi però nessun bando è sospeso o
+  revocato, e nessun evento di quei tipi è stato applicato (§4.3 passo 7).
 - La **11** (`bando_v11_11_traduzione_stato_proposto.sql`) fa tradurre a `bando_applica_evento`
-  lo `stato_proposto` degli eventi raccolti in ombra. Senza la 11 la RPC della 04 li marca
-  applicati senza cambiare lo stato. Va applicata **prima** di qualunque `applica-eventi` su
-  sospensioni e revoche, e conviene prima della 06 (è innocua anche da sola). Scaletta in §4.3.
+  lo `stato_proposto` degli eventi raccolti in ombra. Senza, la RPC della 04 li marca applicati
+  senza cambiare lo stato. Il marcatore `bando_capacita_eventi()` risponde, dal 28/09,
+  `{"stati_cinque": true, "traduce_stato_proposto": true}`.
 - La **07** (fase d: REVOKE di colonna, RLS stretta) richiede che BandoFit sia passato al contratto.
 
 ### Configurazione in produzione (`scraper_bandi/.env`)
@@ -59,7 +61,13 @@ scritta dal 27/09).
 ```
 RESOLVER_MODALITA=attivo      ← messo il 25/09: prima valeva `ombra` per difetto
                                  e ogni giro risolveva bandi nuovi e buttava il risultato
+MONITOR_STATI_ESTESI=true     ← messo il 28/09, dopo la 06: le sospensioni e le revoche
+                                 nuove nascono con `stato_bando` (in ombra, invisibili)
 ```
+
+`applica-eventi` stampa `stati_estesi` nel riepilogo: `True` solo se questo flag è letto **e**
+il DB ha il CHECK a cinque stati. Il 28/09 la prima prova a secco ha dato `False` per una riga
+scritta male nel `.env`: è il controllo più rapido che il flag sia davvero letto.
 
 `MONITOR_MODALITA` **non è impostata**, quindi vale `ombra`: il monitor registra le proposte e non
 tocca stato né date. È voluto. `MONITOR_GIRI` e `MONITOR_SCENARIO` non sono impostate e i default
@@ -204,12 +212,11 @@ select count(*) from bando where pubblicato and (stato_processing <> 'completed'
 select count(*) filter (where stato_processing='completed' and slug is not null) as predicato_storico,
        count(*) filter (where pubblicato) as flag_nuovo from bando;
 
--- 8. Nessuno stato fuori vocabolario prima della migrazione 06. Atteso: 0
---    (0 anche il 27/09). Dopo la 06 il vocabolario ha cinque valori: aggiungere
---    'sospeso','revocato' alla lista, e l'atteso resta 0.
+-- 8. Nessuno stato fuori vocabolario (cinque valori dalla 06, applicata il 28/09).
+--    Atteso: 0.
 select count(*) from bando
  where stato_bando is not null
-   and stato_bando not in ('aperto','chiuso','in apertura prossimamente');
+   and stato_bando not in ('aperto','chiuso','in apertura prossimamente','sospeso','revocato');
 
 -- 9. Anon esegue solo le tre funzioni della vista (più quelle di pg_trgm).
 --    Atteso: esattamente 3 righe, bando_stato_effettivo, dominio_di,
@@ -642,6 +649,17 @@ Sul server: `journalctl -u edunews-bandi-sender --since today | grep 772894`.
 committente ha confermato per iscritto che R0-a è in produzione: è il commit `a9d520a` sul `main`
 di BandoFit («rilascio difensivo R0-a per gli stati sospeso/revocato», 12 file). Poi, in ordine:
 
+Passi 1-6 **fatti il 27 e 28/09/2026**; tutte le verifiche hanno dato il valore atteso:
+- Verifica 3 della 06: solo i tre stati storici più i NULL dei non pubblicati;
+- Verifica 5 della 06: nessuna riga, perché non ci sono ancora sospesi;
+- marcatore: `{"stati_cinque": true, "traduce_stato_proposto": true}`;
+- prova a secco: `traduzione_stato_proposto: True`, `stati_estesi: True`,
+  `in_attesa_traduzione: 0`, `candidati: 0`.
+
+Il riavvio delle 08:21 è arrivato a giro di avvio in corso (partito alle 08:17). Il giro nuovo è
+risultato `saltato` per il lock `bandi_pipeline` del processo vecchio, e il lock è stato
+rilasciato a mano con `lock_rilascia` (§3.2 punto 10). **Resta da fare il passo 7.**
+
 1. ~~la conferma scritta che R0-a è in produzione~~: data il 27/09/2026;
 2. **backup** (§4.1 f): nel pannello Supabase del progetto bandi (Database → Backups) un backup
    recente o il PITR. La 06 e la 11 hanno un rollback, gli eventi applicati dopo no;
@@ -750,7 +768,11 @@ predicato storico.
    riavviato, e il riavvio va verificato dall'esterno.
 
 6. **Un `systemctl restart` durante un giro lascia il lock orfano** per tutta la sua scadenza. Vedi
-   §3.2 punto 10.
+   §3.2 punto 10. Il giro di avvio conta come un giro: il 28/09 un secondo riavvio, quattro
+   minuti dopo il primo, ha trovato il lock del giro di avvio precedente, ha saltato il proprio
+   e avrebbe fatto saltare anche quello delle 12 (il TTL della pipeline è di 4 ore,
+   `backend/app/bandi_pipeline.py:95`). Fra due riavvii si aspetta la riga «Pipeline iniziale
+   completata» del primo.
 
 7. **Una colonna, una scala.** `bando_evento.confidenza` è uno `smallint` e il resolver ci scriveva
    0-100 mentre il monitor 0-1: Postgres rifiutava ogni insert e l'errore finiva in un warning.

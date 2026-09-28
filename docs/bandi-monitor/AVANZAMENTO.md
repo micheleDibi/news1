@@ -722,3 +722,21 @@ difetti nella traduzione. Ha trovato undici imprecisioni di contorno, tutte corr
 La guardia del lock aggiunta al rollback aveva a sua volta un difetto, trovato dal banco effimero
 e non dai test testuali: un `IF … AND EXISTS (SELECT … FROM pipeline_lock)` fallisce se la tabella
 manca, perché PL/pgSQL pianifica l'intera espressione.
+
+## 11 e 06 applicate (28/09/2026)
+
+Il committente ha applicato la 11 e poi la 06 nel SQL Editor. Poi ha aggiunto
+`MONITOR_STATI_ESTESI=true` a `scraper_bandi/.env`, ha fatto il pull del codice e ha riavviato il
+sender. Tutte le verifiche hanno dato il valore atteso; il dettaglio sta in RIPRESA §4.3.
+
+Due inciampi, tutti e due presi dai controlli:
+- **la prima prova a secco ha dato `stati_estesi: False`**, perché la riga del flag nel `.env` era
+  scritta male. Il riepilogo di `applica-eventi` lo ha mostrato subito. Corretta la riga, ha dato
+  `True`;
+- **il secondo riavvio è arrivato col giro di avvio del primo ancora in corso.** Il sender nuovo
+  ha saltato il proprio giro per il lock `bandi_pipeline` del processo vecchio, e quel lock
+  (TTL di 4 ore) avrebbe fatto saltare anche il giro delle 12. Rilasciato a mano con
+  `lock_rilascia` dopo aver verificato con `ps` che il processo non esisteva più.
+
+Nessun bando è sospeso o revocato e nessun evento di quei tipi è in coda. Applicarli (passo 7)
+aspetta le decisioni di RIPRESA §4.1 i.

@@ -144,10 +144,10 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > solo dopo la sua migrazione al contratto `docs/contratto-db-bandi.md`). Finché non sono applicate, il codice nuovo
 > degrada da solo (`db.controllo` rileva le colonne assenti) e monitor e resolver restano in modalità ombra.
 
-> Stato al 27/09/2026 (RIPRESA §1, che resta la fonte aggiornata): applicate 01, 02, seed, 03, 04, 05, 08, 09, 10;
-> mancano 06, 07 e 11 (la 11 è scritta dal 27/09 e va applicata prima di ogni `applica-eventi` su sospensioni e
-> revoche); R0-a di BandoFit confermato per iscritto il 27/09, quindi la 06 non è più bloccata (scaletta in RIPRESA
-> §4.3); resolver attivo, monitor in ombra (faq e nuovo_allegato resi visibili una sola volta, a mano, il 25/09).
+> Stato al 28/09/2026 (RIPRESA §1, che resta la fonte aggiornata): applicate 01, 02, seed, 03, 04, 05, 08, 09, 10,
+> più 11 e 06 il 28/09 (R0-a di BandoFit confermato per iscritto il 27/09); manca la 07. `MONITOR_STATI_ESTESI=true`
+> dal 28/09; nessun evento di sospensione o revoca applicato (RIPRESA §4.3 passo 7, dopo le decisioni di §4.1 i);
+> resolver attivo, monitor in ombra (faq e nuovo_allegato resi visibili una sola volta, a mano, il 25/09).
 
 > **Deroga registrata (intervento "documentazione allineata al codice", 25/09/2026).** Su richiesta esplicita
 > dell'utente è stato modificato solo il commento in testa a `scripts/migrate-slugs.ts` (il lancio documentato non
