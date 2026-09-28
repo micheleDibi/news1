@@ -3753,6 +3753,31 @@ class TestClassificazioneFallita(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(esito["classificazioni_fallite"], 3)
         self.assertEqual(esito["classificazioni"], 3)
 
+    async def test_sonnet_giu_e_haiku_su_si_torna_alla_prova_indipendente(self):
+        """Dopo 3 errori di fila di Sonnet la seconda opinione vale «nessuna
+        concordanza» per il resto del giro, come prima del 28/09: altrimenti
+        le stesse pagine si rifarebbero a ogni giro consumando il tetto."""
+        chiamate_sonnet = []
+
+        async def propone(ctx):
+            return [eventi.Evento(tipo="proroga", citazione="prorogato al 1 dicembre 2026",
+                                  valore="2026-12-01", url_prova="https://www.lazioeuropa.it/x")]
+
+        async def sonnet(ctx):
+            chiamate_sonnet.append(ctx.bando_id)
+            raise RuntimeError("404 model not found")
+
+        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(6)])
+        with patch.object(monitoraggio, "_scarico_predefinito", lambda: self._scarica), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(), fonte_dati=dati, classifica=propone,
+                seconda_opinione=sonnet, lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            )
+        self.assertEqual(len(chiamate_sonnet), monitoraggio.FALLIMENTI_MODELLO_DI_FILA)
+        self.assertEqual(esito["classificazioni_fallite"], monitoraggio.FALLIMENTI_MODELLO_DI_FILA)
+        self.assertEqual(esito["seconde_opinioni_fallite"], monitoraggio.FALLIMENTI_MODELLO_DI_FILA)
+
     async def test_seconda_opinione_fallita_non_perde_la_modifica(self):
         async def propone(ctx):
             return [eventi.Evento(tipo="proroga", citazione="prorogato al 1 dicembre 2026",

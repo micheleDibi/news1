@@ -445,7 +445,10 @@ def _classificazioni(riga: Mapping[str, Any]) -> tuple[int, int]:
     classificazioni = int(_numero(riga.get("classificazioni")))
     fallite = riga.get("classificazioni_fallite")
     if fallite is not None:
-        return int(_numero(fallite)), classificazioni
+        # Le pagine con Haiku riuscito e Sonnet fallito stanno in tutti e due i
+        # contatori: fra le riuscite non vanno contate.
+        doppie = int(_numero(riga.get("seconde_opinioni_fallite")))
+        return int(_numero(fallite)), max(0, classificazioni - doppie)
     if classificazioni > 0 and riga.get("usd") is not None and _numero(riga.get("usd")) == 0:
         return classificazioni, 0
     return 0, classificazioni

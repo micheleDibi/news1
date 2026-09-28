@@ -360,6 +360,7 @@ class MisureSalute(unittest.TestCase):
         selezione = next(c for c in prima[1] if c[0] == "select")[1][0]
         for colonna in ("classificazioni:contatori->>classificazioni",
                         "classificazioni_fallite:contatori->>classificazioni_fallite",
+                        "seconde_opinioni_fallite:contatori->>seconde_opinioni_fallite",
                         "usd:contatori->>usd"):
             self.assertIn(colonna, selezione)
 

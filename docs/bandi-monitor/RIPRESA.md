@@ -598,7 +598,10 @@ niente preme.
   - È contata in `classificazioni_fallite` e in `errori`, non in `classificazioni`: i tentativi
     falliti non consumano il tetto giornaliero, altrimenti dopo qualche giorno di credito a zero
     avrebbero fermato anche i controlli gratuiti.
-  - Dopo 3 fallimenti di fila il giro smette di chiamare il modello e prosegue con il resto.
+  - Due interruttori per giro, uno per modello. Dopo 3 fallimenti di fila di Haiku il giro
+    smette di chiamarlo e prosegue con il resto. Dopo 3 di Sonnet la seconda opinione torna a
+    valere «nessuna concordanza» per il resto del giro, come prima: il G7 passa solo con la
+    prova indipendente.
   - `salute` e il journal alzano un allarme (§3.1). Prima della correzione se ne sono perse 10: i
   bandi 366543, 356672, 156520 e 804007 del 26/09, più tre il 27/09 alle 18 e tre il 28/09 alle
   06. Quelle modifiche non tornano da sole: vedi §4.4.
@@ -606,9 +609,11 @@ niente preme.
   passeggero: rete, 5xx, 429, filtro WAF, ripiego Firecrawl fallito, eccezione del modello. Il
   bando resta `scraped` e il giro dopo riprova, come quando fallisce il percorso principale; il
   contatore è `fallback_rinviati`.
-  - Il rinvio dura al massimo 7 giorni dalla nascita del bando. Poi diventa un rifiuto
-    («fonte non disponibile da oltre 7 giorni»), perché un host morto non deve lasciare un bando
-    `scraped` per sempre.
+  - Il rinvio non ha limite d'età, per scelta. Dopo giorni senza credito, un solo guasto della
+    fonte scarterebbe per sempre un bando vero. Il prezzo è che un host morto lascia il bando
+    `scraped` e lo riscarica a ogni giro. Finché il rilascio 2 non porta l'allarme sull'ingresso
+    fermo, si guarda a mano:
+    `select id, created_at from bando where stato_processing = 'scraped' and created_at < now() - interval '2 days';`
   - Restano rifiuti una pagina vuota, una sparita (404/410) e un errore dello scarico che
     riprovando non passa (redirect infiniti, URL non valida).
   - Prima della correzione i rifiuti del ramo Firecrawl erano 25 (dal 02/07 al 23/09), e non si

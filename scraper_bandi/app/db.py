@@ -194,8 +194,7 @@ def select_bandi_scraped(limit: int | None = None) -> list[dict[str, Any]]:
         try:
             res = (
                 sb.table("bando")
-                .select("id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link, "
-                        "created_at")
+                .select("id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link")
                 .eq("stato_processing", "scraped")
                 .order("id")
                 .range(offset, offset + page_size - 1)
@@ -2378,6 +2377,7 @@ def misure_salute(
             .select("avviato_at,concluso_at,esito,giro,interrotto_per_tetto,motivo:contatori->>motivo,"
                     "classificazioni:contatori->>classificazioni,"
                     "classificazioni_fallite:contatori->>classificazioni_fallite,"
+                    "seconde_opinioni_fallite:contatori->>seconde_opinioni_fallite,"
                     "usd:contatori->>usd")
             .eq("step", "monitor").not_.is_("giro", "null")
             .order("avviato_at", desc=True).limit(60).execute()

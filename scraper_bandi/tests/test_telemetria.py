@@ -506,6 +506,18 @@ class TestClassificazioniFallite(unittest.TestCase):
             self.assertEqual(campi["classificazioni_fallite_ultimo_monitor"], 0, riga)
             self.assertEqual(telemetria.salute(telemetria.Stato(**campi)).allarmi, (), riga)
 
+    def test_le_pagine_con_sonnet_fallito_non_contano_due_volte(self):
+        # 5 classificazioni di Haiku riuscite, 3 delle quali poi fallite su
+        # Sonnet: riuscite davvero 2, fallite 3.
+        campi = telemetria.stato_da_misure(self._misure([
+            {"esito": "ok", "avviato_at": "2026-09-28T04:08:00+00:00",
+             "classificazioni": "5", "classificazioni_fallite": "3",
+             "seconde_opinioni_fallite": "3", "usd": "0.08"},
+        ]), adesso=self.ADESSO)
+        self.assertEqual(campi["classificazioni_fallite_ultimo_monitor"], 3)
+        self.assertEqual(campi["classificazioni_riuscite_ultimo_monitor"], 2)
+        self.assertTrue(telemetria.salute(telemetria.Stato(**campi)).allarmi)
+
     def test_senza_righe_di_monitor_non_si_misura(self):
         campi = telemetria.stato_da_misure(self._misure([]), adesso=self.ADESSO)
         self.assertNotIn("classificazioni_fallite_ultimo_monitor", campi)

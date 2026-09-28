@@ -1648,18 +1648,30 @@ def _classificazione_fallita(esito: EsitoControllo, motivo: str) -> EsitoControl
 FALLIMENTI_MODELLO_DI_FILA = 3
 
 
-def _con_interruttore(stato: dict[str, int], funzione: Callable[..., Awaitable[Any]]):
-    """Avvolge una chiamata al modello con l'interruttore del giro.
+async def _nessuna_concordanza(*_args: Any, **_kwargs: Any) -> None:
+    return None
 
-    `stato` e' condiviso fra classificatore e seconda opinione: il credito e'
-    uno solo. Un successo azzera il conto, quindi un errore isolato (un 529)
-    non spegne niente.
+
+def _sospeso(*_args: Any, **_kwargs: Any) -> Awaitable[Any]:
+    raise RuntimeError(
+        f"chiamate al modello sospese per il resto del giro dopo "
+        f"{FALLIMENTI_MODELLO_DI_FILA} fallimenti di fila")
+
+
+def _con_interruttore(
+    stato: dict[str, int],
+    funzione: Callable[..., Awaitable[Any]],
+    *,
+    aperto: Callable[..., Awaitable[Any]] = _sospeso,
+):
+    """Avvolge una chiamata al modello con un interruttore per giro.
+
+    Un successo azzera il conto, quindi un errore isolato (un 529) non spegne
+    niente. Ad interruttore aperto si chiama `aperto` invece del modello.
     """
     async def chiama(*args: Any, **kwargs: Any) -> Any:
         if stato["di_fila"] >= FALLIMENTI_MODELLO_DI_FILA:
-            raise RuntimeError(
-                f"chiamate al modello sospese per il resto del giro dopo "
-                f"{FALLIMENTI_MODELLO_DI_FILA} fallimenti di fila")
+            return await aperto(*args, **kwargs)
         try:
             risultato = await funzione(*args, **kwargs)
         except Exception:
@@ -1869,14 +1881,17 @@ async def run(
                 return dict(base, saltato="scarico_non_configurato",
                             candidati=len(righe), controllati=0, allarmi=allarmi)
 
-        # Un solo interruttore per classificatore e seconda opinione: dopo
-        # FALLIMENTI_MODELLO_DI_FILA errori di fila il giro smette di chiamare
-        # il modello e prosegue con i controlli che non ne hanno bisogno.
-        interruttore = {"di_fila": 0}
+        # Due interruttori, uno per modello: un successo di Haiku non deve
+        # azzerare il conto degli errori di Sonnet. Dopo
+        # FALLIMENTI_MODELLO_DI_FILA errori di fila il classificatore smette di
+        # essere chiamato (le pagine restano da rifare), la seconda opinione
+        # torna a valere «nessuna concordanza» per il resto del giro (il G7
+        # passa solo con la prova indipendente, come prima del 28/09).
         if classificatore is not None:
-            classificatore = _con_interruttore(interruttore, classificatore)
+            classificatore = _con_interruttore({"di_fila": 0}, classificatore)
         if seconda_opinione is not None:
-            seconda_opinione = _con_interruttore(interruttore, seconda_opinione)
+            seconda_opinione = _con_interruttore(
+                {"di_fila": 0}, seconda_opinione, aperto=_nessuna_concordanza)
 
         # La whitelist dei domini si costruisce UNA volta per giro, e solo se
         # c'e' davvero qualcosa da controllare. Senza, `eventi.g4_prova`
@@ -1971,6 +1986,10 @@ async def run(
             # alimenta i tetti. Maggiori di zero vuol dire credito esaurito o
             # API giu': `salute` lo legge da qui.
             "classificazioni_fallite": contatori.classificazioni_fallite,
+            # Di cui: Haiku ha risposto (e sta in `classificazioni`), Sonnet no.
+            # `salute` le toglie dalle riuscite per non contarle due volte.
+            "seconde_opinioni_fallite": sum(
+                1 for e in esiti if e.classificato and e.classificazione_fallita),
             "eventi": contatori.eventi,
             "respinti": sum(len(e.respinti) for e in esiti),
             # Un giro che propone eventi e non riesce a scriverne nemmeno uno
