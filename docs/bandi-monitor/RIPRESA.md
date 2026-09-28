@@ -131,7 +131,11 @@ Exit 1 con `[ALLARME]` se:
 - un lock valido tenuto da oltre due terzi del suo TTL (monitor 120', resolver 80', pipeline
   160'); oltre un terzo del TTL, con un massimo di 60' (monitor e pipeline 60', resolver 40'), è
   un avviso;
-- il DB non risponde.
+- il DB non risponde;
+- nell'ultimo monitor di regime che ha provato a classificare, le classificazioni fallite sono
+  almeno quante le riuscite (dal 28/09): credito Anthropic esaurito o API giù. Qualche errore
+  isolato fra tante riuscite è solo un avviso. Sulle righe precedenti la correzione vale la firma
+  «classificazioni > 0 con `usd = 0`». Lo stesso giro scrive anche un `[ALLARME]` nel journal.
 
 Login OE, residuo Firecrawl e schede OE **non si misurano dal DB**: `salute` lo dice negli avvisi
 («non misurato da salute: …»), e si controllano come sotto.
@@ -584,28 +588,36 @@ niente preme.
   dagli eventi `applicato=false`»: non è vero, gli eventi saranno già applicati. Non corretta.
 - `BANDI_STATI_ESTESI` / `PUBLIC_BANDI_STATI_ESTESI` non è in `.env.example`.
 
-**Due difetti emersi il 26/09 con il credito Anthropic esaurito** (giro delle 18:00; le quattro
-classificazioni fallite con «Your credit balance is too low»). Il committente ha deciso di tenerli
-per un intervento futuro:
+**Due difetti emersi il 26/09 con il credito Anthropic esaurito: corretti il 28/09** (commit
+`811ff22`, rilascio 1). Il credito è rimasto a zero dal 26/09 pomeriggio almeno fino al 28/09.
 
-- **Monitor: una classificazione fallita vale come riuscita e consuma la modifica.** In
-  `scraper_bandi/app/monitoraggio.py:1073-1078` l'eccezione della chiamata al modello diventa
-  `proposte = []` con un warning, poi `esito.classificato = True`. Il giro conta la
-  classificazione, riporta `errori: 0` e nessun allarme, e salva comunque la nuova impronta e il
-  nuovo `testo_norm` (`_colonne_invariato(..., cambiato=True)`). Così la modifica non si
-  ripresenta al giro dopo: il 26/09 si sono perse quelle dei bandi 366543, 356672, 156520 e
-  804007. Correzione: contare l'errore, non far avanzare l'impronta (il giro dopo riprova) e
-  alzare un allarme che `salute` possa leggere. L'unico indizio di oggi è una riga `monitor` con
-  `classificazioni > 0` e `usd = 0`.
-- **Preprocess: un errore dell'API manda il bando in `rejected` per sempre.** Se la pagina del
-  bando è troppo corta, il preprocess passa al ripiego `resolve_bando`. Quando la chiamata a Sonnet
-  fallisce, `scraper_bandi/app/bando_resolver.py:359-372` restituisce `is_valid_bando: False` con
-  `rejection_reason = 'fallback fallito: Sonnet API error'`, e `bando_preprocess_runner._build_update`
-  lo scrive come `rejected`. Nessun codice ritenta quegli scarti. Correzione: trattarlo come
-  l'errore del percorso principale, lasciando il bando `scraped` per il giro dopo. Fino alla
-  correzione, dopo un periodo senza credito controllare (atteso 0; il 26-27/09 era 0):
-  `select id, updated_at from bando where stato_processing = 'rejected' and rejection_reason =
-  'fallback fallito: Sonnet API error';`
+- **Monitor.** Una classificazione fallita non vale più «nessun evento», e nemmeno una seconda
+  opinione (Sonnet) fallita. Il controllo non salva niente: impronta, `testo_norm` e prossimo
+  controllo restano quelli di prima, la pagina risulta ancora cambiata e il giro dopo il modello
+  la rivede.
+  - È contata in `classificazioni_fallite` e in `errori`, non in `classificazioni`: i tentativi
+    falliti non consumano il tetto giornaliero, altrimenti dopo qualche giorno di credito a zero
+    avrebbero fermato anche i controlli gratuiti.
+  - Dopo 3 fallimenti di fila il giro smette di chiamare il modello e prosegue con il resto.
+  - `salute` e il journal alzano un allarme (§3.1). Prima della correzione se ne sono perse 10: i
+  bandi 366543, 356672, 156520 e 804007 del 26/09, più tre il 27/09 alle 18 e tre il 28/09 alle
+  06. Quelle modifiche non tornano da sole: vedi §4.4.
+- **Preprocess.** Il ripiego sulla pagina della fonte non scarta più un bando per un errore
+  passeggero: rete, 5xx, 429, filtro WAF, ripiego Firecrawl fallito, eccezione del modello. Il
+  bando resta `scraped` e il giro dopo riprova, come quando fallisce il percorso principale; il
+  contatore è `fallback_rinviati`.
+  - Il rinvio dura al massimo 7 giorni dalla nascita del bando. Poi diventa un rifiuto
+    («fonte non disponibile da oltre 7 giorni»), perché un host morto non deve lasciare un bando
+    `scraped` per sempre.
+  - Restano rifiuti una pagina vuota, una sparita (404/410) e un errore dello scarico che
+    riprovando non passa (redirect infiniti, URL non valida).
+  - Prima della correzione i rifiuti del ramo Firecrawl erano 25 (dal 02/07 al 23/09), e non si
+    sa quanti fossero errori passeggeri: il log li registrava a livello debug.
+  - Controllo: questa query deve dare 0 dopo la correzione. Gli altri motivi `fallback fallito:`
+    restano legittimi.
+
+  `select count(*) from bando where stato_processing = 'rejected' and rejection_reason =
+  'fallback fallito: Sonnet API error' and updated_at > '2026-09-28';`
 
 **Da guardare: un bando fermo nello step SEO.** Il bando 772894 (fonte OE, `enriched` dal 22/08,
 senza titolo né slug) fallisce la SEO a ogni giro (`seo.payload_failed: 1`). Non si sa se ogni
@@ -638,10 +650,11 @@ Sul server: `journalctl -u edunews-bandi-sender --since today | grep 772894`.
 
 | quando | cosa |
 |---|---|
-| ogni giorno | §3.1 (journal o `salute`) |
+| ogni giorno | §3.1 (journal o `salute`); dal 28/09 anche il credito Anthropic, che `salute` vede solo dal monitor delle 06 e delle 18 |
 | **02/10** | settimo giorno d'ombra: `report-ombra --dal 2026-09-24`, lettura a mano delle citazioni degli ammessi |
 | **prima del 05/10** | leggere il residuo di Firecrawl: il 05/10 si rinnova il periodo del piano (200 000 crediti al mese; il 22/09 ne restavano 180 286), ed è l'unico dato che conta anche preprocess, enrich e SEO |
-| **08/10** | ondata dei ricontrolli (§3.1): una decina di giorni con 120 righe al giorno |
+| **07/10** | prima del giro delle 06 dell'08/10: il DNS di `regione.basilicata.it` era rotto il 28/09 (§4.4). Dal server: `getent hosts portalebandi.regione.basilicata.it` |
+| **08/10** | ondata dei ricontrolli: 690 righe (non 1 252), 60 per giro alle 06 e alle 18, finisce il 13/10 alle 18 (§4.4) |
 | **09/10** | quattordicesimo giorno d'ombra: nuovo `report-ombra`, poi le decisioni di §4.1 a e b |
 | **verso il 24/10** | `domini --import` mensile (§6) |
 
@@ -740,6 +753,68 @@ Il banco non è nel repo, ma si ricostruisce in pochi minuti:
 Le otto richieste di BandoFit (§12 del contratto) rispondono tutte, con la chiave anonima, in meno
 di mezzo secondo al 26/09. Il conteggio della vista come anon (2 162) è uguale a quello del
 predicato storico.
+
+### 4.4 Prova generale del 28/09/2026
+
+Il 28/09 si sono anticipate le operazioni in calendario, in sola lettura e senza spesa: 55
+agenti, 25 rilievi (24 confermati da due verificatori, 1 smentito) più 4 del critico. Ecco cosa
+ne è uscito e cosa è stato deciso.
+
+**Corretti o in correzione** (pacchetto «eventi affidabili»):
+- rilascio 1 (`811ff22`): monitor e preprocess col credito esaurito (§4.2);
+- rilascio 2, in lavorazione:
+  - la chiave `valore` e la sua guardia;
+  - il 23514 contato come rifiuto;
+  - l'INSERT diretto del monitor attivo;
+  - le citazioni vere respinte da G1/G4 (il modello cita il diff di `sezioni()`, i gate
+    confrontano `testo_normalizzato`, che toglie spazi e orari);
+  - G2 che per i tipi «da link» passa su qualunque citazione (19 su 19);
+  - `data_evento` presa dal giorno del controllo;
+  - G3 che respinge le graduatorie datate dall'atto;
+  - l'allarme di `salute` sull'ingresso fermo (4 bandi fermi in `scraped` col credito a zero,
+    nessuna pubblicazione dal 25/09).
+
+**Correzioni a mano preparate** (`docs/bandi-monitor/correzioni-2026-09-28.sql`, da far girare al committente):
+- tre eventi falsi tolti dal box: 9750, 9834, 9828;
+- la proroga reale del 215460, all'08/11;
+- la scadenza del 17598, 16/10.
+
+**Decisioni del committente ancora aperte:**
+- **Nessun «in apertura» esce da solo.** Nessuna data di apertura è mai stata verificata e il
+  cron non ha mai aperto un bando: attivare `apertura` sistemerebbe 1 dei 19 con la data
+  passata. Dei 19, 9 non li guarda il monitor, perché la fonte è `in_verifica`: 6 sono in realtà
+  aperti e 2 chiusi. Altri 163 «in apertura» non hanno nessuna data, e in un campione 4 su 5 erano
+  sbagliati. Le strade:
+  - un percorso redazionale nella lista bianca;
+  - il monitor sul `link_bando` quando l'host è ufficiale;
+  - «stato da verificare» per un «in apertura» con la data passata da N giorni;
+  - un evento di conferma quando la pagina ripete la data in colonna.
+- **46 pubblicati hanno la fonte su una pagina di pre-informazione** del Piemonte (45) o della
+  Calabria (1). Quella pagina non annuncia mai né l'apertura né la chiusura.
+- **Il lotto L4 (fondi-doppioni) non va lanciato così com'è:**
+  - il dry-run non elenca le coppie;
+  - non si può fondere solo quelle approvate;
+  - il criterio per URL fonderebbe 5591/5593, che sono due avvisi diversi sulla stessa pagina
+    elenco;
+  - il master ignora lo stato: in 7 fusioni su 70 sparisce l'unica scheda giusta;
+  - i calendari senza link e i redirect restano fuori;
+  - i doppioni esatti rinascono dalla pipeline.
+- **Ingresso.** `ora_scadenza` e `ora_apertura` non sono mai valorizzate, e la finestra d'invio
+  non viene letta: 3 «aperti» su 14 in realtà aprivano giorni dopo.
+- **Ricontrolli.** I lotti del 23-24/09 hanno già consumato i «tre tentativi a 14 giorni»: dopo
+  l'08/10 i pubblicati `in_verifica` passano a 60 giorni. Seconda ondata il 23/11, con 854 righe.
+- **Resolver e monitor non leggono la tabella `dominio_ufficiale`.** Un import di IndicePA
+  (§4.1 d) cambierebbe solo le funzioni SQL.
+- **L8.** 35 dei 43 `processed` nella finestra dei 90 giorni ne escono il 29/09. `destinazione()`
+  archivierebbe il 2773, che ha la scadenza nel 2027.
+- **Le 10 classificazioni perse col credito a zero.** Non esiste oggi un modo sicuro di
+  ripresentarle: azzerare l'impronta le farebbe rileggere come prima lettura, dove il G2' non
+  ammette quasi niente. Da progettare.
+
+**Scadenze nate dalla prova:**
+- 07/10: la Basilicata. Col DNS rotto, il giro delle 06 dell'08/10 rischia 100 minuti di
+  ricontrolli su 101 URL morti.
+- Credito Anthropic ogni giorno finché il rilascio 2 non aggiunge l'allarme sull'ingresso.
 
 ---
 
