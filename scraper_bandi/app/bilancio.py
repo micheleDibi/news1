@@ -63,6 +63,10 @@ class Contatori:
     crediti_firecrawl: int = 0
     ricerche: int = 0
     classificazioni: int = 0
+    #: Chiamate al modello partite e fallite (credito esaurito, API giu'): le
+    #: legge `salute`. Sono comprese in `classificazioni`, che conta i tentativi
+    #: e alimenta i tetti.
+    classificazioni_fallite: int = 0
     eventi: int = 0
     rigenerazioni: int = 0
     errori: int = 0

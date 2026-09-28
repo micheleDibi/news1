@@ -3626,3 +3626,83 @@ class TestRiparaGliApplicatiInvisibili(unittest.IsolatedAsyncioTestCase):
         esito = await self._lancia(finto, dry_run=True, limit=50)
         self.assertEqual(esito["resi_visibili"], 0)
         self.assertEqual(finto.resi_leggibili, [])
+
+
+# --- classificazione fallita (credito esaurito, API giu') ---------------------
+
+class TestClassificazioneFallita(unittest.IsolatedAsyncioTestCase):
+    """Una classificazione fallita non e' una classificazione senza eventi.
+
+    Misurato dal 26/09/2026 col credito Anthropic esaurito: l'eccezione del
+    modello diventava `proposte = []`, il controllo salvava la nuova impronta e
+    il nuovo `testo_norm`, e la modifica della pagina non si ripresentava piu'
+    (bandi 366543, 356672, 156520, 804007 e altri sei). Il giro diceva
+    `errori: 0`. Ora: errore contato, niente salvato, la pagina resta
+    «cambiata» e il giro dopo il modello la rivede.
+    """
+
+    HTML = ("<h1>Avviso</h1><p>Le domande entro il 6 ottobre 2026.</p>"
+            "<h2>Proroga</h2><p>Termine prorogato al 1 dicembre 2026.</p>")
+
+    def setUp(self):
+        _zittisci_io(self)
+
+    async def _scarica(self, url, **kw):
+        return _Risposta(html=self.HTML)
+
+    async def test_niente_impronta_e_errore_contato(self):
+        async def classifica(ctx):
+            raise RuntimeError("Your credit balance is too low")
+
+        esito = await monitoraggio.controlla(
+            _bando(), scarica=self._scarica, classifica=classifica,
+            fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(esito.esito, "errore")
+        self.assertTrue(esito.classificazione_fallita)
+        self.assertIn("classificazione fallita", esito.motivo)
+        # Nessuna colonna: impronta, testo e prossimo controllo restano quelli
+        # di prima, quindi il bando torna nella coda del giro dopo.
+        self.assertEqual(esito.colonne, {})
+        self.assertEqual(esito.eventi, ())
+
+    async def test_il_giro_dopo_la_pagina_torna_al_modello(self):
+        chiamate = []
+
+        async def fallisce(ctx):
+            chiamate.append("fallita")
+            raise RuntimeError("Your credit balance is too low")
+
+        async def risponde(ctx):
+            chiamate.append("ok")
+            return []
+
+        dati = monitoraggio.FonteDati()
+        riga = _bando()
+        primo = await monitoraggio.controlla(
+            riga, scarica=self._scarica, classifica=fallisce, fonte_dati=dati,
+            adesso=ADESSO, casuale=lambda: 0.5)
+        # Le colonne del primo controllo (nessuna) sono tutto cio' che
+        # sopravvive fra un giro e l'altro.
+        secondo = await monitoraggio.controlla(
+            dict(riga, **primo.colonne), scarica=self._scarica, classifica=risponde,
+            fonte_dati=dati, adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(chiamate, ["fallita", "ok"])
+        self.assertTrue(secondo.classificato)
+        self.assertFalse(secondo.classificazione_fallita)
+        self.assertIn("testo_norm", secondo.colonne)
+
+    async def test_il_giro_conta_le_classificazioni_fallite(self):
+        async def fallisce(ctx):
+            raise RuntimeError("Your credit balance is too low")
+
+        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(3)])
+        with patch.object(monitoraggio, "_scarico_predefinito", lambda: self._scarica), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(), fonte_dati=dati, classifica=fallisce,
+                lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            )
+        self.assertEqual(esito["classificazioni_fallite"], 3)
+        self.assertEqual(esito["errori"], 3)
+        # Tentate: contano per i tetti, perche' la chiamata e' partita.
+        self.assertEqual(esito["classificazioni"], 3)

@@ -442,5 +442,53 @@ class TestScrittura(unittest.TestCase):
         self.assertEqual(client.scritture, [])
 
 
+
+class TestClassificazioniFallite(unittest.TestCase):
+    """Credito Anthropic esaurito: l'unica traccia era una riga di monitor con
+    classificazioni > 0 e usd = 0, e `salute` non la guardava (26-28/09/2026)."""
+
+    ADESSO = datetime(2026, 9, 28, 8, 0, tzinfo=timezone.utc)
+
+    def _misure(self, monitor):
+        return {"monitor": monitor, "pipeline": [], "mese": [], "nuovi": [],
+                "vivi": [], "falliti": [], "lock": []}
+
+    def test_le_fallite_dell_ultimo_monitor(self):
+        campi = telemetria.stato_da_misure(self._misure([
+            {"esito": "ok", "avviato_at": "2026-09-28T04:08:00+00:00",
+             "classificazioni": "3", "classificazioni_fallite": "3", "usd": "0"},
+            {"esito": "ok", "avviato_at": "2026-09-27T16:09:00+00:00",
+             "classificazioni": "2", "classificazioni_fallite": "0", "usd": "0.03"},
+        ]), adesso=self.ADESSO)
+        self.assertEqual(campi["classificazioni_fallite_ultimo_monitor"], 3)
+        allarmi = telemetria.salute(telemetria.Stato(**campi)).allarmi
+        self.assertTrue(any("classificazioni fallite" in a for a in allarmi), allarmi)
+
+    def test_righe_vecchie_senza_il_contatore(self):
+        # Prima della correzione il contatore non c'era: vale la firma
+        # «classificazioni pagate zero».
+        campi = telemetria.stato_da_misure(self._misure([
+            {"esito": "ok", "avviato_at": "2026-09-28T04:08:00+00:00",
+             "classificazioni": "3", "classificazioni_fallite": None, "usd": "0"},
+        ]), adesso=self.ADESSO)
+        self.assertEqual(campi["classificazioni_fallite_ultimo_monitor"], 3)
+
+    def test_giro_sano_nessun_allarme(self):
+        for riga in (
+            {"classificazioni": "2", "classificazioni_fallite": "0", "usd": "0.03"},
+            {"classificazioni": "0", "classificazioni_fallite": None, "usd": "0"},
+            {"classificazioni": None, "classificazioni_fallite": None, "usd": None},
+        ):
+            campi = telemetria.stato_da_misure(self._misure([
+                dict(riga, esito="ok", avviato_at="2026-09-28T04:08:00+00:00"),
+            ]), adesso=self.ADESSO)
+            self.assertEqual(campi["classificazioni_fallite_ultimo_monitor"], 0, riga)
+            self.assertEqual(telemetria.salute(telemetria.Stato(**campi)).allarmi, (), riga)
+
+    def test_senza_righe_di_monitor_non_si_misura(self):
+        campi = telemetria.stato_da_misure(self._misure([]), adesso=self.ADESSO)
+        self.assertNotIn("classificazioni_fallite_ultimo_monitor", campi)
+
+
 if __name__ == "__main__":
     unittest.main()

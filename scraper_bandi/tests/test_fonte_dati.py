@@ -355,6 +355,13 @@ class MisureSalute(unittest.TestCase):
         # Solo il monitor di regime: `giro` vuoto vuol dire lancio a mano.
         self.assertIn(("not_",), prima[1])
         self.assertIn(("is_", ("giro", "null"), {}), prima[1])
+        # Le classificazioni fallite e il costo del giro: servono all'allarme
+        # del credito esaurito.
+        selezione = next(c for c in prima[1] if c[0] == "select")[1][0]
+        for colonna in ("classificazioni:contatori->>classificazioni",
+                        "classificazioni_fallite:contatori->>classificazioni_fallite",
+                        "usd:contatori->>usd"):
+            self.assertIn(colonna, selezione)
 
     def test_tabelle_assenti_valgono_none(self):
         misure = db.misure_salute(adesso=ADESSO, client=self._Client({}),

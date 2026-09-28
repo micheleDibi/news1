@@ -270,6 +270,38 @@ def _validate_resolver_output(
     }
 
 
+#: Stati HTTP che dicono «riprova piu' tardi», non «questa pagina non c'e'».
+#: 403/406 sono il filtro WAF: il ripiego Firecrawl puo' non essere passato
+#: (credito finito, errore) e la volta dopo passare. `None` e' la rete caduta.
+STATI_PASSEGGERI = frozenset({403, 406, 408, 425, 429})
+
+
+def _stato_passeggero(stato: int | None) -> bool:
+    return stato is None or stato >= 500 or stato in STATI_PASSEGGERI
+
+
+def _rinviato(motivo: str) -> dict[str, Any]:
+    """Esito del ripiego che il runner NON scrive: il bando resta `scraped`.
+
+    `is_valid_bando` resta False per chi legge il dizionario senza conoscere la
+    chiave nuova, ma `_errore_transitorio` e' cio' che il runner guarda: un
+    `rejected` e' terminale, e nessun codice lo ritenta.
+    """
+    return {
+        "is_valid_bando": False,
+        "confidence_score": 0.0,
+        "rejection_reason": f"fallback rinviato: {motivo}"[:300],
+        "stato_bando": None,
+        "data_pubblicazione": None,
+        "data_apertura": None,
+        "data_scadenza": None,
+        "_needs_fallback": False,
+        "_fallback_used": True,
+        "_fallback_failed": True,
+        "_errore_transitorio": True,
+    }
+
+
 async def resolve_bando(
     bando: dict[str, Any],
     fonte_ctx: dict[str, Any],
@@ -317,13 +349,23 @@ async def resolve_bando(
             "_fallback_failed": True,
         }
 
-    # Firecrawl della FONTE
-    from .enricher import _firecrawl_scrape_markdown
+    # Pagina della FONTE (Firecrawl se serve). Si guarda la risposta e non solo
+    # il testo: un errore passeggero (rete, 5xx, 429, WAF con il ripiego che non
+    # passa) non dice niente del bando, e scartarlo lo farebbe sparire per
+    # sempre. In quel caso il bando resta `scraped` e il giro dopo riprova.
+    from .scarico import scarico_corrente
     fonte_markdown = ""
     try:
-        fonte_markdown = await _firecrawl_scrape_markdown(fonte_link)
+        risposta = await scarico_corrente().scarica(fonte_link, principale=True)
     except Exception as e:
-        logger.debug("[resolver/{}] Firecrawl fonte fail: {}", bando_id, e)
+        logger.warning("[resolver/{}] scarico della fonte fallito, si riprova: {}", bando_id, e)
+        return _rinviato(f"scarico della fonte fallito: {e}")
+    if not risposta.ok and _stato_passeggero(risposta.stato):
+        logger.warning(
+            "[resolver/{}] fonte non disponibile (stato {}), si riprova al giro dopo",
+            bando_id, risposta.stato)
+        return _rinviato(f"fonte non disponibile (stato {risposta.stato})")
+    fonte_markdown = risposta.markdown or risposta.testo
 
     if not fonte_markdown or len(fonte_markdown) < 200:
         logger.warning(
@@ -357,19 +399,9 @@ async def resolve_bando(
             user_prompt=user_prompt,
         )
     except Exception as e:
-        logger.exception("[resolver/{}] Sonnet call fallita: {}", bando_id, e)
-        return {
-            "is_valid_bando": False,
-            "confidence_score": 0.0,
-            "rejection_reason": f"fallback fallito: Sonnet API error",
-            "stato_bando": None,
-            "data_pubblicazione": None,
-            "data_apertura": None,
-            "data_scadenza": None,
-            "_needs_fallback": False,
-            "_fallback_used": True,
-            "_fallback_failed": True,
-        }
+        # Credito esaurito, API giu', rate limit: non e' un giudizio sul bando.
+        logger.exception("[resolver/{}] Sonnet call fallita, si riprova: {}", bando_id, e)
+        return _rinviato("Sonnet API error")
 
     raw_analysis = _extract_tool_input(response)
     result = _validate_resolver_output(raw_analysis, fonte_markdown, bando_id)

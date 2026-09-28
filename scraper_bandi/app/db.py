@@ -2374,7 +2374,10 @@ def misure_salute(
         # Il motivo di un giro fermato dal tetto sta nei contatori, non nella colonna.
         misure["monitor"] = list((
             sb.table(TABELLA_RUN)
-            .select("avviato_at,concluso_at,esito,giro,interrotto_per_tetto,motivo:contatori->>motivo")
+            .select("avviato_at,concluso_at,esito,giro,interrotto_per_tetto,motivo:contatori->>motivo,"
+                    "classificazioni:contatori->>classificazioni,"
+                    "classificazioni_fallite:contatori->>classificazioni_fallite,"
+                    "usd:contatori->>usd")
             .eq("step", "monitor").not_.is_("giro", "null")
             .order("avviato_at", desc=True).limit(60).execute()
         ).data or [])

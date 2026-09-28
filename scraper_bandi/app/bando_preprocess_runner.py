@@ -153,6 +153,7 @@ async def run(
     confidence_n = 0
     fallback_used = 0
     fallback_failed = 0
+    fallback_rinviati = 0
     with_pub = 0
     with_apt = 0
     with_scad = 0
@@ -162,6 +163,14 @@ async def run(
             errors += 1
             continue
         analysis = res
+        if analysis.get("_errore_transitorio"):
+            # Errore passeggero del ripiego (rete, credito, API): nessuna
+            # scrittura, il bando resta `scraped` e il giro dopo riprova. Come
+            # un'eccezione del percorso principale, e contato con lei.
+            errors += 1
+            fallback_used += 1
+            fallback_rinviati += 1
+            continue
         update = _build_update(bid, analysis)
         confidence_sum += update["confidence_score"]
         confidence_n += 1
@@ -205,6 +214,7 @@ async def run(
         "with_data_scadenza": with_scad,
         "fallback_used": fallback_used,
         "fallback_failed": fallback_failed,
+        "fallback_rinviati": fallback_rinviati,
         "db_updated": n_updated,
         "db_failed": n_failed,
         "dry_run": dry_run,

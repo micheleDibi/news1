@@ -806,6 +806,10 @@ class EsitoControllo:
     fetch: int = 0
     diff_rilevante: bool = False
     classificato: bool = False
+    #: La chiamata al modello e' partita ma e' fallita (credito esaurito, API
+    #: giu'). Non e' una classificazione senza eventi: il controllo non salva
+    #: niente, cosi' la modifica della pagina si ripresenta al giro dopo.
+    classificazione_fallita: bool = False
     eventi: tuple[dict[str, Any], ...] = ()
     respinti: tuple[dict[str, Any], ...] = ()
     #: Quanti INSERT di evento il database ha rifiutato. Non e' una decorazione:
@@ -1070,12 +1074,24 @@ async def controlla(
         modalita=modalita,
     )
 
+    esito.classificato = True
     try:
         proposte = list(await classifica(ctx))
     except Exception as e:
+        # Un errore, non «nessun evento». Fino al 28/09/2026 qui si proseguiva
+        # con `proposte = []`: il controllo salvava la nuova impronta e il nuovo
+        # `testo_norm`, e la modifica non si ripresentava piu' (col credito
+        # Anthropic esaurito dal 26/09 se ne sono perse dieci, con `errori: 0`).
+        # Nessuna colonna: impronta, testo e prossimo controllo restano quelli
+        # di prima, la pagina risulta ancora cambiata e il giro dopo il modello
+        # la rivede. Niente `controlli_falliti`: la pagina non ha colpa, e
+        # cinque giri senza credito non devono bloccare il bando.
         logger.warning("[monitor] classificazione fallita per {}: {}", riga.get("id"), e)
-        proposte = []
-    esito.classificato = True
+        esito.esito = "errore"
+        esito.classificazione_fallita = True
+        esito.motivo = f"classificazione fallita: {e}"[:300]
+        esito.colonne = {}
+        return esito
 
     if proposte and seconda_opinione is not None:
         try:
@@ -1853,6 +1869,7 @@ async def run(
                 dry_run=dry_run,
             )
             contatori.classificazioni += 1 if esito.classificato else 0
+            contatori.classificazioni_fallite += 1 if esito.classificazione_fallita else 0
             contatori.eventi += len(esito.eventi)
             contatori.errori += 1 if esito.esito == "errore" else 0
             esiti.append(esito)
@@ -1896,6 +1913,9 @@ async def run(
             "non_modificati": sum(1 for e in esiti if e.esito in ("304", "invariato")),
             "errori": contatori.errori,
             "classificazioni": contatori.classificazioni,
+            # Comprese in `classificazioni`. Maggiori di zero vuol dire credito
+            # esaurito o API giu': `salute` lo legge da qui.
+            "classificazioni_fallite": contatori.classificazioni_fallite,
             "eventi": contatori.eventi,
             "respinti": sum(len(e.respinti) for e in esiti),
             # Un giro che propone eventi e non riesce a scriverne nemmeno uno
