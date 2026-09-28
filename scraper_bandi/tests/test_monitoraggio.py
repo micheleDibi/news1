@@ -3752,6 +3752,27 @@ class TestClassificazioneFallita(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(chiamate), 6)
         self.assertEqual(esito["classificazioni_fallite"], 3)
         self.assertEqual(esito["classificazioni"], 3)
+        # Meta' e meta': e' ancora un allarme (stessa soglia di `salute`).
+        self.assertTrue(any("classificazioni fallite" in a for a in esito["allarmi"]))
+
+    async def test_un_errore_isolato_non_e_un_allarme(self):
+        chiamate = []
+
+        async def quasi_sempre(ctx):
+            chiamate.append(ctx.bando_id)
+            if len(chiamate) == 1:
+                raise RuntimeError("529 overloaded")
+            return []
+
+        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(5)])
+        with patch.object(monitoraggio, "_scarico_predefinito", lambda: self._scarica), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(), fonte_dati=dati, classifica=quasi_sempre,
+                lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            )
+        self.assertEqual(esito["classificazioni_fallite"], 1)
+        self.assertFalse(any("classificazioni fallite" in a for a in esito["allarmi"]))
 
     async def test_sonnet_giu_e_haiku_su_si_torna_alla_prova_indipendente(self):
         """Dopo 3 errori di fila di Sonnet la seconda opinione vale «nessuna

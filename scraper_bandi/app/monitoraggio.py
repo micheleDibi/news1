@@ -2015,14 +2015,21 @@ async def run(
             allarmi.append(avviso)
             logger.warning("[ALLARME] [monitor] {}", avviso)
             riepilogo["allarmi"] = allarmi
-        if contatori.classificazioni_fallite:
+        fallite = contatori.classificazioni_fallite
+        if fallite:
             # Il controllo quotidiano di RIPRESA §3.1 cerca «[ALLARME]» nel
             # journal: senza questa riga il credito esaurito passava di li'.
-            avviso = (f"{contatori.classificazioni_fallite} classificazioni fallite: credito "
+            # Stessa soglia di `salute`: qualche errore isolato fra tante
+            # riuscite e' un warning, non un allarme sul credito.
+            riuscite = max(0, contatori.classificazioni - riepilogo["seconde_opinioni_fallite"])
+            avviso = (f"{fallite} classificazioni fallite su {fallite + riuscite}: credito "
                       f"Anthropic esaurito o API giu' (le pagine si rifanno al giro dopo)")
-            allarmi.append(avviso)
-            logger.warning("[ALLARME] [monitor] {}", avviso)
-            riepilogo["allarmi"] = allarmi
+            if fallite >= riuscite:
+                allarmi.append(avviso)
+                logger.warning("[ALLARME] [monitor] {}", avviso)
+                riepilogo["allarmi"] = allarmi
+            else:
+                logger.warning("[monitor] {}", avviso)
         _scrivi_telemetria(riepilogo, contatori, giro, slug_modificati, interrotto,
                            tempo=time.monotonic() - avvio, passo=passo)
         logger.info("[monitor] {}", riepilogo)

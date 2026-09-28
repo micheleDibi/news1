@@ -283,7 +283,8 @@ def _stato_passeggero(stato: int | None) -> bool:
 #: Le eccezioni dello scarico che riprovando non passano. Tutte le altre sono
 #: un rinvio. Nessun limite d'eta' al rinvio: dopo giorni senza credito un solo
 #: guasto della fonte scarterebbe per sempre un bando vero. Un bando fermo in
-#: `scraped` lo deve segnalare `salute` (allarme sull'ingresso fermo).
+#: `scraped` oggi si vede solo con la query di RIPRESA §4.2; l'allarme di
+#: `salute` sull'ingresso fermo arriva con il rilascio 2.
 ECCEZIONI_TERMINALI = frozenset({
     "TooManyRedirects", "InvalidURL", "UnsupportedProtocol", "ScaricoVietatoError",
 })
