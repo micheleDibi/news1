@@ -911,6 +911,26 @@ Verificato con la chiave anonima:
 La proposta è seguire un salto sullo stesso dominio istituzionale per raccogliere i documenti
 principali. Tocca il resolver e la raccolta dei link, quindi serve la decisione del committente.
 
+**Controllo dei 20 bandi pubblicati dal giro delle 12 del 29/09** (confronto con le fonti
+ufficiali, un verificatore più uno scettico per ogni difetto grave o importante):
+- **6 doppioni su 20**, tutti confermati sul DB. Quattro sono schede di ObiettivoEuropa (fonte
+  449) di avvisi già pubblicati dalla fonte ufficiale, con stesso ente, importo e scadenza. Uno
+  nasce dal cambio d'URL della pagina del Piemonte dopo una rettifica. L'ultimo è la stessa
+  pagina lazioeuropa.it arrivata da due fonti. Fusioni F1-F6 in
+  `docs/bandi-monitor/correzioni-2026-09-29.sql`, da lanciare dal committente.
+- **17 dei 20 bandi vengono da ObiettivoEuropa.** Ne copiano anche gli errori: il 1262408 dichiara
+  25,7 milioni invece di 2,57, anche nel titolo (B3).
+- **Date strutturate mancanti.** Nessuno dei 20 ha `data_apertura`, e tre non hanno la scadenza,
+  che pure la fonte dichiara. Due risultano «aperti» ma aprono il 30/09 e l'01/10 (1262404,
+  1262412). Sui pubblicati, `data_apertura` è valorizzata su 111 su 2182.
+- **Testi SEO con beneficiari o requisiti non sostenuti dalla fonte** in 8 schede: 1262345,
+  1262398, 1262399, 1262402, 1262406, 1262408, 1262411, 1262412. Stesso difetto della
+  segnalazione di BandoFit.
+- **Da verificare a mano**: 1262402 (Sicilia, spettacolo: trovato solo l'avviso 2025) e 1262407
+  (Trento, biogas: atto ufficiale non trovato). Potrebbero non essere avvisi del 2026.
+- **Corretti a DB con B1-B2** (da lanciare): la proroga del 1262082 al 19/10, che il monitor non
+  ha visto perché la pagina del Piemonte è cieca; apertura e scadenza del 1262080.
+
 **Scadenze nate dalla prova:**
 - 07/10: la Basilicata. Col DNS rotto, il giro delle 06 dell'08/10 rischia 100 minuti di
   ricontrolli su 101 URL morti.
