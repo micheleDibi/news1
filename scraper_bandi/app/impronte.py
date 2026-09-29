@@ -35,6 +35,7 @@ Cosa garantisce
 from __future__ import annotations
 
 import difflib
+from collections import Counter
 import hashlib
 import re
 from dataclasses import dataclass
@@ -576,7 +577,14 @@ def link_pagina(html_o_testo: str | None) -> tuple[str, ...]:
     """I link della pagina, normalizzati, unici e ordinati. Vuota su un testo."""
     if not html_o_testo or not _e_html(html_o_testo):
         return ()
-    return tuple(sorted(_link_normalizzati(html_o_testo)))
+    # Gli stessi <a> di `impronta_contenuto`: `sezioni()` salta i link dentro
+    # i titoli, e un allegato in un <h4> cambiava l'impronta senza mai
+    # comparire fra i link nuovi.
+    zuppa = pulisci(html_o_testo)
+    return tuple(sorted({
+        u for u in (normalizza_url((a.get("href") or "").strip()) for a in zuppa.find_all("a"))
+        if u
+    }))
 
 
 def diff_testi(
@@ -616,6 +624,9 @@ def diff_testi(
             aggiunte.append(riga[1:].strip())
         elif riga.startswith("-"):
             rimosse.append(riga[1:].strip())
+    # Una riga che cambia solo posto esce dal diff unificato come rimossa e
+    # aggiunta: non e' una novita', e il G2 la prendeva per tale.
+    aggiunte, rimosse = _senza_spostamenti(aggiunte, rimosse)
 
     if link_prima is None:
         link_aggiunti: tuple[str, ...] = ()
@@ -643,6 +654,24 @@ def diff_testi(
         link_aggiunti=link_aggiunti,
         link_rimossi=link_rimossi,
     )
+
+
+def _senza_spostamenti(aggiunte: list[str], rimosse: list[str]) -> tuple[list[str], list[str]]:
+    """Toglie le righe presenti fra le aggiunte e fra le rimosse (spostamenti)."""
+    comuni = Counter(aggiunte) & Counter(rimosse)
+    if not comuni:
+        return aggiunte, rimosse
+
+    def filtra(righe: list[str]) -> list[str]:
+        resto = Counter(comuni)
+        tenute = []
+        for riga in righe:
+            if resto[riga] > 0:
+                resto[riga] -= 1
+                continue
+            tenute.append(riga)
+        return tenute
+    return filtra(aggiunte), filtra(rimosse)
 
 
 def _e_rumore(

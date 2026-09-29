@@ -322,5 +322,29 @@ class DiffTesti(unittest.TestCase):
         self.assertEqual(impronte.link_pagina("solo testo"), ())
 
 
+    def test_una_riga_spostata_non_e_aggiunta(self):
+        # Revisione del 29/09: una riga che cambia solo posto usciva fra le
+        # «aggiunte» e faceva passare al G2 un documento vecchio.
+        prima = "Avviso\nGraduatoria provvisoria approvata\nScadenza 30 ottobre 2026"
+        dopo = "Graduatoria provvisoria approvata\nAvviso\nScadenza 30 ottobre 2026"
+        diff = impronte.diff_testi(prima, dopo, oggi=OGGI)
+        self.assertEqual(diff.righe_aggiunte, ())
+        self.assertEqual(diff.righe_rimosse, ())
+        self.assertFalse(diff.rilevante)
+
+    def test_una_data_cambiata_senza_parole_chiave_non_e_rumore(self):
+        # Il monitor decide su `rumore`: una scadenza spostata non ha «proroga»
+        # nella riga, ma va al modello (bando 514869, 29/09).
+        prima = "Avviso\nDomande entro il 5 ottobre 2026."
+        dopo = "Avviso\nDomande entro il 30 ottobre 2026."
+        diff = impronte.diff_testi(prima, dopo, oggi=OGGI)
+        self.assertFalse(diff.rumore)
+
+    def test_i_link_dentro_i_titoli_contano(self):
+        html = '<main><h4><a href="https://ente.it/allegato-b.pdf">Allegato B</a></h4></main>'
+        self.assertEqual(impronte.link_pagina(html),
+                         (impronte.normalizza_url("https://ente.it/allegato-b.pdf"),))
+
+
 if __name__ == "__main__":                                  # pragma: no cover
     unittest.main()

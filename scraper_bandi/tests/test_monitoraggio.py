@@ -1088,6 +1088,25 @@ class TestDiffTestoConTesto(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Testo del bando", diff.righe_aggiunte)
         self.assertFalse(any("6 ottobre" in r for r in diff.righe_aggiunte))
 
+    async def test_una_data_spostata_arriva_al_modello(self):
+        chiamate = []
+
+        async def classifica(ctx):
+            chiamate.append(ctx.diff)
+            return []
+
+        riga = _bando(testo_norm="Avviso\nDomande entro il 5 ottobre 2026.",
+                      impronta_contenuto="vecchia",
+                      impronte_sezioni={"__link__": []})
+
+        async def scarica(url, **kw):
+            return _Risposta(html="<main><h1>Avviso</h1><p>Domande entro il 30 ottobre 2026.</p></main>")
+
+        esito = await monitoraggio.controlla(
+            riga, scarica=scarica, classifica=classifica,
+            fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(len(chiamate), 1, esito.motivo)
+
     async def test_senza_link_salvati_nessun_link_nuovo(self):
         # Le righe salvate prima del 29/09 non hanno `__link__`.
         visti = []

@@ -1008,7 +1008,10 @@ async def controlla(
     diff = impronte.diff_testi(
         testo_prima, testo_dopo, link_prima=_link_salvati(riga), link_dopo=link_dopo,
         oggi=momento.date())
-    esito.diff_rilevante = bool(diff.rilevante) or testo_prima is None
+    # Decide `rumore`, non la sola lista di parole: una scadenza spostata («entro
+    # il 5 ottobre» → «entro il 30 ottobre») non contiene «proroga» ma non e'
+    # rumore, e scartata qui si perdeva per sempre (revisione del 29/09/2026).
+    esito.diff_rilevante = bool(diff.rilevante) or not diff.rumore or testo_prima is None
     if not esito.diff_rilevante:
         esito.esito = "invariato"
         esito.motivo = "diff classificato come rumore"
