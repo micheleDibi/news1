@@ -117,6 +117,12 @@ class TestG1(unittest.TestCase):
         evento = _proroga(citazione="Prossima Aperturavenerdì 11 Settembre 2026")
         self.assertTrue(eventi.g1_citazione(evento, ctx)[0])
 
+    def test_le_cifre_di_righe_diverse_non_si_fondono(self):
+        # «3» e «1/12» su due righe non sono «31/12».
+        ctx = _ctx(pagine=(_pagina(testo="Lotto 3\n1/12/2026 pubblicazione"),))
+        evento = _proroga(citazione="Lotto 31/12/2026")
+        self.assertFalse(eventi.g1_citazione(evento, ctx)[0])
+
     def test_ignorare_gli_spazi_non_fa_passare_un_riassunto(self):
         ctx = _ctx(pagine=(_pagina(testo=self.TESTO_SICILIA),))
         evento = _proroga(citazione="prorogato il termine all'8 novembre")
@@ -161,6 +167,16 @@ class TestG2(unittest.TestCase):
             rumore=False, rilevante=True)
         evento = eventi.Evento(tipo="faq", url_prova=URL, citazione="FAQ aggiornate 9 luglio 2026")
         self.assertTrue(eventi.g2_diff(evento, _ctx(diff=diff))[0])
+
+    def test_host_anno_e_mese_del_link_non_bastano(self):
+        # Revisione del 29/09: i token dell'URL finivano in un sacco solo, e
+        # «lazioeuropa», «2026», «09» facevano passare qualunque citazione.
+        diff = impronte.Diff(
+            link_aggiunti=("https://lazioeuropa.it/uploads/2026/09/modulo.pdf",),
+            rumore=False, rilevante=True)
+        evento = eventi.Evento(tipo="nuovo_allegato", url_prova=URL,
+                               citazione="Avviso Lazioeuropa del 09/2026")
+        self.assertFalse(eventi.g2_diff(evento, _ctx(diff=diff))[0])
 
     def test_i_nomi_dei_link_non_valgono_per_gli_altri_tipi(self):
         diff = impronte.Diff(
@@ -236,6 +252,21 @@ class TestG3(unittest.TestCase):
             citazione="Graduatoria provvisoria: Determinazione DPG025/327 del 21/09/2026")
         self.assertTrue(eventi.g3_ruolo(evento, _ctx())[0])
 
+    def test_la_data_di_un_atto_vecchio_non_vale(self):
+        # Solo un atto recente: una graduatoria «del 21/03/2026» letta il
+        # 23/09 non e' una graduatoria nuova.
+        evento = eventi.Evento(
+            tipo="graduatoria", url_prova=URL, data_evento=date(2026, 3, 21),
+            citazione="Graduatoria: Determinazione DPG025/12 del 21/03/2026")
+        self.assertFalse(eventi.g3_ruolo(evento, _ctx())[0])
+
+    def test_faq_e_allegati_datati_dall_atto(self):
+        for tipo in ("faq", "nuovo_allegato"):
+            evento = eventi.Evento(
+                tipo=tipo, url_prova=URL, data_evento=date(2026, 9, 18),
+                citazione="Pubblicato con Determinazione n. 40 del 18/09/2026")
+            self.assertTrue(eventi.g3_ruolo(evento, _ctx())[0], tipo)
+
     def test_la_data_dell_atto_resta_esclusa_per_le_proroghe(self):
         evento = _proroga(
             valore="2026-09-18",
@@ -291,6 +322,11 @@ class TestChiaveDelValore(unittest.TestCase):
             for colonna in ("data_apertura", "data_scadenza"):
                 if colonna in colonne:
                     self.assertEqual(dopo.get(colonna), colonne[colonna], evento)
+
+    def test_valore_prima_segue_la_stessa_colonna(self):
+        evento = eventi.Evento(tipo="apertura", valore="2026-10-01", citazione="x", url_prova=URL)
+        riga = self._riga(evento, data_apertura=date(2026, 9, 1))
+        self.assertEqual(riga["valore_prima"].get("data_apertura"), "2026-09-01")
 
     def test_la_chiusura_non_scrive_la_data(self):
         # Voluto (§4): la scadenza resta quella dichiarata dall'ente.
@@ -883,6 +919,13 @@ class TestPrompt(unittest.TestCase):
     def test_primo_controllo_lo_dichiara(self):
         testo = eventi.prompt_utente(_ctx(diff=None, testo_prima=None))
         self.assertIn("primo controllo", testo)
+
+    def test_solo_link_cambiati_non_e_un_primo_controllo(self):
+        diff = impronte.Diff(link_aggiunti=("https://lazioeuropa.it/faq.pdf",),
+                             rumore=False, rilevante=True)
+        testo = eventi.prompt_utente(_ctx(diff=diff))
+        self.assertNotIn("primo controllo", testo)
+        self.assertIn("solo i link", testo)
 
 
 class TestAllineaDoppioni(unittest.TestCase):

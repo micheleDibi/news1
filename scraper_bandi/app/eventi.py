@@ -49,6 +49,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date as date_cls, datetime
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from .date_validation import (
     check_dates_coherence,
@@ -416,7 +417,13 @@ def prompt_utente(ctx: Contesto, *, diff_testo: str | None = None) -> str:
         righe += ["", "LINK COMPARSI"] + [f"- {u}" for u in aggiunti[:20]]
     if rimossi:
         righe += ["", "LINK SPARITI"] + [f"- {u}" for u in rimossi[:20]]
-    righe += ["", "DIFF", testo or "(nessun diff: e' il primo controllo di questa pagina)"]
+    if testo:
+        vuoto = testo
+    elif ctx.testo_prima is None or diff is None:
+        vuoto = "(nessun diff: e' il primo controllo di questa pagina)"
+    else:
+        vuoto = "(nessuna riga di testo cambiata: sono cambiati solo i link, vedi sopra)"
+    righe += ["", "DIFF", vuoto]
     return "\n".join(righe)
 
 
@@ -444,7 +451,9 @@ def _token(testo: str) -> tuple[str, ...]:
 
 
 def _compatto(testo: str) -> str:
-    return re.sub(r"\s+", "", testo)
+    # Gli spazi si tolgono solo accanto a una non-cifra: «3» e «1/12» su due
+    # righe non devono diventare «31/12» (revisione del 29/09/2026).
+    return re.sub(r"(?<=\D)\s+|\s+(?=\D)", "", testo)
 
 
 def citazione_in(citazione: str, testo: str) -> bool:
@@ -486,19 +495,39 @@ def g2_diff(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
     if diff is None:
         return False, "nessun diff disponibile"
     aggiunte = " ".join(getattr(diff, "righe_aggiunte", ()) or ())
-    if evento.tipo in TIPI_DA_LINK:
-        aggiunte += " " + " ".join(getattr(diff, "link_aggiunti", ()) or ())
-    if not aggiunte.strip():
+    link_nuovi = tuple(getattr(diff, "link_aggiunti", ()) or ()) if evento.tipo in TIPI_DA_LINK else ()
+    if not aggiunte.strip() and not link_nuovi:
         return False, "nessuna riga aggiunta nel diff"
     token_citazione = _token(evento.citazione)
     if not token_citazione:
         return False, "citazione senza token"
+    # Il nome di un documento nuovo vale, ma link per link e sulle sole parole
+    # di contenuto: host, anno e mese del percorso («uploads/2026/09») facevano
+    # passare qualunque citazione (revisione del 29/09/2026).
+    contenuto = [t for t in token_citazione if len(t) >= 3 and not t.isdigit()]
+    for link in link_nuovi:
+        parole = _token_link(link)
+        if contenuto and parole and \
+                sum(1 for t in contenuto if t in parole) / len(contenuto) >= QUOTA_TOKEN_G2:
+            return True, ""
+    if not aggiunte.strip():
+        return False, "citazione estranea ai link nuovi"
     token_aggiunte = set(_token(aggiunte))
     comuni = sum(1 for t in token_citazione if t in token_aggiunte)
     quota = comuni / len(token_citazione)
     if quota < QUOTA_TOKEN_G2:
         return False, f"citazione fuori dalle righe aggiunte ({quota:.0%} < {QUOTA_TOKEN_G2:.0%})"
     return True, ""
+
+
+def _token_link(url: str) -> set[str]:
+    """Le parole di contenuto del percorso di un link: niente schema, host,
+    cifre ne' parole di due lettere."""
+    try:
+        percorso = urlsplit(url).path
+    except ValueError:
+        return set()
+    return {t for t in _token(percorso) if len(t) >= 3 and not t.isdigit()}
 
 
 def g2_primo(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
@@ -558,13 +587,17 @@ def g3_ruolo(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
         data = evento.data_evento
     ruolo = _ruolo_atteso(evento)
     trovate = estrai_date_con_ruolo(evento.citazione)
-    if evento.tipo in ("graduatoria", "esito") and data == evento.data_evento:
-        # Una graduatoria o un esito si pubblicano con «Determinazione n. X
-        # del <data>»: la data dell'atto E' la data dell'evento. Col ruolo
+    if evento.tipo in TIPI_DA_LINK and data == evento.data_evento:
+        # Graduatorie, esiti, FAQ e allegati si pubblicano con «Determinazione
+        # n. X del <data>»: la data dell'atto E' la data dell'evento. Col ruolo
         # «normativa» il G3 respingeva proprio le graduatorie vere (evento
-        # 9747, 28/09/2026), mentre passavano gli allegati di atti vecchi.
-        if any(c.data == data for c in trovate):
+        # 9747, 28/09/2026). Ma solo un atto recente: uno di mesi fa non e' una
+        # novita' (revisione del 29/09/2026).
+        recente = 0 <= (ctx.giorno - data).days <= FINESTRA_DEDUP_GIORNI
+        if recente and any(c.data == data for c in trovate):
             return True, ""
+        if not recente:
+            return False, f"la data dell'atto {data.isoformat()} non e' recente"
     for candidata in trovate:
         if candidata.data != data:
             continue
@@ -1021,9 +1054,12 @@ def riga_evento(evento: Evento, ctx: Contesto, giudizio: Giudizio) -> dict[str, 
         valore_dopo["stato_bando"] = giudizio.nuovo_stato
 
     valore_prima: dict[str, Any] = {}
-    if evento.campo == "data_apertura":
+    # La stessa colonna di `valore_dopo`: `rigenera.date_da_evento` cerca la
+    # data vecchia li'.
+    colonna = chiave_del_valore(evento) if evento.valore else evento.campo
+    if colonna == "data_apertura" or evento.campo == "data_apertura":
         valore_prima["data_apertura"] = ctx.data_apertura.isoformat() if ctx.data_apertura else None
-    elif evento.campo == "data_scadenza" or evento.tipo == "proroga":
+    elif colonna == "data_scadenza" or evento.campo == "data_scadenza" or evento.tipo == "proroga":
         valore_prima["data_scadenza"] = ctx.data_scadenza.isoformat() if ctx.data_scadenza else None
     if giudizio.nuovo_stato:
         valore_prima["stato_bando"] = ctx.stato_bando
