@@ -527,9 +527,10 @@ Abbreviazioni usate sotto (tutte da `services/bandi_service.py`):
 - **DETAIL** (`:42-51`) =
   `id,slug,titolo,titolo_breve,descrizione_raw,descrizione_breve,stato_bando,livello,data_pubblicazione,data_apertura,data_scadenza,importo_totale_eur,importo_max_per_progetto_eur,ente_erogatore,area_geografica,tematica,link_bando,link_candidatura,contenuto,allegati,tipologie_bando(id,nome),modalita_erogazione(id,nome),programmi(id,nome),bando_regioni(regioni(id,nome)),bando_settori(settori(id,nome)),bando_beneficiari(beneficiari(id,nome)),bando_codici_ateco(codici_ateco(id,codice,descrizione))`
 
-Il predicato di pubblicazione compare in sei punti (riletti il 29/09/2026 sul `main` di
+Il predicato di pubblicazione compare in sette punti (riletti il 29/09/2026 sul `main` di
 BandoFit): completo, `stato_processing=eq.completed&slug=not.is.null`, in
-`services/bandi_service.py:151` e `services/bando_alert_service.py:222-223`; nella forma
+`services/bandi_service.py:151`, `services/saved_bandi_service.py:202-203` (insieme a
+`id=in.(…)`, R5-a) e `services/bando_alert_service.py:222-223`; nella forma
 `stato_processing=eq.completed&slug=eq.<slug>` in `services/bandi_service.py:386-387` e
 `:410-411`, `services/saved_bandi_service.py:59-60`, `services/calendar_service.py:126-127`. Nelle
 prime righe della fase (c) è quello da togliere, perché la vista è già filtrata.
