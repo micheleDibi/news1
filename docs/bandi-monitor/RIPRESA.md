@@ -881,6 +881,22 @@ ne è uscito e cosa è stato deciso.
 - **G1/G4**: cifre spezzate da un tag inline («<b>1</b>5 ottobre» diventa «1 5 ottobre») non
   combaciano più con «15 ottobre». Raro.
 
+**Segnalato da BandoFit il 29/09, non corretto: testi SEO con forme di partecipazione inventate.**
+Tre schede affermano nel `contenuto` forme di partecipazione che l'atto dell'ente non prevede:
+- 18145: «imprese in forma singola o associata», assente dall'All. 1 del DD 1246/2026;
+- 18278: «reti di imprese e aggregazioni» e «imprese sociali e società benefit», mentre il bando
+  CCIAA finanzia solo singole imprese (art. 2);
+- 171905: «in forma singola o associata», mentre il decreto MASE 233/2026 (art. 4 c.1) vuole almeno
+  due partner con capofila.
+
+Le cause sono due, misurate sul DB:
+- per 18278 l'enricher ha messo il beneficiario «Imprese sociali/Società benefit» nella junction,
+  e la SEO lo ha trasformato in prosa;
+- il resto è formula generica aggiunta dalla SEO: il prompt di `seo_skill.py` non la contiene.
+
+Le tre schede sono di giugno-luglio. Non si sa quante altre ne abbiano; il committente decide se
+cercarle ed eventualmente rigenerarle.
+
 **Scadenze nate dalla prova:**
 - 07/10: la Basilicata. Col DNS rotto, il giro delle 06 dell'08/10 rischia 100 minuti di
   ricontrolli su 101 URL morti.
