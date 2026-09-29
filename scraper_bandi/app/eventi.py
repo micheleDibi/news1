@@ -476,15 +476,18 @@ def g1_citazione(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
 def g2_diff(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
     """La citazione interseca le righe AGGIUNTE del diff (>= 60 % dei token).
 
-    Per graduatoria/esito/faq/nuovo_allegato basta un link nuovo: quegli eventi
-    si annunciano con un documento, non sempre con una frase.
+    Per graduatoria/esito/faq/nuovo_allegato vale anche il nome di un link
+    nuovo: quegli eventi si annunciano con un documento, non sempre con una
+    frase. Ma la citazione deve parlare di QUEL documento. Fino al 29/09/2026
+    bastava che un link nuovo qualsiasi esistesse, e col diff che dava per
+    «comparsi» tutti i link della pagina il gate passava sempre (19 su 19).
     """
     diff = ctx.diff
     if diff is None:
         return False, "nessun diff disponibile"
-    if evento.tipo in TIPI_DA_LINK and tuple(getattr(diff, "link_aggiunti", ()) or ()):
-        return True, ""
     aggiunte = " ".join(getattr(diff, "righe_aggiunte", ()) or ())
+    if evento.tipo in TIPI_DA_LINK:
+        aggiunte += " " + " ".join(getattr(diff, "link_aggiunti", ()) or ())
     if not aggiunte.strip():
         return False, "nessuna riga aggiunta nel diff"
     token_citazione = _token(evento.citazione)
@@ -555,6 +558,13 @@ def g3_ruolo(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
         data = evento.data_evento
     ruolo = _ruolo_atteso(evento)
     trovate = estrai_date_con_ruolo(evento.citazione)
+    if evento.tipo in ("graduatoria", "esito") and data == evento.data_evento:
+        # Una graduatoria o un esito si pubblicano con «Determinazione n. X
+        # del <data>»: la data dell'atto E' la data dell'evento. Col ruolo
+        # «normativa» il G3 respingeva proprio le graduatorie vere (evento
+        # 9747, 28/09/2026), mentre passavano gli allegati di atti vecchi.
+        if any(c.data == data for c in trovate):
+            return True, ""
     for candidata in trovate:
         if candidata.data != data:
             continue
@@ -1008,7 +1018,13 @@ def riga_evento(evento: Evento, ctx: Contesto, giudizio: Giudizio) -> dict[str, 
         # scattava piu' (la differenza era negativa): la stessa proroga
         # ripassava a ogni giro. Stesso difetto nell'indice di dedup a DB
         # (§16.2 M6), che usa `coalesce(data_evento, rilevato_at::date)`.
-        "data_evento": (evento.data_evento or ctx.giorno).isoformat(),
+        # Per i tipi «da link» nessun ripiego sul giorno del controllo: un
+        # documento di luglio letto il 25/09 non e' «nuovo del 25/09» (tre
+        # eventi pubblici cosi' il 28/09/2026). Meglio nessuna data.
+        "data_evento": (
+            evento.data_evento.isoformat() if evento.data_evento
+            else None if evento.tipo in TIPI_DA_LINK
+            else ctx.giorno.isoformat()),
         "citazione": evento.citazione[:300],
         "url_prova": evento.url_prova,
         # `dominio_prova` NON entra: in tabella e' `GENERATED ALWAYS AS

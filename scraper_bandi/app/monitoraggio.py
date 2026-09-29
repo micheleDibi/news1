@@ -1296,7 +1296,12 @@ def _ctx_aggiornato(
     if "stato_bando" in colonne:
         campi["stato_bando"] = colonne["stato_bando"]
     if riga_evento:
-        campi["eventi_recenti"] = ctx.eventi_recenti + (dict(riga_evento),)
+        recente = dict(riga_evento)
+        # Un evento «da link» puo' non avere `data_evento` (dal 29/09/2026 non
+        # ripiega piu' sul giorno del controllo): per il G8 vale il giorno in
+        # cui e' stato rilevato, come a DB (`rilevato_at`).
+        recente.setdefault("rilevato_at", ctx.giorno.isoformat())
+        campi["eventi_recenti"] = ctx.eventi_recenti + (recente,)
     return replace_contesto(ctx, **campi) if campi else ctx
 
 

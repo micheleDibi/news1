@@ -144,6 +144,31 @@ class TestG2(unittest.TestCase):
         evento = eventi.Evento(tipo="graduatoria", citazione="Graduatoria", url_prova=URL)
         self.assertTrue(eventi.g2_diff(evento, ctx)[0])
 
+    # Prova generale del 28/09/2026: 19 G2 superati su 19 per i tipi «da
+    # link», perche' bastava che un link nuovo qualsiasi esistesse.
+    def test_un_link_nuovo_non_basta_se_la_citazione_parla_d_altro(self):
+        diff = impronte.Diff(
+            righe_aggiunte=("Download: 2171",),
+            link_aggiunti=("https://lazioeuropa.it/allegati/1266/2026-09-23/determina-327.pdf",),
+            rumore=False, rilevante=True)
+        evento = eventi.Evento(tipo="nuovo_allegato", url_prova=URL,
+                               citazione="Determinazione DPG025/240 del 01/07/2026")
+        self.assertFalse(eventi.g2_diff(evento, _ctx(diff=diff))[0])
+
+    def test_la_citazione_puo_stare_nel_nome_del_documento_nuovo(self):
+        diff = impronte.Diff(
+            link_aggiunti=("https://lazioeuropa.it/allegati/faq-aggiornate-9-luglio-2026.pdf",),
+            rumore=False, rilevante=True)
+        evento = eventi.Evento(tipo="faq", url_prova=URL, citazione="FAQ aggiornate 9 luglio 2026")
+        self.assertTrue(eventi.g2_diff(evento, _ctx(diff=diff))[0])
+
+    def test_i_nomi_dei_link_non_valgono_per_gli_altri_tipi(self):
+        diff = impronte.Diff(
+            link_aggiunti=("https://lazioeuropa.it/proroga-al-1-dicembre-2026.pdf",),
+            rumore=False, rilevante=True)
+        evento = _proroga(citazione="proroga al 1 dicembre 2026")
+        self.assertFalse(eventi.g2_diff(evento, _ctx(diff=diff))[0])
+
 
 class TestG2Primo(unittest.TestCase):
     """La variante «G2 primo»: primo controllo o mismatch senza diff."""
@@ -202,6 +227,40 @@ class TestG3(unittest.TestCase):
     def test_evento_senza_data_passa(self):
         evento = eventi.Evento(tipo="sospensione", citazione="bando sospeso", url_prova=URL)
         self.assertTrue(eventi.g3_ruolo(evento, _ctx())[0])
+
+    def test_graduatoria_datata_dall_atto(self):
+        # Una graduatoria si pubblica con «Determinazione n. X del <data>»: la
+        # data dell'atto E' la data dell'evento (evento 9747, 28/09/2026).
+        evento = eventi.Evento(
+            tipo="graduatoria", url_prova=URL, data_evento=date(2026, 9, 21),
+            citazione="Graduatoria provvisoria: Determinazione DPG025/327 del 21/09/2026")
+        self.assertTrue(eventi.g3_ruolo(evento, _ctx())[0])
+
+    def test_la_data_dell_atto_resta_esclusa_per_le_proroghe(self):
+        evento = _proroga(
+            valore="2026-09-18",
+            citazione="Con determinazione DD 12 del 18/09/2026 e' stato disposto il differimento")
+        self.assertFalse(eventi.g3_ruolo(evento, _ctx())[0])
+
+
+class TestDataEventoDeiTipiDaLink(unittest.TestCase):
+    """`data_evento` e' quando l'ente ha dichiarato il fatto, mai il giorno
+    del controllo: tre atti di luglio sono usciti come «nuovi del 25/09»."""
+
+    def test_evento_da_link_senza_data_resta_senza_data(self):
+        evento = eventi.Evento(tipo="nuovo_allegato", citazione="Allegato B", url_prova=URL)
+        riga = eventi.riga_evento(evento, _ctx(), eventi.Giudizio(ammesso=True))
+        self.assertIsNone(riga["data_evento"])
+
+    def test_evento_da_link_con_data(self):
+        evento = eventi.Evento(tipo="faq", citazione="FAQ", url_prova=URL,
+                               data_evento=date(2026, 7, 9))
+        riga = eventi.riga_evento(evento, _ctx(), eventi.Giudizio(ammesso=True))
+        self.assertEqual(riga["data_evento"], "2026-07-09")
+
+    def test_gli_altri_tipi_ripiegano_sul_giorno(self):
+        riga = eventi.riga_evento(_proroga(), _ctx(), eventi.Giudizio(ammesso=True))
+        self.assertEqual(riga["data_evento"], OGGI.isoformat())
 
 
 class TestG4(unittest.TestCase):
