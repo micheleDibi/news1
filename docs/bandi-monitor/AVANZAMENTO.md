@@ -740,3 +740,25 @@ Due inciampi, tutti e due presi dai controlli:
 
 Nessun bando è sospeso o revocato e nessun evento di quei tipi è in coda. Applicarli (passo 7)
 aspetta le decisioni di RIPRESA §4.1 i.
+
+## Pacchetto «eventi affidabili», rilasci 1 e 2 (28-29/09/2026)
+
+Nato dalla prova generale anticipata del 28/09 (RIPRESA §4.4). Il dettaglio di cosa cambia sta in
+RIPRESA §4.2.
+
+- **Rilascio 1 (28/09)**: col credito Anthropic esaurito il monitor non salva più niente e il
+  preprocess non scarta più bandi. `salute` e il journal lo segnalano.
+- **Rilascio 2 (29/09)**:
+  - il diff del monitor confronta testo con testo e link con link;
+  - gate G1-G4 corretti sui casi veri della prova;
+  - chiave `valore`, 23514 e INSERT del monitor attivo;
+  - allarme sull'ingresso fermo.
+
+Tre revisioni in fila, ognuna con verificatori che dovevano smentire i rilievi, hanno trovato
+difetti nelle correzioni della revisione precedente:
+- il vecchio diff rendeva «nuova» la pagina intera: è la causa dei falsi «nuovo allegato»;
+- la regola «atto solo recente» perdeva le graduatorie dei bandi chiusi, che si ricontrollano
+  ogni 22-37 giorni. Scenario ricostruito con `controlla` vero.
+
+I rilievi rimasti aperti sono in RIPRESA §4.4. Il più grosso: il 28% delle pagine monitorate è
+cieco.

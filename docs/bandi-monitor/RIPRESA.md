@@ -637,9 +637,17 @@ niente preme.
 - **Gate**:
   - G1/G4 confrontano le citazioni anche a spazi diversi, senza fondere le cifre;
   - G2 dei tipi «da link» vuole la citazione nelle righe nuove o nel nome di un link nuovo,
-    valutato link per link;
-  - G3 accetta la data dell'atto recente per graduatorie, esiti, FAQ e allegati;
+    valutato link per link (percorso e valori della query, dove molti enti mettono il nome del
+    file);
+  - G3 accetta la data dell'atto per graduatorie, esiti, FAQ e allegati solo se l'atto è una
+    novità: al massimo 30 giorni, oppure datato dopo l'ultimo controllo meno 15 giorni (i chiusi
+    si ricontrollano ogni 22-37 giorni). Se il modello non dà la data, contano le date d'atto
+    della citazione;
   - i tipi «da link» senza data non prendono più il giorno del controllo.
+- **I link con `;jsessionid=`** (Regione Umbria) non contano come link nuovi.
+- **Costo misurato** (verifica del 29/09 su 42 pagine vere): delle 7 pagine cambiate in coda, al
+  modello ne vanno 2 invece di 7. A regime 2-4 classificazioni per giro, circa 0,05-0,12 USD al
+  giorno per il monitor (0,011-0,015 USD a classificazione, seconde opinioni comprese).
 - **La data di proroghe e aperture va nella colonna giusta**, non più in `valore`. Gli eventi
   vecchi in quella forma restano in coda (`in_attesa_valore`); oggi è uno solo, il 9786, non
   verificato.
@@ -793,7 +801,7 @@ ne è uscito e cosa è stato deciso.
 
 **Corretti o in correzione** (pacchetto «eventi affidabili»):
 - rilascio 1 (`811ff22`): monitor e preprocess col credito esaurito (§4.2);
-- rilascio 2, in lavorazione:
+- rilascio 2 (29/09):
   - la chiave `valore` e la sua guardia;
   - il 23514 contato come rifiuto;
   - l'INSERT diretto del monitor attivo;
@@ -859,7 +867,15 @@ ne è uscito e cosa è stato deciso.
   - due graduatorie diverse entro 30 giorni si deduplicano.
 - **Monitor attivo**:
   - un timeout dopo il commit della RPC lascia la colonna cambiata e la prosa vecchia;
-  - un evento registrato ma non applicato (date incoerenti) resta visibile nel box.
+  - un evento registrato ma non applicato (date incoerenti) resta visibile nel box;
+  - solo se si torna indietro dalla 06 (o con `MONITOR_STATI_ESTESI=false`) e il monitor è
+    attivo: una sospensione o revoca ammessa fa scattare l'allarme «eventi non applicati» senza
+    motivo e il suo slug non va a IndexNow. Con la configurazione di oggi non succede.
+- **G2, caso residuo**: se il modello cita un paragrafo che c'era già (Toscana, «graduatoria
+  approvata con decreto …») e i link agli allegati arrivano dopo, la citazione non è né nelle
+  righe nuove né nel nome dei link, e l'evento è respinto.
+- **G1/G4**: cifre spezzate da un tag inline («<b>1</b>5 ottobre» diventa «1 5 ottobre») non
+  combaciano più con «15 ottobre». Raro.
 
 **Scadenze nate dalla prova:**
 - 07/10: la Basilicata. Col DNS rotto, il giro delle 06 dell'08/10 rischia 100 minuti di
