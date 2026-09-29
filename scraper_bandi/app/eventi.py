@@ -443,13 +443,32 @@ def _token(testo: str) -> tuple[str, ...]:
     return tuple(t for t in re.split(r"[^0-9a-zà-ÿ]+", norm_cit(testo)) if t)
 
 
+def _compatto(testo: str) -> str:
+    return re.sub(r"\s+", "", testo)
+
+
+def citazione_in(citazione: str, testo: str) -> bool:
+    """La citazione sta nel testo, anche a spazi diversi.
+
+    `testo_normalizzato` va a capo a ogni tag inline («dell'8/11/2026</strong>.»
+    diventa «dell'8/11/2026 .»), e il modello a volte ricompone la frase o
+    incolla due parole («Aperturavenerdi'»). Confrontare anche senza spazi
+    salva le citazioni vere senza far passare un riassunto: le parole devono
+    esserci tutte, nello stesso ordine. Misurato il 28/09/2026: 3 dei 5
+    respinti per G1 erano citazioni vere, fra cui una proroga reale.
+    """
+    citazione, testo = norm_cit(citazione), norm_cit(testo)
+    if not citazione:
+        return False
+    return citazione in testo or _compatto(citazione) in _compatto(testo)
+
+
 def g1_citazione(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
     """La citazione e' sottostringa di una pagina scaricata in questo controllo."""
-    citazione = norm_cit(evento.citazione)
-    if not citazione:
+    if not norm_cit(evento.citazione):
         return False, "citazione vuota"
     for pagina in ctx.pagine:
-        if citazione in norm_cit(pagina.testo):
+        if citazione_in(evento.citazione, pagina.testo):
             return True, ""
     return False, "citazione non presente in nessuna pagina scaricata"
 
@@ -560,7 +579,7 @@ def g4_prova(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
     pagina = ctx.pagina(evento.url_prova)
     if pagina is None:
         return False, "url_prova non e' una pagina scaricata in questo controllo"
-    if norm_cit(evento.citazione) not in norm_cit(pagina.testo):
+    if not citazione_in(evento.citazione, pagina.testo):
         return False, "la citazione non e' nella pagina indicata da url_prova"
     host = dominio_di(evento.url_prova)
     if not host:

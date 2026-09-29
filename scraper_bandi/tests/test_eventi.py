@@ -99,6 +99,29 @@ class TestG1(unittest.TestCase):
     def test_citazione_vuota_respinta(self):
         self.assertFalse(eventi.g1_citazione(_proroga(citazione=""), _ctx())[0])
 
+    # Casi reali della prova generale del 28/09/2026: citazioni vere respinte
+    # perche' `testo_normalizzato` spezza i tag inline su righe diverse.
+    TESTO_SICILIA = ("AGGIORNAMENTO (24/09/2026): Con DDG n. 1725 del 17/09/2026 e' prorogato "
+                     "il termine di presentazione delle domande alle ore 12:00 dell'8/11/2026\n.")
+    CITAZIONE_SICILIA = ("Con DDG n. 1725 del 17/09/2026 e' prorogato il termine di "
+                         "presentazione delle domande alle ore 12:00 dell'8/11/2026.")
+
+    def test_spazio_prima_del_punto(self):
+        ctx = _ctx(pagine=(_pagina(testo=self.TESTO_SICILIA),))
+        evento = _proroga(citazione=self.CITAZIONE_SICILIA)
+        self.assertTrue(eventi.g1_citazione(evento, ctx)[0])
+        self.assertEqual(eventi.g4_prova(evento, ctx), (True, ""))
+
+    def test_parole_incollate_dal_modello(self):
+        ctx = _ctx(pagine=(_pagina(testo="Prossima Apertura\nvenerdì 11 Settembre 2026"),))
+        evento = _proroga(citazione="Prossima Aperturavenerdì 11 Settembre 2026")
+        self.assertTrue(eventi.g1_citazione(evento, ctx)[0])
+
+    def test_ignorare_gli_spazi_non_fa_passare_un_riassunto(self):
+        ctx = _ctx(pagine=(_pagina(testo=self.TESTO_SICILIA),))
+        evento = _proroga(citazione="prorogato il termine all'8 novembre")
+        self.assertFalse(eventi.g1_citazione(evento, ctx)[0])
+
 
 class TestG2(unittest.TestCase):
     def test_citazione_nelle_righe_aggiunte(self):
