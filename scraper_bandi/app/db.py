@@ -2366,7 +2366,7 @@ def misure_salute(
     sb = _client(client)
     misure: dict[str, Any] = {
         "monitor": None, "pipeline": None, "mese": None, "nuovi": None,
-        "vivi": None, "falliti": None, "lock": None,
+        "vivi": None, "falliti": None, "lock": None, "scraped_fermi": None,
     }
 
     if strumento.tabella_esiste(TABELLA_RUN):
@@ -2414,6 +2414,16 @@ def misure_salute(
             .gte("controlli_falliti", SOGLIA_CONTROLLI_FALLITI).order("bando_id"),
             quanto, salto))
         misure["falliti"] = [r["bando_id"] for r in falliti]
+
+    if strumento.ha("bando", "created_at"):
+        # I bandi entrati e mai passati dal preprocess: col credito Anthropic a
+        # zero (dal 26/09/2026) restavano li' senza che niente lo dicesse.
+        from .telemetria import ORE_SCRAPED_FERMO
+        soglia = (momento - timedelta(hours=ORE_SCRAPED_FERMO)).isoformat()
+        misure["scraped_fermi"] = _scorri(lambda quanto, salto: _pagina(
+            sb.table("bando").select("id")
+            .eq("stato_processing", "scraped").lt("created_at", soglia).order("id"),
+            quanto, salto))
 
     if strumento.tabella_esiste(TABELLA_LOCK):
         misure["lock"] = list((

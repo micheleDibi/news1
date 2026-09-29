@@ -304,6 +304,9 @@ class Stato:
     #: Le riuscite dello stesso giro: un errore isolato (un 529) fra tante
     #: riuscite e' un avviso, non un allarme sul credito.
     classificazioni_riuscite_ultimo_monitor: int | None = None
+    #: Bandi entrati da oltre ORE_SCRAPED_FERMO ore e mai passati dal
+    #: preprocess: l'ingresso e' fermo (credito Anthropic, API, preprocess).
+    bandi_scraped_fermi: int | None = None
     #: Le misure sul DB non si sono potute fare: e' un allarme, non un silenzio.
     misure_db_errore: str | None = None
     #: Voci che questa esecuzione non ha misurato: finiscono negli avvisi.
@@ -337,6 +340,10 @@ def salute(stato: Stato) -> Salute:
         allarmi.append(f"nessun monitor OK da {stato.ore_dall_ultimo_monitor_ok:.0f} h")
     if stato.misure_db_errore:
         allarmi.append(f"misure sul DB non disponibili: {stato.misure_db_errore}")
+    if stato.bandi_scraped_fermi:
+        allarmi.append(
+            f"{stato.bandi_scraped_fermi} bandi fermi in scraped da oltre {ORE_SCRAPED_FERMO} ore: "
+            f"ingresso bloccato (credito Anthropic esaurito o preprocess in errore)")
     fallite = stato.classificazioni_fallite_ultimo_monitor or 0
     riuscite = stato.classificazioni_riuscite_ultimo_monitor or 0
     if fallite:
@@ -431,6 +438,11 @@ def _motivo_del_tetto(riga: Mapping[str, Any]) -> str:
             if isinstance(valore, Mapping) and valore.get("motivo"):
                 return str(valore["motivo"])
     return ""
+
+
+#: Un bando `scraped` da piu' di tante ore ha saltato almeno due giri (uno ogni
+#: 6 ore): non e' un bando appena entrato, e' un ingresso fermo.
+ORE_SCRAPED_FERMO = 13
 
 
 def _classificazioni(riga: Mapping[str, Any]) -> tuple[int, int]:
@@ -557,6 +569,12 @@ def stato_da_misure(
     else:
         non_misurati.append("consumo mensile")
 
+    fermi = misure.get("scraped_fermi")
+    if fermi is not None:
+        campi["bandi_scraped_fermi"] = len(fermi)
+    else:
+        non_misurati.append("bandi fermi in scraped")
+
     lock = misure.get("lock")
     if lock is not None:
         tenuti = []
@@ -647,7 +665,7 @@ def _inserisci(
 
 __all__ = [
     "ESITO_ERRORE", "ESITO_INTERROTTO", "ESITO_OK", "ESITO_SALTATO", "FonteRun",
-    "GIORNI_NUOVI", "LOCK_ALLARME_MIN", "LOCK_AVVISO_MIN", "LockTenuto",
+    "GIORNI_NUOVI", "LOCK_ALLARME_MIN", "LOCK_AVVISO_MIN", "LockTenuto", "ORE_SCRAPED_FERMO",
     "MINIMO_NUOVI", "NON_MISURABILI_DAL_DB",
     "PREFISSO_ALLARME", "PipelineRun", "RISPECCHIATI_PIPELINE_RUN", "Salute",
     "SOGLIA_CONTROLLI_FALLITI", "Stato", "TABELLA_FONTE_RUN",

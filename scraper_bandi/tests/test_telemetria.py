@@ -523,5 +523,34 @@ class TestClassificazioniFallite(unittest.TestCase):
         self.assertNotIn("classificazioni_fallite_ultimo_monitor", campi)
 
 
+
+class TestIngressoFermo(unittest.TestCase):
+    """Col credito Anthropic a zero il preprocess fallisce e i bandi nuovi
+    restano `scraped`: dal 26/09/2026 nessuna pubblicazione, e `salute` era
+    verde (a parte un allarme che non c'entrava)."""
+
+    ADESSO = datetime(2026, 9, 29, 8, 0, tzinfo=timezone.utc)
+
+    def _misure(self, fermi):
+        return {"monitor": [], "pipeline": [], "mese": [], "nuovi": [], "vivi": [],
+                "falliti": [], "lock": [], "scraped_fermi": fermi}
+
+    def test_bandi_fermi_in_scraped_sono_un_allarme(self):
+        campi = telemetria.stato_da_misure(self._misure([{"id": 1}, {"id": 2}]), adesso=self.ADESSO)
+        self.assertEqual(campi["bandi_scraped_fermi"], 2)
+        allarmi = telemetria.salute(telemetria.Stato(**campi)).allarmi
+        self.assertTrue(any("fermi in scraped" in a for a in allarmi), allarmi)
+
+    def test_nessun_bando_fermo(self):
+        campi = telemetria.stato_da_misure(self._misure([]), adesso=self.ADESSO)
+        self.assertEqual(campi["bandi_scraped_fermi"], 0)
+        self.assertEqual(telemetria.salute(telemetria.Stato(**campi)).allarmi, ())
+
+    def test_misura_non_disponibile(self):
+        campi = telemetria.stato_da_misure(self._misure(None), adesso=self.ADESSO)
+        self.assertNotIn("bandi_scraped_fermi", campi)
+        self.assertTrue(any("scraped" in v for v in campi["non_misurati"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -347,7 +347,11 @@ class MisureSalute(unittest.TestCase):
     def test_legge_il_monitor_di_regime_e_non_scrive(self):
         client = self._Client({"pipeline_lock": [{"nome": "pipeline"}]})
         misure = db.misure_salute(adesso=ADESSO, client=client, strumento=self._Strumento())
-        self.assertEqual(set(misure), {"monitor", "pipeline", "mese", "nuovi", "vivi", "falliti", "lock"})
+        self.assertEqual(set(misure), {"monitor", "pipeline", "mese", "nuovi", "vivi", "falliti",
+                                       "lock", "scraped_fermi"})
+        # I bandi fermi in `scraped`: una lettura su `bando` filtrata per stato.
+        letture_bando = [c for tabella, c in client.registro if tabella == "bando"]
+        self.assertTrue(any(("eq", ("stato_processing", "scraped"), {}) in c for c in letture_bando))
         self.assertEqual(misure["lock"], [{"nome": "pipeline"}])
         prima = client.registro[0]
         self.assertEqual(prima[0], "pipeline_run")
