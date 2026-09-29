@@ -837,7 +837,11 @@ ne è uscito e cosa è stato deciso.
     elenco;
   - il master ignora lo stato: in 7 fusioni su 70 sparisce l'unica scheda giusta;
   - i calendari senza link e i redirect restano fuori;
-  - i doppioni esatti rinascono dalla pipeline.
+  - i doppioni esatti rinascono dalla pipeline;
+  - **BandoFit** (R0-b, 29/09): finché non fa la sua fase (c), legge `bando` con il predicato
+    storico (`completed` e slug), che include ancora il doppione fuso. Un L4 lanciato prima
+    della (c) lascia su BandoFit una seconda scheda. Da decidere col committente: L4 dopo la
+    (c), oppure accettare il doppione su BandoFit per quel periodo.
 - **Ingresso.** `ora_scadenza` e `ora_apertura` non sono mai valorizzate, e la finestra d'invio
   non viene letta: 3 «aperti» su 14 in realtà aprivano giorni dopo.
 - **Ricontrolli.** I lotti del 23-24/09 hanno già consumato i «tre tentativi a 14 giorni»: dopo
