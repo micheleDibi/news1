@@ -897,6 +897,20 @@ Le cause sono due, misurate sul DB:
 Le tre schede sono di giugno-luglio. Non si sa quante altre ne abbiano; il committente decide se
 cercarle ed eventualmente rigenerarle.
 
+**Proposta di BandoFit il 29/09, da decidere: seguire un salto dalla pagina ufficiale.** Su alcuni
+bandi le regole stanno in atti linkati dalla pagina ufficiale, e `bando_link` non li contiene.
+Verificato con la chiave anonima:
+- 18351 (MIMIT): ci sono la pagina del DM (HTML) e l'informativa privacy, ma non i PDF del DM e del
+  DD in `/images/stories/normativa/`;
+- 18207 (Sardegna Ricerche): ci sono la pagina e un PDF del 19/12/2025 (secondo BandoFit la sola
+  locandina), ma non le disposizioni attuative, gli allegati e le FAQ; l'avviso sembra riemesso
+  a febbraio 2026;
+- 2242 (Abruzzo, welfare aziendale): ci sono 19 allegati (commissione, FAQ, graduatorie), ma non
+  l'Avviso.
+
+La proposta è seguire un salto sullo stesso dominio istituzionale per raccogliere i documenti
+principali. Tocca il resolver e la raccolta dei link, quindi serve la decisione del committente.
+
 **Scadenze nate dalla prova:**
 - 07/10: la Basilicata. Col DNS rotto, il giro delle 06 dell'08/10 rischia 100 minuti di
   ricontrolli su 101 URL morti.
