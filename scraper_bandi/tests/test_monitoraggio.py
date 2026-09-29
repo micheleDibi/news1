@@ -1045,6 +1045,69 @@ class TestMemoriaDelControllo(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(colonna, monitoraggio.COLONNE_CONTROLLO)
 
 
+class TestDiffTestoConTesto(unittest.IsolatedAsyncioTestCase):
+    """Il modello vede solo cio' che e' cambiato davvero (29/09/2026)."""
+
+    PRIMA = ('<main><h1>Avviso</h1><p>Le domande entro il 6 ottobre 2026.</p>'
+             '<p><a href="https://www.lazioeuropa.it/bando.pdf">Testo del bando</a></p>'
+             '<p>Download: 2166</p></main>')
+    DOPO = ('<main><h1>Avviso</h1><p>Le domande entro il 6 ottobre 2026.</p>'
+            '<p><a href="https://www.lazioeuropa.it/bando.pdf">Testo del bando</a></p>'
+            '<p><a href="https://www.lazioeuropa.it/graduatoria.pdf">Graduatoria provvisoria</a></p>'
+            '<p>Download: 2171</p></main>')
+
+    async def test_diff_solo_delle_righe_e_dei_link_nuovi(self):
+        visti = []
+
+        async def classifica(ctx):
+            visti.append(ctx.diff)
+            return []
+
+        async def scarica_prima(url, **kw):
+            return _Risposta(html=self.PRIMA)
+
+        async def scarica_dopo(url, **kw):
+            return _Risposta(html=self.DOPO)
+
+        dati = monitoraggio.FonteDati()
+        riga = _bando()
+        primo = await monitoraggio.controlla(
+            riga, scarica=scarica_prima, classifica=classifica, fonte_dati=dati,
+            adesso=ADESSO, casuale=lambda: 0.5)
+        # I link della pagina si salvano: sono il «prima» del giro dopo.
+        self.assertIn("__link__", primo.colonne["impronte_sezioni"])
+        await monitoraggio.controlla(
+            dict(riga, **primo.colonne), scarica=scarica_dopo, classifica=classifica,
+            fonte_dati=dati, adesso=ADESSO, casuale=lambda: 0.5)
+        diff = visti[-1]
+        impronte = carica_modulo("impronte")
+        self.assertEqual(diff.link_aggiunti,
+                         (impronte.normalizza_url("https://www.lazioeuropa.it/graduatoria.pdf"),))
+        self.assertIn("Graduatoria provvisoria", diff.righe_aggiunte)
+        # Il testo del bando e la scadenza non sono cambiati: non sono nel diff.
+        self.assertNotIn("Testo del bando", diff.righe_aggiunte)
+        self.assertFalse(any("6 ottobre" in r for r in diff.righe_aggiunte))
+
+    async def test_senza_link_salvati_nessun_link_nuovo(self):
+        # Le righe salvate prima del 29/09 non hanno `__link__`.
+        visti = []
+
+        async def classifica(ctx):
+            visti.append(ctx.diff)
+            return []
+
+        riga = _bando(testo_norm="Avviso\nLe domande entro il 6 ottobre 2026.",
+                      impronta_contenuto="vecchia", impronte_sezioni={"avviso": "x"})
+
+        async def scarica(url, **kw):
+            return _Risposta(html=self.DOPO)
+
+        await monitoraggio.controlla(
+            riga, scarica=scarica, classifica=classifica,
+            fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(visti[-1].link_aggiunti, ())
+
+
 # --- volatilita': una cricca a senso unico (F4) -----------------------------
 
 #: Le colonne che `bando_controllo` ha davvero (02:1138-1163). Non c'e'

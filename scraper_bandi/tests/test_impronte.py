@@ -260,5 +260,67 @@ class SelezioneSezioni(unittest.TestCase):
         self.assertLessEqual(len(impronte.seleziona_sezioni(blob, budget=500)), 500)
 
 
+
+class DiffTesti(unittest.TestCase):
+    """Il diff del monitor confronta testo con testo e link con link.
+
+    Fino al 29/09/2026 il monitor confrontava il `testo_norm` salvato (testo
+    semplice, diviso per righe) con l'HTML nuovo (diviso per titoli): le
+    sezioni non combaciavano mai, ogni cambio d'impronta rendeva «nuova» la
+    pagina intera e tutti i suoi link risultavano «comparsi». Il G2 passava
+    19 volte su 19, e tre atti di luglio sono usciti come «nuovo allegato».
+    """
+
+    PRIMA = ("Avviso pubblico formazione\n"
+             "Le domande si presentano entro il 30 ottobre 2026.\n"
+             "Download: 2166")
+
+    def test_cambia_solo_il_contatore(self):
+        dopo = self.PRIMA.replace("2166", "2171")
+        diff = impronte.diff_testi(self.PRIMA, dopo, oggi=OGGI)
+        self.assertEqual(diff.righe_aggiunte, ("Download: 2171",))
+        self.assertEqual(diff.righe_rimosse, ("Download: 2166",))
+        self.assertTrue(diff.rumore)
+        self.assertFalse(diff.rilevante)
+
+    def test_una_riga_in_cima_non_sposta_le_altre(self):
+        dopo = "AGGIORNAMENTO: termine prorogato al 1 dicembre 2026.\n" + self.PRIMA
+        diff = impronte.diff_testi(self.PRIMA, dopo, oggi=OGGI)
+        self.assertEqual(diff.righe_aggiunte,
+                         ("AGGIORNAMENTO: termine prorogato al 1 dicembre 2026.",))
+        self.assertEqual(diff.righe_rimosse, ())
+        self.assertTrue(diff.rilevante)
+
+    def test_link_confrontati_con_quelli_salvati(self):
+        diff = impronte.diff_testi(
+            self.PRIMA, self.PRIMA, oggi=OGGI,
+            link_prima=("https://ente.it/bando.pdf",),
+            link_dopo=("https://ente.it/bando.pdf", "https://ente.it/graduatoria.pdf"))
+        self.assertEqual(diff.link_aggiunti, ("https://ente.it/graduatoria.pdf",))
+        self.assertTrue(diff.rilevante)
+
+    def test_senza_link_salvati_nessun_link_e_nuovo(self):
+        # Il primo giro dopo il deploy non ha un «prima» per i link: dichiararli
+        # tutti comparsi era il difetto.
+        diff = impronte.diff_testi(
+            self.PRIMA, self.PRIMA, oggi=OGGI,
+            link_prima=None, link_dopo=("https://ente.it/bando.pdf",))
+        self.assertEqual(diff.link_aggiunti, ())
+        self.assertTrue(diff.vuoto)
+
+    def test_primo_controllo(self):
+        diff = impronte.diff_testi(None, self.PRIMA, oggi=OGGI)
+        self.assertEqual(len(diff.righe_aggiunte), 3)
+        self.assertEqual(diff.link_aggiunti, ())
+
+    def test_link_della_pagina_normalizzati_e_ordinati(self):
+        html = ('<main><a href="https://ente.it/b.pdf?utm_source=x">B</a>'
+                '<a href="https://ente.it/a.pdf">A</a><a href="https://ente.it/a.pdf">A</a></main>')
+        self.assertEqual(impronte.link_pagina(html),
+                         (impronte.normalizza_url("https://ente.it/a.pdf"),
+                          impronte.normalizza_url("https://ente.it/b.pdf?utm_source=x")))
+        self.assertEqual(impronte.link_pagina("solo testo"), ())
+
+
 if __name__ == "__main__":                                  # pragma: no cover
     unittest.main()

@@ -987,7 +987,11 @@ async def controlla(
     contenuto = getattr(risposta, "html", "") or getattr(risposta, "testo", "")
     impronta_nuova = impronte.impronta_contenuto(contenuto)
     testo_dopo = impronte.testo_normalizzato(contenuto)
-    sezioni_dopo = impronte.impronte_sezioni(contenuto)
+    link_dopo = impronte.link_pagina(contenuto)
+    sezioni_dopo: dict[str, Any] = dict(impronte.impronte_sezioni(contenuto))
+    # I link di oggi sono il «prima» del giro dopo: il testo salvato e' testo
+    # semplice e non li contiene.
+    sezioni_dopo[impronte.CHIAVE_LINK] = list(link_dopo)
     testo_prima = testo_da_colonna(riga.get("testo_norm"))
     if impronta_nuova == riga.get("impronta_contenuto") and testo_prima is not None:
         esito.esito = "invariato"
@@ -998,7 +1002,12 @@ async def controlla(
         _salva(scrittore, esito)
         return esito
 
-    diff = impronte.diff_sezioni(testo_prima, contenuto, oggi=momento.date())
+    # Testo con testo e link con link. Fino al 29/09/2026 qui si confrontava il
+    # `testo_norm` salvato con l'HTML nuovo: la pagina intera risultava nuova a
+    # ogni cambio d'impronta, e tutti i link «comparsi».
+    diff = impronte.diff_testi(
+        testo_prima, testo_dopo, link_prima=_link_salvati(riga), link_dopo=link_dopo,
+        oggi=momento.date())
     esito.diff_rilevante = bool(diff.rilevante) or testo_prima is None
     if not esito.diff_rilevante:
         esito.esito = "invariato"
@@ -1625,6 +1634,17 @@ def _rifiutato(scrittore: Any, riga: Mapping[str, Any]) -> bool:
     if esito is None:
         return not scrittore.registra_evento(riga)
     return esito(riga) == db.EVENTO_RIFIUTATO
+
+
+def _link_salvati(riga: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """I link della pagina al controllo precedente; None se non salvati."""
+    sezioni = riga.get("impronte_sezioni")
+    if not isinstance(sezioni, Mapping):
+        return None
+    link = sezioni.get(impronte.CHIAVE_LINK)
+    if not isinstance(link, (list, tuple)):
+        return None
+    return tuple(str(u) for u in link)
 
 
 def _classificazione_fallita(esito: EsitoControllo, motivo: str) -> EsitoControllo:

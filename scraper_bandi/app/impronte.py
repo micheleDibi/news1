@@ -565,6 +565,86 @@ def _scheletro(riga: str) -> str:
     return re.sub(r"[^a-zA-Zàèéìòùáíóúü]+", "", riga).casefold()
 
 
+
+#: Chiave riservata dentro `bando_controllo.impronte_sezioni` dove il monitor
+#: salva l'insieme dei link della pagina: e' il «prima» dei link al giro dopo.
+#: `impronte_sezioni` non la legge nessun altro, e cosi' non serve una colonna.
+CHIAVE_LINK = "__link__"
+
+
+def link_pagina(html_o_testo: str | None) -> tuple[str, ...]:
+    """I link della pagina, normalizzati, unici e ordinati. Vuota su un testo."""
+    if not html_o_testo or not _e_html(html_o_testo):
+        return ()
+    return tuple(sorted(_link_normalizzati(html_o_testo)))
+
+
+def diff_testi(
+    prima: str | None,
+    dopo: str | None,
+    *,
+    link_prima: Sequence[str] | None = None,
+    link_dopo: Sequence[str] = (),
+    limite: int = LIMITE_DIFF,
+    oggi: date_cls | None = None,
+) -> Diff:
+    """Diff riga per riga fra due testi normalizzati, e fra due insiemi di link.
+
+    E' il diff del monitor. `diff_sezioni` confrontava il `testo_norm` salvato
+    (testo semplice) con l'HTML nuovo: due rappresentazioni diverse della
+    stessa pagina, quindi a ogni cambio d'impronta risultava nuova la pagina
+    intera, e tutti i link «comparsi» (nel testo semplice non ce ne sono).
+    Qui entrambi i lati sono `testo_normalizzato` e il diff e' sulle righe,
+    non su sezioni con chiavi di posizione: una riga inserita in cima non fa
+    sembrare cambiate tutte le altre.
+
+    `link_prima=None` vuol dire «nessun insieme salvato» (il primo giro dopo
+    il 29/09/2026, o una pagina mai letta): nessun link si dichiara comparso
+    o sparito, perche' non c'e' niente con cui confrontarlo.
+    """
+    giorno = oggi or oggi_roma()
+    righe_prima = [r for r in (prima or "").splitlines() if r.strip()]
+    righe_dopo = [r for r in (dopo or "").splitlines() if r.strip()]
+    blocchi = list(difflib.unified_diff(
+        righe_prima, righe_dopo, fromfile="prima", tofile="dopo", lineterm="", n=2))
+    aggiunte: list[str] = []
+    rimosse: list[str] = []
+    for riga in blocchi:
+        if riga.startswith("+++") or riga.startswith("---"):
+            continue
+        if riga.startswith("+"):
+            aggiunte.append(riga[1:].strip())
+        elif riga.startswith("-"):
+            rimosse.append(riga[1:].strip())
+
+    if link_prima is None:
+        link_aggiunti: tuple[str, ...] = ()
+        link_rimossi: tuple[str, ...] = ()
+    else:
+        vecchi, nuovi = set(link_prima), set(link_dopo)
+        link_aggiunti = tuple(sorted(nuovi - vecchi))
+        link_rimossi = tuple(sorted(vecchi - nuovi))
+
+    testo = "\n".join(blocchi)
+    troncato = len(testo) > limite
+    if troncato:
+        testo = testo[:limite]
+    rilevante = bool(link_aggiunti or link_rimossi) or any(
+        PAROLE_RILEVANTI.search(r) for r in aggiunte + rimosse
+    )
+    return Diff(
+        testo=testo,
+        troncato=troncato,
+        rumore=_e_rumore(aggiunte, rimosse, link_aggiunti, link_rimossi, giorno),
+        rilevante=rilevante,
+        sezioni_cambiate=("testo",) if (aggiunte or rimosse) else (),
+        righe_aggiunte=tuple(aggiunte),
+        righe_rimosse=tuple(rimosse),
+        link_aggiunti=link_aggiunti,
+        link_rimossi=link_rimossi,
+    )
+
+
 def _e_rumore(
     aggiunte: Sequence[str],
     rimosse: Sequence[str],
