@@ -2535,6 +2535,46 @@ class TestGuardiaValore(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(monitoraggio.valore_non_applicabile(riga), atteso, riga)
 
 
+
+class TestTransizioneNonAmmessa(unittest.TestCase):
+    """Il 23514 della lista bianca e' un rifiuto, non un «non tentato».
+
+    `bando_applica_evento` solleva 23514 quando la transizione non e' piu'
+    ammessa (per esempio il cron ha chiuso il bando dopo la sospensione).
+    Contato come non tentato, l'evento tornava in coda a ogni lancio e
+    consumava il blocco per sempre (prova generale, 28/09/2026).
+    """
+
+    def setUp(self):
+        self.db = carica_modulo("db")
+
+    def _esito(self, errore):
+        from postgrest.exceptions import APIError
+
+        class _Rpc:
+            def execute(self_inner):
+                raise APIError(errore) if isinstance(errore, dict) else errore
+
+        client = SimpleNamespace(rpc=lambda nome, parametri: _Rpc())
+        strumento = SimpleNamespace(rpc_disponibile=lambda _n: True)
+        return self.db.applica_evento_esito(7, client=client, strumento=strumento)
+
+    def test_transizione_non_ammessa_e_un_rifiuto(self):
+        esito = self._esito({"code": "23514", "message":
+            "evento 7 (sospensione): transizione non ammessa per «worker»: chiuso → sospeso (bando 3)."})
+        self.assertEqual(esito, self.db.ESITO_RIFIUTATO)
+
+    def test_un_altro_23514_resta_non_tentato(self):
+        # Un CHECK violato per un nostro difetto non e' un giudizio sull'evento:
+        # annotarlo lo escluderebbe per sempre.
+        esito = self._esito({"code": "23514", "message":
+            'new row for relation "bando" violates check constraint "bando_provenienza_stato"'})
+        self.assertEqual(esito, self.db.ESITO_NON_TENTATO)
+
+    def test_errori_di_rete_restano_non_tentati(self):
+        self.assertEqual(self._esito(RuntimeError("503")), self.db.ESITO_NON_TENTATO)
+
+
 class TestAttendeTraduzione(unittest.TestCase):
     """La tabella di verita' della guardia: gemella del blocco v11_11."""
 

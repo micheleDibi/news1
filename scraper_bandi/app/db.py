@@ -2532,6 +2532,18 @@ def rendi_evento_leggibile(
     return _controllo(strumento).aggiorna(TABELLA_EVENTO, evento_id, payload)
 
 
+def transizione_non_ammessa(errore: BaseException) -> bool:
+    """Vero se l'errore e' il 23514 della lista bianca delle transizioni.
+
+    Solo quello: ogni altro 23514 (un CHECK violato da un nostro difetto) resta
+    un «non tentato», perche' annotarlo come rifiuto escluderebbe per sempre un
+    evento che nessuno ha giudicato.
+    """
+    codice = str(getattr(errore, "code", "") or "")
+    messaggio = str(getattr(errore, "message", "") or errore)
+    return codice == "23514" and "transizione non ammessa" in messaggio
+
+
 def applica_evento_esito(
     evento_id: Any,
     *,
@@ -2555,6 +2567,13 @@ def applica_evento_esito(
         risposta = _client(client).rpc(
             RPC_APPLICA_EVENTO, {"p_evento_id": evento_id}).execute()
     except Exception as e:
+        if transizione_non_ammessa(e):
+            # La RPC ha guardato l'evento e l'ha respinto: e' un giudizio.
+            # Contato come «non tentato», l'evento tornava in coda a ogni
+            # lancio e consumava il blocco per sempre (28/09/2026).
+            logger.info("[db] {}: evento {} respinto dalla lista bianca",
+                        RPC_APPLICA_EVENTO, evento_id)
+            return ESITO_RIFIUTATO
         logger.warning("[db] {} sull'evento {} fallita: {}",
                        RPC_APPLICA_EVENTO, evento_id, e)
         return ESITO_NON_TENTATO
