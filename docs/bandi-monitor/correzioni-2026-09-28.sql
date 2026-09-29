@@ -97,3 +97,34 @@ select stato_bando, data_scadenza, ora_scadenza, data_scadenza_verificata
 
 -- Nota: la prosa delle due schede può citare ancora le date vecchie. La
 -- rigenerazione usa Claude: si fa quando il credito è tornato.
+
+
+-- ---------------------------------------------------------------------------
+-- A4 (aggiunta il 29/09). Bando 455779 (valle-aosta-srd03-diversificazione-aziende-agricole)
+--     A DB è «chiuso» con scadenza 15/09. L'ente l'ha prorogato: «Si precisa
+--     che con PF n. 654 del 14 agosto 2026 la scadenza è stata prorogata alle
+--     ore 23.59 del 30 ottobre 2026.» (pagina letta il 29/09). La pagina della
+--     Valle d'Aosta è una di quelle che il monitor oggi non vede (RIPRESA §4.4).
+-- ---------------------------------------------------------------------------
+
+-- prima: dominio verificante (atteso: true; se false, FERMARSI)
+select public.bando_dominio_verificante(public.dominio_di(
+  'https://www.regione.vda.it/agricoltura/CSR_2023_2027/bandi_interventi_strutturali/srd03_investimenti_diversificazione_attivita_nonagricole_i.aspx'));
+
+select public.bando_registra_evento(
+  p_bando_id    => 455779,
+  p_tipo        => 'proroga',
+  p_origine     => 'worker',
+  p_campo       => 'data_scadenza',
+  p_valore_dopo => '{"data_scadenza": "2026-10-30", "ora_scadenza": "23:59", "stato_bando": "aperto"}'::jsonb,
+  p_url_prova   => 'https://www.regione.vda.it/agricoltura/CSR_2023_2027/bandi_interventi_strutturali/srd03_investimenti_diversificazione_attivita_nonagricole_i.aspx',
+  p_citazione   => 'Si precisa che con PF n. 654 del 14 agosto 2026 la scadenza è stata prorogata alle ore 23.59 del 30 ottobre 2026.',
+  p_data_evento => '2026-08-14',
+  p_applica     => true,
+  p_metodo      => 'correzione manuale del committente (revisione del 29/09): proroga non vista dal monitor'
+);
+-- atteso: {"id": <nuovo>, "nuovo": true, "applicato": true}
+
+-- dopo (atteso: aperto | 2026-10-30 | 23:59:00 | true)
+select stato_bando, data_scadenza, ora_scadenza, data_scadenza_verificata
+  from bando where id = 455779;
