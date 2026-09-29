@@ -527,11 +527,23 @@ Abbreviazioni usate sotto (tutte da `services/bandi_service.py`):
 - **DETAIL** (`:42-51`) =
   `id,slug,titolo,titolo_breve,descrizione_raw,descrizione_breve,stato_bando,livello,data_pubblicazione,data_apertura,data_scadenza,importo_totale_eur,importo_max_per_progetto_eur,ente_erogatore,area_geografica,tematica,link_bando,link_candidatura,contenuto,allegati,tipologie_bando(id,nome),modalita_erogazione(id,nome),programmi(id,nome),bando_regioni(regioni(id,nome)),bando_settori(settori(id,nome)),bando_beneficiari(beneficiari(id,nome)),bando_codici_ateco(codici_ateco(id,codice,descrizione))`
 
-Il predicato di pubblicazione `stato_processing=eq.completed&slug=not.is.null` compare in sette
-punti: `services/bandi_service.py:151`, `:370`, `:394`,
-`services/saved_bandi_service.py:60`, `:202`, `services/calendar_service.py:127`,
-`services/bando_alert_service.py:222-223`. Nelle prime righe della fase (c) è quello da togliere,
-perché la vista è già filtrata.
+Il predicato di pubblicazione compare in sei punti (riletti il 29/09/2026 sul `main` di
+BandoFit): completo, `stato_processing=eq.completed&slug=not.is.null`, in
+`services/bandi_service.py:151` e `services/bando_alert_service.py:222-223`; nella forma
+`stato_processing=eq.completed&slug=eq.<slug>` in `services/bandi_service.py:386-387` e
+`:410-411`, `services/saved_bandi_service.py:59-60`, `services/calendar_service.py:126-127`. Nelle
+prime righe della fase (c) è quello da togliere, perché la vista è già filtrata.
+
+**Aggiornamento del 29/09/2026: le richieste dopo R0-a (BandoFit `a9d520a`).**
+- R1, R2, R3 e R7 portano un parametro in più, su entrambi i segmenti:
+  `or=(stato_bando.in.("aperto","in apertura prossimamente","chiuso"),stato_bando.is.null)`.
+  Viene da `_solo_stati_segmentati` (`services/bandi_service.py:207`), usata da
+  `apply_open_tier` (`:213`) e `apply_closed_tier` (`:223`); gli alert la ricevono da
+  `carica_candidati` (`services/bando_alert_service.py:214`, via `apply_open_tier` alla `:225`).
+- Il client manda gli spazi come `+`, non come `%20`: per PostgREST è lo stesso.
+- Misurato il 29/09 con la anon key, la «Versione (c)» di R3 su `bando_pubblico` (FTS su
+  `ricerca`, segmento su `stato_effettivo`, quattro `!inner`, `count=exact`) risponde in circa
+  70-200 ms di mediana e al massimo 360 ms su 5 ripetizioni per termine.
 
 ---
 
