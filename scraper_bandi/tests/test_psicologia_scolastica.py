@@ -316,12 +316,17 @@ class TestPercorsoG2Primo(unittest.TestCase):
 def _zittisci_io(caso):
     """Telemetria e RPC fuori dal test: nessuna connessione, nemmeno fallita.
 
-    La migrazione 02/04 non e' applicata, quindi `bando_registra_evento` non
-    esiste: qui lo si dichiara invece di andare a scoprirlo con una GET.
+    Le migrazioni 02 e 04 sono applicate dal 23/09/2026: `bando_registra_evento`
+    esiste e applica. Qui la si simula invece di chiamarla. Fino al 29/09/2026
+    la fixture la dava assente, e il test si aspettava lo stesso colonne,
+    rigenerazione e IndexNow: era il difetto dell'INSERT diretto «applicato»
+    con la RPC che non aveva scritto niente.
     """
     for bersaglio in (
         patch.object(monitoraggio, "_scrivi_telemetria", MagicMock()),
-        patch.object(eventi, "_rpc_disponibile", lambda controllo: False),
+        patch.object(eventi, "_rpc_disponibile", lambda controllo: True),
+        patch.object(eventi, "_rpc_predefinita",
+                     lambda nome, parametri: {"id": 1, "nuovo": True, "applicato": True}),
     ):
         bersaglio.start()
         caso.addCleanup(bersaglio.stop)

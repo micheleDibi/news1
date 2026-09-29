@@ -1121,15 +1121,29 @@ def applica(
 
     parametri = parametri_registra_evento(riga)
     try:
-        (rpc or _rpc_predefinita)(RPC_REGISTRA_EVENTO, parametri)
+        risposta = (rpc or _rpc_predefinita)(RPC_REGISTRA_EVENTO, parametri)
     except Exception as e:
         logger.warning("[eventi] {} fallita per il bando {}: {}", RPC_REGISTRA_EVENTO, ctx.bando_id, e)
         return Applicazione(riga=riga, colonne=colonne, applicato=False, scritto=False,
                             motivo=f"rpc fallita: {e}", giudizio=verdetto)
 
     return Applicazione(riga=riga, colonne=colonne,
-                        applicato=bool(riga.get("applicato")), scritto=True,
-                        motivo="", giudizio=verdetto)
+                        applicato=_applicato_dalla_rpc(risposta, bool(riga.get("applicato"))),
+                        scritto=True, motivo="", giudizio=verdetto)
+
+
+def _applicato_dalla_rpc(risposta: Any, predefinito: bool) -> bool:
+    """`applicato` come lo dice `bando_registra_evento` ({id, nuovo, applicato}).
+
+    Con date incoerenti, o uno stato che il CHECK non ammette, l'evento si
+    registra ma non si applica: contarlo applicato faceva contare colonne e
+    rigenerare la prosa con una data che la colonna non ha. Se la risposta non
+    dice niente (RPC iniettata dai test) vale l'intenzione della riga.
+    """
+    dati = getattr(risposta, "data", risposta)
+    if isinstance(dati, Mapping) and "applicato" in dati:
+        return bool(dati["applicato"])
+    return predefinito
 
 
 #: I parametri di `bando_registra_evento` come la migrazione 04 li dichiara

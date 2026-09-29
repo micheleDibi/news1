@@ -1118,18 +1118,32 @@ async def controlla(
         voce = applicazione.come_dizionario()
         if applicazione.giudizio and applicazione.giudizio.ammesso:
             ammessi.append(voce)
+            attivo = ctx.modalita == eventi_mod.MODALITA_ATTIVO
+            # In attivo contano solo le colonne che la RPC ha scritto davvero:
+            # con la RPC fallita, o l'evento registrato ma non applicato, la
+            # prosa rigenerata direbbe una data che la colonna non ha. In ombra
+            # restano le colonne «che si scriverebbero», per il report.
+            colonne_evento = applicazione.colonne if (applicazione.applicato or not attivo) else {}
             date_cambiate.extend(
-                _date_da_rigenerare(ctx, applicazione.colonne, applicazione.riga))
-            colonne.update(applicazione.colonne)
+                _date_da_rigenerare(ctx, colonne_evento, applicazione.riga))
+            colonne.update(colonne_evento)
             # Il contesto avanza con l'evento appena accettato: il prossimo
             # deve essere giudicato sulle date NUOVE, non su quelle vecchie, e
             # deve vedere questo evento fra i recenti — senza, due proposte
             # identiche nella stessa risposta superano entrambe il G8 e il box
             # «Aggiornamenti» mostra due volte la stessa notizia.
+            # Il contesto avanza con l'intenzione dell'evento, applicato o no:
+            # serve a giudicare il secondo evento di una coppia (differimento).
             ctx = _ctx_aggiornato(ctx, applicazione.colonne, applicazione.riga)
-            if (scrittore is not None
-                    and _rifiutato(scrittore, applicazione.riga)):
-                esito.eventi_non_scritti += 1
+            # L'INSERT diretto solo se la RPC non ha scritto la riga. In attivo
+            # quella riga NON e' applicata ne' visibile (fino al 29/09/2026 lo
+            # diventava anche con la RPC fallita): `applica-eventi` la riprende.
+            if scrittore is not None and not applicazione.scritto:
+                riga_db = dict(applicazione.riga)
+                if attivo:
+                    riga_db.update(applicato=False, leggibile=False, in_aggiornamenti=False)
+                if _rifiutato(scrittore, riga_db):
+                    esito.eventi_non_scritti += 1
         else:
             respinti.append(voce)
             # I respinti vanno **a DB**, non solo nel riepilogo del giro.

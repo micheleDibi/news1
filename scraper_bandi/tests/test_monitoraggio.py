@@ -1108,6 +1108,71 @@ class TestDiffTestoConTesto(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visti[-1].link_aggiunti, ())
 
 
+class TestMonitorAttivoSenzaRpc(unittest.IsolatedAsyncioTestCase):
+    """Monitor attivo, RPC fallita: l'evento non deve risultare applicato.
+
+    Fino al 29/09/2026 `controlla` faceva sempre anche un INSERT diretto della
+    riga con `applicato=true`: se la RPC era fallita l'evento diventava
+    pubblico e «applicato» con la colonna intatta, e partiva la rigenerazione
+    della prosa con la data nuova.
+    """
+
+    async def _controlla(self, applicazione):
+        async def scarica(url, **kw):
+            return _Risposta(html="<main><h1>Avviso</h1><p>Termine prorogato al 1 dicembre 2026.</p></main>")
+
+        async def classifica(ctx):
+            return [eventi.Evento(tipo="proroga", valore="2026-12-01",
+                                  citazione="prorogato al 1 dicembre 2026", url_prova="x")]
+
+        rigenerate = []
+
+        async def rigenerazione(*args, **kwargs):
+            rigenerate.append(args)
+            return {}
+
+        dati = monitoraggio.FonteDati()
+        with patch.object(monitoraggio.eventi_mod, "applica", lambda proposta, ctx: applicazione):
+            esito = await monitoraggio.controlla(
+                _bando(testo_norm="Avviso", impronta_contenuto="vecchia"),
+                scarica=scarica, classifica=classifica, fonte_dati=dati,
+                rigenerazione=rigenerazione, modalita="attivo", adesso=ADESSO,
+                casuale=lambda: 0.5)
+        return esito, dati, rigenerate
+
+    def _applicazione(self, **kw):
+        giudizio = eventi.Giudizio(ammesso=True)
+        riga = {"bando_id": 1, "tipo": "proroga", "applicato": True, "leggibile": True,
+                "in_aggiornamenti": True, "verificato": True}
+        base = dict(riga=riga, colonne={"data_scadenza": "2026-12-01"}, giudizio=giudizio)
+        base.update(kw)
+        return eventi.Applicazione(**base)
+
+    async def test_rpc_fallita_riga_a_db_non_applicata_e_invisibile(self):
+        esito, dati, rigenerate = await self._controlla(
+            self._applicazione(applicato=False, scritto=False, motivo="rpc fallita: 503"))
+        self.assertEqual(len(dati.registrati), 1)
+        riga = dati.registrati[0]
+        self.assertFalse(riga["applicato"])
+        self.assertFalse(riga["leggibile"])
+        self.assertFalse(riga["in_aggiornamenti"])
+        self.assertEqual(esito.colonne_bando, {})
+        self.assertEqual(rigenerate, [])
+
+    async def test_rpc_riuscita_niente_insert_doppio(self):
+        esito, dati, rigenerate = await self._controlla(
+            self._applicazione(applicato=True, scritto=True))
+        self.assertEqual(dati.registrati, [])
+        self.assertEqual(esito.colonne_bando, {"data_scadenza": "2026-12-01"})
+        self.assertEqual(len(rigenerate), 1)
+
+    async def test_rpc_riuscita_ma_non_applicato_niente_rigenerazione(self):
+        esito, dati, rigenerate = await self._controlla(
+            self._applicazione(applicato=False, scritto=True))
+        self.assertEqual(esito.colonne_bando, {})
+        self.assertEqual(rigenerate, [])
+
+
 # --- volatilita': una cricca a senso unico (F4) -----------------------------
 
 #: Le colonne che `bando_controllo` ha davvero (02:1138-1163). Non c'e'

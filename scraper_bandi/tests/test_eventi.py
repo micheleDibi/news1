@@ -783,6 +783,25 @@ class TestApplica(unittest.TestCase):
         self.assertEqual(esito.colonne["data_scadenza"], "2026-12-01")
         self.assertTrue(esito.colonne["data_scadenza_verificata"])
 
+    def test_applicato_e_quello_che_dice_la_rpc(self):
+        # La RPC risponde {id, nuovo, applicato}: con date incoerenti o uno
+        # stato che il CHECK non ammette l'evento si registra ma non si applica.
+        esito = eventi.applica(
+            _proroga(), self._ctx_ok(modalita="attivo"),
+            rpc=lambda n, p: {"id": 5, "nuovo": True, "applicato": False},
+            controllo=self._Controllo(),
+        )
+        self.assertTrue(esito.scritto)
+        self.assertFalse(esito.applicato)
+
+    def test_applicato_anche_dalla_risposta_di_postgrest(self):
+        risposta = type("R", (), {"data": {"id": 5, "nuovo": True, "applicato": True}})()
+        esito = eventi.applica(
+            _proroga(), self._ctx_ok(modalita="attivo"),
+            rpc=lambda n, p: risposta, controllo=self._Controllo(),
+        )
+        self.assertTrue(esito.applicato)
+
     def test_rpc_assente_degrada_in_ombra(self):
         esito = eventi.applica(
             _proroga(), self._ctx_ok(modalita="attivo"),
