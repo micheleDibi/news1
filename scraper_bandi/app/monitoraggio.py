@@ -819,6 +819,11 @@ class EsitoControllo:
     #: dichiarava riuscito. Due giorni di ombra a vuoto, e nessun numero che lo
     #: dicesse. Stesso difetto e stessa cura di `link-verifica`/`non_scritte`.
     eventi_non_scritti: int = 0
+    #: Solo in attivo: gli eventi ammessi che la RPC ha applicato davvero, e
+    #: quelli rimasti a DB non applicati (RPC fallita o evento respinto). Solo i
+    #: primi cambiano la pagina, e quindi possono andare a IndexNow.
+    eventi_applicati: int = 0
+    eventi_non_applicati: int = 0
     slug: str | None = None
     prossimo: datetime | None = None
     #: Le colonne di **`bando_controllo`**: sono quelle che `_salva` scrive.
@@ -1127,6 +1132,11 @@ async def controlla(
             # prosa rigenerata direbbe una data che la colonna non ha. In ombra
             # restano le colonne «che si scriverebbero», per il report.
             colonne_evento = applicazione.colonne if (applicazione.applicato or not attivo) else {}
+            if attivo:
+                if applicazione.applicato:
+                    esito.eventi_applicati += 1
+                else:
+                    esito.eventi_non_applicati += 1
             date_cambiate.extend(
                 _date_da_rigenerare(ctx, colonne_evento, applicazione.riga))
             colonne.update(colonne_evento)
@@ -2000,9 +2010,11 @@ async def run(
         # IndexNow riceve solo le pagine il cui **contenuto** e' cambiato: un
         # evento sulle date senza rigenerazione lascia la prosa com'era, e
         # notificare Google una pagina identica e' peggio che non notificarla.
+        # Solo gli esiti con almeno un evento APPLICATO: un evento ammesso che la
+        # RPC non ha scritto non cambia la pagina (revisione del 29/09/2026).
         slug_modificati = tuple(
             e.slug for e in esiti
-            if e.slug and e.eventi and modalita == eventi_mod.MODALITA_ATTIVO
+            if e.slug and e.eventi_applicati and modalita == eventi_mod.MODALITA_ATTIVO
             and (not e.da_rigenerare or e.rigenerato)
         )
         # Un giro `--senza-rete` (o senza uno scarico) accodava N esiti
@@ -2028,6 +2040,9 @@ async def run(
             # alimenta i tetti. Maggiori di zero vuol dire credito esaurito o
             # API giu': `salute` lo legge da qui.
             "classificazioni_fallite": contatori.classificazioni_fallite,
+            # Solo in attivo: ammessi ma non applicati dalla RPC. Restano a DB
+            # non applicati e invisibili: li riprende `applica-eventi --attivo`.
+            "eventi_non_applicati": sum(e.eventi_non_applicati for e in esiti),
             # Di cui: Haiku ha risposto (e sta in `classificazioni`), Sonnet no.
             # `salute` le toglie dalle riuscite per non contarle due volte.
             "seconde_opinioni_fallite": sum(
@@ -2054,6 +2069,12 @@ async def run(
             # `db.registra_evento`.
             avviso = (f"{non_scritti} eventi non scritti: il database li ha "
                       f"rifiutati, l'ombra non sta misurando niente")
+            allarmi.append(avviso)
+            logger.warning("[ALLARME] [monitor] {}", avviso)
+            riepilogo["allarmi"] = allarmi
+        if riepilogo["eventi_non_applicati"]:
+            avviso = (f"{riepilogo['eventi_non_applicati']} eventi ammessi non applicati dalla RPC: "
+                      f"restano in coda, lanciare applica-eventi --attivo")
             allarmi.append(avviso)
             logger.warning("[ALLARME] [monitor] {}", avviso)
             riepilogo["allarmi"] = allarmi

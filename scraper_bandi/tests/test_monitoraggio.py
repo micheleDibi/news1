@@ -1185,6 +1185,33 @@ class TestMonitorAttivoSenzaRpc(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(esito.colonne_bando, {"data_scadenza": "2026-12-01"})
         self.assertEqual(len(rigenerate), 1)
 
+    async def test_rpc_fallita_conta_l_evento_non_applicato(self):
+        esito, _dati, _rig = await self._controlla(
+            self._applicazione(applicato=False, scritto=False, motivo="rpc fallita: 503"))
+        self.assertEqual(esito.eventi_applicati, 0)
+        self.assertEqual(esito.eventi_non_applicati, 1)
+
+    async def test_il_giro_non_notifica_indexnow_senza_eventi_applicati(self):
+        applicazione = self._applicazione(applicato=False, scritto=False, motivo="rpc fallita: 503")
+
+        async def scarica(url, **kw):
+            return _Risposta(html="<main><h1>Avviso</h1><p>Termine prorogato al 1 dicembre 2026.</p></main>")
+
+        async def classifica(ctx):
+            return [eventi.Evento(tipo="proroga", valore="2026-12-01",
+                                  citazione="prorogato al 1 dicembre 2026", url_prova="x")]
+
+        dati = _FonteSenzaLimite(righe=[_bando(testo_norm="Avviso", impronta_contenuto="vecchia")])
+        with patch.object(monitoraggio.eventi_mod, "applica", lambda proposta, ctx: applicazione), \
+                patch.object(monitoraggio, "_scarico_predefinito", lambda: scarica), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(monitor_modalita="attivo"), fonte_dati=dati,
+                classifica=classifica, lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(esito["slug_modificati"], [])
+        self.assertEqual(esito["eventi_non_applicati"], 1)
+        self.assertTrue(any("non applicati" in a for a in esito["allarmi"]))
+
     async def test_rpc_riuscita_ma_non_applicato_niente_rigenerazione(self):
         esito, dati, rigenerate = await self._controlla(
             self._applicazione(applicato=False, scritto=True))
