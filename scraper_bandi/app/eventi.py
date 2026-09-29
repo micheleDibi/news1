@@ -793,7 +793,9 @@ def g8_dedup(evento: Evento, ctx: Contesto, *, giorni: int = FINESTRA_DEDUP_GIOR
 def _valore_evento(riga: Mapping[str, Any]) -> str | None:
     dopo = riga.get("valore_dopo")
     if isinstance(dopo, Mapping):
-        for nome in ("valore", "data", "stato_proposto"):
+        # «data_scadenza» e «data_apertura» dal 29/09/2026: e' la forma che
+        # `riga_evento` scrive per le date, senza `campo`.
+        for nome in ("valore", "data", "data_scadenza", "data_apertura", "stato_proposto"):
             if riga.get("campo") and riga.get("campo") in dopo:
                 return str(dopo[riga["campo"]])
             if nome in dopo:
@@ -983,6 +985,24 @@ def colonne_da_evento(evento: Evento, ctx: Contesto, giudizio: Giudizio) -> dict
     return colonne
 
 
+def chiave_del_valore(evento: Evento) -> str:
+    """La chiave di `valore_dopo` per il valore dell'evento.
+
+    Per una data e' la colonna che `colonne_da_evento` scrive, con la stessa
+    precedenza: e' l'unica chiave che `bando_applica_evento` riconosce. Fino
+    al 29/09/2026 una proroga senza `campo` finiva in `{"valore": …}`, la RPC
+    la scartava e l'evento risultava applicato con la scadenza vecchia
+    (evento 9786). La `chiusura` resta su «valore» apposta (§4: la scadenza
+    resta quella dichiarata dall'ente).
+    """
+    if evento.data_valore is not None:
+        if evento.campo == "data_apertura" or evento.tipo in ("apertura", "riapertura"):
+            return "data_apertura"
+        if evento.campo == "data_scadenza" or evento.tipo == "proroga":
+            return "data_scadenza"
+    return evento.campo or "valore"
+
+
 def riga_evento(evento: Evento, ctx: Contesto, giudizio: Giudizio) -> dict[str, Any]:
     """Payload di `bando_evento` per questo evento."""
     proposto = stato_solo_proposto(evento, ctx)
@@ -990,7 +1010,11 @@ def riga_evento(evento: Evento, ctx: Contesto, giudizio: Giudizio) -> dict[str, 
     leggibile = giudizio.ammesso and not ombra
     valore_dopo: dict[str, Any] = {}
     if evento.valore:
-        valore_dopo[evento.campo or "valore"] = evento.valore
+        chiave = chiave_del_valore(evento)
+        valore_dopo[chiave] = (
+            evento.data_valore.isoformat()
+            if chiave in ("data_apertura", "data_scadenza") and evento.data_valore is not None
+            else evento.valore)
     if proposto and giudizio.nuovo_stato:
         valore_dopo["stato_proposto"] = giudizio.nuovo_stato
     elif giudizio.nuovo_stato:

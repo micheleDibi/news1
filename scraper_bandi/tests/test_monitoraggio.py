@@ -2496,6 +2496,45 @@ class TestGuardiaStatoProposto(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(esito["stati_estesi"])
 
 
+
+class TestGuardiaValore(unittest.IsolatedAsyncioTestCase):
+    """Gli eventi d'ombra con la data in `{"valore": …}` non vanno alla RPC:
+    la scarterebbe e li marcherebbe applicati con la data vecchia."""
+
+    def setUp(self):
+        zitto = patch.object(monitoraggio, "_scrivi_run", MagicMock())
+        zitto.start()
+        self.addCleanup(zitto.stop)
+
+    async def test_la_proroga_vecchia_resta_in_coda(self):
+        righe = [{"id": 1, "bando_id": 9, "tipo": "proroga", "campo": None, "verificato": True,
+                  "applicato": False, "valore_dopo": {"valore": "2026-11-08"},
+                  "rilevato_at": "2026-09-25T08:00:00+00:00"},
+                 {"id": 2, "bando_id": 9, "tipo": "proroga", "campo": None, "verificato": True,
+                  "applicato": False, "valore_dopo": {"data_scadenza": "2026-11-08"},
+                  "rilevato_at": "2026-09-29T08:00:00+00:00"}]
+        finto = _DbEventi(righe, esito_rpc=_DbEventi.ESITO_APPLICATO)
+        with patch.dict(sys.modules, {f"{ALIAS}.db": finto}), \
+                patch.object(sys.modules[ALIAS], "db", finto, create=True):
+            esito = await monitoraggio.run_applica_eventi(
+                attivo=True, limit=5, tipi=("proroga",), lock=_lock_libero(),
+                impostazioni=_impostazioni())
+        self.assertEqual(finto.chiamate_rpc, [2])
+        self.assertEqual(esito["in_attesa_valore"], 1)
+
+    def test_tabella_di_verita(self):
+        casi = [
+            ({"tipo": "proroga", "valore_dopo": {"valore": "2026-11-08"}}, True),
+            ({"tipo": "apertura", "valore_dopo": {"valore": "2026-10-01", "stato_bando": "aperto"}}, True),
+            ({"tipo": "proroga", "valore_dopo": {"data_scadenza": "2026-11-08"}}, False),
+            ({"tipo": "chiusura", "valore_dopo": {"valore": "2026-09-20"}}, False),
+            ({"tipo": "faq", "valore_dopo": {"valore": "x"}}, False),
+            ({"tipo": "proroga", "valore_dopo": None}, False),
+        ]
+        for riga, atteso in casi:
+            self.assertEqual(monitoraggio.valore_non_applicabile(riga), atteso, riga)
+
+
 class TestAttendeTraduzione(unittest.TestCase):
     """La tabella di verita' della guardia: gemella del blocco v11_11."""
 

@@ -2797,6 +2797,27 @@ def attende_traduzione(riga: Mapping[str, Any], *, traduzione: bool) -> bool:
     return TRADUZIONI_STATO_PROPOSTO.get(tipo) != dopo.get("stato_proposto")
 
 
+#: I tipi il cui valore e' una data che la RPC deve scrivere in colonna.
+TIPI_CON_DATA_IN_COLONNA: tuple[str, ...] = ("proroga", "apertura", "riapertura")
+
+
+def valore_non_applicabile(riga: Mapping[str, Any]) -> bool:
+    """Vero se la RPC applicherebbe l'evento perdendone la data.
+
+    Gli eventi registrati prima del 29/09/2026 portano la data di una proroga
+    o di un'apertura senza `campo` in `{"valore": …}`, chiave che
+    `bando_applica_evento` scarta: l'evento risulterebbe applicato con la data
+    vecchia, e `valore_dopo` e' immutabile. Non si mandano alla RPC: restano in
+    coda, contati in `in_attesa_valore`, per una correzione decisa a mano.
+    """
+    if str(riga.get("tipo") or "") not in TIPI_CON_DATA_IN_COLONNA:
+        return False
+    dopo = riga.get("valore_dopo")
+    if not isinstance(dopo, Mapping) or "valore" not in dopo:
+        return False
+    return "data_scadenza" not in dopo and "data_apertura" not in dopo
+
+
 def _capacita_eventi() -> tuple[bool, bool]:
     """(traduzione, stati_cinque) dal marcatore della migrazione 11.
 
@@ -2908,6 +2929,7 @@ def applica_eventi(
     esaminati = 0
     ultimo_id: Any = None
     in_attesa_traduzione = 0
+    in_attesa_valore = 0
     for riga in righe:
         esaminati += 1
         ultimo_id = riga.get("id", ultimo_id)
@@ -2915,6 +2937,9 @@ def applica_eventi(
             continue
         if attende_traduzione(riga, traduzione=traduzione):
             in_attesa_traduzione += 1
+            continue
+        if valore_non_applicabile(riga):
+            in_attesa_valore += 1
             continue
         scelte.append(riga)
         if len(scelte) >= max(1, limit):
@@ -2967,6 +2992,7 @@ def applica_eventi(
         "non_tentati": non_tentati,
         "segnalati": segnalati,
         "in_attesa_traduzione": in_attesa_traduzione,
+        "in_attesa_valore": in_attesa_valore,
         "ultimo_id": ultimo_id,
         "dry_run": dry_run,
         "tipo": tipo,
@@ -3407,6 +3433,11 @@ def _da_applicare(
                 # blocco e resta in coda, intatto, per quando la 11 ci sara'.
                 conto["in_attesa_traduzione"] += 1
                 continue
+            if valore_non_applicabile(riga):
+                # La RPC ne perderebbe la data: non consuma il blocco e resta
+                # in coda, intatto.
+                conto["in_attesa_valore"] += 1
+                continue
             raccolti.append(riga)
             if len(raccolti) >= max(0, limit):
                 return raccolti
@@ -3479,7 +3510,8 @@ async def run_applica_eventi(
     preso = lock.acquisisci(NOME_LOCK, f"{STEP_APPLICA}:cli", blocco.TTL_PREDEFINITO_S)
     if not preso.proseguire:
         return lock.esito_saltato(preso)
-    conto = {"attraversati": 0, "saltati": 0, "bloccati": 0, "in_attesa_traduzione": 0}
+    conto = {"attraversati": 0, "saltati": 0, "bloccati": 0, "in_attesa_traduzione": 0,
+             "in_attesa_valore": 0}
     try:
         # Il marcatore della migrazione 11, letto anche in `--dry-run` (e' una
         # lettura). Con le righe iniettate non c'e' un DB da interrogare: nel
@@ -3572,6 +3604,7 @@ async def run_applica_eventi(
                 "CHECK a cinque stati (migrazioni 06 e 11): i rifiuti di sospensione "
                 "e revoca non vengono annotati")
         in_attesa_traduzione = conto["in_attesa_traduzione"]
+        in_attesa_valore = conto["in_attesa_valore"]
         per_tipo: dict[str, int] = {}
         for nome in gruppi:
             if rimanenti <= 0:
@@ -3587,6 +3620,7 @@ async def run_applica_eventi(
             non_tentati += int(esito.get("non_tentati") or 0)
             segnalati += int(esito.get("segnalati") or 0)
             in_attesa_traduzione += int(esito.get("in_attesa_traduzione") or 0)
+            in_attesa_valore += int(esito.get("in_attesa_valore") or 0)
             rimanenti -= int(esito.get("candidati") or 0)
             per_tipo[nome or "tutti"] = int(esito.get("candidati") or 0)
 
@@ -3631,6 +3665,8 @@ async def run_applica_eventi(
             # brucerebbe, o che senza la 06 respingerebbe: non applicati, non
             # annotati, restano in coda.
             "in_attesa_traduzione": in_attesa_traduzione,
+            # Eventi con la data in `{"valore": …}`: la RPC la perderebbe.
+            "in_attesa_valore": in_attesa_valore,
             "traduzione_stato_proposto": traduzione,
             "stati_estesi": stati_estesi,
             "per_tipo": per_tipo,
@@ -3678,9 +3714,9 @@ def _scrivi_run(step: str, riepilogo: Mapping[str, Any], *, tempo: float) -> Non
 __all__ = [
     "ALLARME_RIFIUTI_TRONCATI", "BLOCCO_APPLICAZIONE", "CAMPIONE_MINIMO",
     "COLONNE_RIFIUTO", "FALLIMENTI_MODELLO_DI_FILA", "INTESTAZIONI_REPORT", "MOTIVO_RIFIUTO",
-    "TETTO_RIFIUTI_NOTI", "TRADUZIONI_STATO_PROPOSTO",
+    "TETTO_RIFIUTI_NOTI", "TIPI_CON_DATA_IN_COLONNA", "TRADUZIONI_STATO_PROPOSTO",
     "PAGINA_SELEZIONE_EVENTI", "SOGLIA_PRECISIONE", "STEP_APPLICA",
-    "applicabile", "attende_traduzione", "eventi_gia_rifiutati", "precisione", "report_ombra_da_eventi",
+    "applicabile", "attende_traduzione", "eventi_gia_rifiutati", "valore_non_applicabile", "precisione", "report_ombra_da_eventi",
     "riga_report_da_evento", "run_applica_eventi", "run_report_ombra",
     "scrivi_csv",
     "BACKOFF_BASE_ORE", "BACKOFF_MASSIMO_ORE", "BONUS_EVENTO_IN_ATTESA",

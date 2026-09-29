@@ -263,6 +263,48 @@ class TestDataEventoDeiTipiDaLink(unittest.TestCase):
         self.assertEqual(riga["data_evento"], OGGI.isoformat())
 
 
+
+class TestChiaveDelValore(unittest.TestCase):
+    """La data di una proroga senza `campo` finiva in `{"valore": …}`, chiave
+    che `bando_applica_evento` scarta: l'evento risultava applicato e la
+    scadenza restava quella vecchia (evento 9786, 28/09/2026)."""
+
+    def _riga(self, evento, **ctx):
+        return eventi.riga_evento(evento, _ctx(**ctx), eventi.Giudizio(ammesso=True))
+
+    def test_proroga_senza_campo(self):
+        riga = self._riga(_proroga(campo=None, valore="2026-11-08"))
+        self.assertEqual(riga["valore_dopo"].get("data_scadenza"), "2026-11-08")
+        self.assertNotIn("valore", riga["valore_dopo"])
+
+    def test_apertura_e_riapertura_senza_campo(self):
+        for tipo in ("apertura", "riapertura"):
+            evento = eventi.Evento(tipo=tipo, valore="2026-10-01", citazione="x", url_prova=URL)
+            riga = self._riga(evento)
+            self.assertEqual(riga["valore_dopo"].get("data_apertura"), "2026-10-01", tipo)
+
+    def test_la_chiave_e_quella_di_colonne_da_evento(self):
+        for evento in (_proroga(campo=None), _proroga(),
+                       eventi.Evento(tipo="apertura", valore="2026-10-01", citazione="x", url_prova=URL)):
+            colonne = eventi.colonne_da_evento(evento, _ctx(), eventi.Giudizio(ammesso=True))
+            dopo = self._riga(evento)["valore_dopo"]
+            for colonna in ("data_apertura", "data_scadenza"):
+                if colonna in colonne:
+                    self.assertEqual(dopo.get(colonna), colonne[colonna], evento)
+
+    def test_la_chiusura_non_scrive_la_data(self):
+        # Voluto (§4): la scadenza resta quella dichiarata dall'ente.
+        evento = eventi.Evento(tipo="chiusura", valore="2026-09-20", citazione="x", url_prova=URL)
+        dopo = self._riga(evento)["valore_dopo"]
+        self.assertNotIn("data_scadenza", dopo)
+
+    def test_il_g8_riconosce_la_forma_nuova(self):
+        passato = {"tipo": "proroga", "campo": None, "valore_dopo": {"data_scadenza": "2026-12-01"},
+                   "data_evento": OGGI.isoformat()}
+        ok, _ = eventi.g8_dedup(_proroga(campo=None), _ctx(eventi_recenti=(passato,)))
+        self.assertFalse(ok)
+
+
 class TestG4(unittest.TestCase):
     def test_pagina_scaricata(self):
         self.assertTrue(eventi.g4_prova(_proroga(), _ctx())[0])
