@@ -158,3 +158,106 @@ select s.slug, s.bando_id, s.esito
   join bando b on b.slug = s.slug
  where b.id in (1262344, 1262345, 1262369, 1262406, 1262410, 1262413)
  order by s.bando_id;
+
+
+-- ===========================================================================
+-- C. URGENTE (aggiunto il 29/09 sera): 13 bandi pubblicati scadono a DB il
+--    30/09, ma l'ente ha già prorogato il termine. Da lanciare entro il 30/09:
+--    dall'01/10 alle 00:05 il cron li chiude e il sito li mostra chiusi (anche
+--    dopo si correggono, chiuso → aperto per una proroga è nella lista bianca).
+--    Il monitor delle 18 del 29/09 ne ha visti 6 e li ha ammessi, ma in ombra
+--    non li applica, e con la chiave `valore` non sarebbero applicabili
+--    comunque (RIPRESA §4.2). Pagine rilette a mano il 29/09 alle 19:32.
+-- ===========================================================================
+
+-- C1. Regione Toscana, avviso FSE+ «percorsi formativi in undici settori
+--     produttivi strategici»: in catalogo una scheda per settore, 11 schede.
+--     «Proroga per presentare la domanda fino alle ore 13 del 12 ottobre 2026»
+--     (decreto dirigenziale 19940 del 7 settembre 2026).
+
+-- prima: dominio verificante (atteso: true; se false, FERMARSI)
+select public.bando_dominio_verificante(public.dominio_di(
+  'https://www.regione.toscana.it/-/finanziamenti-per-realizzare-percorsi-formativi-in-undici-settori-produttivi-strategici'));
+
+-- prima (atteso: 11 righe, aperto | 2026-09-30)
+select id, stato_bando, data_scadenza from bando
+ where id in (759891, 759892, 759894, 759895, 759896, 759897, 759898, 759900, 759902, 759907, 759909)
+ order by id;
+
+select b.id, public.bando_registra_evento(
+  p_bando_id    => b.id,
+  p_tipo        => 'proroga',
+  p_origine     => 'worker',
+  p_campo       => 'data_scadenza',
+  p_valore_dopo => '{"data_scadenza": "2026-10-12", "ora_scadenza": "13:00"}'::jsonb,
+  p_url_prova   => 'https://www.regione.toscana.it/-/finanziamenti-per-realizzare-percorsi-formativi-in-undici-settori-produttivi-strategici',
+  p_citazione   => 'Proroga per presentare la domanda fino alle ore 13 del 12 ottobre 2026',
+  p_data_evento => '2026-09-07',
+  p_applica     => true,
+  p_metodo      => 'correzione manuale del committente (29/09): proroga vista dal monitor in ombra, non applicabile con la chiave valore'
+)
+  from unnest(array[759891, 759892, 759894, 759895, 759896, 759897, 759898, 759900, 759902, 759907, 759909]) as b(id);
+-- atteso: 11 righe {"id": <nuovo>, "nuovo": true, "applicato": true}
+
+-- dopo (atteso: 11 righe, aperto | 2026-10-12 | 13:00:00)
+select id, stato_bando, data_scadenza, ora_scadenza from bando
+ where id in (759891, 759892, 759894, 759895, 759896, 759897, 759898, 759900, 759902, 759907, 759909)
+ order by id;
+
+
+-- C2. Bando 112862 (FVG, associazioni combattentistiche, d'arma e forze
+--     dell'ordine). «l'articolo 10, comma 1, con proroga del termine
+--     perentorio di presentazione delle domande al 15 ottobre 2026» (decreto
+--     di rettifica n. 47780/GRFVG del 7 settembre 2026). Il monitor l'ha
+--     respinta solo al G7 (nessuna seconda prova).
+
+-- prima: dominio verificante (atteso: true; se false, FERMARSI)
+select public.bando_dominio_verificante(public.dominio_di(
+  'https://www.regione.fvg.it/rafvg/cms/RAFVG/MODULI/bandi_avvisi/BANDI/9026.html'));
+
+select public.bando_registra_evento(
+  p_bando_id    => 112862,
+  p_tipo        => 'proroga',
+  p_origine     => 'worker',
+  p_campo       => 'data_scadenza',
+  p_valore_dopo => '{"data_scadenza": "2026-10-15"}'::jsonb,
+  p_url_prova   => 'https://www.regione.fvg.it/rafvg/cms/RAFVG/MODULI/bandi_avvisi/BANDI/9026.html',
+  p_citazione   => 'l''articolo 10, comma 1, con proroga del termine perentorio di presentazione delle domande al 15 ottobre 2026',
+  p_data_evento => '2026-09-07',
+  p_applica     => true,
+  p_metodo      => 'correzione manuale del committente (29/09): proroga respinta dal G7 per mancanza di una seconda prova'
+);
+-- atteso: {"id": <nuovo>, "nuovo": true, "applicato": true}
+
+-- dopo (atteso: aperto | 2026-10-15)
+select stato_bando, data_scadenza, ora_scadenza from bando where id = 112862;
+
+
+-- C3. Bando 17792 (Sardegna, SRD13 trasformazione e commercializzazione dei
+--     prodotti agricoli). Determinazione n. 1166/21659 del 24/09/2026, art. 1:
+--     il termine «è prorogato dal 30 settembre 2026 alle ore 23:59:59 del
+--     15 ottobre 2026». Il monitor ha visto la proroga ma senza la data nuova
+--     (G5), perché la data sta nel PDF e non nella pagina.
+
+-- prima: dominio verificante del PDF (atteso: true). Se dà false, usare come
+-- url_prova la pagina https://www.regione.sardegna.it/atti-bandi-archivi/atti-amministrativi/bandi/177884969569684
+-- e come citazione «Determinazione n.1166/21659 del 24/09/2026 - Proroga del termine di presentazione delle domande di sostegno».
+select public.bando_dominio_verificante(public.dominio_di(
+  'https://files.regione.sardegna.it/squidex/api/assets/redazionaleras/a63d832e-3dc5-44e4-b6f7-8504bf8b485f/proroga-bando-srd13.pdf'));
+
+select public.bando_registra_evento(
+  p_bando_id    => 17792,
+  p_tipo        => 'proroga',
+  p_origine     => 'worker',
+  p_campo       => 'data_scadenza',
+  p_valore_dopo => '{"data_scadenza": "2026-10-15", "ora_scadenza": "23:59"}'::jsonb,
+  p_url_prova   => 'https://files.regione.sardegna.it/squidex/api/assets/redazionaleras/a63d832e-3dc5-44e4-b6f7-8504bf8b485f/proroga-bando-srd13.pdf',
+  p_citazione   => 'è prorogato dal 30 settembre 2026 alle ore 23:59:59 del 15 ottobre 2026',
+  p_data_evento => '2026-09-24',
+  p_applica     => true,
+  p_metodo      => 'correzione manuale del committente (29/09): la data nuova sta nel PDF della determinazione'
+);
+-- atteso: {"id": <nuovo>, "nuovo": true, "applicato": true}
+
+-- dopo (atteso: aperto | 2026-10-15 | 23:59:00)
+select stato_bando, data_scadenza, ora_scadenza from bando where id = 17792;
