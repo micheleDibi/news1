@@ -624,6 +624,32 @@ niente preme.
   `select count(*) from bando where stato_processing = 'rejected' and rejection_reason =
   'fallback fallito: Sonnet API error' and updated_at > '2026-09-28';`
 
+**Rilascio 2 del pacchetto «eventi affidabili» (29/09, branch `claude/eventi-affidabili-2`).**
+- **Il diff del monitor confronta testo con testo e link con link.** Prima confrontava il
+  `testo_norm` salvato (testo semplice) con l'HTML nuovo, e ogni cambio d'impronta rendeva nuova
+  la pagina intera: su 20 pagine vere il vecchio diff era «rilevante» 19 volte. È la causa dei
+  falsi «nuovo allegato».
+  - I link della pagina si salvano in `bando_controllo.impronte_sezioni["__link__"]`, così al
+    giro dopo c'è un «prima» anche per i link.
+  - Il modello si chiama quando il diff non è rumore, quindi anche per una data spostata senza
+    parole chiave.
+  - Le righe solo spostate non contano.
+- **Gate**:
+  - G1/G4 confrontano le citazioni anche a spazi diversi, senza fondere le cifre;
+  - G2 dei tipi «da link» vuole la citazione nelle righe nuove o nel nome di un link nuovo,
+    valutato link per link;
+  - G3 accetta la data dell'atto recente per graduatorie, esiti, FAQ e allegati;
+  - i tipi «da link» senza data non prendono più il giorno del controllo.
+- **La data di proroghe e aperture va nella colonna giusta**, non più in `valore`. Gli eventi
+  vecchi in quella forma restano in coda (`in_attesa_valore`); oggi è uno solo, il 9786, non
+  verificato.
+- **Il 23514 «transizione non ammessa» è un rifiuto.**
+- **Monitor attivo**: niente INSERT «applicato» se la RPC non ha scritto; IndexNow solo per gli
+  eventi applicati; allarme per gli eventi ammessi ma non applicati.
+- **`salute`**: allarme per i bandi fermi in `scraped` da oltre 13 ore (ingresso bloccato).
+- **Tetto ai tentativi SEO (il 772894)**: il committente ha scelto il 29/09 di **non**
+  aggiungerlo, e di tenere Opus per la SEO.
+
 **Da guardare: un bando fermo nello step SEO.** Il bando 772894 (fonte OE, `enriched` dal 22/08,
 senza titolo né slug) fallisce la SEO a ogni giro (`seo.payload_failed: 1`). Non si sa se ogni
 tentativo costi una chiamata a Claude, perché la riga del giro non registra il costo della SEO.
@@ -815,6 +841,25 @@ ne è uscito e cosa è stato deciso.
 - **Le 10 classificazioni perse col credito a zero.** Non esiste oggi un modo sicuro di
   ripresentarle: azzerare l'impronta le farebbe rileggere come prima lettura, dove il G2' non
   ammette quasi niente. Da progettare.
+
+**Trovati dalla revisione del rilascio 2, non corretti** (29/09):
+- **Il 28% delle pagine monitorate è «cieco»**: 171 su 614 `testo_norm` hanno 3 righe o meno.
+  Sono cieche tutte le 145 del Piemonte e tutte quelle della Valle d'Aosta. `impronte.pulisci`
+  toglie i nodi che contengono il contenuto (il `form`, classi confrontate per sottostringa), e il
+  monitor non vede nessun cambiamento. Correggerlo cambia l'impronta di tutte le pagine: serve
+  prima un riallineamento senza diff, altrimenti un giro classificherebbe tutto.
+- **Bando 455779** (Valle d'Aosta): chiuso a DB, prorogato dall'ente al 30/10. Correzione A4 in
+  `correzioni-2026-09-28.sql`.
+- **Il primo giro dopo il deploy non ha link salvati**: i link comparsi nel frattempo entrano nel
+  «prima» senza essere visti una volta.
+- **Box «Aggiornamenti»**: gli eventi senza data vanno in fondo e sono i primi a uscire dal limite
+  di 20 (`src/lib/bandi/aggiornamenti.ts`). Serve la deroga sul frontend.
+- **G8**:
+  - non deduplica le sospensioni con `stato_proposto`;
+  - due graduatorie diverse entro 30 giorni si deduplicano.
+- **Monitor attivo**:
+  - un timeout dopo il commit della RPC lascia la colonna cambiata e la prosa vecchia;
+  - un evento registrato ma non applicato (date incoerenti) resta visibile nel box.
 
 **Scadenze nate dalla prova:**
 - 07/10: la Basilicata. Col DNS rotto, il giro delle 06 dell'08/10 rischia 100 minuti di
