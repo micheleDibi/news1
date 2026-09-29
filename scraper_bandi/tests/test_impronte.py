@@ -321,6 +321,15 @@ class DiffTesti(unittest.TestCase):
                           impronte.normalizza_url("https://ente.it/b.pdf?utm_source=x")))
         self.assertEqual(impronte.link_pagina("solo testo"), ())
 
+    def test_il_jsessionid_non_cambia_i_link(self):
+        # Regione Umbria: la prima pagina servita senza cookie riscrive ogni
+        # href con un jsessionid nuovo (revisione del 29/09/2026).
+        con = '<main><a href="/bandi/dettaglio;jsessionid=A1B2C3?id=7">Bando</a></main>'
+        senza = '<main><a href="/bandi/dettaglio?id=7">Bando</a></main>'
+        altra = '<main><a href="/bandi/dettaglio;JSESSIONID=ZZ9?id=7">Bando</a></main>'
+        self.assertEqual(impronte.link_pagina(con), impronte.link_pagina(senza))
+        self.assertEqual(impronte.link_pagina(altra), impronte.link_pagina(senza))
+
 
     def test_una_riga_spostata_non_e_aggiunta(self):
         # Revisione del 29/09: una riga che cambia solo posto usciva fra le

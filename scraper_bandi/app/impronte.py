@@ -572,6 +572,12 @@ def _scheletro(riga: str) -> str:
 #: `impronte_sezioni` non la legge nessun altro, e cosi' non serve una colonna.
 CHIAVE_LINK = "__link__"
 
+#: `;jsessionid=…` nel percorso: la Regione Umbria lo riscrive in ogni href
+#: della prima pagina servita a un client senza cookie, e a ogni giro quella
+#: pagina risultava avere venti «link nuovi» (revisione del 29/09/2026). Si
+#: toglie solo qui: `normalizza_url` e' gemella della SQL e resta com'e'.
+_SESSIONE_NEL_LINK = re.compile(r";jsessionid=[^/?#]*", re.I)
+
 
 def link_pagina(html_o_testo: str | None) -> tuple[str, ...]:
     """I link della pagina, normalizzati, unici e ordinati. Vuota su un testo."""
@@ -582,7 +588,10 @@ def link_pagina(html_o_testo: str | None) -> tuple[str, ...]:
     # comparire fra i link nuovi.
     zuppa = pulisci(html_o_testo)
     return tuple(sorted({
-        u for u in (normalizza_url((a.get("href") or "").strip()) for a in zuppa.find_all("a"))
+        u for u in (
+            normalizza_url(_SESSIONE_NEL_LINK.sub("", (a.get("href") or "").strip()))
+            for a in zuppa.find_all("a")
+        )
         if u
     }))
 

@@ -300,6 +300,11 @@ def _istante(valore: Any) -> datetime | None:
     return None
 
 
+def _giorno_di(valore: Any) -> date_cls | None:
+    istante = _istante(valore)
+    return istante.date() if istante else None
+
+
 def fase(riga: Mapping[str, Any], *, oggi: date_cls | None = None) -> str:
     """Fase del ciclo di vita del bando (§6.2).
 
@@ -1087,6 +1092,7 @@ async def controlla(
         prove=tuple(prove),
         tabella_domini=tabella_domini,
         oggi=momento.date(),
+        ultimo_controllo=_giorno_di(riga.get("ultimo_controllo_at")),
         stati_estesi=stati_estesi,
         modalita=modalita,
     )

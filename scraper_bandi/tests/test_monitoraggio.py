@@ -563,6 +563,27 @@ class TestControlla(unittest.IsolatedAsyncioTestCase):
             fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
         self.assertEqual(len(scaricati), 1 + monitoraggio.MAX_PAGINE_COLLEGATE)
 
+    async def test_il_giorno_dell_ultimo_controllo_arriva_ai_gate(self):
+        # Il G3 misura la novita' di un atto anche dall'ultimo controllo: i
+        # bandi chiusi si ricontrollano ogni 22-37 giorni (revisione 29/09).
+        visti = []
+
+        async def scarica(url, **kw):
+            return _Risposta(html="<h1>Avviso</h1><p>graduatoria</p>")
+
+        async def classifica(ctx):
+            visti.append(ctx.ultimo_controllo)
+            return []
+
+        await monitoraggio.controlla(
+            _bando(ultimo_controllo_at="2026-08-30T04:10:00+00:00"),
+            scarica=scarica, classifica=classifica,
+            fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
+        await monitoraggio.controlla(
+            _bando(), scarica=scarica, classifica=classifica,
+            fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(visti, [date(2026, 8, 30), None])
+
 
 # --- giro completo ----------------------------------------------------------
 

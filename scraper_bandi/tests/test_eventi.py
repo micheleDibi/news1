@@ -178,6 +178,20 @@ class TestG2(unittest.TestCase):
                                citazione="Avviso Lazioeuropa del 09/2026")
         self.assertFalse(eventi.g2_diff(evento, _ctx(diff=diff))[0])
 
+    def test_il_nome_del_documento_nella_query_vale(self):
+        # Toscana, Liguria, CCIAA: il nome del file sta nella query
+        # (revisione del 29/09/2026). Le chiavi della query non contano.
+        diff = impronte.Diff(
+            link_aggiunti=("https://ente.it/download.php?file=graduatoria_definitiva_imprese.pdf",),
+            rumore=False, rilevante=True)
+        evento = eventi.Evento(tipo="graduatoria", url_prova=URL,
+                               citazione="Graduatoria definitiva imprese")
+        self.assertTrue(eventi.g2_diff(evento, _ctx(diff=diff))[0])
+        chiavi = impronte.Diff(
+            link_aggiunti=("https://ente.it/download.php?graduatoria=1&definitiva=2",),
+            rumore=False, rilevante=True)
+        self.assertFalse(eventi.g2_diff(evento, _ctx(diff=chiavi))[0])
+
     def test_i_nomi_dei_link_non_valgono_per_gli_altri_tipi(self):
         diff = impronte.Diff(
             link_aggiunti=("https://lazioeuropa.it/proroga-al-1-dicembre-2026.pdf",),
@@ -259,6 +273,48 @@ class TestG3(unittest.TestCase):
             tipo="graduatoria", url_prova=URL, data_evento=date(2026, 3, 21),
             citazione="Graduatoria: Determinazione DPG025/12 del 21/03/2026")
         self.assertFalse(eventi.g3_ruolo(evento, _ctx())[0])
+
+    def test_un_atto_uscito_dopo_l_ultimo_controllo_vale_anche_se_vecchio(self):
+        # Bando chiuso ricontrollato dopo 35 giorni: la graduatoria del 25/08,
+        # uscita sul sito il 02/09, arriva al controllo del 29/09. Con la sola
+        # finestra di 30 giorni da oggi si perdeva per sempre.
+        evento = eventi.Evento(
+            tipo="graduatoria", url_prova=URL, data_evento=date(2026, 8, 25),
+            citazione="Graduatoria definitiva approvata con Determinazione n. 88 del 25/08/2026")
+        giorno = date(2026, 9, 29)
+        self.assertFalse(eventi.g3_ruolo(evento, _ctx(oggi=giorno))[0])
+        self.assertTrue(eventi.g3_ruolo(
+            evento, _ctx(oggi=giorno, ultimo_controllo=date(2026, 8, 30)))[0])
+
+    def test_un_atto_molto_anteriore_all_ultimo_controllo_resta_vecchio(self):
+        evento = eventi.Evento(
+            tipo="graduatoria", url_prova=URL, data_evento=date(2026, 7, 1),
+            citazione="Graduatoria: Determinazione DPG025/240 del 01/07/2026")
+        ctx = _ctx(oggi=date(2026, 9, 25), ultimo_controllo=date(2026, 8, 20))
+        self.assertFalse(eventi.g3_ruolo(evento, ctx)[0])
+
+    def test_un_atto_futuro_non_vale(self):
+        evento = eventi.Evento(
+            tipo="graduatoria", url_prova=URL, data_evento=date(2026, 10, 15),
+            citazione="Graduatoria: Determinazione n. 9 del 15/10/2026")
+        self.assertFalse(eventi.g3_ruolo(
+            evento, _ctx(ultimo_controllo=date(2026, 9, 20)))[0])
+
+    def test_senza_data_evento_conta_la_data_dell_atto_citato(self):
+        # 9750 e 9834: il modello non ha dichiarato la data, la citazione
+        # era una determina di luglio (revisione del 29/09/2026).
+        vecchio = eventi.Evento(
+            tipo="nuovo_allegato", url_prova=URL,
+            citazione="Determinazione DPG025/240 del 01/07/2026")
+        ok, motivo = eventi.g3_ruolo(vecchio, _ctx())
+        self.assertFalse(ok)
+        self.assertIn("non e' recente", motivo)
+        recente = eventi.Evento(
+            tipo="nuovo_allegato", url_prova=URL,
+            citazione="Determinazione DPG025/327 del 21/09/2026")
+        self.assertTrue(eventi.g3_ruolo(recente, _ctx())[0])
+        senza_atto = eventi.Evento(tipo="faq", url_prova=URL, citazione="FAQ aggiornate")
+        self.assertTrue(eventi.g3_ruolo(senza_atto, _ctx())[0])
 
     def test_faq_e_allegati_datati_dall_atto(self):
         for tipo in ("faq", "nuovo_allegato"):

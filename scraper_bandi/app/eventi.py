@@ -47,9 +47,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date as date_cls, datetime
+from datetime import date as date_cls, datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from .date_validation import (
     check_dates_coherence,
@@ -114,6 +114,10 @@ SORGENTE_CANDIDATURA_ASSENTE = "missing"
 
 FINESTRA_DEDUP_GIORNI = 30
 QUOTA_TOKEN_G2 = 0.60
+#: Un atto datato fino a tanti giorni prima dell'ultimo controllo e' ancora
+#: una novita': la determina esce sul sito giorni dopo la sua data, e fra i
+#: due controlli di un bando chiuso passano fino a 37 giorni.
+MARGINE_ATTO_GIORNI = 15
 
 # --- G6: parole chiave obbligatorie per tipo (§6.2) -------------------------
 #
@@ -294,6 +298,7 @@ class Contesto:
     seconda_opinione: Any = None
     tabella_domini: Any = None
     oggi: date_cls | None = None
+    ultimo_controllo: date_cls | None = None          # giorno del controllo precedente
     stati_estesi: bool = False                        # migrazione 06 applicata
     modalita: str = MODALITA_OMBRA
 
@@ -521,13 +526,19 @@ def g2_diff(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
 
 
 def _token_link(url: str) -> set[str]:
-    """Le parole di contenuto del percorso di un link: niente schema, host,
-    cifre ne' parole di due lettere."""
+    """Le parole di contenuto di un link: percorso e valori della query.
+    Niente schema, host, chiavi della query, cifre ne' parole di due lettere.
+
+    I valori della query contano perche' molti enti mettono li' il nome del
+    file (`download.php?file=graduatoria.pdf`, `nomeFile=Decreto+n.…`).
+    """
     try:
-        percorso = urlsplit(url).path
+        parti = urlsplit(url)
+        valori = [v for _, v in parse_qsl(parti.query, keep_blank_values=False)]
     except ValueError:
         return set()
-    return {t for t in _token(percorso) if len(t) >= 3 and not t.isdigit()}
+    testo = " ".join([unquote(parti.path), *valori])
+    return {t for t in _token(testo) if len(t) >= 3 and not t.isdigit()}
 
 
 def g2_primo(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
@@ -583,6 +594,14 @@ def g3_ruolo(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
         # Eventi senza data (sospensione, revoca, faq...): niente da validare,
         # ma una `data_evento` normativa resta inammissibile.
         if evento.data_evento is None:
+            if evento.tipo in TIPI_DA_LINK:
+                # `data_evento` e' facoltativa: senza, l'atto vecchio passava.
+                # Si guardano le date d'atto della citazione (revisione del
+                # 29/09/2026: 9750 e 9834 citavano una determina di luglio).
+                atti = [c.data for c in estrai_date_con_ruolo(evento.citazione)
+                        if c.ruolo == "normativa"]
+                if atti and not any(_atto_recente(d, ctx) for d in atti):
+                    return False, f"l'atto citato ({max(atti).isoformat()}) non e' recente"
             return True, ""
         data = evento.data_evento
     ruolo = _ruolo_atteso(evento)
@@ -593,7 +612,7 @@ def g3_ruolo(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
         # «normativa» il G3 respingeva proprio le graduatorie vere (evento
         # 9747, 28/09/2026). Ma solo un atto recente: uno di mesi fa non e' una
         # novita' (revisione del 29/09/2026).
-        recente = 0 <= (ctx.giorno - data).days <= FINESTRA_DEDUP_GIORNI
+        recente = _atto_recente(data, ctx)
         if recente and any(c.data == data for c in trovate):
             return True, ""
         if not recente:
@@ -798,6 +817,23 @@ def _prova_indipendente(evento: Evento, ctx: Contesto) -> Prova | None:
             continue
         return prova
     return None
+
+
+def _atto_recente(data: date_cls, ctx: Contesto) -> bool:
+    """L'atto e' una novita' per questo controllo: non futuro, e datato negli
+    ultimi 30 giorni oppure dopo l'ultimo controllo (meno un margine).
+
+    Contare solo da oggi respingeva le graduatorie vere dei bandi chiusi, che
+    si ricontrollano ogni 22-37 giorni: la pagina nuova arrivava al modello
+    con l'atto gia' vecchio di 35 giorni, e la memoria salvata la faceva
+    sparire per sempre (revisione del 29/09/2026).
+    """
+    if data > ctx.giorno:
+        return False
+    if (ctx.giorno - data).days <= FINESTRA_DEDUP_GIORNI:
+        return True
+    return ctx.ultimo_controllo is not None and \
+        data >= ctx.ultimo_controllo - timedelta(days=MARGINE_ATTO_GIORNI)
 
 
 def g8_dedup(evento: Evento, ctx: Contesto, *, giorni: int = FINESTRA_DEDUP_GIORNI) -> tuple[bool, str]:
@@ -1381,7 +1417,7 @@ def tabella_transizioni() -> tuple[dict[str, Any], ...]:
 __all__ = [
     "Allineamento", "Applicazione", "CAMPI_RETTIFICA", "Contesto", "Evento",
     "FINESTRA_DEDUP_GIORNI", "Giudizio", "ISTRUZIONI_CLASSIFICATORE",
-    "MODALITA_ATTIVO", "MODALITA_OMBRA", "PAROLE_G6", "PARAMETRI_REGISTRA_EVENTO",
+    "MARGINE_ATTO_GIORNI", "MODALITA_ATTIVO", "MODALITA_OMBRA", "PAROLE_G6", "PARAMETRI_REGISTRA_EVENTO",
     "PESI_GATE", "Pagina", "parametri_registra_evento",
     "PROVE_G7_AMMESSE", "PROVE_G7_VIETATE", "Prova", "QUOTA_TOKEN_G2",
     "RPC_REGISTRA_EVENTO", "SORGENTE_CANDIDATURA_ASSENTE",
