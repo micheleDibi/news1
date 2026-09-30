@@ -9,13 +9,13 @@ Questo registro sopravvive al cambio di macchina e lo vede chi fa commit. Le dat
 | Fase | Stato | Note |
 |---|---|---|
 | Piano (Fase 0, Design 1-2, Verify-1) | [x] chiuso 22/09/2026 ~19:50 | approvato dal committente («ok procedi pure») |
-| P0 rotazione password OE | [ ] a carico del committente | precondizione della bonifica dei file (README, legacy) |
+| P0 rotazione password OE | [ ] a carico del committente | precondizione della bonifica dei file (README, legacy); al 30/09 ancora da confermare (`verifiche-michele-2026-10.md`, voce 6) |
 | A — codice, nessun DB | [x] **chiusa il 23/09/2026**: tappe 0-6 fatte, verifica finale della consegna eseguita e correzioni applicate | 1226 test Python, 381 npm, 26 backend, tsc 51 |
-| B — migrazioni (b) | [ ] | il committente applica 01-05 + seed nel SQL Editor |
-| C — ombra 14 gg | [ ] | |
-| D — attivazione per tipo | [ ] | |
-| E — R0 BandoFit → 06 | [ ] | |
-| F — (c) → 07 | [ ] | |
+| B — migrazioni (b) | [x] 24-28/09 | applicate 01, 02, seed, 03, 04, 05, 08, 09, 10, poi 11 e 06 il 28/09 (RIPRESA §1) |
+| C — ombra 14 gg | [~] dal 24/09 | misura del 30/09: 75 proposte del monitor, 23 ammesse, nessuna proroga falsa (`ombra-2026-10.md`) |
+| D — attivazione per tipo | [ ] al deploy di ottobre | `MONITOR_TIPI_ATTIVI=faq,nuovo_allegato,graduatoria,esito,proroga`; codice pronto sul branch `claude/bandi-ripresa-ottobre`, deploy a carico del committente |
+| E — R0 BandoFit → 06 | [x] 28/09 | R0-a confermato per iscritto il 27/09, 06 applicata il 28/09 |
+| F — (c) → 07 | [ ] rimandata | R0-b di BandoFit in produzione dal 30/09; **(c) passo c1 in produzione dal 30/09** (878acb0, f5e232d), c2 dopo la nuova misura di §5.1; la 07 toglierebbe il pulsante a 183 bandi aperti o in apertura: rimandata il 30/09 (`misure-colonne-07.md`, contratto §5.1) |
 
 ## Tappe della fase A
 
@@ -762,3 +762,28 @@ difetti nelle correzioni della revisione precedente:
 
 I rilievi rimasti aperti sono in RIPRESA §4.4. Il più grosso: il 28% delle pagine monitorate è
 cieco.
+
+## Giro «ripresa bandi, ottobre 2026» (30/09/2026)
+
+Un giro di lavoro a più operatori (lead, due sul codice, uno sui dati, un revisore), con un
+contratto interno (`docs/contracts/bandi-ripresa-ottobre.md`). **Codice pronto sul branch
+`claude/bandi-ripresa-ottobre`, deploy a carico del committente**, entro il 07/10: i passi sono in
+RIPRESA §1.
+
+- **Codice** (RIPRESA §4.2): pagine cieche leggibili (164 → 1 su 611) con riallineamento senza
+  spesa; `MONITOR_TIPI_ATTIVI` (al deploy `faq,nuovo_allegato,graduatoria,esito,proroga`); host
+  morti con tetto di 120 secondi e DNS saltato; prompt SEO senza forme di partecipazione
+  inventate e comando `seo-rigenera`; il 772894 sbloccato (titolo di 88 caratteri); doppioni di
+  ObiettivoEuropa rifiutati prima della SEO; lock orfani rilasciati all'avvio del sender.
+- **Dati** (RIPRESA §4.5): la 07 rimandata; 31 date e stati corretti con i file SQL dell'01/10
+  (13 scadenze del 30/09, 18 «in apertura»); il 18278 chiuso e senza la voce di beneficiari
+  sbagliata; nessuna proroga falsa nel periodo d'ombra, ma copertura bassa; 425 «aperto» senza
+  scadenza; 41 coppie di doppioni OE da fondere.
+- **Decisioni del 30/09**: `proroga` attiva dal deploy (committente); arretrato dell'ombra non
+  pubblicato (lead); 07 rimandata (lead, contratto verso BandoFit §5.1).
+- **Test al 30/09 sera**: 1879 `test:py:bandi`, 437 `npm test`, 46 `test:py`, tutti verdi.
+
+Il 30/09 alle 12:33 il sender è stato riavviato (giro di avvio finito bene). Il monitor delle 18
+conferma che sul server gira il rilascio 2: 56 righe con `__link__` e la chiave `eventi_non_applicati`
+nella riga del giro (`misure-2026-09-30.md` §5).
+

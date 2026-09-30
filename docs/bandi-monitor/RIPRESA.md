@@ -1,13 +1,20 @@
 # Bandi — punto di ripresa e verifiche
 
 Questo file serve a riprendere il lavoro sui bandi dopo una pausa di giorni o di settimane, senza
-rileggere il piano né ricostruire il contesto. È aggiornato al **28 settembre 2026**:
+rileggere il piano né ricostruire il contesto. È aggiornato al **30 settembre 2026**, alla fine del
+giro «ripresa bandi, ottobre 2026»:
 - il 27/09: conferma di R0-a e migrazione 11 scritta;
 - il 28/09 mattina: 11 e 06 applicate, `MONITOR_STATI_ESTESI=true`, sender riavviato (§4.3,
-  passi 2-6).
+  passi 2-6);
+- il 29/09: rilascio 2 del pacchetto «eventi affidabili» (§4.2);
+- il 30/09: il committente ha eseguito le correzioni del 28-29/09 e riavviato il sender alle 12:33
+  (giro di avvio finito bene). **Sul server gira il rilascio 2**: lo conferma il monitor delle 18
+  (56 righe con `__link__`). Il giro di ottobre ha preparato codice, misure e file SQL, **ma il suo
+  deploy non è ancora fatto** (§1, «Giro di ottobre»).
 
-Il controllo completo sul DB, sul sito pubblico e sui test resta quello del 26/09 alle 12; dopo si
-sono rimisurati solo eventi, stati e marcatore (§4.3).
+Il controllo sul DB (query di §3.2 e numeri qui sotto) è del 30/09 alle 13:29, più il monitor delle
+18 misurato alle 18:30, in `misure-2026-09-30.md`. Il sito pubblico non è stato riletto dopo il
+26/09.
 
 Per la cronaca di come ci siamo arrivati: `AVANZAMENTO.md`, nella stessa cartella. Per il contratto
 verso BandoFit: `docs/contratto-db-bandi.md`. Il piano completo dell'intervento sta in
@@ -20,18 +27,70 @@ verso BandoFit: `docs/contratto-db-bandi.md`. Il piano completo dell'intervento 
 L'intervento è **in esercizio**. Il resolver e i ricontrolli scrivono in produzione; il monitor
 registra ma non applica e non rende visibile niente, di nessun tipo (modalità ombra). Il 25/09 gli
 eventi `faq` e `nuovo_allegato` già raccolti sono stati resi visibili una volta, a mano, con
-`applica-eventi` (vedi sotto).
+`applica-eventi` (vedi sotto). **Dal deploy di ottobre** cinque tipi si applicano da soli
+(`MONITOR_TIPI_ATTIVI`, qui sotto).
 
-| | valore al 26/09/2026 | al 25/09 |
-|---|---|---|
-| bandi pubblicati | 2 162 | 2 147 |
-| **fonti ufficiali trovate** (pubblicati) | **614** — 693 contando 79 bandi `processed` mai pubblicati | 609 |
-| fonti in verifica (pubblicati) | 1 031 | 1 027 |
-| fonti non trovate (pubblicati) | 517 | 511 |
-| fonti trovate con link non leggibile | 0 su 693 | — |
-| **CTA verso un aggregatore** | **0** (query 1 a DB e 30 schede lette) | 0 su 2 147 |
-| proposte del monitor registrate dal 24/09 | 24 (6 ammesse, 5 visibili sulle schede) | 17 |
-| domini in whitelist | 109 (non rimisurato) | 109 |
+| | 30/09/2026, 13:29 | 26/09 | 25/09 |
+|---|---|---|---|
+| bandi pubblicati | 2 180 | 2 162 | 2 147 |
+| — aperti / chiusi / in apertura | 1 249 / 747 / 184 | — | — |
+| **fonti ufficiali trovate** (pubblicati) | **616** — 696 in tutto, con 79 `processed` mai pubblicati e 1 fuso | 614 (693) | 609 |
+| fonti in verifica (pubblicati) | 1 044 | 1 031 | 1 027 |
+| fonti non trovate (pubblicati) | 520 | 517 | 511 |
+| fonti trovate con link non leggibile | 0 su 696 | 0 su 693 | — |
+| **CTA verso un aggregatore** | **0** (query 1; schede non rilette) | 0 (anche 30 schede lette) | 0 su 2 147 |
+| proposte del monitor dal 24/09 | 75: 23 ammesse, 5 visibili (senza le 17 correzioni a mano del 30/09) | 24 (6, 5) | 17 |
+| «aperto» senza data di scadenza | 425 su 1 249 (286 di ObiettivoEuropa) | — | — |
+| «in apertura» con la data passata (query 12) | 21 (18 li corregge il file dell'01/10) | 19 | — |
+| righe di `dominio_ufficiale` | 109: 58 enti, 19 portali, 7 pattern, 25 aggregatori | 109 | 109 |
+
+**Il monitor delle 18 del 30/09**, primo giro col rilascio 2: 62 pagine controllate, 53 invariate, 7
+classificazioni (sopra le 2-4 attese, perché al primo giro i link salvati non c'erano ancora: il numero
+giusto si legge dai prossimi), 9 proposte e 2 ammesse, 0,09 USD. Nello stesso giro 7 bandi nuovi
+pubblicati, tutti da ObiettivoEuropa. Uno risulta «aperto» ma apre l'01/10 alle 12 (1262673).
+
+### Giro «ripresa bandi, ottobre 2026»: codice pronto, deploy da fare
+
+Il 30/09 un giro di lavoro ha preparato tutto sul branch `claude/bandi-ripresa-ottobre`. **Il
+deploy è a carico del committente.** Contratto interno: `docs/contracts/bandi-ripresa-ottobre.md`.
+
+Cosa porta il codice (dettagli in §4.2):
+- pagine «cieche» del Piemonte e della Valle d'Aosta di nuovo leggibili, con un riallineamento
+  delle impronte che non classifica e non spende;
+- `MONITOR_TIPI_ATTIVI`: i tipi scelti si applicano e diventano visibili nel giro stesso;
+- host morti: un tetto di 120 secondi per bando e gli host senza DNS saltati per il giro;
+- SEO: prompt senza forme di partecipazione inventate, comando `seo-rigenera`, titoli oltre 80
+  caratteri gestiti (il 772894 fermo da settimane), bandi di ObiettivoEuropa già pubblicati da una
+  fonte ufficiale rifiutati prima della SEO;
+- all'avvio il sender rilascia i lock orfani dei propri processi precedenti.
+
+**I passi, in ordine** (le verifiche con un clic o un comando sono in
+`verifiche-michele-2026-10.md`):
+1. controllare backup e PITR del progetto bandi (voci 1-2 del foglio);
+2. fuori dall'ora e mezza prima dei giri delle 00, 06, 12 e 18, lanciare
+   `correzioni-2026-10-01-chat.sql` (o il file lungo
+   `correzioni-2026-10-01.sql`: sono intercambiabili), un blocco alla volta: 13 scadenze del 30/09
+   spostate e 18 «in apertura» sistemati. Funziona anche dopo le 00:05 dell'01/10, quando il cron
+   avrà chiuso i primi 13;
+3. lanciare `correzioni-2026-10-01-testi.sql`: beneficiari e chiusura del 18278, proroga
+   verificata del 112862;
+4. **deploy, entro il 07/10**, in una finestra sicura (12:30-16:30 o 19:00-22:30):
+   - pull del codice sul server;
+   - in `scraper_bandi/.env` la riga
+     `MONITOR_TIPI_ATTIVI=faq,nuovo_allegato,graduatoria,esito,proroga`;
+   - **un solo** `systemctl restart edunews-bandi-sender`, poi l'attesa di «Pipeline iniziale
+     completata» (voce 13 del foglio);
+   - `salute` deve stampare «tipi attivi del monitor: faq, nuovo_allegato, graduatoria, esito,
+     proroga» (un valore sconosciuto dà `[ALLARME]`);
+5. dopo il primo monitor (06 o 18): nella riga del giro `riallineate` sopra zero, e
+   `bando_controllo.impronte_sezioni` con `__versione__` = 2;
+6. per una settimana, ogni mattina, la query di sorveglianza delle proroghe (§6);
+7. `rigenera --dry-run`, poi `--attivo` (§6), nella finestra sicura e mai durante un giro: è un
+   lotto e non prende lock. Sistema la prosa con le date vecchie (elenco in
+   `rigenerazione-2026-10.md` §6);
+8. `seo-rigenera`: prima `--solo-controllo`, poi la prova a secco sui 14 aperti di
+   `rigenerazione-2026-10.md` §7, lettura, e solo allora `--attivo --proposte` (§6);
+9. il 07/10, il DNS della Basilicata (voce 14 del foglio).
 
 Il numero «653 schede con un pulsante verso l'ente» del 25/09 non si confronta più: dal
 ridisegno (vedi sotto) i bandi chiusi non mostrano nessun pulsante.
@@ -54,11 +113,23 @@ Le verifiche visive le ha fatte il committente.
   6ce5cfd di BandoFit): ricerca su `ricerca`, miss risolti su `bando_slug_storico` e
   `bando_fusione`, colonne `fonte_ufficiale_*`. BandoFit legge ancora `bando` con il predicato
   storico, quindi fino alla (c) un doppione fuso resta visibile nelle sue liste.
+  **Aggiornamento del 30/09 sera: la fase (c), passo c1, di BandoFit è in produzione** (commit 878acb0 e
+  f5e232d di BandoFit, conferma scritta).
+  - BandoFit ora legge solo `bando_pubblico`, `bando_link`, `bando_slug_storico` e `bando_fusione`, mai la tabella
+    `bando`; tiene i ripieghi deprecati di §5.1 del contratto e rimappa i fusi ogni ora.
+  - La 07 è **rimandata**: si propone solo dopo il c2 di BandoFit (niente ripieghi), che parte dopo una nuova misura
+    di §5.1 annunciata con almeno 7 giorni di preavviso.
+  - Prima di un lotto di fusioni (L4) o di una separazione, e prima della prima applicazione attiva di sospensioni o
+    revoche, **avvisare BandoFit** (va in modalità `prova`).
+  - Le verifiche di §11 in versione (c) del 30/09 passano tutte; le 13 risposte a BandoFit sono nel contratto
+    (§3, §5, §5.1, §6.2, §8, §10.1, §11, §12).
 - La **11** (`bando_v11_11_traduzione_stato_proposto.sql`) fa tradurre a `bando_applica_evento`
   lo `stato_proposto` degli eventi raccolti in ombra. Senza, la RPC della 04 li marca applicati
   senza cambiare lo stato. Il marcatore `bando_capacita_eventi()` risponde, dal 28/09,
   `{"stati_cinque": true, "traduce_stato_proposto": true}`.
 - La **07** (fase d: REVOKE di colonna, RLS stretta) richiede che BandoFit sia passato al contratto.
+  **Il 30/09 è stata rimandata** anche oltre la (c), finché il suo effetto su BandoFit non è nullo
+  (§4.5, `misure-colonne-07.md`).
 
 ### Configurazione in produzione (`scraper_bandi/.env`)
 
@@ -68,6 +139,15 @@ RESOLVER_MODALITA=attivo      ← messo il 25/09: prima valeva `ombra` per difet
 MONITOR_STATI_ESTESI=true     ← messo il 28/09, dopo la 06: le sospensioni e le revoche
                                  nuove nascono con `stato_bando` (in ombra, invisibili)
 ```
+
+**Da aggiungere al deploy di ottobre** (non ancora in produzione al 30/09):
+
+```
+MONITOR_TIPI_ATTIVI=faq,nuovo_allegato,graduatoria,esito,proroga
+```
+
+`proroga` c'è per decisione del committente del 30/09, dopo il controllo di `ombra-2026-10.md`
+(nessuna proroga ammessa sbagliata).
 
 `applica-eventi` stampa `stati_estesi` nel riepilogo: `True` solo se questo flag è letto **e**
 il DB ha il CHECK a cinque stati. Il 28/09 la prima prova a secco ha dato `False` per una riga
@@ -82,7 +162,9 @@ tipo non esiste nel codice: in ombra ogni evento nuovo nasce `leggibile=false`, 
 tipo, e la pipeline non rilancia `applica-eventi`. Il 26/09 nessun evento ammesso di quei due tipi
 era rimasto nascosto (l'unico nuovo, del 26/09, non ha passato i gate), ma il prossimo ammesso
 resterà invisibile finché qualcuno non rilancia `applica-eventi --tipo faq,nuovo_allegato
---attivo`. Vedi §4.1 a.
+--attivo`. Vedi §4.1 a. **Dal deploy di ottobre** l'attivazione per tipo esiste
+(`MONITOR_TIPI_ATTIVI`) e vale per gli eventi nati da quel momento: l'arretrato resta fermo, e per
+decisione del lead non si pubblica (`ombra-2026-10.md` §5).
 
 **`RESOLVER_MODALITA=attivo` vale anche per i comandi lanciati a mano.** Senza `--dry-run` o
 `--ombra` scritti per esteso, `risolvi-fonte`, `oe-dettaglio`, `link-verifica`, `fondi-doppioni` e
@@ -144,9 +226,11 @@ Exit 1 con `[ALLARME]` se:
 Login OE, residuo Firecrawl e schede OE **non si misurano dal DB**: `salute` lo dice negli avvisi
 («non misurato da salute: …»), e si controllano come sotto.
 
-**Esito atteso oggi: exit 1**, con un solo allarme: «fonti in verifica sui nuovi 34% (> 30%)» (22
-su 64 al 26/09). È un allarme vero secondo la soglia del piano, e resterà finché non si decide il
-§4.1 c (il terzo segnale del resolver).
+**Esito atteso oggi: exit 1**, con un solo allarme: «fonti in verifica sui nuovi 45% (> 30%)» (era
+34% il 26/09). È un allarme vero secondo la soglia del piano, e resterà finché non si decide il
+§4.1 c (il terzo segnale del resolver). Dal deploy di ottobre `salute` stampa anche la riga
+«salute: tipi attivi del monitor: …»: deve elencare i cinque tipi; un valore sconosciuto dà
+`[ALLARME]` ed exit 1.
 
 ```bash
 systemctl is-active edunews-bandi-sender
@@ -327,9 +411,9 @@ curl -s https://edunews24.it/bandi/abruzzo-competenze-linguistiche-certificazion
 
 ```bash
 cd ~/projects/news1
-npm run test:py:bandi     # atteso: 1533 test, OK (1485 il 26/09, prima della 11)
-npm test                  # atteso: 433 test, 0 falliti, 0 skipped (erano 404 prima del ridisegno)
-npm run test:py           # atteso: 26 test, OK
+npm run test:py:bandi     # atteso: 1879 test, OK (30/09 sera, giro di ottobre; 1533 prima)
+npm test                  # atteso: 437 test, 0 falliti, 0 skipped (erano 404 prima del ridisegno)
+npm run test:py           # atteso: 46 test, OK (30/09; 26 prima dei test sui lock orfani)
 npx tsc --noEmit -p tsconfig.json   # atteso: 51 errori, tutti preesistenti, 0 nei file dei bandi
 ```
 
@@ -366,6 +450,11 @@ Verifica: `journalctl -u edunews-bandi-sender --since "<ora del riavvio>" | grep
 iniziale completata|Pipeline schedulata"`, con la prima riga prima del giro successivo.
 
 ### 3.6 Verifica prima di attivare un tipo di evento
+
+**Dal deploy di ottobre** un tipo si attiva aggiungendolo a `MONITOR_TIPI_ATTIVI` (poi il riavvio
+verificato, §3.5): vale per gli eventi nati da quel momento. `applica-eventi`, qui sotto, resta lo
+strumento per l'arretrato, che al 30/09 si è deciso di non pubblicare. La verifica prima di
+aggiungere un tipo resta questa: leggere a mano le proposte ammesse di quel tipo.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app report-ombra \
@@ -436,7 +525,12 @@ Al 26/09 il mese vale 0,88 $ su 16 $ di tetto di regime.
 
 ### 4.1 Decisioni aperte (non sono lavoro arretrato: sono scelte)
 
-**a) I tipi di evento.**
+**a) I tipi di evento.** **Deciso il 30/09**: `faq`, `nuovo_allegato`, `graduatoria`, `esito` e
+`proroga` si applicano da soli dal deploy di ottobre (`MONITOR_TIPI_ATTIVI`, contratto interno §3).
+Gli eventi già in coda non si pubblicano (decisione del lead, `ombra-2026-10.md` §5). Restano in
+ombra `apertura`, `chiusura`, `rettifica`, `riapertura`, `sospensione` e `revoca`. La chiave
+`valore` del punto sotto è corretta dal rilascio 2. Il resto di questo punto è la storia della
+decisione.
 
 - `apertura`, `proroga`, `chiusura`, `sospensione` e `revoca` sono in ombra. Cambiano quello che il
   lettore vede come stato del bando. Il monitor li registra a ogni giro: quando saranno un
@@ -577,6 +671,34 @@ niente preme.
 
 ### 4.2 Lavoro tecnico proposto e non fatto
 
+**Fatto nel giro di ottobre** (30/09, codice pronto sul branch `claude/bandi-ripresa-ottobre`,
+in produzione dal deploy; §1):
+- **Pagine cieche** (T-B1): `impronte.pulisci` non toglie più il contenuto. Ancore su `main` o
+  sugli h1 fuori da header, nav, footer e aside. Misurato su 611 pagine vere: le cieche passano da
+  164 a 1, e le altre danno lo stesso testo di prima.
+- **Riallineamento** (T-B2): `VERSIONE_PULIZIA = 2`, salvata in
+  `impronte_sezioni["__versione__"]`. Una pagina con la versione vecchia si riscrive senza diff e
+  senza classificazione (contatore `riallineate`), una volta sola. Il prezzo accettato: un
+  cambiamento vero proprio in quell'intervallo non si vede.
+- **`MONITOR_TIPI_ATTIVI`** (T-B3): per ogni evento nato nel giro di un tipo attivo, registrazione,
+  applicazione e visibilità nello stesso giro. Se la RPC non scrive, l'evento resta non applicato e
+  scatta l'allarme; mai un INSERT «applicato».
+- **Host morti** (T-B4): tetto di 120 secondi per bando (`TETTO_TEMPO_BANDO_S`) nel resolver e nei
+  ricontrolli, e gli host senza DNS saltati per il resto del giro, senza consumare tentativi. Nella
+  riga del giro: `host_irraggiungibili` ed elenco (massimo 20).
+- **SEO** (T-C1, T-C2, T-C3):
+  - il prompt non afferma più forme di partecipazione, beneficiari o requisiti che non si leggono
+    nella fonte o nei cataloghi collegati;
+  - comando `seo-rigenera` (§6);
+  - il 772894 era fermo per un titolo di 88 caratteri: ora si usa `titolo_breve`, poi una
+    richiamata al modello, poi lo scarto con il motivo in `payload_failed_motivi`. Sui pubblicati il
+    titolo è congelato e non si valida;
+  - un bando di ObiettivoEuropa con una controparte pubblicata di una fonte non OE (stessa pagina,
+    oppure stesso ente, importo e scadenza) si rifiuta prima della SEO: `rejection_reason` =
+    «doppione probabile di <id>: …», contatore `doppioni_oe`. Mai una fusione automatica.
+- **Lock orfani** (T-C4): all'avvio il sender rilascia con `lock_rilascia` i lock dei propri
+  processi precedenti non più vivi, e lo scrive nel journal. `:cli` e processi vivi non si toccano.
+
 **Emersi dalla verifica del 27/09**, fuori dal perimetro dell'intervento:
 
 - **Monitor attivo: un INSERT diretto dopo una RPC fallita.** In modalità attiva `controlla` fa
@@ -662,7 +784,9 @@ niente preme.
 - **Tetto ai tentativi SEO (il 772894)**: il committente ha scelto il 29/09 di **non**
   aggiungerlo, e di tenere Opus per la SEO.
 
-**Da guardare: un bando fermo nello step SEO.** Il bando 772894 (fonte OE, `enriched` dal 22/08,
+**Da guardare: un bando fermo nello step SEO.** **Causa trovata e corretta il 30/09 (T-C2)**: il
+titolo proposto aveva 88 caratteri e la validazione lo scartava a ogni giro, dopo una chiamata a
+Opus pagata (circa 26 dal 23/09). Il bando 772894 (fonte OE, `enriched` dal 22/08,
 senza titolo né slug) fallisce la SEO a ogni giro (`seo.payload_failed: 1`). Non si sa se ogni
 tentativo costi una chiamata a Claude, perché la riga del giro non registra il costo della SEO.
 Sul server: `journalctl -u edunews-bandi-sender --since today | grep 772894`.
@@ -672,11 +796,11 @@ Sul server: `journalctl -u edunews-bandi-sender --since today | grep 772894`.
   giorni di ombra a vuoto. Le stesse insidie possono stare in `bando_link`, `bando_controllo` e
   `bando`. Mezz'ora di lavoro.
 - **Il sender non rilascia all'avvio i lock di cui era proprietario.** Dal 26/09 `salute` vede
-  un lock tenuto a lungo; il rilascio automatico dopo un `systemctl restart` resta da fare.
+  un lock tenuto a lungo. **Fatto nel giro di ottobre** (T-C4), in produzione dal deploy.
 - **Il tetto mensile non è applicato** (§3.7): `bilancio.verifica()` non riceve mai i consumi
   del mese.
 - **Nessun tetto di tempo per singolo bando nel resolver.** Su host morti un solo bando ha
-  impiegato fino a 247 secondi.
+  impiegato fino a 247 secondi. **Fatto nel giro di ottobre** (T-B4): 120 secondi.
 - **Il logger del sender rimette `diagnose=True`.** `backend/app/logger.py` sostituisce i sink di
   `scraper_bandi` e i traceback possono contenere i valori delle variabili locali (per esempio la
   password OE a `obiettivo_europa.py:211`): il filtro `redigi` agisce solo sul messaggio. È
@@ -694,6 +818,9 @@ Sul server: `journalctl -u edunews-bandi-sender --since today | grep 772894`.
 | quando | cosa |
 |---|---|
 | ogni giorno | §3.1 (journal o `salute`); dal 28/09 anche il credito Anthropic, che `salute` vede solo dal monitor delle 06 e delle 18 |
+| **01/10** | `correzioni-2026-10-01-chat.sql` (o il file lungo) e `correzioni-2026-10-01-testi.sql`, fra un giro e l'altro (§1, passi 1-3) |
+| **entro il 07/10** | deploy del giro di ottobre con `MONITOR_TIPI_ATTIVI` nello stesso riavvio (§1, passo 4) |
+| **prima settimana dopo il deploy** | ogni mattina, la query di sorveglianza delle proroghe (§6) |
 | **02/10** | settimo giorno d'ombra: `report-ombra --dal 2026-09-24`, lettura a mano delle citazioni degli ammessi |
 | **prima del 05/10** | leggere il residuo di Firecrawl: il 05/10 si rinnova il periodo del piano (200 000 crediti al mese; il 22/09 ne restavano 180 286), ed è l'unico dato che conta anche preprocess, enrich e SEO |
 | **07/10** | prima del giro delle 06 dell'08/10: il DNS di `regione.basilicata.it` era rotto il 28/09 (§4.4). Dal server: `getent hosts portalebandi.regione.basilicata.it` |
@@ -754,7 +881,8 @@ rilasciato a mano con `lock_rilascia` (§3.2 punto 10). **Resta da fare il passo
        `process.env` e nessuno carica il `.env` della root;
      - `PUBLIC_BANDI_STATI_ESTESI=true` nel `.env` della root prima di `npm run build`, poi il
        riavvio;
-8. la fase (c);
+8. la fase (c): **c1 in produzione dal 30/09/2026** (BandoFit 878acb0 e f5e232d); il c2 (niente ripieghi) parte
+   dopo una nuova misura di §5.1 del contratto, annunciata a BandoFit con almeno 7 giorni di preavviso;
 9. la 07.
 
 **Misurato il 27/09** (PostgREST, solo GET):
@@ -951,6 +1079,37 @@ proroga non compare nel box «Aggiornamenti».
   ricontrolli su 101 URL morti.
 - Credito Anthropic ogni giorno finché il rilascio 2 non aggiunge l'allarme sull'ingresso.
 
+### 4.5 Giro «ripresa bandi, ottobre 2026» (30/09/2026)
+
+Oltre al codice (§4.2), il giro ha misurato il DB e riletto le pagine ufficiali. Tutto in sola
+lettura; le correzioni sono file SQL che lancia il committente.
+
+- **La 07 è rimandata** (`misure-colonne-07.md`, contratto verso BandoFit §5.1). Letta con la anon
+  key, toglierebbe il pulsante verso l'ente a 211 bandi (183 aperti o in apertura) e tutti gli
+  allegati a 151. Le righe sostitutive di `bando_link` esistono quasi tutte, ma sono righe `raw`
+  mai verificate. E il buco cresce: nessun codice crea righe `candidatura`, mentre la SEO continua
+  a scrivere `link_candidatura`. Nella fase (c) BandoFit leggerà prima `bando_link` e ripiegherà
+  sulle colonne deprecate.
+- **Scadenze e aperture sbagliate** (`correzioni-2026-10-01.sql` e la versione per la chat). Dei
+  120 pubblicati che scadevano il 30/09, 13 hanno una data nuova per l'ente (12 proroghe, una data
+  sbagliata di un anno). Dei 21 «in apertura» con la data passata, 16 sono aperti e 2 già chiusi.
+  Provati su Postgres 17 effimero.
+- **Testi** (`rigenerazione-2026-10.md`, `correzioni-2026-10-01-testi.sql`): 166 schede con forme
+  di partecipazione, soprattutto da ObiettivoEuropa (nel campione, 5 sbagliate su 13 OE, 0 su 2
+  delle altre fonti); 14 aperti da passare a `seo-rigenera`; il 18278 è l'edizione 2025, esaurita
+  il 21/10/2025, e si chiude. `rigenera` prende la prosa con le date vecchie.
+- **Periodo d'ombra** (`ombra-2026-10.md`): nessuna proroga falsa in 12 proposte, ma il monitor non
+  ha visto nessuna delle 13 proroghe trovate a mano. Vede i cambiamenti, non le date già sbagliate
+  alla prima lettura (§5.13).
+- **425 dei 1 249 «aperto» non hanno una scadenza** (286 di ObiettivoEuropa): uno sportello
+  esaurito resta aperto per sempre, perché il cron non ha una data per chiuderlo
+  (`rigenerazione-2026-10.md` §8).
+- **41 coppie ObiettivoEuropa / fonte ufficiale** pubblicate tutte e due e mai fuse
+  (`doppioni-oe-da-fondere.md`): lavoro con il committente, con `bando_fondi` e dopo aver deciso
+  per BandoFit.
+- **Verifiche che solo il committente può fare**: `verifiche-michele-2026-10.md` (crediti, backup,
+  rotazione della password OE, 57014, unit, DNS della Basilicata).
+
 ---
 
 ## 5. Trappole imparate (leggere prima di lavorarci)
@@ -1011,6 +1170,18 @@ proroga non compare nel box «Aggiornamenti».
     `MONITOR_MODALITA=attivo`. **Scrivere sempre per esteso `--dry-run` (per provare) o `--ombra`
     (che non tocca le colonne pubbliche ma scrive comunque le tabelle di servizio).**
 
+13. **Il monitor vede i cambiamenti, non le date già sbagliate.** Il 30/09 nessuna delle 13
+    proroghe trovate a mano era stata proposta: tre pagine dei GAL dell'Emilia-Romagna avevano la
+    proroga già alla prima lettura, e niente cambia dopo. Lo stesso per il 18278, esaurito da un
+    anno e ancora «aperto». Una data sbagliata alla pubblicazione (quasi sempre da ObiettivoEuropa)
+    resta sbagliata finché qualcuno non la confronta con la pagina.
+
+14. **Un evento vecchio in coda può riaprire un bando.** La lista bianca guarda solo lo stato di
+    partenza, quello di arrivo e l'attore, non il tipo né l'età dell'evento. Un'apertura ammessa
+    settimane fa e applicata dopo la chiusura del bando lo riporta ad «aperto» (chiuso → aperto è
+    ammesso per il worker). Al 30/09 ce ne sono due (9749 e 11299): `MONITOR_TIPI_ATTIVI` non li
+    tocca, il rischio è un `applica-eventi` lanciato a mano sull'arretrato.
+
 ---
 
 ## 6. Comandi utili, in ordine di frequenza
@@ -1037,12 +1208,89 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app monitor --ombra --lotto L6 --f
 # misura del periodo d'ombra
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app report-ombra --campione 100 --dal <data>
 
-# attivazione di un tipo di evento
+# attivazione a posteriori di un tipo di evento (arretrato dell'ombra)
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app applica-eventi --dal <data> --tipo <tipo> --attivo
+
+# ripresa di eventi precisi, per id: è il comando che scrivono gli allarmi
+# del monitor («eventi ammessi non applicati»); prima --dry-run
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app applica-eventi --ids 1,2 --dry-run
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app applica-eventi --ids 1,2 --attivo
 
 # whitelist dei domini (mensile, o dopo aver aggiunto fonti)
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app domini --import --attivo [--enti enti.xlsx]
+
+# testi già pubblicati da riscrivere col prompt nuovo (dal giro di ottobre)
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app seo-rigenera --solo-controllo
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app seo-rigenera \
+  --dry-run --ids 1,2,3
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app seo-rigenera \
+  --attivo --proposte ~/seo-proposte-AAAA-MM-GG.json
+
+# prosa con le date vecchie dopo eventi verificati (lotto L7: niente lock,
+# quindi nella finestra sicura e mai durante un giro)
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app rigenera --dry-run
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app rigenera --attivo
 ```
+
+**`seo-rigenera`**, tre modi:
+- `--solo-controllo [--ids …]`: cerca nei testi attuali le forme di partecipazione non sostenute.
+  Niente modello, lock, scritture o spesa; la stima è per eccesso, perché non legge la pagina
+  ufficiale. Non vede i beneficiari e i requisiti inventati: quelli si trovano solo leggendo;
+- `--dry-run --ids … [--uscita FILE]`: **spende** (Opus e lo scarico della pagina), stampa vecchio,
+  nuovo e costo, e salva le proposte nel file (default `~/seo-proposte-AAAA-MM-GG.json`, con l'ora
+  in coda se esiste già). Non scrive sul DB. Meglio non passare `--uscita` con un nome fisso: se il
+  file esiste già, la seconda prova si ferma con exit 2;
+- `--attivo --proposte FILE [--ids …]`: scrive le proposte del file **senza richiamare il modello**,
+  cioè esattamente il testo letto. Salta i bandi non più pubblicati, quelli cambiati dopo la prova
+  e quelli con affermazioni ancora segnalate. Prende il lock `bandi_pipeline` e scrive
+  `pipeline_run`: solo nella finestra sicura (12:30-16:30 o 19:00-22:30), altrimenti il giro del
+  sender salta.
+
+Rifiuta gli id non pubblicati o fusi; `--limit N` conta le schede lavorate. Riscrive solo
+`contenuto` e, se la prova l'ha deciso, `descrizione_breve`: slug, titolo, date, importi, stato e
+junction restano come sono. Le junction sbagliate si correggono con SQL.
+
+**`applica-eventi`**: `--tipo` e `--dal` prendono tutto l'arretrato di quei tipi e di quei giorni.
+`--ids` prende **solo** gli eventi indicati: è il filtro da usare quando un allarme del monitor dice
+«eventi ammessi non applicati» e scrive il comando di ripresa (`applica-eventi --ids … --attivo`),
+perché riprende gli eventi di quel giro e non tocca l'arretrato. Con `--ids` si possono combinare
+`--dry-run` e `--limit`. `--riprova-rifiutati` ripresenta anche gli eventi già respinti dalla RPC:
+serve solo se un rifiuto è stato annotato per sbaglio.
+
+**`MONITOR_TIPI_ATTIVI`** (in `scraper_bandi/.env`, letto all'avvio: dopo una modifica serve il
+riavvio verificato, §3.5): lista separata da virgole dei tipi che il monitor applica e rende
+visibili nello stesso giro, anche con `MONITOR_MODALITA` in ombra. Vale solo per gli eventi nati
+da quel momento. Un valore sconosciuto è ignorato, con `[ALLARME]` nel journal e in `salute`.
+Nella riga del giro: `tipi_attivi`, cioè la lista **usata** da quel giro (vuota con `--ombra` o
+`--dry-run`), `applicati_per_tipo` ed `eventi_non_applicati`.
+
+**Sorveglianza delle proroghe** (la prima settimana dopo il deploy, ogni mattina, con la pagina
+ufficiale aperta accanto). Il filtro su `metodo` esclude le correzioni a mano, che sono
+`origine='worker'` come il monitor:
+
+```sql
+select id, bando_id, valore_dopo, url_prova, citazione
+  from bando_evento
+ where tipo = 'proroga' and applicato
+   and applicato_at > now() - interval '1 day'
+   and coalesce(metodo, '') not like 'correzione manuale%'
+ order by id;
+```
+
+**Doppione di ObiettivoEuropa rifiutato per sbaglio** (contratto interno §6). Il controllo della
+SEO può rifiutare un bando OE vero. Per rimetterlo in coda:
+
+```sql
+update bando
+   set stato_processing = 'enriched',
+       rejection_reason = 'doppione escluso a mano'
+ where id = <id> and stato_processing = 'rejected';
+```
+
+Al giro dopo il bando va alla SEO e il controllo non lo rifiuta più. `rejection_reason =
+'doppione escluso a mano'` resta sulla riga anche dopo la pubblicazione: è voluto, è il segno che
+qualcuno l'ha deciso. I rifiuti del controllo:
+`select id, rejection_reason from bando where rejection_reason like 'doppione probabile di %';`
 
 Ogni comando che scrive accetta `--dry-run` e `--limit`. **Senza `--attivo` e senza `--ombra`
 decide `RESOLVER_MODALITA` (o `MONITOR_MODALITA` per monitor, eventi e lotti)**, e in produzione il
