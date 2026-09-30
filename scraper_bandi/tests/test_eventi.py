@@ -1057,6 +1057,69 @@ class TestAllineaDoppioni(unittest.TestCase):
         self.assertEqual(scritture[0][0], 1)
 
 
+class TestRegistraViaRpc(unittest.TestCase):
+    """Primo passo dell'attivazione per tipo: registra senza applicare e
+    restituisce `{id, nuovo}` (contratto di ottobre 2026, §3)."""
+
+    class _Controllo:
+        def __init__(self, disponibile=True):
+            self.disponibile = disponibile
+
+        def rpc_disponibile(self, _nome):
+            return self.disponibile
+
+    RIGA = {"bando_id": 7, "tipo": "proroga", "origine": "worker",
+            "valore_dopo": {"data_scadenza": "2026-11-30"}, "applicato": True,
+            "leggibile": True, "in_aggiornamenti": True, "citazione": "prorogato"}
+
+    def test_non_applica_e_non_rende_leggibile(self):
+        chiamate = []
+
+        def rpc(nome, parametri):
+            chiamate.append((nome, parametri))
+            return type("R", (), {"data": {"id": 42, "nuovo": True, "applicato": False}})()
+
+        esito = eventi.registra_via_rpc(self.RIGA, rpc=rpc, controllo=self._Controllo())
+        self.assertEqual(esito, {"id": 42, "nuovo": True})
+        ((nome, parametri),) = chiamate
+        self.assertEqual(nome, eventi.RPC_REGISTRA_EVENTO)
+        # Anche da una riga «attiva», la registrazione non applica niente.
+        self.assertFalse(parametri["p_applica"])
+        self.assertFalse(parametri["p_leggibile"])
+        self.assertFalse(parametri["p_in_aggiornamenti"])
+        self.assertEqual(parametri["p_valore_dopo"], {"data_scadenza": "2026-11-30"})
+        self.assertEqual(set(parametri), set(eventi.PARAMETRI_REGISTRA_EVENTO))
+
+    def test_la_dedup_dice_nuovo_false(self):
+        def rpc(_nome, _parametri):
+            return {"id": 9, "nuovo": False, "applicato": False}
+        self.assertEqual(eventi.registra_via_rpc(self.RIGA, rpc=rpc, controllo=self._Controllo()),
+                         {"id": 9, "nuovo": False})
+
+    def test_senza_la_chiave_nuovo_non_si_sa(self):
+        # Revisione avversaria del 30/09/2026: il default «vero» sceglieva il
+        # ramo che applica. Chiave assente (o non booleana) → None → ombra.
+        for risposta in ({"id": 9, "applicato": False}, {"id": 9, "nuovo": "si"}):
+            with self.subTest(risposta=risposta):
+                esito = eventi.registra_via_rpc(
+                    self.RIGA, rpc=lambda _n, _p, r=risposta: r, controllo=self._Controllo())
+                self.assertEqual(esito, {"id": 9, "nuovo": None})
+
+    def test_rpc_assente_fallita_o_senza_id(self):
+        def rotta(_nome, _parametri):
+            raise RuntimeError("503")
+
+        def muta(_nome, _parametri):
+            return {"nuovo": True}
+
+        self.assertIsNone(eventi.registra_via_rpc(
+            self.RIGA, rpc=muta, controllo=self._Controllo(disponibile=False)))
+        self.assertIsNone(eventi.registra_via_rpc(
+            self.RIGA, rpc=rotta, controllo=self._Controllo()))
+        self.assertIsNone(eventi.registra_via_rpc(
+            self.RIGA, rpc=muta, controllo=self._Controllo()))
+
+
 if __name__ == "__main__":       # pragma: no cover
     unittest.main()
 

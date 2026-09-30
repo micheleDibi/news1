@@ -5,7 +5,9 @@ Rete finta con `httpx.MockTransport` e ripiego Firecrawl finto: nessun test
 tocca la rete, la chiave Firecrawl o il DB.
 """
 import asyncio
+import socket
 import unittest
+import unittest.mock
 
 import httpx
 
@@ -497,6 +499,267 @@ class TestSingleton(unittest.TestCase):
         self.assertEqual(scarico.contatori().fetch, 0)
         _esegui(scarico.scarica_testo("https://ente.it/x"))
         self.assertEqual(len(chiamate), 2)
+
+
+HOST_MORTO = "portalebandi.regione.basilicata.it"
+
+
+def _dns_rotto(request: httpx.Request, codice: int = socket.EAI_NONAME):
+    """Come httpx con un nome che non risolve: ConnectError ← gaierror. Il
+    codice e' la costante del sistema (EAI_NONAME e' -2 su Linux, 8 su macOS)."""
+    try:
+        raise socket.gaierror(codice, "Name or service not known")
+    except socket.gaierror as causa:
+        raise httpx.ConnectError(
+            f"[Errno {codice}] Name or service not known", request=request) from causa
+
+
+class TestHostIrraggiungibili(unittest.TestCase):
+    """DNS che non risolve: l'host si salta per il resto del giro (contratto
+    di ottobre 2026, §5). Il 28/09/2026 i 101 URL di regione.basilicata.it
+    pagavano tre tentativi l'uno."""
+
+    def _costruisci_misto(self):
+        def gestore(request):
+            if request.url.host == HOST_MORTO:
+                _dns_rotto(request)
+            return httpx.Response(200, text=PAGINA)
+        return _costruisci(gestore)
+
+    def test_l_errore_dns_si_riconosce_dalla_catena(self):
+        request = httpx.Request("GET", f"https://{HOST_MORTO}/")
+        with self.assertRaises(httpx.ConnectError) as preso:
+            _dns_rotto(request)
+        self.assertTrue(scarico.errore_dns(preso.exception))
+        if hasattr(socket, "EAI_NODATA"):
+            with self.assertRaises(httpx.ConnectError) as senza_dati:
+                _dns_rotto(request, socket.EAI_NODATA)
+            self.assertTrue(scarico.errore_dns(senza_dati.exception))
+        # EAI_AGAIN e' il DNS di ente rotto (SERVFAIL, nameserver sbagliati):
+        # il caso della Basilicata. Conta come host morto (decisione del lead
+        # del 30/09/2026); il resolver locale giu' lo dice l'allarme a soglia.
+        with self.assertRaises(httpx.ConnectError) as temporaneo:
+            _dns_rotto(request, socket.EAI_AGAIN)
+        self.assertTrue(scarico.errore_dns(temporaneo.exception))
+        # Un altro codice di getaddrinfo non e' un host morto.
+        with self.assertRaises(httpx.ConnectError) as servizio:
+            _dns_rotto(request, socket.EAI_SERVICE)
+        self.assertFalse(scarico.errore_dns(servizio.exception))
+        self.assertFalse(scarico.errore_dns(httpx.ConnectTimeout("timeout")))
+        try:
+            raise httpx.ConnectError("rifiutata") from ConnectionRefusedError(61, "refused")
+        except httpx.ConnectError as rifiutata:
+            self.assertFalse(scarico.errore_dns(rifiutata))
+        self.assertFalse(scarico.errore_dns(None))
+
+    def test_dopo_l_errore_dns_l_host_non_si_interroga_piu(self):
+        s, chiamate = self._costruisci_misto()
+        prima = _esegui(s.scarica(f"https://{HOST_MORTO}/avvisi-e-bandi/a/"))
+        self.assertIsNone(prima.stato)
+        self.assertTrue(prima.host_irraggiungibile)
+        self.assertEqual(len(chiamate), 3)            # i ritentativi di sempre
+        self.assertEqual(s.host_irraggiungibili, (HOST_MORTO,))
+
+        for n in range(100):
+            risposta = _esegui(s.scarica(f"https://{HOST_MORTO}/avvisi-e-bandi/b{n}/"))
+            self.assertTrue(risposta.host_irraggiungibile)
+            self.assertIsNone(risposta.stato)
+        self.assertEqual(len(chiamate), 3)            # nessuna richiesta in piu'
+        self.assertEqual(s.contatori.saltati_dns, 100)
+        # Un nome che non risolve non manda richieste: niente fetch per il
+        # tetto del giro, e non e' un errore (l'host si salta, §5).
+        self.assertEqual(s.contatori.fetch, 0)
+        self.assertEqual(s.contatori.errori, 0)
+
+    def test_gli_altri_host_restano_raggiungibili(self):
+        s, chiamate = self._costruisci_misto()
+        _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+        risposta = _esegui(s.scarica("https://www.regione.basilicata.it/giunta/"))
+        self.assertEqual(risposta.stato, 200)
+        self.assertFalse(risposta.host_irraggiungibile)
+        self.assertEqual(len(chiamate), 4)
+
+    def test_la_porta_non_conta(self):
+        s, chiamate = self._costruisci_misto()
+        _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+        risposta = _esegui(s.scarica(f"https://{HOST_MORTO.upper()}:443/b/"))
+        self.assertTrue(risposta.host_irraggiungibile)
+        self.assertEqual(len(chiamate), 3)
+
+    def test_un_dominio_nudo_morto_non_spegne_il_www_vivo(self):
+        # `ente.it` e `www.ente.it` hanno record DNS distinti (correzione
+        # finale del 30/09/2026): il www si prova, e risponde.
+        s, chiamate = self._costruisci_misto()
+        _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+        risposta = _esegui(s.scarica(f"https://www.{HOST_MORTO}/b/"))
+        self.assertEqual(risposta.stato, 200)
+        self.assertFalse(risposta.host_irraggiungibile)
+        self.assertEqual(len(chiamate), 4)
+        self.assertEqual(s.host_irraggiungibili, (HOST_MORTO,))
+
+    def test_un_redirect_verso_un_host_morto_lascia_vivo_il_primo(self):
+        # L'host vivo risponde 301 verso un dominio che non risolve: si segna
+        # il dominio morto, non quello chiesto. Per questa richiesta e' un
+        # errore di rete ordinario.
+        vivo = "www.regione.basilicata.it"
+
+        def gestore(request):
+            if request.url.host == vivo:
+                return httpx.Response(
+                    301, headers={"Location": f"https://{HOST_MORTO}/nuovo/"})
+            _dns_rotto(request)
+        s, chiamate = _costruisci(gestore)
+        risposta = _esegui(s.scarica(f"https://{vivo}/avviso/"))
+        self.assertIsNone(risposta.stato)
+        self.assertFalse(risposta.host_irraggiungibile)
+        self.assertEqual(s.host_irraggiungibili, (HOST_MORTO,))
+        self.assertEqual(s.contatori.errori, 1)
+        # L'host vivo si prova ancora; quello morto no.
+        prima = len(chiamate)
+        _esegui(s.scarica(f"https://{vivo}/altro/"))
+        self.assertGreater(len(chiamate), prima)
+        dopo = len(chiamate)
+        self.assertTrue(_esegui(s.scarica(f"https://{HOST_MORTO}/x/")).host_irraggiungibile)
+        self.assertEqual(len(chiamate), dopo)
+
+    def test_timeout_5xx_e_connessione_rifiutata_non_segnano_l_host(self):
+        def timeout(_request):
+            raise httpx.ConnectTimeout("timeout")
+
+        def rifiutata(_request):
+            raise httpx.ConnectError("[Errno 111] Connection refused")
+
+        for nome, gestore in (
+            ("timeout", timeout),
+            ("5xx", lambda _request: httpx.Response(503)),
+            ("rifiutata", rifiutata),
+        ):
+            with self.subTest(errore=nome):
+                s, chiamate = _costruisci(gestore)
+                risposta = _esegui(s.scarica("https://ente.it/a"))
+                self.assertFalse(risposta.host_irraggiungibile)
+                _esegui(s.scarica("https://ente.it/b"))
+                self.assertEqual(len(chiamate), 6)    # la seconda URL si prova
+                self.assertEqual(s.host_irraggiungibili, ())
+
+    def test_eai_again_dopo_i_ritentativi_e_un_host_morto(self):
+        def gestore(request):
+            _dns_rotto(request, socket.EAI_AGAIN)
+        s, chiamate = _costruisci(gestore)
+        risposta = _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+        self.assertTrue(risposta.host_irraggiungibile)
+        self.assertEqual(len(chiamate), 3)            # i ritentativi di sempre
+        _esegui(s.scarica(f"https://{HOST_MORTO}/b/"))
+        self.assertEqual(len(chiamate), 3)            # poi l'host si salta
+        self.assertEqual(s.host_irraggiungibili, (HOST_MORTO,))
+
+    def test_un_eai_again_che_passa_al_ritentativo_non_segna_niente(self):
+        risposte = iter(["dns", "ok"])
+
+        def gestore(request):
+            if next(risposte) == "dns":
+                _dns_rotto(request, socket.EAI_AGAIN)
+            return httpx.Response(200, text=PAGINA)
+        s, _chiamate = _costruisci(gestore)
+        self.assertEqual(_esegui(s.scarica(f"https://{HOST_MORTO}/a/")).stato, 200)
+        self.assertEqual(s.host_irraggiungibili, ())
+
+    def _host_morti(self, quanti):
+        def gestore(request):
+            _dns_rotto(request, socket.EAI_AGAIN)
+        s, _chiamate = _costruisci(gestore)
+        registro = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(scarico, "logger", registro):
+            for n in range(quanti):
+                _esegui(s.scarica(f"https://ente{n}.example.it/a/"))
+        allarmi = [c.args for c in registro.warning.call_args_list
+                   if "[ALLARME]" in str(c.args[0])]
+        return s, allarmi
+
+    def test_cinque_host_morti_fanno_allarme_resolver_locale(self):
+        # Tanti host distinti morti nello stesso giro: piu' probabile il
+        # resolver del server giu' che tanti DNS di ente rotti.
+        s, allarmi = self._host_morti(scarico.SOGLIA_RESOLVER_LOCALE)
+        self.assertEqual(scarico.SOGLIA_RESOLVER_LOCALE, 5)
+        self.assertTrue(s.resolver_sospetto)
+        self.assertEqual(len(allarmi), 1)
+        self.assertIn("resolver locale?", allarmi[0][0])
+
+    def test_quattro_host_morti_niente_allarme(self):
+        s, allarmi = self._host_morti(4)
+        self.assertFalse(s.resolver_sospetto)
+        self.assertEqual(allarmi, [])
+
+    def test_l_allarme_resolver_una_volta_sola_per_giro(self):
+        _s, allarmi = self._host_morti(7)
+        self.assertEqual(len(allarmi), 1)
+
+    def test_un_dns_che_torna_al_ritentativo_non_segna_niente(self):
+        risposte = iter(["dns", "ok"])
+
+        def gestore(request):
+            if next(risposte) == "dns":
+                _dns_rotto(request)
+            return httpx.Response(200, text=PAGINA)
+        s, _chiamate = _costruisci(gestore)
+        risposta = _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+        self.assertEqual(risposta.stato, 200)
+        self.assertEqual(s.host_irraggiungibili, ())
+
+    def test_il_nuovo_giro_ricomincia_da_capo(self):
+        s, chiamate = self._costruisci_misto()
+        _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+        s.nuovo_giro()
+        self.assertEqual(s.host_irraggiungibili, ())
+        _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+        self.assertEqual(len(chiamate), 6)            # si riprova davvero
+
+    def test_il_monitor_a_meta_giro_non_dimentica_gli_host_morti(self):
+        # Il monitor azzera cache e contatori (`svuota(host_morti=False)`):
+        # un host trovato morto da resolver e ricontrolli dello stesso giro
+        # resta saltato. Solo l'inizio pipeline (`svuota()`) lo dimentica.
+        s, chiamate = self._costruisci_misto()
+        scarico.imposta_scarico(s)
+        try:
+            _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+            scarico.svuota(host_morti=False)
+            self.assertEqual(s.host_irraggiungibili, (HOST_MORTO,))
+            self.assertTrue(_esegui(s.scarica(f"https://{HOST_MORTO}/b/")).host_irraggiungibile)
+            self.assertEqual(len(chiamate), 3)
+            scarico.svuota()
+            self.assertEqual(s.host_irraggiungibili, ())
+        finally:
+            scarico.imposta_scarico(None)
+
+    def test_un_timeout_prima_del_dns_resta_un_fetch(self):
+        # Solo i tentativi finiti per DNS escono dal conto: un timeout e' una
+        # richiesta partita davvero.
+        risposte = iter(["timeout", "dns", "dns"])
+
+        def gestore(request):
+            if next(risposte) == "timeout":
+                raise httpx.ConnectTimeout("timeout")
+            _dns_rotto(request)
+        s, _chiamate = _costruisci(gestore)
+        _esegui(s.scarica(f"https://{HOST_MORTO}/a/"))
+        self.assertEqual(s.contatori.fetch, 1)
+        self.assertEqual(s.host_irraggiungibili, (HOST_MORTO,))
+
+    def test_nessun_credito_firecrawl_su_un_host_morto(self):
+        crediti = []
+
+        async def firecrawl(url):
+            crediti.append(url)
+            return {"html": PAGINA, "markdown": ""}
+
+        def gestore(request):
+            _dns_rotto(request)
+        s, _chiamate = _costruisci(
+            gestore, firecrawl=firecrawl, host_richiede_js=[HOST_MORTO])
+        for n in range(3):
+            _esegui(s.scarica(f"https://{HOST_MORTO}/{n}/", principale=True))
+        self.assertEqual(crediti, [])
+        self.assertEqual(s.contatori.crediti_firecrawl, 0)
 
 
 if __name__ == "__main__":

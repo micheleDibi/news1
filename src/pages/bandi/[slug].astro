@@ -19,7 +19,7 @@ import { calendario } from '../../lib/bandi/calendario';
 import { eur } from '../../lib/bandi/elenco';
 import { sceltaCta } from '../../lib/bandi/cta';
 import { statoDaEventi, vociAggiornamento } from '../../lib/bandi/aggiornamenti';
-import { jsonLdBando } from '../../lib/bandi/jsonld';
+import { jsonLdBando, proteggiJsonLd, serializzaJsonLd } from '../../lib/bandi/jsonld';
 import { esitoSlug, RITENTA_DOPO_SECONDI, type Lettura } from '../../lib/bandi/slug-storico';
 import BandiExpertCta from '../../components/BandiExpertCta.astro';
 import { hrefFiltroSePubblicata } from '../../lib/pagine-filtro';
@@ -485,8 +485,8 @@ const classiNumero = 'font-heading text-[24px] font-bold leading-[1.05] tabular-
   modifiedTime={bando.updated_at ? new Date(bando.updated_at).toISOString() : undefined}
 >
   <Fragment slot="head">
-    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
-    <script type="application/ld+json" set:html={breadcrumbStructuredData} />
+    <script type="application/ld+json" set:html={serializzaJsonLd(jsonLd)} />
+    <script type="application/ld+json" set:html={proteggiJsonLd(breadcrumbStructuredData)} />
   </Fragment>
 
   <main class="bg-white font-[Poppins,system-ui,sans-serif] text-[#1a2233] antialiased leading-[normal]">

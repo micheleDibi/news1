@@ -138,5 +138,43 @@ class TestStatiEstesi(unittest.TestCase):
         self.assertFalse(_bool_env("MONITOR_STATI_ESTESI", "forse"))
 
 
+class TestTipiAttivi(unittest.TestCase):
+    """`MONITOR_TIPI_ATTIVI` (contratto di ottobre 2026, §3): i tipi di evento
+    applicati anche in ombra. Un valore sconosciuto si scarta e si dice."""
+
+    def _tipi(self, valore):
+        ambiente = dict(os.environ)
+        ambiente.pop("MONITOR_TIPI_ATTIVI", None)
+        if valore is not None:
+            ambiente["MONITOR_TIPI_ATTIVI"] = valore
+        with patch.dict(os.environ, ambiente, clear=True):
+            return settings._tipi_attivi_env("MONITOR_TIPI_ATTIVI")
+
+    def test_default_nessun_tipo(self):
+        self.assertEqual(self._tipi(None), ((), ()))
+        self.assertEqual(self._tipi("  "), ((), ()))
+
+    def test_il_primo_valore_di_produzione(self):
+        validi, ignorati = self._tipi("faq,nuovo_allegato,graduatoria,esito,proroga")
+        self.assertEqual(validi, ("faq", "nuovo_allegato", "graduatoria", "esito", "proroga"))
+        self.assertEqual(ignorati, ())
+
+    def test_spazi_maiuscole_e_doppioni(self):
+        self.assertEqual(self._tipi(" FAQ , proroga,,faq "), (("faq", "proroga"), ()))
+
+    def test_valori_sconosciuti_ignorati_e_riportati(self):
+        # Un tipo che il monitor non produce, o uno scritto male: si scarta,
+        # e `monitor_tipi_attivi_ignorati` alimenta l'allarme.
+        validi, ignorati = self._tipi("faq,profroga,fusione")
+        self.assertEqual(validi, ("faq",))
+        self.assertEqual(ignorati, ("profroga", "fusione"))
+
+    def test_ammessi_sono_i_tipi_del_monitor(self):
+        eventi = carica_modulo("eventi")
+        validi, ignorati = self._tipi(",".join(eventi.TIPI_PROPONIBILI))
+        self.assertEqual(validi, eventi.TIPI_PROPONIBILI)
+        self.assertEqual(ignorati, ())
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

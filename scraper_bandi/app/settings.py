@@ -16,6 +16,8 @@ continua a funzionare in modalita' ombra e con i tetti dello scenario
 bilanciato):
   - MONITOR_GIRI             (ore dei giri, "06:00,18:00"; M13: era MONITOR_ORE)
   - MONITOR_MODALITA / RESOLVER_MODALITA  (ombra|attivo, default ombra)
+  - MONITOR_TIPI_ATTIVI      (tipi di evento applicati anche in ombra, "faq,proroga";
+                              default nessuno)
   - MONITOR_SCENARIO         (economico|bilanciato|massimo, default bilanciato)
   - TETTO_* / BACKFILL_TETTO_*  (tetti per giro, giornalieri, mensili, backfill)
   - OE_SCHEDE_GIORNO         (tetto schede Obiettivo Europa al giorno)
@@ -112,6 +114,13 @@ class Settings:
     # difensivo R0-a del consumatore. Finche' e' falsa, gli eventi verificati di
     # sospensione e revoca restano leggibili ma non applicati alla colonna.
     monitor_stati_estesi: bool
+    # L'interruttore per tipo (contratto di ottobre 2026, §3): con
+    # MONITOR_MODALITA=ombra, gli eventi di questi tipi nati nel giro e ammessi
+    # dai gate si applicano e si rendono leggibili; gli altri restano in ombra.
+    # `_ignorati` sono i valori scartati perche' il monitor non li produce:
+    # alimentano l'allarme del giro e di `salute`.
+    monitor_tipi_attivi: tuple[str, ...] = ()
+    monitor_tipi_attivi_ignorati: tuple[str, ...] = ()
 
     def __repr__(self) -> str:
         """Repr mascherante: un `Settings` non deve poter finire in un log.
@@ -269,6 +278,33 @@ def _giri_env(
     return tuple(dict.fromkeys(giri)), not scartate
 
 
+def _tipi_attivi_env(name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """"faq,proroga" -> ((tipi ammessi), (valori ignorati)).
+
+    Ammessi sono solo i tipi che il monitor produce (`eventi.TIPI_PROPONIBILI`).
+    Un valore sconosciuto si scarta con un allarme e non ferma niente: un
+    `profroga` scritto male non deve impedire l'avvio del sender, ma nemmeno
+    passare inosservato, perche' vorrebbe dire un tipo rimasto in ombra.
+    """
+    grezzo = os.getenv(name, "").strip()
+    if not grezzo:
+        return (), ()
+    # Import pigro: `settings` lo importano quasi tutti, `eventi` no.
+    from .eventi import TIPI_PROPONIBILI
+    validi: list[str] = []
+    ignorati: list[str] = []
+    for pezzo in grezzo.split(","):
+        tipo = pezzo.strip().lower()
+        if tipo:
+            (validi if tipo in TIPI_PROPONIBILI else ignorati).append(tipo)
+    if ignorati:
+        logger.warning(
+            "[ALLARME] [settings] {}: valori ignorati {} (ammessi solo i tipi del monitor {})",
+            name, ignorati, list(TIPI_PROPONIBILI),
+        )
+    return tuple(dict.fromkeys(validi)), tuple(dict.fromkeys(ignorati))
+
+
 def _listino_env(name: str, default: dict[str, tuple[float, float]]) -> Mapping[str, tuple[float, float]]:
     """"id=in/out,id2=in/out" -> mappa. Le voci malformate sono ignorate; le
     valide si SOMMANO al default (un listino parziale non cancella gli altri)."""
@@ -303,6 +339,7 @@ def get_settings() -> Settings:
     scenario = _scelta_env("MONITOR_SCENARIO", SCENARI, "bilanciato")
     tetti = _TETTI_SCENARIO[scenario]
     giri, giri_validi = _giri_env("MONITOR_GIRI", _GIRI_DEFAULT)
+    tipi_attivi, tipi_ignorati = _tipi_attivi_env("MONITOR_TIPI_ATTIVI")
 
     return Settings(
         supabase_url=supabase_url,
@@ -357,4 +394,6 @@ def get_settings() -> Settings:
         listino_modelli=_listino_env("LISTINO_MODELLI", _LISTINO_DEFAULT),
         dedup_canonical=bool_env("DEDUP_CANONICAL", False),
         monitor_stati_estesi=bool_env("MONITOR_STATI_ESTESI", False),
+        monitor_tipi_attivi=tipi_attivi,
+        monitor_tipi_attivi_ignorati=tipi_ignorati,
     )

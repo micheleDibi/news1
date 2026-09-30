@@ -25,7 +25,9 @@ Cosa garantisce
    briciole, menu, sidebar, widget, correlati (`related` e `correlat`) o
    newsletter: e' la stessa ripulitura che `allegati.estrai` applica prima di
    guardare gli href, cosi' i PDF dei «bandi correlati» non diventano allegati
-   del bando, nemmeno quando il loro riquadro sta dentro `<main>` (§5);
+   del bando, nemmeno quando il loro riquadro sta dentro `<main>` (§5). Non
+   toglie mai il contenuto: `<main>`, `role=main` (o, se mancano, l'`h1` fuori
+   dal contorno) e i loro antenati restano, qualunque sia il tag o la classe;
 2. `ripulisci_testo` toglie contatori, «aggiornato il …» e gli orari che stanno
    fuori da una frase con una data o con una parola di ruolo (un «entro le ore
    12:00» non si tocca mai: e' la scadenza);
@@ -62,9 +64,17 @@ TAG_RIMOSSI: tuple[str, ...] = (
 # classificazione LLM per niente. `collegat` **non** e' qui di proposito: nei
 # CMS italiani «documenti collegati» e' proprio la cassetta degli allegati del
 # bando, e toglierla vorrebbe dire perdere gli atti.
+#
+# `widget` non vale dentro `elementor-widget`: Elementor chiama cosi' OGNI
+# blocco della pagina (`elementor-widget-theme-post-content` e' il testo del
+# bando), e le pagine delle camere di commercio restavano vuote. Il tipo del
+# blocco resta nella classe e si confronta come prima:
+# `elementor-widget-nav-menu` cade ancora per «menu». I blocchi che elencano
+# ALTRI articoli (`elementor-widget-posts`, le griglie «loop») sono i correlati
+# di Elementor: cambiano a ogni notizia pubblicata dall'ente.
 NODI_RUMORE = re.compile(
-    r"cookie|banner|share|social|breadcrumb|menu|sidebar|widget|related|correlat|"
-    r"newsletter",
+    r"cookie|banner|share|social|breadcrumb|menu|sidebar|(?<!elementor-)widget|related|"
+    r"correlat|newsletter|elementor-widget-(?:archive-posts|posts|loop-grid|loop-carousel)\b",
     re.IGNORECASE,
 )
 
@@ -201,6 +211,25 @@ def normalizza_url(url: str | None) -> str | None:
 
 # --- pulizia dell'HTML ------------------------------------------------------
 
+#: Versione della pulizia: si incrementa a ogni cambio che sposta le impronte
+#: o `testo_norm`. Il monitor la salva in `impronte_sezioni[CHIAVE_VERSIONE]` e,
+#: quando quella salvata e' diversa, riallinea la riga invece di confrontarla
+#: (un diff fra due pulizie diverse farebbe sembrare cambiata ogni pagina).
+#:
+#: 1 — fino al 30/09/2026 (le righe senza la chiave valgono 1);
+#: 2 — dal 30/09/2026: il contenuto non e' mai contorno (`_nodi_del_contenuto`).
+#:     Il 28 % delle pagine monitorate era cieco: 164 su 611, tutte le 147 del
+#:     Piemonte (`<main class="… sidebar-offcanvas">`) e tutte quelle della
+#:     Valle d'Aosta (ASP.NET avvolge la pagina in un solo `<form>`).
+VERSIONE_PULIZIA = 2
+
+#: I tag di contorno per posizione: un `h1` che sta qui dentro e' il logo del
+#: sito, non il titolo del bando, e non protegge niente.
+_CORNICE: tuple[str, ...] = ("header", "nav", "footer", "aside")
+
+_RUOLO_MAIN = re.compile(r"(?:^|\s)main(?:\s|$)", re.IGNORECASE)
+
+
 def _zuppa(html: str):
     """BeautifulSoup con lxml; `html.parser` solo se lxml manca."""
     from bs4 import BeautifulSoup
@@ -226,21 +255,57 @@ def _attributi_rumore(nodo) -> bool:
     return any(NODI_RUMORE.search(v) for v in valori)
 
 
+def _ancore_del_contenuto(zuppa) -> list:
+    """Dove sta il contenuto: `<main>` e `role=main`; senza, gli `h1` che non
+    stanno nel contorno (il logo in un `<header>` non conta)."""
+    ancore = zuppa.find_all("main") + zuppa.find_all(attrs={"role": _RUOLO_MAIN})
+    if ancore:
+        return ancore
+    return [h1 for h1 in zuppa.find_all("h1") if h1.find_parent(_CORNICE) is None]
+
+
+def _nodi_del_contenuto(zuppa) -> set[int]:
+    """Gli `id()` delle ancore e di tutti i loro antenati: nodi da non togliere.
+
+    Un antenato del contenuto non e' contorno, qualunque cosa dicano il tag o
+    le classi. I casi misurati il 30/09/2026 sono quattro: il `<main>` del
+    Piemonte con la classe `sidebar-offcanvas`, il `<form>` di ASP.NET che
+    avvolge la pagina della Valle d'Aosta, e l'HTML malformato che lxml annida
+    dentro un `<header>`, un `<nav>` o la sezione «breadcrumb» (Calabria,
+    Filse, Agenzia per la gioventu'). I discendenti restano giudicati uno per
+    uno: il menu accanto al contenuto cade come prima.
+    """
+    protetti: set[int] = set()
+    for ancora in _ancore_del_contenuto(zuppa):
+        nodo = ancora
+        while nodo is not None and id(nodo) not in protetti:
+            protetti.add(id(nodo))
+            nodo = nodo.parent
+    return protetti
+
+
 def pulisci(html: str):
-    """Zuppa ripulita: via i tag di contorno e i nodi di contorno (§6.2).
+    """Zuppa ripulita: via i tag di contorno e i nodi di contorno (§6.2), ma
+    mai il contenuto (`_nodi_del_contenuto`).
 
     Restituisce l'oggetto BeautifulSoup, non una stringa, perche' `allegati.py`
     deve poter cercare gli href **dentro** la stessa ripulitura: due pulizie
     diverse sui due lati rimetterebbero in gioco i link della sidebar.
+
+    Cambiare cio' che questa funzione toglie sposta le impronte di tutte le
+    pagine: va incrementata `VERSIONE_PULIZIA`.
     """
     from bs4 import Comment
     zuppa = _zuppa(html or "")
+    protetti = _nodi_del_contenuto(zuppa)
     for nodo in zuppa.find_all(TAG_RIMOSSI):
+        if nodo.decomposed or id(nodo) in protetti:
+            continue
         nodo.decompose()
     for commento in zuppa.find_all(string=lambda t: isinstance(t, Comment)):
         commento.extract()
     for nodo in list(zuppa.find_all(True)):
-        if nodo.decomposed or nodo.name in ("html", "body"):
+        if nodo.decomposed or nodo.name in ("html", "body") or id(nodo) in protetti:
             continue
         if _attributi_rumore(nodo):
             nodo.decompose()
@@ -571,6 +636,25 @@ def _scheletro(riga: str) -> str:
 #: salva l'insieme dei link della pagina: e' il «prima» dei link al giro dopo.
 #: `impronte_sezioni` non la legge nessun altro, e cosi' non serve una colonna.
 CHIAVE_LINK = "__link__"
+
+#: Chiave riservata dove il monitor salva la `VERSIONE_PULIZIA` con cui sono
+#: state calcolate le impronte e `testo_norm` della riga.
+CHIAVE_VERSIONE = "__versione__"
+
+
+def versione_pulizia(impronte_salvate: object) -> int:
+    """La versione della pulizia di una riga di `bando_controllo`.
+
+    Le righe scritte prima del 30/09/2026 non hanno la chiave e valgono 1, e
+    cosi' un valore illeggibile: ricalcolare una riga costa una GET, mentre
+    confrontare due pulizie diverse costa una classificazione per niente.
+    """
+    if not isinstance(impronte_salvate, Mapping):
+        return 1
+    try:
+        return int(impronte_salvate.get(CHIAVE_VERSIONE) or 1)
+    except (TypeError, ValueError):
+        return 1
 
 #: `;jsessionid=…` nel percorso: la Regione Umbria lo riscrive in ogni href
 #: della prima pagina servita a un client senza cookie, e a ogni giro quella

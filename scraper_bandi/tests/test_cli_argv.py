@@ -42,6 +42,11 @@ _COMANDI_V11 = {
     "pulisci-contenuto", "rigenera", "archivia-processed",
 }
 
+# `seo-rigenera` (contratto di ottobre, §7) ha un parser suo, fuori da
+# `_esegui_v11` e dalla matrice delle opzioni: i suoi test stanno in
+# `tests/test_seo_rigenera.py`.
+_COMANDI_SEO = {"seo-rigenera"}
+
 # Sottocomandi che scriveranno sul DB: per ognuno `--dry-run` e `--limit N`
 # devono essere gia' accettati oggi (vincolo 3, M20). `report-ombra` non scrive
 # — stampa il CSV della misura — ma sta nell'elenco lo stesso: M20 non ammette
@@ -164,7 +169,7 @@ class TestLeggiOpzioni(unittest.TestCase):
 
 class TestComandi(_ConRunnerFinti):
     def test_tutti_i_comandi_sono_registrati_e_accettano_argv(self):
-        self.assertEqual(set(cli._COMMANDS), set(_RUNNER_DI) | _COMANDI_V11)
+        self.assertEqual(set(cli._COMMANDS), set(_RUNNER_DI) | _COMANDI_V11 | _COMANDI_SEO)
         for cmd, fn in cli._COMMANDS.items():
             self.assertTrue(callable(fn), cmd)
 
@@ -795,7 +800,7 @@ class TestMonitorEOmbra(_ConRunnerFinti):
         ])
         finto.run_applica_eventi.assert_awaited_once_with(
             dry_run=True, limit=50, attivo=None,
-            dal=date(2026, 9, 1), tipi=("proroga", "rettifica"), offset=0,
+            dal=date(2026, 9, 1), tipi=("proroga", "rettifica"), offset=0, ids=(),
             riprova_rifiutati=False,
         )
         log.warning.assert_not_called()
@@ -803,7 +808,7 @@ class TestMonitorEOmbra(_ConRunnerFinti):
     def test_applica_eventi_senza_filtri(self):
         _, finto, _ = self._monitor(["applica-eventi"])
         finto.run_applica_eventi.assert_awaited_once_with(
-            dry_run=False, limit=None, attivo=None, dal=None, tipi=(), offset=0,
+            dry_run=False, limit=None, attivo=None, dal=None, tipi=(), offset=0, ids=(),
             riprova_rifiutati=False,
         )
 
@@ -817,7 +822,7 @@ class TestMonitorEOmbra(_ConRunnerFinti):
         _, finto, log = self._monitor([
             "applica-eventi", "--riprova-rifiutati", "--limit", "10"])
         finto.run_applica_eventi.assert_awaited_once_with(
-            dry_run=False, limit=10, attivo=None, dal=None, tipi=(), offset=0,
+            dry_run=False, limit=10, attivo=None, dal=None, tipi=(), offset=0, ids=(),
             riprova_rifiutati=True,
         )
         log.warning.assert_not_called()
@@ -946,7 +951,7 @@ class TestBackfill(_ConRunnerFinti):
 #: (`--campione 0` e `--dal 01/09/2026` sono rifiutati per conto loro).
 _VALORE_VALIDO = {
     "--id": "42", "--lotto": "L7", "--enti": "enti.xlsx", "--campione": "100",
-    "--tipo": "proroga", "--dal": "2026-09-01", "--offset": "800",
+    "--tipo": "proroga", "--dal": "2026-09-01", "--offset": "800", "--ids": "12,13",
 }
 
 #: Quali opzioni con valore accetta ogni sottocomando v11. `--offset` ce l'hanno
@@ -964,7 +969,9 @@ _OPZIONI_AMMESSE_DI = {
     # esiste un «prima») e i trenta del regime bastano per trenta bandi.
     "monitor": {"--lotto"},
     "report-ombra": {"--campione", "--tipo", "--dal"},
-    "applica-eventi": {"--dal", "--tipo", "--offset"},
+    # `--ids`: il filtro esatto del comando di ripresa scritto negli allarmi
+    # del monitor (revisione avversaria del 30/09/2026).
+    "applica-eventi": {"--dal", "--tipo", "--offset", "--ids"},
     "pulisci-contenuto": {"--lotto", "--offset"},
     "rigenera": {"--lotto", "--offset"},
     "archivia-processed": {"--lotto", "--offset"},
@@ -1080,6 +1087,41 @@ class TestOpzioniConValorePerComando(_ConRunnerFinti):
                     else:
                         self.assertEqual(codice, cli.EXIT_OPZIONI, stderr)
                         self.assertIn(opzione, stderr)
+
+    def test_applica_eventi_ids_arriva_al_modulo(self):
+        codice, stderr, ingresso = self._lancia(
+            ["applica-eventi", "--dry-run", "--ids", "12, 13,12"])
+        self.assertEqual(codice, cli.EXIT_OK, stderr)
+        self.assertEqual(ingresso.await_args.kwargs["ids"], (12, 13))
+
+    def test_applica_eventi_ids_non_validi_exit_2(self):
+        for valore in ("dodici", "12,-3", ","):
+            with self.subTest(valore=valore):
+                codice, stderr, _ = self._lancia(
+                    ["applica-eventi", "--dry-run", "--ids", valore])
+                self.assertEqual(codice, cli.EXIT_OPZIONI, stderr)
+                self.assertIn("--ids", stderr)
+
+    def test_ids_opzione_ha_una_sola_definizione(self):
+        # Correzione finale del 30/09/2026: una seconda `_ids_opzione` per
+        # `applica-eventi` ridefiniva in silenzio quella di `seo-rigenera`.
+        import ast
+        from pathlib import Path
+        albero = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+        definizioni = [n for n in albero.body
+                       if isinstance(n, ast.FunctionDef) and n.name == "_ids_opzione"]
+        self.assertEqual(len(definizioni), 1)
+        self.assertEqual(cli._ids_opzione("12, 13,12"), (12, 13))
+        self.assertEqual(cli._ids_opzione(None), ())
+        for valore in ("x", "0", ","):
+            with self.subTest(valore=valore), self.assertRaises(cli.ErroreOpzioni):
+                cli._ids_opzione(valore)
+
+    def test_l_help_di_applica_eventi_documenta_ids(self):
+        testo = cli.__doc__ or ""
+        inizio = testo.index("  applica-eventi Applica")
+        blocco = testo[inizio:testo.index("  pulisci-contenuto", inizio)]
+        self.assertIn("--ids", blocco)
 
     def test_la_matrice_copre_i_comandi_v11_e_sta_nel_catalogo(self):
         # `salute` non passa da `_esegui_v11` (vedi TestSalute); tutti gli

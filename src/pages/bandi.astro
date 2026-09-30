@@ -23,6 +23,7 @@ import { generateBreadcrumbStructuredData, generateItemListStructuredData } from
 import { contaFiltriContenuto, normalizzaPresentazione, TESTATA_LISTA, titoloLista } from '../lib/bandi/elenco';
 import { INTRO_BANDI } from '../lib/liste/testi';
 import { todayRomeISO } from '../lib/stato-bando';
+import { proteggiJsonLd } from '../lib/bandi/jsonld';
 import type { Bando } from '../lib/supabase-bandi';
 
 const DEF = DEF_BANDI;
@@ -98,8 +99,8 @@ const hrefPrec = pagina > 2 ? urlLista(DEF, valori, pagina - 1) : pagina === 2 ?
 const hrefSucc = pagina < pagine ? urlLista(DEF, valori, pagina + 1) : null;
 ---
 <Layout title={pageTitle} description={pageDescription} keywords={pageKeywords} image="https://edunews24.it/og-bandi.png" canonicalUrl={canonical} robots={robots}>
-  <script type="application/ld+json" set:html={breadcrumbStructuredData} slot="head" />
-  {itemListStructuredData && <script type="application/ld+json" set:html={itemListStructuredData} slot="head" />}
+  <script type="application/ld+json" set:html={proteggiJsonLd(breadcrumbStructuredData)} slot="head" />
+  {itemListStructuredData && <script type="application/ld+json" set:html={proteggiJsonLd(itemListStructuredData)} slot="head" />}
   {hrefPrec && <link rel="prev" href={`https://edunews24.it${hrefPrec}`} slot="head" />}
   {hrefSucc && <link rel="next" href={`https://edunews24.it${hrefSucc}`} slot="head" />}
 

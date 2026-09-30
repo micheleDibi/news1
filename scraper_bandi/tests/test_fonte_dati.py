@@ -451,5 +451,24 @@ class CodaTroncata(unittest.TestCase):
         self.assertEqual(fonte.allarmi, [])
 
 
+class TestSelectEventiPerId(unittest.TestCase):
+    """`applica-eventi --ids`: il filtro esatto che gli allarmi del monitor
+    scrivono (revisione avversaria del 30/09/2026)."""
+
+    def test_gli_id_diventano_un_filtro_in(self):
+        from tests.test_db_backfill import SCHEMA_DOPO, _Query, _strumento
+        query = _Query()
+        db.select_eventi(client=query, strumento=_strumento(SCHEMA_DOPO),
+                         ids=(12, 13), applicato=False, verificato=True)
+        self.assertIn(("in_", "id", [12, 13]), query.filtri)
+        self.assertIn(("eq", "verificato", True), query.filtri)
+
+    def test_senza_id_nessun_filtro_per_id(self):
+        from tests.test_db_backfill import SCHEMA_DOPO, _Query, _strumento
+        query = _Query()
+        db.select_eventi(client=query, strumento=_strumento(SCHEMA_DOPO), tipi=("faq",))
+        self.assertFalse(any(f[:2] == ("in_", "id") for f in query.filtri))
+
+
 if __name__ == "__main__":                                # pragma: no cover
     unittest.main()

@@ -8,6 +8,7 @@ import Layout from '../../layouts/Layout.astro';
 import PaginazioneLinks from './PaginazioneLinks.astro';
 import Sorelle from './Sorelle.astro';
 import { datiStrutturatiFiltro } from '../../lib/filtro/dati-strutturati';
+import { proteggiJsonLd } from '../../lib/bandi/jsonld';
 import { configSezione } from '../../config/pagine-filtro';
 import type { MetaFiltro, RigaIntro } from '../../lib/seo-filtro';
 import type { Sezione } from '../../config/pagine-filtro';
@@ -88,8 +89,8 @@ const { breadcrumb, itemList: itemListJson, hrefPrec, hrefSucc } = datiStruttura
 });
 ---
 <Layout title={meta.title} description={meta.description} canonicalUrl={meta.canonical}>
-  <script type="application/ld+json" set:html={breadcrumb} slot="head" />
-  {itemListJson && <script type="application/ld+json" set:html={itemListJson} slot="head" />}
+  <script type="application/ld+json" set:html={proteggiJsonLd(breadcrumb)} slot="head" />
+  {itemListJson && <script type="application/ld+json" set:html={proteggiJsonLd(itemListJson)} slot="head" />}
   {hrefPrec && <link rel="prev" href={`https://edunews24.it${hrefPrec}`} slot="head" />}
   {hrefSucc && <link rel="next" href={`https://edunews24.it${hrefSucc}`} slot="head" />}
 

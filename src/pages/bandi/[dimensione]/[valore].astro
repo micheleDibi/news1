@@ -25,6 +25,7 @@ import { caricaBandi, conteggiStatoBandi, corpusBandi, gruppiFiltroBandi } from 
 import { datiStrutturatiFiltro } from '../../../lib/filtro/dati-strutturati';
 import { valoreDiIds } from '../../../lib/bandi/elenco';
 import { todayRomeISO } from '../../../lib/stato-bando';
+import { proteggiJsonLd } from '../../../lib/bandi/jsonld';
 import type { Valori } from '../../../lib/liste/parametri';
 
 const SEZIONE = 'bandi' as const;
@@ -102,8 +103,8 @@ const testoTestata = pag.pagina === 1 && intro.length > 0 ? testoRiga(intro[0]) 
 const altreRighe = pag.pagina === 1 ? intro.slice(1) : [];
 ---
 <Layout title={meta.title} description={meta.description} canonicalUrl={meta.canonical}>
-  <script type="application/ld+json" set:html={struttura.breadcrumb} slot="head" />
-  {struttura.itemList && <script type="application/ld+json" set:html={struttura.itemList} slot="head" />}
+  <script type="application/ld+json" set:html={proteggiJsonLd(struttura.breadcrumb)} slot="head" />
+  {struttura.itemList && <script type="application/ld+json" set:html={proteggiJsonLd(struttura.itemList)} slot="head" />}
   {struttura.hrefPrec && <link rel="prev" href={`https://edunews24.it${struttura.hrefPrec}`} slot="head" />}
   {struttura.hrefSucc && <link rel="next" href={`https://edunews24.it${struttura.hrefSucc}`} slot="head" />}
 

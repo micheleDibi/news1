@@ -1259,6 +1259,49 @@ def parametri_registra_evento(riga: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def registra_via_rpc(
+    riga: Mapping[str, Any],
+    *,
+    rpc: Callable[[str, dict[str, Any]], Any] | None = None,
+    controllo: Any = None,
+) -> dict[str, Any] | None:
+    """Registra la riga con `bando_registra_evento`, **senza** applicarla ne'
+    renderla leggibile, e ne restituisce `{id, nuovo}`.
+
+    E' il primo dei tre passi dell'attivazione per tipo (`MONITOR_TIPI_ATTIVI`,
+    contratto di ottobre 2026, §3); gli altri due sono quelli di
+    `applica-eventi`: `bando_applica_evento`, poi `leggibile` (RIPRESA §5.8).
+    La RPC unica del monitor attivo (`p_applica` e `p_leggibile` veri) qui non
+    va bene: sul ramo della dedup applicherebbe un evento registrato prima,
+    lasciandolo invisibile. `nuovo=false` dice proprio questo: l'indice di
+    dedup ha riconosciuto un evento identico dello stesso giorno, che non e'
+    nato in questo giro e non si tocca.
+
+    None se la RPC non c'e', fallisce o non restituisce un id: il chiamante
+    ripiega sull'INSERT d'ombra e l'evento non si perde.
+    """
+    if not _rpc_disponibile(controllo):
+        return None
+    parametri = parametri_registra_evento(riga)
+    parametri.update(p_applica=False, p_leggibile=False, p_in_aggiornamenti=False)
+    try:
+        risposta = (rpc or _rpc_predefinita)(RPC_REGISTRA_EVENTO, parametri)
+    except Exception as e:
+        logger.warning("[eventi] {} fallita per il bando {}: {}",
+                       RPC_REGISTRA_EVENTO, riga.get("bando_id"), e)
+        return None
+    dati = getattr(risposta, "data", risposta)
+    if not isinstance(dati, Mapping) or dati.get("id") is None:
+        logger.warning("[eventi] {} senza id per il bando {}: {}",
+                       RPC_REGISTRA_EVENTO, riga.get("bando_id"), dati)
+        return None
+    # Senza la chiave `nuovo` non si sa se l'evento e' nato adesso: None, e il
+    # chiamante lo lascia in ombra (revisione avversaria del 30/09/2026). Il
+    # default «vero» sceglieva proprio il ramo che applica.
+    nuovo = dati.get("nuovo")
+    return {"id": dati["id"], "nuovo": nuovo if isinstance(nuovo, bool) else None}
+
+
 def _rpc_disponibile(controllo: Any) -> bool:
     adattatore = controllo
     if adattatore is None:

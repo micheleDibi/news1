@@ -34,7 +34,7 @@ import time
 
 import schedule
 
-from .bandi_pipeline import GIRI_SCHEDULER, run_bandi_pipeline
+from .bandi_pipeline import GIRI_SCHEDULER, rilascia_lock_orfani, run_bandi_pipeline
 from .logger import logger
 
 # Giro dell'esecuzione immediata al boot. NON e' una delle ore dello scheduler,
@@ -71,6 +71,14 @@ def schedule_bandi_pipeline() -> None:
 
 if __name__ == "__main__":
     try:
+        # Prima del giro di boot, quando questo processo non tiene ancora
+        # nessun lock: si liberano quelli dei processi precedenti morti in un
+        # `systemctl restart` (contratto di ottobre, §8). Non deve mai fermare
+        # l'avvio: al peggio il lock scade da solo, come prima.
+        try:
+            rilascia_lock_orfani()
+        except Exception as e:
+            logger.warning("[bandi_sender] lock orfani non rilasciati: {}", e)
         logger.info("[bandi_sender] Avvio immediato della pipeline (giro={})...", GIRO_BOOT)
         _run_sync(giro=GIRO_BOOT)
         logger.info("[bandi_sender] Pipeline iniziale completata. Avvio scheduler...")

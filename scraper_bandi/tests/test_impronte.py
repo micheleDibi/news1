@@ -355,5 +355,112 @@ class DiffTesti(unittest.TestCase):
                          (impronte.normalizza_url("https://ente.it/allegato-b.pdf"),))
 
 
+class ContenutoMaiContorno(unittest.TestCase):
+    """Pulizia v2 (30/09/2026): il contenuto non e' mai contorno.
+
+    Fino alla v1 il 28 % delle pagine monitorate era cieco: `pulisci` toglieva
+    il nodo che conteneva il bando (un `<main>` con la classe
+    `sidebar-offcanvas`, il `<form>` di ASP.NET, i blocchi di Elementor) e il
+    monitor confrontava ogni volta il solo `<title>`. Le pagine vere sono in
+    `test_impronte_pagine_reali.py`; qui c'e' una regola per test.
+    """
+
+    def test_main_con_una_classe_di_contorno_resta(self):
+        html = """<html><body>
+          <nav class="menu"><a href="/">Tutti i bandi</a></nav>
+          <main class="main-content col sidebar-offcanvas" role="main">
+            <h1>Energie rinnovabili nelle imprese</h1>
+            <p>Le domande entro il 30 ottobre 2026.</p>
+            <div class="bandi-correlati"><a href="/altro.pdf">Altro bando</a></div>
+          </main></body></html>"""
+        testo = impronte.testo_normalizzato(html)
+        self.assertIn("Energie rinnovabili nelle imprese", testo)
+        self.assertIn("Le domande entro il 30 ottobre 2026.", testo)
+        # I discendenti si giudicano come prima.
+        self.assertNotIn("Tutti i bandi", testo)
+        self.assertNotIn("Altro bando", testo)
+
+    def test_il_form_che_avvolge_la_pagina_resta(self):
+        # ASP.NET WebForms (Valle d'Aosta): un solo <form> per tutta la pagina,
+        # nessun <main>. L'ancora e' l'h1 del bando.
+        html = """<html><body><form id="form1" method="post">
+          <div id="main_menu"><a href="/regione">La Regione</a></div>
+          <div id="contenuto"><h1>Intervento SRD03</h1>
+            <p>Scadenza prorogata alle ore 23.59 del 30 ottobre 2026.</p></div>
+        </form>
+        <div id="testata"><form class="ricerca"><label>Cerca nel sito</label></form></div>
+        </body></html>"""
+        testo = impronte.testo_normalizzato(html)
+        self.assertIn("Intervento SRD03", testo)
+        self.assertIn("prorogata alle ore 23.59 del 30 ottobre 2026", testo)
+        self.assertNotIn("La Regione", testo)
+        # Un form che non contiene il contenuto e' contorno come prima.
+        self.assertNotIn("Cerca nel sito", testo)
+
+    def test_un_header_che_contiene_il_main_resta(self):
+        # HTML malformato: lxml puo' annidare il <main> dentro l'<header>.
+        html = """<html><body><header class="testata">
+          <nav><a href="/">Home</a></nav>
+          <main><h1>Avviso</h1><p>Contributi alle imprese del territorio.</p></main>
+        </header></body></html>"""
+        testo = impronte.testo_normalizzato(html)
+        self.assertIn("Contributi alle imprese del territorio.", testo)
+        self.assertNotIn("Home", testo)
+
+    def test_il_logo_in_h1_non_protegge_l_header(self):
+        html = """<html><body>
+          <header><h1>Regione Esempio</h1><a href="/accedi">Accedi</a></header>
+          <div class="contenuto"><h1>Avviso contributi</h1><p>Domande entro il 5 novembre.</p></div>
+        </body></html>"""
+        testo = impronte.testo_normalizzato(html)
+        self.assertIn("Avviso contributi", testo)
+        self.assertNotIn("Accedi", testo)
+        self.assertNotIn("Regione Esempio", testo)
+
+    def test_con_il_main_l_h1_fuori_non_protegge(self):
+        # Con un <main> le ancore sono solo quelle: un h1 dentro un riquadro
+        # di contorno fuori dal main non lo salva.
+        html = """<html><body>
+          <div class="sidebar"><h1>Ultime notizie</h1><p>Notizia del giorno</p></div>
+          <main><h2>Avviso</h2><p>Testo del bando.</p></main>
+        </body></html>"""
+        testo = impronte.testo_normalizzato(html)
+        self.assertIn("Testo del bando.", testo)
+        self.assertNotIn("Notizia del giorno", testo)
+
+    def test_elementor_il_blocco_del_testo_resta_i_menu_e_i_correlati_no(self):
+        html = """<html><body><div class="elementor elementor-7749">
+          <div class="elementor-widget elementor-widget-theme-post-title">
+            <div class="elementor-widget-container"><h1>Avviso Mirabilia</h1></div></div>
+          <div class="elementor-widget elementor-widget-theme-post-content">
+            <div class="elementor-widget-container"><p>Contributi per il mercato estero.</p></div></div>
+          <div class="elementor-widget elementor-widget-nav-menu"><a href="/camera">La Camera</a></div>
+          <div class="elementor-widget elementor-widget-posts">
+            <article><h3>Altra notizia</h3><a href="/altra">Leggi di piu'</a></article></div>
+        </div></body></html>"""
+        testo = impronte.testo_normalizzato(html)
+        self.assertIn("Avviso Mirabilia", testo)
+        self.assertIn("Contributi per il mercato estero.", testo)
+        self.assertNotIn("La Camera", testo)
+        self.assertNotIn("Altra notizia", testo)
+
+
+class VersionePulizia(unittest.TestCase):
+    def test_la_versione_corrente_e_la_2(self):
+        # Da incrementare a ogni cambio di `pulisci` che sposta le impronte:
+        # e' cio' che fa riallineare le righe al monitor invece di confrontarle.
+        self.assertEqual(impronte.VERSIONE_PULIZIA, 2)
+
+    def test_versione_salvata(self):
+        chiave = impronte.CHIAVE_VERSIONE
+        self.assertEqual(chiave, "__versione__")
+        self.assertEqual(impronte.versione_pulizia({chiave: 2, "__link__": []}), 2)
+        # Righe di prima del 30/09/2026: niente chiave, versione 1.
+        self.assertEqual(impronte.versione_pulizia({"__link__": []}), 1)
+        self.assertEqual(impronte.versione_pulizia(None), 1)
+        self.assertEqual(impronte.versione_pulizia("non una mappa"), 1)
+        self.assertEqual(impronte.versione_pulizia({chiave: "illeggibile"}), 1)
+
+
 if __name__ == "__main__":                                  # pragma: no cover
     unittest.main()

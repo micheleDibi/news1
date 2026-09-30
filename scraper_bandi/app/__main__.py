@@ -32,6 +32,34 @@ Comandi:
                  allegati, ente_erogatore, area_geografica, tematica,
                  importi, link_candidatura). Stato finale: 'completed'.
                  Opzioni: --dry-run, --limit N, --rerun-completed.
+  seo-rigenera   Riscrive il testo di schede GIA' pubblicate con il prompt
+                 di oggi (contratto di ottobre §7). Tre modi:
+                   --solo-controllo [--ids 1,2,3]  cerca le forme di
+                     partecipazione non sostenute nei testi attuali (degli id,
+                     o di tutti i pubblicati). Niente modello, lock,
+                     scritture o spesa; stima per eccesso (non legge la
+                     pagina ufficiale).
+                   --dry-run --ids 1,2,3 [--uscita FILE]  prova: SPENDE
+                     (Opus e scarico della pagina), stampa vecchio, nuovo e
+                     costo e salva le proposte in FILE (default
+                     ~/seo-proposte-<data>.json). Non scrive sul DB. Senza
+                     --dry-run e senza --attivo e' la stessa prova.
+                   --attivo --proposte FILE [--ids 1,2]  scrive le proposte
+                     del file SENZA modello: `contenuto` e, se la prova l'ha
+                     decisa, `descrizione_breve`. Salta i bandi non piu'
+                     pubblicati, quelli cambiati dopo la prova e quelli con
+                     affermazioni ancora segnalate. Prende il lock
+                     `bandi_pipeline` e scrive `pipeline_run`: lanciare solo
+                     nella finestra sicura (12:30-16:30 o 19:00-22:30),
+                     altrimenti il giro del sender salta.
+                 Rifiuta gli id non pubblicati o fusi. --limit N conta le
+                 schede lavorate. Exit 2: --dry-run con --attivo, --attivo
+                 senza --proposte, --uscita gia' esistente.
+                 NON si rilevano in automatico beneficiari e requisiti
+                 inventati (solo le forme di partecipazione): ne'
+                 --solo-controllo ne' l'attivo li fermano, conta la lettura
+                 della prova. L'attivo salta anche le proposte fuori forma
+                 (`contenuto` senza `sections`).
   salute         Diagnosi: allarmi di configurazione e di consumo.
                  Opzioni: --json. Exit 1 se c'e' almeno un allarme.
   domini         Whitelist/blocklist dei domini ufficiali. `--import` compone
@@ -91,7 +119,9 @@ Comandi:
                  (§6.2: senza questo comando la baseline delle impronte li
                  perderebbe). Opzioni: --dry-run, --limit N, --dal AAAA-MM-GG,
                  --tipo a,b,c (elenco separato da virgole: i tipi si attivano
-                 uno alla volta), --offset N, --ombra|--attivo.
+                 uno alla volta), --ids 12,13 (solo quegli eventi: e' il
+                 comando di ripresa scritto negli allarmi del monitor, che
+                 non tocca l'arretrato dell'ombra), --offset N, --ombra|--attivo.
                  Il --limit conta gli eventi da APPLICARE: quelli gia'
                  rifiutati dalla RPC non consumano piu' il blocco.
   pulisci-contenuto  Backfill L7 (§6.4): toglie dal `contenuto` gia' generato i
@@ -159,10 +189,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import os
 import sys
 from dataclasses import dataclass
 from datetime import date
-from typing import Callable
+from typing import Any, Callable
 
 from .logger import logger
 
@@ -289,6 +320,96 @@ def _cmd_seo(argv: list[str]) -> None:
     logger.info("[main] counters finali: {}", counters)
 
 
+def _ids_opzione(valore: str | None) -> tuple[int, ...]:
+    """`--ids 18145,18278` -> `(18145, 18278)`, doppioni tolti; assente -> `()`.
+
+    Vale per `seo-rigenera` e per `applica-eventi` (il filtro esatto degli
+    allarmi del monitor). Un valore non intero o <= 0 e' un errore: un id
+    illeggibile scartato in silenzio farebbe lavorare il comando su meno righe
+    di quelle chieste. E anche un `--ids` scritto ma vuoto (`--ids ,`): in
+    `applica-eventi` diventerebbe «nessun filtro», cioe' tutto l'arretrato.
+    """
+    if valore is None:
+        return ()
+    ids: list[int] = []
+    for pezzo in valore.split(","):
+        pezzo = pezzo.strip()
+        if not pezzo:
+            continue
+        try:
+            numero = int(pezzo)
+        except ValueError:
+            raise ErroreOpzioni(
+                f"--ids richiede interi separati da virgole (es. --ids 12,13): {pezzo!r}"
+            ) from None
+        if numero <= 0:
+            raise ErroreOpzioni(f"--ids richiede interi > 0: {numero}")
+        ids.append(numero)
+    if not ids:
+        raise ErroreOpzioni("--ids richiede almeno un id (es. --ids 12,13)")
+    return tuple(dict.fromkeys(ids))
+
+
+#: I flag di `seo-rigenera`. Non passa da `_esegui_v11`: ha un solo valore
+#: (`--ids`) che nessun altro comando conosce, e tre modi che si escludono.
+FLAG_SEO_RIGENERA = frozenset({"--attivo", "--solo-controllo"})
+
+
+def _cmd_seo_rigenera(argv: list[str]) -> int:
+    """`seo-rigenera`: controllo, prova con le proposte, scrittura delle proposte.
+
+    La prova (`--dry-run --ids …`) chiama Opus e SPENDE, e salva le proposte in
+    `--uscita` (default `~/seo-proposte-<data>.json`). `--attivo --proposte
+    FILE` scrive quelle, senza modello, e va lanciato solo nella finestra
+    sicura. `--solo-controllo` non spende niente. I controlli sui file stanno
+    qui, PRIMA di spendere: un `--uscita` gia' esistente sarebbe sovrascritto,
+    un `--proposte` inesistente fermerebbe l'attivo dopo il lock.
+    """
+    opzioni = _leggi_opzioni(argv)
+    valore, resto = _valore_opzione(opzioni.resto, "--ids")
+    uscita, resto = _valore_opzione(resto, "--uscita")
+    proposte, resto = _valore_opzione(resto, "--proposte")
+    ignorati = [t for t in resto if t not in FLAG_SEO_RIGENERA]
+    if ignorati:
+        raise ErroreOpzioni(
+            f"seo-rigenera: opzioni non riconosciute: {ignorati}. "
+            "Un refuso su --dry-run farebbe partire una scrittura: il comando si ferma."
+        )
+    attivo = "--attivo" in resto
+    solo_controllo = "--solo-controllo" in resto
+    if attivo and opzioni.dry_run:
+        raise ErroreOpzioni("seo-rigenera: --dry-run e --attivo sono incompatibili")
+    if attivo and solo_controllo:
+        raise ErroreOpzioni("seo-rigenera: --solo-controllo e --attivo sono incompatibili")
+    if attivo and not proposte:
+        raise ErroreOpzioni(
+            "seo-rigenera: --attivo scrive le proposte di una prova e non chiama il modello.\n"
+            "  1) seo-rigenera --dry-run --ids 1,2,3   (spende; salva ~/seo-proposte-<data>.json)\n"
+            "  2) leggere il file\n"
+            "  3) seo-rigenera --attivo --proposte FILE   (non spende; finestra sicura)"
+        )
+    if proposte and not attivo:
+        raise ErroreOpzioni("seo-rigenera: --proposte vale solo con --attivo")
+    if uscita and (attivo or solo_controllo):
+        raise ErroreOpzioni("seo-rigenera: --uscita vale solo per la prova (--dry-run)")
+    if uscita and os.path.exists(os.path.expanduser(uscita)):
+        raise ErroreOpzioni(f"seo-rigenera: {uscita} esiste gia': la prova lo sovrascriverebbe")
+    if proposte and not os.path.isfile(os.path.expanduser(proposte)):
+        raise ErroreOpzioni(f"seo-rigenera: il file di proposte {proposte} non esiste")
+    ids = _ids_opzione(valore)
+    if not ids and not (solo_controllo or attivo):
+        raise ErroreOpzioni("seo-rigenera: --ids e' obbligatorio per la prova")
+    from .bando_seo_runner import run_seo_rigenera
+    contatori = asyncio.run(run_seo_rigenera(
+        ids, dry_run=opzioni.dry_run, attivo=attivo,
+        solo_controllo=solo_controllo, limit=opzioni.limit,
+        uscita=uscita, proposte=proposte,
+    ))
+    if isinstance(contatori, dict) and contatori.get("status") == "errore":
+        return EXIT_ERRORE
+    return _codice_da_contatori(contatori)
+
+
 # --- comandi v11 -----------------------------------------------------------
 
 def _codice_da_contatori(contatori: object) -> int:
@@ -368,7 +489,7 @@ def _modulo_opzionale(
 # silenzio, con exit 0: l'operatore credeva di aver spostato il blocco e
 # rilanciava lo stesso identico giro.
 OPZIONI_CON_VALORE = frozenset({
-    "--id", "--lotto", "--enti", "--campione", "--tipo", "--dal", "--offset",
+    "--id", "--lotto", "--enti", "--campione", "--tipo", "--dal", "--offset", "--ids",
 })
 
 #: Le opzioni con valore dei tre lotti di §6.4 (`pulisci-contenuto`,
@@ -668,11 +789,37 @@ def _cmd_fondi_doppioni(argv: list[str]) -> int:
     return _esegui_v11("fondi-doppioni", "run_fondi_doppioni", argv)
 
 
+def _rigenerazione_serve(
+    *, attivo: bool, ombra: bool, dry_run: bool, impostazioni: Any = None,
+) -> bool:
+    """Il giro del monitor puo' applicare eventi, e quindi cambiare date?
+
+    Si': con `--attivo`, con `MONITOR_MODALITA=attivo` e con
+    `MONITOR_TIPI_ATTIVI` non vuota (una proroga di un tipo attivo cambia
+    `data_scadenza` anche in ombra: revisione avversaria del 30/09/2026, P1).
+    No con `--dry-run` o `--ombra`, che spengono anche i tipi attivi.
+    """
+    if dry_run or ombra:
+        return False
+    if attivo:
+        return True
+    if impostazioni is None:
+        try:
+            from .settings import get_settings
+            impostazioni = get_settings()
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[main] impostazioni non leggibili per la rigenerazione: {}", e)
+            return False
+    return (getattr(impostazioni, "monitor_modalita", "ombra") == "attivo"
+            or bool(getattr(impostazioni, "monitor_tipi_attivi", ())))
+
+
 def _rigenerazione_di_produzione(scrive: bool) -> Callable | None:
     """L'adattatore che porta la prosa in linea con le date nuove (§6.2, §12).
 
-    Il monitor lo chiama solo quando un evento ha cambiato `data_apertura` o
-    `data_scadenza`, e solo in modalita' attiva. Senza di lui il giro scrive le
+    Il monitor lo chiama solo quando un evento applicato ha cambiato
+    `data_apertura` o `data_scadenza`: in attivo, o per un tipo di
+    `MONITOR_TIPI_ATTIVI` (`_rigenerazione_serve`). Senza di lui il giro scrive le
     colonne ma **non** restituisce lo slug in `slug_modificati`: notificare a
     Google una pagina il cui testo dice ancora la data vecchia e' peggio che
     tacere, e la scelta e' del chiamante.
@@ -758,8 +905,10 @@ def _cmd_monitor(argv: list[str]) -> int:
             "senza_rete": "--senza-rete" in opzioni.resto,
             # `--dry-run` e' piu' forte di `--attivo` anche qui: il monitor lo
             # sa gia' (forza l'ombra), ma l'adattatore che scrive non deve
-            # nemmeno essere costruito.
-            "rigenerazione": _rigenerazione_di_produzione(attivo and not opzioni.dry_run),
+            # nemmeno essere costruito. Senza flag decidono l'ambiente e i
+            # tipi attivi, come dentro `monitoraggio.run`.
+            "rigenerazione": _rigenerazione_di_produzione(_rigenerazione_serve(
+                attivo=attivo, ombra="--ombra" in opzioni.resto, dry_run=opzioni.dry_run)),
             # `--lotto Lx` sposta il giro sui tetti del backfill: la semina
             # delle impronte (L6) passa dal modello su ogni riga, perche' al
             # primo controllo non c'e' un «prima», e i trenta del regime
@@ -840,7 +989,10 @@ def _cmd_report_ombra(argv: list[str]) -> int:
 
 
 def _cmd_applica_eventi(argv: list[str]) -> int:
-    """`applica-eventi --dal AAAA-MM-GG [--tipo a,b] [--limit 50] [--dry-run]`.
+    """`applica-eventi --dal AAAA-MM-GG [--tipo a,b] [--ids 12,13] [--limit 50] [--dry-run]`.
+
+    `--ids` e' il filtro esatto per id: e' il comando di ripresa che gli
+    allarmi del monitor scrivono, e riprende solo gli eventi di quel giro.
 
     `--tipo` e' l'interruttore dell'attivazione progressiva di §6.2: senza,
     il comando guarderebbe tutti i tipi insieme, compresi sospensione e revoca,
@@ -855,15 +1007,16 @@ def _cmd_applica_eventi(argv: list[str]) -> int:
     def parametri(opzioni: Opzioni) -> dict:
         dal, resto = _valore_opzione(opzioni.resto, "--dal")
         tipo, resto = _valore_opzione(resto, "--tipo")
-        offset, _ = _valore_opzione(resto, "--offset")
+        offset, resto = _valore_opzione(resto, "--offset")
+        ids, _ = _valore_opzione(resto, "--ids")
         return {"dal": _giorno_opzione(dal, "--dal"), "tipi": _tipi_opzione(tipo),
-                "offset": _offset_opzione(offset),
+                "offset": _offset_opzione(offset), "ids": _ids_opzione(ids),
                 "riprova_rifiutati": "--riprova-rifiutati" in opzioni.resto}
 
     return _esegui_v11(
         "applica-eventi", "run_applica_eventi", argv, modulo="monitoraggio",
         ammessi=FLAG_MODALITA | frozenset({"--riprova-rifiutati"}),
-        con_valore=frozenset({"--dal", "--tipo", "--offset"}),
+        con_valore=frozenset({"--dal", "--tipo", "--offset", "--ids"}),
         extra=parametri, ingresso_atteso=False,
     )
 
@@ -958,6 +1111,8 @@ def _stato_salute():
         modalita_monitor=impostazioni.monitor_modalita,
         indexnow_configurata=bool(impostazioni.indexnow_api_key),
         monitor_giri_validi=impostazioni.monitor_giri_validi,
+        tipi_attivi=impostazioni.monitor_tipi_attivi,
+        tipi_attivi_ignorati=impostazioni.monitor_tipi_attivi_ignorati,
         **campi,
     )
 
@@ -975,6 +1130,10 @@ def _cmd_salute(argv: list[str]) -> int:
             print(riga, file=sys.stderr)
         for avviso in esito.avvisi:
             print(f"[AVVISO] {avviso}", file=sys.stderr)
+        # I tipi che il monitor applica anche in ombra (MONITOR_TIPI_ATTIVI):
+        # sempre, perche' dicono cosa aspettarsi nel box «Aggiornamenti».
+        print("salute: tipi attivi del monitor: "
+              + (", ".join(esito.tipi_attivi) or "nessuno"))
         if not esito.allarmi and not esito.avvisi:
             print("salute: nessun allarme")
     return esito.exit_code
@@ -989,6 +1148,7 @@ _COMMANDS: dict[str, Callable[[list[str]], int | None]] = {
     "preprocess": _cmd_preprocess,
     "enrich": _cmd_enrich,
     "seo": _cmd_seo,
+    "seo-rigenera": _cmd_seo_rigenera,
     "risolvi-fonte": _cmd_risolvi_fonte,
     "oe-dettaglio": _cmd_oe_dettaglio,
     "link-verifica": _cmd_link_verifica,

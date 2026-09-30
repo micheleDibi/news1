@@ -18,6 +18,7 @@ import re
 import unicodedata
 from typing import Any, Iterable, Mapping
 
+from . import bilancio
 from .impronte import normalizza_url
 from .logger import logger
 from .preprocessor import _get_anthropic_client
@@ -189,7 +190,7 @@ REGOLE EDITORIALI
 
 1. **Sentence case** ovunque (titolo, H2, descrizione, sezioni). Prima lettera maiuscola; sigle/nomi propri in maiuscolo (PNRR, FESR, FSE, JTF, INPS, ANAS, Lombardia, ecc.).
 
-2. **Titolo (≤80 char)**: comincia con fatto concreto. Esempi:
+2. **Titolo (≤80 char)**: massimo 80 caratteri contati, spazi compresi: un titolo più lungo viene rifiutato e dovrai riscriverlo. Comincia con fatto concreto. Esempi:
    - "Aiuti a fondo perduto per startup innovative in Lombardia"
    - "Bando ricerca PNRR 2026 per università del Sud"
    Evita: "Opportunità interessante per...", "Avviso pubblico relativo a..."
@@ -213,7 +214,7 @@ REGOLE EDITORIALI
 
 8. **livello**:
    - **flash_bando** (default): 350-500 parole, 2 sezioni H2: "Chi può candidarsi" e "Come e quando".
-   - **guida_bando**: 800-1200 parole, 7-8 sezioni H2 incluse "In breve", "A chi si rivolge", "Cosa finanzia", "Come presentare", "Scadenze", "Errori comuni", "FAQ", chiusura. Usa solo se: regolamento articolato, fasi multiple, FAQ ufficiali nel markdown, importo > 5M€.
+   - **guida_bando**: 800-1200 parole, 7-8 sezioni H2 incluse "In breve", "A chi si rivolge", "Cosa finanzia", "Come presentare", "Scadenze", "Errori comuni" (solo alle condizioni della regola 18), "FAQ", chiusura. Usa solo se: regolamento articolato, fasi multiple, FAQ ufficiali nel markdown, importo > 5M€.
 
 9. **contenuto.sections** struttura: ogni sezione è un oggetto con `type` (h2, paragraph, bullet_list, numbered_list, faq):
    - h2: `{type: "h2", text: "Titolo sezione"}`
@@ -236,6 +237,11 @@ REGOLE EDITORIALI
 16. **Stato del bando — MAI in prosa**: il testo resta pubblicato per anni mentre lo stato (aperto/chiuso) cambia alla scadenza; il sito lo mostra già con un badge calcolato in tempo reale. NON affermare MAI lo stato corrente in contenuto, descrizione_breve o FAQ: vietate frasi come "attualmente aperto", "il bando è aperto", "risulta aperto", "ancora aperto", "è ancora possibile candidarsi", "restano X giorni". Esprimi apertura e chiusura SOLO con date assolute: "le domande possono essere presentate dal 1 marzo 2026 al 30 settembre 2026", "domande entro il 30 settembre 2026".
 
 17. **Accenti italiani**: scrivi "è", "à", "ù", "ò", "ì", "é" con l'accento vero. Mai la vocale nuda al loro posto ("universita", "puo", "gia", "piu", "perche", "modalita") e mai l'apostrofo come accento ("e'", "citta'", "sara'", "validita'"). Vale in ogni campo del payload: titolo, descrizione_breve, contenuto, meta e FAQ.
+
+18. **Chi partecipa e a quali condizioni: solo ciò che dice la fonte.** Beneficiari, forme di partecipazione ("in forma singola o associata", reti di imprese, aggregazioni, partenariati, ATI/ATS/RTI, consorzi, capofila), requisiti (sede, anzianità, dimensione, fatturato, codici ATECO), esclusioni e vincoli (numero minimo di partner, cumulabilità, cofinanziamento) si scrivono SOLO se si leggono nel MARKDOWN o nella CLASSIFICAZIONE (beneficiari, regioni, settori, ATECO). Se la fonte non dice niente, il testo non dice niente: vietate le formule di completamento ("in forma singola o associata", "anche in forma aggregata", "reti di imprese e aggregazioni", "in possesso dei requisiti previsti"). Quando la fonte prevede una forma di partecipazione, riportala con le sue parole (es. "almeno due partner, di cui uno capofila").
+   - "Chi può candidarsi" e "A chi si rivolge" elencano i beneficiari della classificazione e quelli scritti nel markdown, nient'altro. Se mancano i dettagli, rimanda all'avviso ufficiale senza anticiparli.
+   - "Errori comuni" solo se ogni errore discende da un requisito esplicito della fonte; altrimenti la sezione si omette.
+   - Con il testo dell'aggregatore (intestazione "TESTO DELL'AGGREGATORE") la fonte è povera: scrivi meno, non di più.
 
 OUTPUT: chiama il tool save_seo_bando UNA VOLTA con il payload. Niente testo libero prima/dopo."""
 
@@ -414,6 +420,252 @@ def filtra_allegati(
     return tenuti, len(righe) - len(tenuti)
 
 
+# ---------------------------------------------------------------------------
+# Affermazioni non sostenute dalla fonte (contratto di ottobre, §7)
+# ---------------------------------------------------------------------------
+#
+# Il 29/09 BandoFit ha segnalato tre schede con forme di partecipazione che
+# l'atto dell'ente non prevede (18145, 18278, 171905), e il controllo del giro
+# delle 12 ne ha trovate altre otto. Nove di quegli undici bandi non hanno
+# ancora oggi una fonte ufficiale: il modello ha letto la scheda
+# dell'aggregatore e ha riempito «Chi può candidarsi» con formule di
+# completamento. La regola 18 del prompt lo vieta; questo controllo misura se
+# il modello l'ha rispettata.
+#
+# Copre solo le forme di partecipazione, perche' sono formule riconoscibili e
+# la loro presenza nella fonte si verifica con una ricerca. Requisiti e
+# beneficiari in generale no: «sede in Sicilia da almeno tre anni» non ha una
+# forma fissa, e per loro resta il prompt.
+#
+# Ogni famiglia ha due espressioni: quella che la riconosce nel testo generato
+# e quella, piu' larga, che la trova sostenuta nella fonte. Nel dubbio vince la
+# fonte: un falso «sostenuta» lascia passare una frase, un falso «non
+# sostenuta» farebbe riscrivere una scheda giusta.
+
+_I = re.IGNORECASE
+_SIGLE_RAGGRUPPAMENTO = r"(?-i:\b(?:ATI|ATS|RTI|RTS)\b)"
+
+FAMIGLIE_PARTECIPAZIONE: tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...] = (
+    (
+        "forma singola o associata",
+        re.compile(
+            r"\bforma\s+(?:singola\s+o\s+)?associata\b|\bsingol[aoie]\s+o\s+associat[aoie]\b"
+            r"|\bforma\s+(?:aggregata|congiunta)\b", _I),
+        re.compile(
+            r"\bassociat[aoie]\b|\bforma\s+(?:aggregata|congiunta)\b|\baggregazion"
+            r"|\braggruppament", _I),
+    ),
+    (
+        "reti di imprese",
+        re.compile(
+            r"\bret[ei]\s+(?:di\s+)?impres[ae]\b|\bcontratt[oi]\s+di\s+rete\b"
+            r"|\bret[ei]-(?:soggetto|contratto)\b", _I),
+        re.compile(
+            r"\bret[ei]\s+(?:di\s+)?impres|\bcontratt[oi]\s+di\s+rete\b"
+            r"|\bret[ei]-(?:soggetto|contratto)\b", _I),
+    ),
+    (
+        "aggregazioni",
+        re.compile(r"\baggregazion[ei]\b", _I),
+        re.compile(
+            r"\baggregazion|\baggregat[aoie]\b|\braggruppament"
+            r"|\bassociazion[ei]\s+temporane", _I),
+    ),
+    (
+        "partenariati",
+        re.compile(r"\bpartenariat[oi]\b|\bpartner(?:ship)?\b", _I),
+        re.compile(
+            r"\bpartenariat|\bpartner|\bcapofila\b|\braggruppament|\baggregazion", _I),
+    ),
+    (
+        "raggruppamenti temporanei",
+        re.compile(
+            r"\braggruppament[oi]\s+temporane[oi]\b|\bassociazion[ei]\s+temporane[ae]\b|"
+            + _SIGLE_RAGGRUPPAMENTO, _I),
+        re.compile(
+            r"\braggruppament|\bassociazion[ei]\s+temporane|" + _SIGLE_RAGGRUPPAMENTO, _I),
+    ),
+    (
+        "consorzi",
+        re.compile(r"\bconsorzi[oa]?\b", _I),
+        re.compile(r"\bconsorzi", _I),
+    ),
+    (
+        "capofila",
+        re.compile(r"\bcapofila\b|\bmandatari[oa]\b", _I),
+        re.compile(r"\bcapofila\b|\bmandatari", _I),
+    ),
+)
+
+_SPAZI_RE = re.compile(r"\s+")
+
+
+def _spazi(testo: Any) -> str:
+    """Spazi (anche NBSP e a capo) ridotti a uno: il markdown ne e' pieno."""
+    return _SPAZI_RE.sub(" ", str(testo or ""))
+
+
+def affermazioni_non_sostenute(testo: str, fonte: str) -> tuple[tuple[str, str], ...]:
+    """(famiglia, parole trovate) per ogni forma di partecipazione affermata in
+    `testo` e assente dalla `fonte`. Vuota se il testo non ne afferma.
+
+    `testo` e' cio' che il modello ha scritto (descrizione e contenuto, vedi
+    `testo_del_contenuto`), `fonte` cio' che ha letto (`fonte_del_bando`).
+    """
+    testo, fonte = _spazi(testo), _spazi(fonte)
+    esito: list[tuple[str, str]] = []
+    for famiglia, nel_testo, nella_fonte in FAMIGLIE_PARTECIPAZIONE:
+        trovata = nel_testo.search(testo)
+        if trovata and not nella_fonte.search(fonte):
+            esito.append((famiglia, trovata.group(0)))
+    return tuple(esito)
+
+
+def testo_del_contenuto(contenuto: Any) -> str:
+    """Il testo leggibile di un `contenuto` (dict, o JSON salvato come stringa).
+
+    Si raccolgono le chiavi `text` (titoli e segmenti) e `q` (domande delle
+    FAQ), a qualunque profondita'; gli URL dei segmenti `link` restano fuori.
+    Una stringa che non e' JSON e' gia' testo.
+    """
+    if isinstance(contenuto, str):
+        try:
+            contenuto = json.loads(contenuto)
+        except ValueError:
+            return contenuto
+    pezzi: list[str] = []
+
+    def visita(nodo: Any) -> None:
+        if isinstance(nodo, Mapping):
+            for chiave, valore in nodo.items():
+                if chiave in ("text", "q") and isinstance(valore, str):
+                    pezzi.append(valore)
+                else:
+                    visita(valore)
+        elif isinstance(nodo, list):
+            for valore in nodo:
+                visita(valore)
+
+    visita(contenuto)
+    return " ".join(pezzi)
+
+
+def fonte_del_bando(input_ctx: Mapping[str, Any], markdown: str = "") -> str:
+    """Tutto cio' che il modello legge su un bando: campi grezzi dello scraper,
+    classificazione dell'enricher (i «cataloghi collegati» del §7) e testo della
+    pagina. E' il termine di paragone di `affermazioni_non_sostenute`."""
+    ateco = " ".join(
+        str(a.get("descrizione") or "") for a in (input_ctx.get("codici_ateco") or [])
+        if isinstance(a, Mapping)
+    )
+    pezzi = [
+        input_ctx.get("titolo_raw"),
+        input_ctx.get("descrizione_raw"),
+        json.dumps(input_ctx.get("raw_data") or {}, ensure_ascii=False, default=str),
+        input_ctx.get("tipologia"),
+        input_ctx.get("modalita_erogazione"),
+        input_ctx.get("programma"),
+        " ".join(input_ctx.get("beneficiari") or []),
+        " ".join(input_ctx.get("regioni") or []),
+        " ".join(input_ctx.get("settori") or []),
+        ateco,
+        markdown,
+    ]
+    return " ".join(str(p) for p in pezzi if p)
+
+
+def affermazioni_del_payload(
+    payload: Mapping[str, Any], input_ctx: Mapping[str, Any], markdown: str = "",
+) -> tuple[tuple[str, str], ...]:
+    """`affermazioni_non_sostenute` su descrizione breve e contenuto di un payload."""
+    testo = " ".join((
+        str(payload.get("descrizione_breve") or ""),
+        testo_del_contenuto(payload.get("contenuto")),
+    ))
+    return affermazioni_non_sostenute(testo, fonte_del_bando(input_ctx, markdown))
+
+
+# ---------------------------------------------------------------------------
+# Lunghezze (contratto di ottobre, T-C2)
+# ---------------------------------------------------------------------------
+#
+# Il bando 772894 e' rimasto `enriched` dal 22/08: a ogni giro Opus scriveva un
+# titolo di 88 caratteri («Contributi a fondo perduto per
+# l'internazionalizzazione delle imprese di Pistoia e Prato») e il gate
+# buttava l'intero payload, gia' pagato. Dal 23/09 sono circa 26 chiamate. Il
+# modello scrive fino al limite: dei 2 186 titoli completati, 467 hanno 75-80
+# caratteri.
+#
+# Il TITOLO non si taglia mai a macchina: alla pubblicazione si congela (anche
+# per lo slug e per BandoFit), e «…delle imprese di Pistoia» senza «e Prato» e'
+# un titolo sbagliato per sempre (revisione #25). Sui non pubblicati, oltre 80
+# caratteri (`sistema_titolo`): prima il `titolo_breve` del payload se sta in
+# 80, poi UNA richiamata al modello per il solo titolo, con il motivo scritto,
+# poi lo scarto con motivo. La DESCRIZIONE breve invece si accorcia (ultima
+# frase intera): non e' congelata e non porta lo slug.
+#
+# Solo sui NON pubblicati: il titolo di un pubblicato non si scrive mai, e la
+# sua descrizione non si accorcia senza che nessuno l'abbia letta.
+
+TITOLO_MAX = 80
+DESCRIZIONE_MIN = 180
+DESCRIZIONE_MAX = 320
+
+#: Parole che non possono chiudere un titolo o una frase tagliata.
+_CONNETTIVI_CODA = frozenset({
+    "di", "del", "dello", "della", "dei", "degli", "delle", "e", "ed", "o", "od",
+    "per", "a", "al", "allo", "alla", "ai", "agli", "alle", "in", "nel", "nello",
+    "nella", "nei", "negli", "nelle", "con", "su", "sul", "sullo", "sulla", "sui",
+    "sugli", "sulle", "da", "dal", "dallo", "dalla", "dai", "dagli", "dalle",
+    "tra", "fra", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "che",
+})
+_PUNTEGGIATURA_CODA = " ,;:–—-(/"
+
+
+def _parole_entro(testo: str, massimo: int) -> str:
+    """Le parole intere di `testo` che stanno in `massimo` caratteri, senza
+    connettivi ne' punteggiatura in coda. Vuoto se nemmeno la prima ci sta."""
+    scelte: list[str] = []
+    for parola in testo.split():
+        if len(" ".join(scelte + [parola])) > massimo:
+            break
+        scelte.append(parola)
+    while scelte and (
+        scelte[-1].lower().strip(",;:") in _CONNETTIVI_CODA
+        or not scelte[-1].strip(_PUNTEGGIATURA_CODA)
+    ):
+        scelte.pop()
+    return " ".join(scelte).rstrip(_PUNTEGGIATURA_CODA)
+
+
+def accorcia_descrizione(
+    testo: str, massimo: int = DESCRIZIONE_MAX, minimo: int = DESCRIZIONE_MIN,
+) -> str:
+    """La descrizione entro `massimo` caratteri.
+
+    Prima scelta l'ultima frase intera che ci sta, se ne restano almeno
+    `minimo`; altrimenti l'ultima parola intera piu' «…». Un punto seguito da
+    una cifra («1.500 euro») non chiude una frase.
+    """
+    testo = " ".join(str(testo or "").split())
+    if len(testo) <= massimo:
+        return testo
+    fine_frase = max(
+        (i + 1 for i, c in enumerate(testo[:massimo])
+         if c in ".!?" and (i + 1 == len(testo) or testo[i + 1] == " ")),
+        default=0,
+    )
+    if fine_frase >= minimo:
+        return testo[:fine_frase]
+    return (_parole_entro(testo, massimo - 1) or testo[:massimo - 1]) + "…"
+
+
+def _scarta(diagnosi: dict[str, Any] | None, motivo: str) -> None:
+    """Annota perche' il payload e' stato scartato (lo legge `pipeline_run`)."""
+    if diagnosi is not None:
+        diagnosi["motivo"] = motivo
+
+
 async def _validate_payload(
     payload: dict[str, Any],
     bando_id: int,
@@ -423,6 +675,10 @@ async def _validate_payload(
     *,
     link_ammessi: Iterable[str] | None = None,
     allegati_ammessi: Iterable[str] | None = None,
+    ripara_lunghezze: bool = False,
+    titolo_congelato: bool = False,
+    descrizione_facoltativa: bool = False,
+    diagnosi: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Gate Python: ritorna il payload normalizzato o None se invalid.
 
@@ -430,32 +686,51 @@ async def _validate_payload(
       - slug: fallback slugify se invalid + risoluzione collisione UNIQUE.
       - link_candidatura: reachability check (graceful demote a 'missing').
       - ente_erogatore: warning se non substring (no block).
-      - lunghezze fuori range: block.
+      - lunghezze fuori range: block; con `ripara_lunghezze` (bandi non
+        pubblicati) una descrizione troppo lunga si accorcia invece. Il titolo
+        no: lo sistema `sistema_titolo` prima di arrivare qui.
+        Con `titolo_congelato` (pubblicati: rerun dei completed e
+        `seo-rigenera`) il titolo non si controlla affatto, perche' non verra'
+        scritto: scartare per lui buttava una chiamata pagata. Con
+        `descrizione_facoltativa` (solo `seo-rigenera`, che la descrizione la
+        riscrive soltanto se la vecchia e' segnalata) la lunghezza della
+        descrizione non scarta il payload: la giudica il chiamante, se e
+        quando la usa.
       - allegati: filter url validi, max 20, poi intersezione con
         `allegati_ammessi` (§5: solo i documenti verificati 2xx).
       - contenuto: ogni segmento `link` il cui URL non sta in `link_ammessi`
         viene degradato a testo (§5, gate anti-allucinazione).
 
     `link_ammessi`/`allegati_ammessi` a None disattivano i due gate: e' il caso
-    del bando che il resolver non ha ancora visto.
+    del bando che il resolver non ha ancora visto. In `diagnosi["motivo"]`
+    finisce la ragione dello scarto.
     """
     # 1. Required fields
     for f in _REQUIRED_FIELDS:
         if payload.get(f) is None:
             logger.warning("[seo] bando_id={} payload manca campo required '{}'", bando_id, f)
+            _scarta(diagnosi, f"campo mancante: {f}")
             return None
 
     # 2. Lunghezze hard
     titolo = (payload.get("titolo") or "").strip()
-    if not (1 <= len(titolo) <= 80):
+    if not titolo_congelato and not (1 <= len(titolo) <= TITOLO_MAX):
         logger.warning("[seo] bando_id={} titolo lunghezza non valida: {}", bando_id, len(titolo))
+        _scarta(diagnosi, f"titolo {len(titolo)} caratteri (1-{TITOLO_MAX})")
         return None
     desc = (payload.get("descrizione_breve") or "").strip()
-    if not (180 <= len(desc) <= 320):
+    if ripara_lunghezze and len(desc) > DESCRIZIONE_MAX:
+        corta = accorcia_descrizione(desc)
+        logger.info("[seo] bando_id={} descrizione_breve accorciata ({} -> {})",
+                    bando_id, len(desc), len(corta))
+        desc = payload["descrizione_breve"] = corta
+    if not descrizione_facoltativa and not (DESCRIZIONE_MIN <= len(desc) <= DESCRIZIONE_MAX):
         logger.warning(
             "[seo] bando_id={} descrizione_breve lunghezza fuori range (180-320): {}",
             bando_id, len(desc),
         )
+        _scarta(diagnosi, f"descrizione_breve {len(desc)} caratteri "
+                          f"({DESCRIZIONE_MIN}-{DESCRIZIONE_MAX})")
         return None
     titolo_breve = payload.get("titolo_breve")
     if titolo_breve and len(titolo_breve) > 100:
@@ -464,12 +739,15 @@ async def _validate_payload(
     # 3. Enum re-check (tool gia' enforce)
     if payload.get("livello") not in ("flash_bando", "guida_bando"):
         logger.warning("[seo] bando_id={} livello non enum: {!r}", bando_id, payload.get("livello"))
+        _scarta(diagnosi, f"livello non valido: {payload.get('livello')!r}")
         return None
     if payload.get("link_candidatura_source") not in ("extracted", "fallback_source", "missing"):
         logger.warning(
             "[seo] bando_id={} link_candidatura_source non enum: {!r}",
             bando_id, payload.get("link_candidatura_source"),
         )
+        _scarta(diagnosi, "link_candidatura_source non valido: "
+                          f"{payload.get('link_candidatura_source')!r}")
         return None
 
     # 4. Slug: validate + fallback + collision
@@ -483,6 +761,7 @@ async def _validate_payload(
     resolved_slug = await _resolve_slug_collision(raw_slug, bando_id)
     if not resolved_slug:
         logger.warning("[seo] bando_id={} slug collision irrisolvibile: {!r}", bando_id, raw_slug)
+        _scarta(diagnosi, f"slug in collisione: {raw_slug}")
         return None
     payload["slug"] = resolved_slug
 
@@ -665,6 +944,7 @@ RAW_DATA (metadata scraper, JSONB):
 3. Cita le date in formato italiano (es. "30 settembre 2026") nel contenuto. Le date sono affidabili (già validate substring + source autoritativo).
 4. Slug kebab-case ≤80 char, no stopword italiane.
 5. Titolo ≤80 char, sentence case, fatto concreto in apertura.
+6. Chi può partecipare, in quale forma e con quali requisiti: solo ciò che si legge nel markdown o nella classificazione (regola 18). Se la fonte tace, il testo tace.
 
 Chiama il tool save_seo_bando con il payload completo."""
 
@@ -677,8 +957,19 @@ async def _call_anthropic_tool(
     client, model: str, max_tokens: int,
     system: str, user_prompt: str, tool: dict,
     max_retries: int = 3,
+    *,
+    contatori: bilancio.Contatori | None = None,
+    listino: Mapping[str, tuple[float, float]] | None = None,
+    diagnosi: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Anthropic call con tool use forzato + retry exponential."""
+    """Anthropic call con tool use forzato + retry exponential.
+
+    Con `contatori` ogni risposta ricevuta si somma alla spesa (token e $ dal
+    listino), anche quando non contiene il tool: la chiamata e' pagata lo
+    stesso. Senza, nessun conto: e' il caso della pipeline, la cui riga di
+    giro non lo registra oggi. In `diagnosi` finiscono `stop_reason` e, se
+    non torna un payload, il motivo.
+    """
     import anthropic
     for attempt in range(max_retries):
         try:
@@ -690,15 +981,25 @@ async def _call_anthropic_tool(
                 tool_choice={"type": "tool", "name": tool["name"]},
                 messages=[{"role": "user", "content": user_prompt}],
             )
+            if contatori is not None:
+                bilancio.registra_chiamata(
+                    contatori, model, getattr(response, "usage", None), listino or {},
+                )
+            if diagnosi is not None:
+                diagnosi["stop_reason"] = getattr(response, "stop_reason", None)
             for block in response.content:
                 if getattr(block, "type", None) == "tool_use" and getattr(block, "name", "") == tool["name"]:
                     return dict(block.input)
+            _scarta(diagnosi, "risposta senza il tool "
+                              f"(stop_reason={getattr(response, 'stop_reason', None)})")
             return None
         except (anthropic.RateLimitError, anthropic.APIStatusError, anthropic.APIConnectionError) as e:
             status = getattr(e, "status_code", None)
             if isinstance(e, anthropic.APIStatusError) and status and 400 <= status < 500 and status != 429:
                 logger.error("[seo] API status {} non retryabile: {}", status, e)
+                _scarta(diagnosi, f"API {status} non ripetibile")
                 return None
+            _scarta(diagnosi, f"tentativi esauriti: {type(e).__name__}")
             sleep_s = (2 ** attempt) * 2 + random.uniform(0, 1)
             logger.warning(
                 "[seo] retry {}/{} dopo {}: sleep {:.1f}s",
@@ -707,8 +1008,94 @@ async def _call_anthropic_tool(
             await asyncio.sleep(sleep_s)
         except Exception as e:
             logger.exception("[seo] errore inatteso: {}", e)
+            _scarta(diagnosi, f"errore inatteso: {type(e).__name__}")
             return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# Titolo troppo lungo: titolo_breve, poi una richiamata (revisione #25)
+# ---------------------------------------------------------------------------
+
+RISCRIVI_TITOLO_TOOL = {
+    "name": "riscrivi_titolo",
+    "description": "Salva il titolo H1 riscritto, entro 80 caratteri spazi compresi.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"titolo": {"type": "string", "maxLength": TITOLO_MAX}},
+        "required": ["titolo"],
+    },
+}
+
+RISCRIVI_TITOLO_SYSTEM = (
+    "Sei il redattore SEO della scheda di un bando pubblico italiano. Riscrivi SOLO il "
+    "titolo H1. Regole: al massimo 80 caratteri contati, spazi compresi; sentence case; "
+    "comincia con il fatto concreto; NON togliere enti, luoghi o sigle del titolo attuale "
+    "(accorcia le altre parole); NON aggiungere niente che non sia nel titolo attuale o nei "
+    "dati. Chiama il tool riscrivi_titolo una volta."
+)
+
+
+def prompt_riscrivi_titolo(
+    titolo: str, payload: Mapping[str, Any], input_ctx: Mapping[str, Any],
+) -> str:
+    """Il messaggio della richiamata: il motivo esplicito e i soli dati che servono."""
+    return (
+        f"Il titolo ha {len(titolo)} caratteri, il massimo è {TITOLO_MAX}: riscrivilo entro "
+        f"{TITOLO_MAX} caratteri senza perdere enti o luoghi.\n\n"
+        f"Titolo attuale: {titolo}\n"
+        f"Ente erogatore: {payload.get('ente_erogatore') or '(non indicato)'}\n"
+        f"Area geografica: {payload.get('area_geografica') or '(non indicata)'}\n"
+        f"Titolo grezzo della fonte: {input_ctx.get('titolo_raw') or '(vuoto)'}"
+    )
+
+
+async def sistema_titolo(
+    payload: dict[str, Any],
+    bando_id: Any,
+    input_ctx: Mapping[str, Any],
+    *,
+    client: Any,
+    model: str,
+    contatori: bilancio.Contatori | None = None,
+    listino: Mapping[str, tuple[float, float]] | None = None,
+    diagnosi: dict[str, Any] | None = None,
+) -> bool:
+    """Porta il titolo di un NON pubblicato entro 80 caratteri, o dice perche' no.
+
+    1. il `titolo_breve` del payload, se ha 1-80 caratteri;
+    2. altrimenti UNA richiamata al modello per il solo titolo, con il motivo;
+    3. altrimenti False, con il motivo «titolo N caratteri anche dopo la
+       richiamata» in `diagnosi`.
+
+    Mai un taglio meccanico: il titolo si congela alla pubblicazione.
+    """
+    titolo = str(payload.get("titolo") or "").strip()
+    if len(titolo) <= TITOLO_MAX:
+        return True
+    breve = str(payload.get("titolo_breve") or "").strip()
+    if 1 <= len(breve) <= TITOLO_MAX:
+        logger.info("[seo] bando_id={} titolo di {} caratteri: si usa titolo_breve {!r}",
+                    bando_id, len(titolo), breve)
+        payload["titolo"] = breve
+        return True
+    risposta = await _call_anthropic_tool(
+        client, model=model, max_tokens=300, system=RISCRIVI_TITOLO_SYSTEM,
+        user_prompt=prompt_riscrivi_titolo(titolo, payload, input_ctx),
+        tool=RISCRIVI_TITOLO_TOOL, max_retries=1, contatori=contatori, listino=listino,
+    )
+    nuovo = str((risposta or {}).get("titolo") or "").strip()
+    if 1 <= len(nuovo) <= TITOLO_MAX:
+        logger.info("[seo] bando_id={} titolo riscritto dal modello ({} -> {}): {!r}",
+                    bando_id, len(titolo), len(nuovo), nuovo)
+        payload["titolo"] = nuovo
+        return True
+    lunghezza = len(nuovo) if nuovo else len(titolo)
+    logger.warning("[seo] bando_id={} titolo di {} caratteri anche dopo la richiamata",
+                   bando_id, lunghezza)
+    _scarta(diagnosi, f"titolo {lunghezza} caratteri anche dopo la richiamata"
+                      + ("" if nuovo else " (richiamata senza risposta)"))
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -721,12 +1108,22 @@ async def enrich_seo(
     *,
     link_ammessi: Iterable[str] | None = None,
     allegati_ammessi: Iterable[str] | None = None,
+    contatori: bilancio.Contatori | None = None,
+    ripara_lunghezze: bool = False,
+    titolo_congelato: bool = False,
+    descrizione_facoltativa: bool = False,
+    diagnosi: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Esegue 1 LLM call Opus + validation. Ritorna payload validato o None.
 
     `link_ammessi` e `allegati_ammessi` arrivano dal resolver (fonte ufficiale,
     allegati verificati, `bando_link` pubblicabili) e alimentano il gate del
-    punto 10 di `_validate_payload`.
+    punto 10 di `_validate_payload`. `contatori` raccoglie la spesa della
+    chiamata (lo passa `seo-rigenera`; la pipeline no). `ripara_lunghezze`
+    (solo per i bandi non pubblicati) sistema un titolo troppo lungo con
+    `sistema_titolo` e accorcia la descrizione invece di scartare;
+    `titolo_congelato` solo per i pubblicati, il cui titolo non si scrive mai. `diagnosi["motivo"]` dice perche' il
+    risultato e' None.
     """
     bando_id = input_ctx["id"]
     settings = get_settings()
@@ -739,18 +1136,40 @@ async def enrich_seo(
         system=SEO_SYSTEM_PROMPT,
         user_prompt=_build_seo_prompt(input_ctx, markdown),
         tool=SAVE_SEO_BANDO_TOOL,
+        contatori=contatori,
+        listino=getattr(settings, "listino_modelli", None),
+        diagnosi=diagnosi,
     )
     if not raw_payload:
         logger.warning("[seo] bando_id={} LLM call fallita/vuota", bando_id)
+        if diagnosi is not None and not diagnosi.get("motivo"):
+            _scarta(diagnosi, "chiamata senza payload")
         return None
+
+    if ripara_lunghezze and not titolo_congelato:
+        titolo_ok = await sistema_titolo(
+            raw_payload, bando_id, input_ctx, client=client, model=settings.seo_model,
+            contatori=contatori, listino=getattr(settings, "listino_modelli", None),
+            diagnosi=diagnosi,
+        )
+        if not titolo_ok:
+            return None
 
     validated = await _validate_payload(
         raw_payload, bando_id, input_ctx, markdown,
         reachability_check=settings.seo_reachability_check,
         link_ammessi=link_ammessi,
         allegati_ammessi=allegati_ammessi,
+        ripara_lunghezze=ripara_lunghezze,
+        titolo_congelato=titolo_congelato,
+        descrizione_facoltativa=descrizione_facoltativa,
+        diagnosi=diagnosi,
     )
     if not validated:
+        # Un payload troncato dal tetto di token arriva senza qualche campo:
+        # detto cosi', il motivo porta dritto a SEO_MAX_TOKENS.
+        if diagnosi is not None and diagnosi.get("stop_reason") == "max_tokens":
+            diagnosi["motivo"] = f"{diagnosi.get('motivo', '')} (risposta troncata: max_tokens)"
         return None
 
     logger.debug(

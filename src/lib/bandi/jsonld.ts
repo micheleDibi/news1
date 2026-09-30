@@ -54,6 +54,28 @@ function sameAsDa(fonte: FonteUfficiale | null | undefined): string | null {
   return urlPubblicabile(fonte.url) ? (fonte.url as string).trim() : null;
 }
 
+/**
+ * Un JSON già serializzato, reso sicuro dentro `<script type="application/ld+json">`.
+ *
+ * `set:html={JSON.stringify(...)}` non fa escape: un titolo o una descrizione con
+ * `</script>` (testo del modello nato da pagine esterne) chiudeva lo script e
+ * diventava una XSS salvata a DB. Qui `<`, `>`, `&`, U+2028 e U+2029 diventano
+ * `\u003c`, `\u003e`, `\u0026`, `\u2028`, `\u2029`. In un JSON quei caratteri
+ * possono stare solo dentro le stringhe, dove l'escape Unicode è equivalente:
+ * chi legge il JSON-LD ottiene gli stessi dati, byte per byte dopo il parse.
+ */
+export function proteggiJsonLd(json: string): string {
+  return json.replace(
+    /[<>&\u2028\u2029]/g,
+    (carattere) => `\\u${carattere.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/** `JSON.stringify` più `proteggiJsonLd`: il testo da passare a `set:html`. */
+export function serializzaJsonLd(dati: unknown): string {
+  return proteggiJsonLd(JSON.stringify(dati));
+}
+
 function elencoNonVuoto(valori: readonly string[] | null | undefined): string[] | null {
   if (!Array.isArray(valori)) return null;
   const puliti = valori.filter((v) => typeof v === 'string' && v.trim() !== '');

@@ -59,7 +59,7 @@ import functools
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -83,6 +83,7 @@ from app import telemetria as _telemetria  # type: ignore
 from app.settings import GIRI_SCHEDULER  # type: ignore  # noqa: F401 (riesportato)
 from app.settings import get_settings as _get_settings  # type: ignore
 
+from . import lock_orfani as _lock_orfani
 from .indexnow import submit_to_indexnow
 from .logger import logger
 
@@ -111,6 +112,55 @@ MODULO_ASSENTE = "modulo_assente"
 #: una scelta di esercizio: e' il tetto che impedisce alla manutenzione di
 #: rubare la finestra ai bandi nuovi, che senza lo step 5 escono senza fonte.
 RICONTROLLI_PER_GIRO = 60
+
+
+def _valore_rpc(risposta: Any) -> bool:
+    """Il booleano restituito da `lock_rilascia` (true = riga cancellata).
+
+    PostgREST lo incapsula in `.data`, che puo' essere il booleano, una lista o
+    un dizionario `{"lock_rilascia": …}`. Qui conta il valore vero: dire
+    «rilasciato» quando la RPC non ha cancellato niente (lock gia' scaduto e
+    ripreso, proprietario cambiato) farebbe mentire il journal. Pura, senza
+    dipendenze: il test la estrae dal sorgente.
+    """
+    dati = getattr(risposta, "data", risposta)
+    if isinstance(dati, list):
+        dati = dati[0] if dati else False
+    if isinstance(dati, dict):
+        dati = dati.get("lock_rilascia", next(iter(dati.values()), False))
+    return dati is True or (isinstance(dati, str) and dati.lower() == "true")
+
+
+def rilascia_lock_orfani(avvio: datetime | None = None) -> dict[str, Any]:
+    """All'avvio del sender: rilascia i lock dei suoi processi precedenti morti.
+
+    Le regole stanno in `lock_orfani` (contratto di ottobre, §8); qui c'e' solo
+    l'I/O: la lettura di `pipeline_lock` e il rilascio con la RPC
+    `lock_rilascia`, mai con un DELETE. La RPC si chiama direttamente, e non
+    con `blocco.rilascia`, per leggerne il risultato (`_valore_rpc`). Va
+    chiamata prima del giro di boot, quando questo processo non ha ancora preso
+    nessun lock. Non solleva: un errore diventa un avviso e il sender parte
+    comunque.
+    """
+    try:
+        from app import db as _db  # type: ignore
+    except Exception as e:                                # pragma: no cover - difesa
+        logger.warning("[bandi_pipeline] lock orfani non controllati: {}", e)
+        return {"letti": 0, "rilasciati": [], "falliti": [], "errore": str(e)}
+
+    def _rilascia(nome: str, proprietario: str) -> bool:
+        risposta = _db.get_supabase().rpc(
+            _blocco.RPC_RILASCIA, {"p_nome": nome, "p_proprietario": proprietario},
+        ).execute()
+        return _valore_rpc(risposta)
+
+    return _lock_orfani.rilascia_orfani(
+        leggi=_db.select_lock,
+        rilascia=_rilascia,
+        pid_corrente=os.getpid(),
+        avvio=avvio or datetime.now(timezone.utc),
+        registro=logger,
+    )
 
 
 def _passo_opzionale(modulo: str, funzione: str = "run") -> tuple[Callable | None, str]:
@@ -392,16 +442,20 @@ def _rigenerazione_di_produzione() -> Callable | None:
     `scraper_bandi/app/__main__.py`: i chiamanti del monitor sono due, e un
     modulo condiviso per tre righe legherebbe la pipeline alla CLI.
 
-    Si costruisce solo con `MONITOR_MODALITA=attivo`. In ombra il monitor non
-    lo chiamerebbe comunque (il gate e' dentro `controlla`), ma costruirlo
-    lascerebbe raggiungibile `scrivi_su_db` da un giro che ha promesso di non
-    scrivere. Senza adattatore uno slug le cui date sono cambiate **non**
-    finisce in `slug_modificati`: e' la scelta del monitor, ed e' quella
-    giusta — notificare a Google una pagina che dice ancora la data vecchia e'
-    peggio che tacere.
+    Si costruisce con `MONITOR_MODALITA=attivo` **e** con `MONITOR_TIPI_ATTIVI`
+    non vuota: in ombra, una proroga di un tipo attivo cambia `data_scadenza`,
+    e senza adattatore la prosa resterebbe con la data vecchia (revisione
+    avversaria del 30/09/2026, P1). In ombra senza tipi attivi il monitor non
+    applica niente, e costruirlo lascerebbe raggiungibile `scrivi_su_db` da un
+    giro che ha promesso di non scrivere. Senza adattatore uno slug le cui date
+    sono cambiate **non** finisce in `slug_modificati`: e' la scelta del
+    monitor, ed e' quella giusta — notificare a Google una pagina che dice
+    ancora la data vecchia e' peggio che tacere.
     """
     try:
-        if _get_settings().monitor_modalita != "attivo":
+        impostazioni = _get_settings()
+        if (impostazioni.monitor_modalita != "attivo"
+                and not getattr(impostazioni, "monitor_tipi_attivi", ())):
             return None
         from app import rigenera as _rigenera  # type: ignore
         return functools.partial(

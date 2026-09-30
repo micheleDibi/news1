@@ -552,5 +552,33 @@ class TestIngressoFermo(unittest.TestCase):
         self.assertTrue(any("scraped" in v for v in campi["non_misurati"]))
 
 
+class TestSaluteTipiAttivi(unittest.TestCase):
+    """`salute` e `MONITOR_TIPI_ATTIVI` (contratto di ottobre 2026, §3)."""
+
+    def test_valori_ignorati_sono_un_allarme(self):
+        esito = telemetria.salute(telemetria.Stato(
+            tipi_attivi=("faq",), tipi_attivi_ignorati=("profroga",)))
+        self.assertEqual(esito.exit_code, 1)
+        self.assertTrue(any("MONITOR_TIPI_ATTIVI" in a and "profroga" in a
+                            for a in esito.allarmi))
+
+    def test_i_tipi_attivi_si_leggono_nella_salute(self):
+        esito = telemetria.salute(telemetria.Stato(tipi_attivi=("faq", "proroga")))
+        self.assertEqual(esito.allarmi, ())
+        self.assertEqual(esito.tipi_attivi, ("faq", "proroga"))
+        self.assertEqual(esito.come_dizionario()["tipi_attivi"], ["faq", "proroga"])
+        self.assertEqual(telemetria.salute(telemetria.Stato()).come_dizionario()["tipi_attivi"],
+                         [])
+
+    def test_indexnow_serve_anche_con_i_tipi_attivi(self):
+        # In ombra con un tipo attivo il monitor pubblica: senza la chiave le
+        # pagine cambiate non arrivano ai motori.
+        esito = telemetria.salute(telemetria.Stato(
+            tipi_attivi=("faq",), indexnow_configurata=False))
+        self.assertTrue(any("INDEXNOW_API_KEY" in a for a in esito.allarmi))
+        self.assertEqual(
+            telemetria.salute(telemetria.Stato(indexnow_configurata=False)).allarmi, ())
+
+
 if __name__ == "__main__":
     unittest.main()

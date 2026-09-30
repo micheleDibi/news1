@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import socket
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Iterable
@@ -112,6 +113,9 @@ class Risposta:
     #: vuota): la risposta e' quella di httpx, che non basta. Chi deve decidere
     #: se una pagina «non c'e'» o «non si e' potuta leggere oggi» guarda qui.
     ripiego_fallito: bool = False
+    #: L'host non risolve (errore DNS): la pagina non e' stata letta, e non
+    #: e' una notizia sul bando. Chi tiene i tentativi non ne consuma uno.
+    host_irraggiungibile: bool = False
 
     @property
     def vuota(self) -> bool:
@@ -133,6 +137,8 @@ class Contatori:
     crediti_firecrawl: int = 0
     vietati: int = 0
     sottopagine_saltate: int = 0
+    #: Richieste non fatte perche' l'host non risolveva gia' in questo giro.
+    saltati_dns: int = 0
 
     def come_dizionario(self) -> dict[str, int]:
         return {
@@ -144,6 +150,7 @@ class Contatori:
             "crediti_firecrawl": self.crediti_firecrawl,
             "vietati": self.vietati,
             "sottopagine_saltate": self.sottopagine_saltate,
+            "saltati_dns": self.saltati_dns,
         }
 
 
@@ -154,6 +161,73 @@ def host_di(url: str) -> str:
         netloc = netloc.rsplit("@", 1)[1]
     host = netloc.split(":", 1)[0]
     return host[4:] if host.startswith("www.") else host
+
+
+#: Gli errori di risoluzione che, dopo i ritentativi, fanno saltare l'host per
+#: il resto del giro. I valori cambiano col sistema (EAI_NONAME e' -2 su Linux
+#: e 8 su macOS), per questo si leggono da `socket` e non si scrivono.
+#: `EAI_AGAIN` c'e' di proposito: un DNS di ente rotto (nameserver sbagliati,
+#: SERVFAIL, il caso della Basilicata del 28/09/2026) risponde cosi', e
+#: escluderlo annullerebbe lo scopo del salto. Il rischio opposto — il
+#: resolver del server giu', che fa sembrare morti tutti — lo copre l'allarme
+#: `SOGLIA_RESOLVER_LOCALE` (decisione del lead del 30/09/2026).
+ERRNO_DNS_MORTO: frozenset[int] = frozenset(
+    valore for valore in (getattr(socket, "EAI_NONAME", None),
+                          getattr(socket, "EAI_NODATA", None),
+                          getattr(socket, "EAI_AGAIN", None))
+    if valore is not None
+)
+
+#: Tanti host distinti irraggiungibili nello stesso giro non sono tanti enti
+#: con il DNS rotto: e' piu' probabile che sia giu' il resolver del server.
+#: Da qui in su scatta l'[ALLARME] «resolver locale?».
+SOGLIA_RESOLVER_LOCALE = 5
+
+
+def errore_dns(errore: BaseException | None) -> bool:
+    """Vero se nella catena dell'eccezione c'e' una `socket.gaierror` con uno
+    dei codici di `ERRNO_DNS_MORTO` (nome inesistente, nessun dato, DNS
+    dell'ente che non risponde).
+
+    httpx la avvolge due volte (`httpx.ConnectError` ← `httpcore.ConnectError`
+    ← `gaierror`), e il messaggio cambia col sistema: su Linux «Name or service
+    not known», su macOS «nodename nor servname provided». Il codice no. Un
+    timeout, un 5xx o una connessione rifiutata non sono un host morto.
+    """
+    visti: set[int] = set()
+    corrente = errore
+    while corrente is not None and id(corrente) not in visti:
+        if isinstance(corrente, socket.gaierror):
+            return corrente.errno in ERRNO_DNS_MORTO
+        visti.add(id(corrente))
+        corrente = corrente.__cause__ or corrente.__context__
+    return False
+
+
+def nome_host(url: str) -> str:
+    """Il nome risolto dal DNS: minuscolo, senza porta, **con** il `www.`.
+
+    E' la chiave degli host irraggiungibili. `host_di` toglie il `www.` perche'
+    serve alla blocklist; qui no: `ente.it` e `www.ente.it` hanno record DNS
+    distinti, e un dominio nudo morto non deve spegnere il `www` vivo.
+    """
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:                                     # pragma: no cover - URL malformato
+        return ""
+
+
+def _host_fallito(errore: BaseException, url: str) -> str:
+    """Il nome che ha fallito la risoluzione: quello della richiesta che httpx
+    stava mandando (dopo un redirect non e' l'URL chiesto). Se l'eccezione non
+    porta la richiesta, l'host dell'URL chiesto."""
+    try:
+        richiesta = getattr(errore, "request", None)
+        if richiesta is not None:
+            return str(richiesta.url.host or "").lower() or nome_host(url)
+    except Exception:                                      # `request` non impostata
+        pass
+    return nome_host(url)
 
 
 def in_blocklist(url_o_host: str, blocklist: Iterable[str] = AGGREGATORI) -> bool:
@@ -236,6 +310,15 @@ class Scarico:
         self._client: httpx.AsyncClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._cache: dict[str, tuple[float, Risposta]] = {}
+        #: Host che non risolvono (DNS), per il resto del giro. Il 28/09/2026
+        #: il DNS di regione.basilicata.it era rotto: ogni URL pagava tre
+        #: tentativi, e un solo bando del resolver ha impiegato 247 secondi.
+        self._host_irraggiungibili: set[str] = set()
+
+    @property
+    def host_irraggiungibili(self) -> tuple[str, ...]:
+        """Gli host segnati come irraggiungibili in questo giro, ordinati."""
+        return tuple(sorted(self._host_irraggiungibili))
 
     # --- ciclo di vita -----------------------------------------------------
 
@@ -289,9 +372,18 @@ class Scarico:
     def azzera_contatori(self) -> None:
         self.contatori = Contatori()
 
-    def nuovo_giro(self) -> None:
+    def nuovo_giro(self, *, host_morti: bool = True) -> None:
+        """Cache e contatori ripartono da zero; con `host_morti` anche gli host
+        irraggiungibili (un DNS rotto sei ore fa puo' essere stato riparato).
+
+        `host_morti=False` e' per il monitor, che riparte a meta' pipeline: gli
+        host trovati morti da resolver e ricontrolli nello stesso giro restano
+        tali (contratto di ottobre 2026, §5: «per il resto del giro»).
+        """
         self.svuota()
         self.azzera_contatori()
+        if host_morti:
+            self._host_irraggiungibili.clear()
 
     async def chiudi(self) -> None:
         """Chiude il client del giro. Va chiamata nel `finally` del giro, cosi'
@@ -335,6 +427,8 @@ class Scarico:
         Scaricare la scheda di un bando su un aggregatore resta lecito.
         `etag`/`modificata_dopo` fanno la GET condizionale: un 304 costa zero e
         significa «niente e' cambiato».
+        Un host che in questo giro non ha risolto il DNS non si interroga piu':
+        la risposta torna subito, senza stato e con `host_irraggiungibile`.
         """
         # Una blocklist iniettata nel costruttore vale sempre (e' una scelta
         # esplicita del chiamante e sostituisce `AGGREGATORI`); altrimenti la
@@ -349,6 +443,10 @@ class Scarico:
             if in_cache is not None:
                 self.contatori.da_cache += 1
                 return in_cache
+
+        if nome_host(url) in self._host_irraggiungibili:
+            self.contatori.saltati_dns += 1
+            return Risposta(url=url, stato=None, host_irraggiungibile=True)
 
         risposta = await self._via_httpx(url, etag=etag, modificata_dopo=modificata_dopo)
 
@@ -435,11 +533,28 @@ class Scarico:
                 stato, corpo, testata, troncata = await self._una_get(url, intestazioni)
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 ultimo_errore = e
+                # L'host che ha fallito il DNS non e' per forza quello chiesto:
+                # un redirect puo' portare su un dominio morto. Si segna quello
+                # fallito, e solo se e' quello chiesto la richiesta e' «host
+                # irraggiungibile»; altrimenti e' un errore di rete ordinario.
+                fallito = _host_fallito(e, url) if errore_dns(e) else None
+                dns = fallito is not None and fallito == nome_host(url)
+                if dns:
+                    # Un nome che non risolve non manda nessuna richiesta:
+                    # non e' un fetch per il tetto del giro (contratto §5).
+                    self.contatori.fetch -= 1
                 if tentativo < self.tentativi:
                     await self._dormi(self._attesa(tentativo))
                     continue
-                self.contatori.errori += 1
                 logger.warning("[scarico] {} fallito dopo {} tentativi: {}", url, tentativo + 1, e)
+                if fallito is not None:
+                    # Dopo tutti i ritentativi, non al primo: un singolo
+                    # intoppo del resolver non deve spegnere un host.
+                    self._segna_irraggiungibile(fallito)
+                if dns:
+                    # Non e' nemmeno un errore del giro: l'host si salta.
+                    return Risposta(url=url, stato=None, host_irraggiungibile=True)
+                self.contatori.errori += 1
                 return Risposta(url=url, stato=None)
 
             if stato == 304:
@@ -496,6 +611,26 @@ class Scarico:
             return risposta.status_code, grezzo.decode(codifica, "replace"), testate, troncata
         finally:
             await risposta.aclose()
+
+    def _segna_irraggiungibile(self, host: str) -> None:
+        """`host` e' il nome che non ha risolto, esatto (`nome_host`)."""
+        if not host or host in self._host_irraggiungibili:
+            return
+        self._host_irraggiungibili.add(host)
+        logger.warning(
+            "[scarico] {} non risolve (DNS): i suoi URL si saltano per il resto del giro",
+            host)
+        if len(self._host_irraggiungibili) == SOGLIA_RESOLVER_LOCALE:
+            # Una volta per giro, alla soglia: poi il numero sta nella riga.
+            logger.warning(
+                "[ALLARME] [scarico] resolver locale? {} host irraggiungibili (DNS) "
+                "in questo giro: {}", len(self._host_irraggiungibili),
+                ", ".join(self.host_irraggiungibili))
+
+    @property
+    def resolver_sospetto(self) -> bool:
+        """Almeno `SOGLIA_RESOLVER_LOCALE` host distinti morti in questo giro."""
+        return len(self._host_irraggiungibili) >= SOGLIA_RESOLVER_LOCALE
 
     def _attesa(self, tentativo: int) -> float:
         """Backoff esponenziale: 0,5 s, 1 s, 2 s..."""
@@ -583,9 +718,10 @@ def imposta_scarico(scarico: Scarico | None) -> None:
     _SCARICO = scarico
 
 
-def svuota() -> None:
-    """Inizio giro: cache vuota e contatori azzerati."""
-    scarico_corrente().nuovo_giro()
+def svuota(*, host_morti: bool = True) -> None:
+    """Inizio giro: cache vuota e contatori azzerati. `host_morti=False`
+    lascia gli host irraggiungibili gia' trovati (il monitor a meta' giro)."""
+    scarico_corrente().nuovo_giro(host_morti=host_morti)
 
 
 def contatori() -> Contatori:

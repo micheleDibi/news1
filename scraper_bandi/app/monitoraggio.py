@@ -32,13 +32,15 @@ rete e senza DB.
 from __future__ import annotations
 
 import csv
+import functools
 import json
 import random
 import sys
 import time
 import traceback
 import zlib
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from datetime import date as date_cls, datetime, timedelta
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
@@ -143,6 +145,10 @@ BACKOFF_MASSIMO_ORE = 24 * 7
 FALLIMENTI_PER_BLOCCO = 5
 
 MAX_PAGINE_COLLEGATE = 2
+
+#: Quanti host irraggiungibili la riga del giro elenca per nome (come nel
+#: resolver): oltre si legge solo il numero.
+MAX_HOST_IRRAGGIUNGIBILI_ELENCO = 20
 
 STATO_FONTE_TROVATA = "trovata"
 
@@ -602,6 +608,10 @@ class FonteDati:
     #: Allarmi raccolti durante la selezione (§6.2): finiscono nel riepilogo e
     #: quindi in `pipeline_run`, non solo in una riga di log che nessuno rilegge.
     allarmi: list[str] = field(default_factory=list)
+    #: Le tre scritture dell'attivazione per tipo, nell'ordine in cui avvengono.
+    registrati_rpc: list[dict[str, Any]] = field(default_factory=list)
+    applicati: list[Any] = field(default_factory=list)
+    resi_leggibili: list[tuple[Any, bool]] = field(default_factory=list)
 
     def disponibile(self) -> tuple[bool, str]:
         return True, ""
@@ -631,6 +641,38 @@ class FonteDati:
         distinguere «il database ha rifiutato» da «c'era gia'»."""
         from . import db
         return db.EVENTO_SCRITTO if self.registra_evento(riga) else db.EVENTO_RIFIUTATO
+
+    # --- attivazione per tipo (MONITOR_TIPI_ATTIVI, contratto §3) -----------
+
+    def registra_evento_rpc(self, riga: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Registra senza applicare: `{id, nuovo}`, None se la RPC non c'e'."""
+        self.registrati_rpc.append(dict(riga))
+        return {"id": len(self.registrati_rpc), "nuovo": True}
+
+    def evento_verificato(self, evento_id: Any, riga: Mapping[str, Any]) -> bool | None:
+        """`verificato` come l'ha calcolato il DB alla registrazione; None se
+        non si puo' leggere. Qui: vero, se la riga lo era."""
+        return bool(riga.get("verificato", True))
+
+    def applica_evento(self, evento_id: Any) -> str:
+        """`bando_applica_evento`: uno degli esiti di `db.applica_evento_esito`."""
+        from . import db
+        self.applicati.append(evento_id)
+        return db.ESITO_APPLICATO
+
+    def rendi_leggibile(self, evento_id: Any, *, in_aggiornamenti: bool = True) -> bool:
+        """La seconda scrittura: `leggibile` fa scattare il cursore (RIPRESA §5.8)."""
+        self.resi_leggibili.append((evento_id, bool(in_aggiornamenti)))
+        return True
+
+    def testi_del_bando(self, bando_id: Any) -> dict[str, Any] | None:
+        """`contenuto` e `descrizione_breve` del bando, per la rigenerazione
+        della prosa; None se non si leggono. Qui: quelli della riga in `righe`."""
+        for riga in self.righe:
+            if riga.get("id") == bando_id and "contenuto" in riga:
+                return {"contenuto": riga.get("contenuto"),
+                        "descrizione_breve": riga.get("descrizione_breve")}
+        return None
 
 
 class FonteDatiSupabase(FonteDati):
@@ -793,6 +835,61 @@ class FonteDatiSupabase(FonteDati):
             logger.warning("[monitor] evento {} non registrato: {}", riga.get("tipo"), e)
             return db.EVENTO_RIFIUTATO
 
+    # Le tre scritture dell'attivazione per tipo: ridefinite anche queste, per
+    # la stessa ragione della docstring.
+
+    def registra_evento_rpc(self, riga: Mapping[str, Any]) -> dict[str, Any] | None:
+        client = self._client
+        rpc = (lambda nome, parametri: client.rpc(nome, parametri).execute()) if client else None
+        return eventi_mod.registra_via_rpc(riga, rpc=rpc, controllo=self._adattatore())
+
+    def evento_verificato(self, evento_id: Any, riga: Mapping[str, Any]) -> bool | None:
+        # La RPC di registrazione restituisce {id, nuovo, applicato}, non
+        # `verificato`: si rilegge la riga appena scritta, per id.
+        from . import db
+        try:
+            righe = db.select_eventi(
+                ids=(evento_id,), colonne=("id", "verificato"), client=self._client,
+                strumento=self._adattatore())
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[monitor] verificato dell'evento {} illeggibile: {}", evento_id, e)
+            return None
+        for letta in righe:
+            if letta.get("id") == evento_id:
+                return bool(letta.get("verificato"))
+        return None
+
+    def applica_evento(self, evento_id: Any) -> str:
+        from . import db
+        return db.applica_evento_esito(
+            evento_id, client=self._client, strumento=self._adattatore())
+
+    def rendi_leggibile(self, evento_id: Any, *, in_aggiornamenti: bool = True) -> bool:
+        from . import db
+        try:
+            esito = db.rendi_evento_leggibile(
+                evento_id, in_aggiornamenti=in_aggiornamenti, strumento=self._adattatore())
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[monitor] evento {} non reso leggibile: {}", evento_id, e)
+            return False
+        return bool(esito.get("scritto"))
+
+    def testi_del_bando(self, bando_id: Any) -> dict[str, Any] | None:
+        # La stessa lettura del lotto L7 (`select_bandi_pubblicati_contenuto`),
+        # per un solo id.
+        from . import db
+        try:
+            righe = db.select_bandi_pubblicati_contenuto(
+                bando_ids=[bando_id], client=self._client, strumento=self._adattatore())
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[monitor] contenuto del bando {} illeggibile: {}", bando_id, e)
+            return None
+        for riga in righe:
+            if riga.get("id") == bando_id:
+                return {"contenuto": riga.get("contenuto"),
+                        "descrizione_breve": riga.get("descrizione_breve")}
+        return None
+
 
 def da_db() -> FonteDati:
     """La fonte dati di produzione."""
@@ -815,6 +912,13 @@ class EsitoControllo:
     #: giu'). Non e' una classificazione senza eventi: il controllo non salva
     #: niente, cosi' la modifica della pagina si ripresenta al giro dopo.
     classificazione_fallita: bool = False
+    #: La riga era di una pulizia vecchia (`impronte.VERSIONE_PULIZIA`):
+    #: impronte, `testo_norm` e link si sono riscritti senza diff ne'
+    #: classificazione. E' il contatore `riallineate` del giro.
+    riallineato: bool = False
+    #: L'host della fonte non risolveva (DNS): controllo saltato, niente
+    #: colonne. Finisce nell'elenco `host_irraggiungibili_elenco` del giro.
+    host_irraggiungibile: str | None = None
     eventi: tuple[dict[str, Any], ...] = ()
     respinti: tuple[dict[str, Any], ...] = ()
     #: Quanti INSERT di evento il database ha rifiutato. Non e' una decorazione:
@@ -829,6 +933,25 @@ class EsitoControllo:
     #: primi cambiano la pagina, e quindi possono andare a IndexNow.
     eventi_applicati: int = 0
     eventi_non_applicati: int = 0
+    #: Il tipo di ogni evento applicato (entrambi i percorsi): diventa
+    #: `applicati_per_tipo` nella riga del giro.
+    tipi_applicati: list[str] = field(default_factory=list)
+    #: I tipi degli eventi non applicati e di quelli invisibili: servono al
+    #: comando di ripresa scritto negli allarmi (`--tipo`).
+    tipi_non_applicati: list[str] = field(default_factory=list)
+    #: Gli id degli stessi eventi (None se la registrazione non l'ha dato): il
+    #: comando di ripresa li riprende uno per uno (`applica-eventi --ids`).
+    ids_non_applicati: list[Any] = field(default_factory=list)
+    #: Attivazione per tipo: eventi applicati alle colonne ma non resi
+    #: leggibili (seconda scrittura fallita). La pagina e' cambiata, il box no:
+    #: li recupera `applica-eventi --attivo`.
+    eventi_invisibili: int = 0
+    #: Attivazione per tipo: eventi ammessi dai gate ma registrati dal DB come
+    #: non verificati (dominio fuori da `dominio_ufficiale`). Restano in ombra.
+    eventi_non_verificati: int = 0
+    #: Attivazione per tipo: `verificato` non si e' potuto rileggere. Resta in
+    #: ombra come il non verificato, ma e' un errore e si conta a parte.
+    errori_verifica: int = 0
     slug: str | None = None
     prossimo: datetime | None = None
     #: Le colonne di **`bando_controllo`**: sono quelle che `_salva` scrive.
@@ -849,19 +972,24 @@ class EsitoControllo:
     # La differenza fra le due decide se lo slug va a IndexNow.
     da_rigenerare: bool = False
     rigenerazioni: tuple[dict[str, Any], ...] = ()
+    #: Come `da_rigenerare`, ma solo per le date davvero APPLICATE (in attivo,
+    #: o di un tipo attivo). In ombra `da_rigenerare` dice anche le date che si
+    #: scriverebbero, per il report; IndexNow guarda questa.
+    rigenerazione_dovuta: bool = False
 
     @property
     def rigenerato(self) -> bool:
-        """Vero se almeno una rigenerazione e' arrivata in fondo.
+        """Vero se la prosa dice davvero le date applicate: ogni rigenerazione
+        ha scritto, oppure ha trovato il testo gia' in linea.
 
-        «In fondo» comprende il ripiego sul box templato (`via="box"`): §6.2
-        lo considera un esito legittimo, non un fallimento — il contenuto
-        resta vecchio ma coerente, e il box dichiara la data nuova.
+        Il ripiego sul box templato (`via="box"`, per contenuto assente o gate
+        fallito) NON conta: la colonna e il box dicono la data nuova, la prosa
+        la vecchia. Fino al 30/09/2026 contava come riuscito, e la riga del
+        monitor senza `contenuto` lo produceva sempre (revisione avversaria,
+        P1): nessun allarme, e lo slug andava a IndexNow.
         """
-        return any(
-            bool(r.get("scritto")) or str(r.get("via") or "") == "box"
-            for r in self.rigenerazioni
-        )
+        return bool(self.rigenerazioni) and all(
+            _rigenerazione_riuscita(r) for r in self.rigenerazioni)
 
     def come_dizionario(self) -> dict[str, Any]:
         return {
@@ -897,6 +1025,7 @@ async def controlla(
     modalita: str = eventi_mod.MODALITA_OMBRA,
     scenario: str = "bilanciato",
     stati_estesi: bool = False,
+    tipi_attivi: Iterable[str] = (),
     tabella_domini: Any = None,
     adesso: datetime | None = None,
     casuale: Callable[[], float] | None = None,
@@ -905,6 +1034,10 @@ async def controlla(
     """Un controllo completo su un bando. Non solleva mai.
 
     L'ordine dei passi e' l'ordine dei costi: prima cio' che e' gratis.
+
+    `tipi_attivi` (`MONITOR_TIPI_ATTIVI`) vale solo in ombra: gli eventi di
+    quei tipi, ammessi dai gate e nati in questo controllo, si applicano e si
+    rendono leggibili (`_attiva_per_tipo`); gli altri restano in ombra.
 
     `dry_run=True` legge tutto e **non scrive niente**: ne' `bando_controllo`
     ne' gli eventi interni. E' cio' che il vincolo del committente chiede a
@@ -923,19 +1056,32 @@ async def controlla(
         esito.motivo = "nessuna fonte ufficiale"
         return esito
 
+    # Una riga salvata con una pulizia vecchia non si confronta: il «prima» e'
+    # stato calcolato da un'altra `pulisci`, e il diff farebbe sembrare cambiata
+    # ogni pagina (dal 30/09/2026 le 164 pagine cieche, tutte insieme). Si
+    # riallinea, dentro il controllo normale: pagina scaricata per intero e
+    # colonne riscritte senza diff (contratto di ottobre 2026, §4). La prima
+    # lettura (nessun `testo_norm`) resta com'e'.
+    testo_prima = testo_da_colonna(riga.get("testo_norm"))
+    stantia = riga_stantia(riga)
+
     # 0. nessun classificatore, nessun controllo. La verifica sta PRIMA del
     #    fetch di proposito: un giro senza modello non deve pagare una GET per
     #    riga (e, sugli host `richiede_js`, un credito Firecrawl) per poi
     #    buttare via la pagina. E non si scrive nemmeno la baseline: avanzare
     #    l'impronta qui perderebbe per sempre il cambiamento appena visto.
-    if classifica is None:
+    #    Una riga stantia invece passa: il riallineamento non chiama il modello
+    #    (revisione del 30/09/2026).
+    if classifica is None and not stantia:
         esito.esito = "saltato"
         esito.motivo = "nessun classificatore disponibile"
         return esito
 
     # 1. segnale macchina per host: 0 crediti, 0 LLM. `False` significa «la
-    #    fonte dichiara che non e' cambiato niente»: si smette qui.
-    if segnale_macchina is not None:
+    #    fonte dichiara che non e' cambiato niente»: si smette qui. Non su una
+    #    riga stantia: rimanderebbe il riallineamento al primo cambiamento
+    #    vero, cioe' proprio a quello che il riallineamento non vede.
+    if segnale_macchina is not None and not stantia:
         try:
             cambiato = await segnale_macchina(riga)
         except Exception as e:
@@ -965,24 +1111,44 @@ async def controlla(
             for interno in interni:
                 scrittore.registra_evento(interno)
 
-    # 2. GET condizionale: un 304 costa zero e chiude il controllo.
+    # 2. GET condizionale: un 304 costa zero e chiude il controllo. Su una riga
+    #    stantia la GET e' piena, per lo stesso motivo del segnale macchina.
     try:
         risposta = await scarica(
             url,
             principale=True,
-            etag=riga.get("etag"),
-            modificata_dopo=riga.get("last_modified"),
+            etag=None if stantia else riga.get("etag"),
+            modificata_dopo=None if stantia else riga.get("last_modified"),
         )
     except Exception as e:
         return _errore(riga, esito, str(e), momento, scrittore, modalita)
 
     esito.fetch = 1
+    if getattr(risposta, "host_irraggiungibile", False):
+        # DNS rotto: la pagina non si e' letta, e non e' colpa della pagina.
+        # Niente `controlli_falliti`, che dopo cinque giri rimanderebbero la
+        # fonte al resolver. L'unica colonna e' `prossimo_controllo_at` =
+        # domani, come nel resolver: senza, la riga resterebbe in testa alla
+        # coda a ogni giro. Non conta nel tetto dei fetch: lo scarico non
+        # conta ne' le richieste saltate ne' i tentativi finiti per DNS, e qui
+        # `fetch=0` vale per lo scarico iniettato (contratto di ottobre 2026,
+        # §5; revisione #23).
+        esito.esito = "saltato"
+        esito.motivo = "host irraggiungibile (DNS)"
+        esito.host_irraggiungibile = _host_senza_www(url)
+        esito.fetch = 0
+        esito.prossimo = _domani(momento)
+        esito.colonne = {"prossimo_controllo_at": esito.prossimo.isoformat()}
+        _salva(scrittore, esito)
+        return esito
     stato_http = getattr(risposta, "stato", None)
     if stato_http == 304:
         esito.esito = "304"
         esito.prossimo = prossimo_controllo(riga, scenario=scenario, adesso=momento, casuale=casuale)
         # Niente corpo, quindi niente `testo_norm`: si rinfrescano solo le
-        # testate, che un 304 puo' comunque aggiornare.
+        # testate, che un 304 puo' comunque aggiornare. Una riga stantia (il
+        # server ha risposto 304 anche senza etag) resta della versione vecchia
+        # e si riallinea al controllo dopo.
         esito.colonne = _colonne_invariato(
             riga, esito.prossimo, momento, risposta=risposta)
         _salva(scrittore, esito)
@@ -1002,7 +1168,30 @@ async def controlla(
     # I link di oggi sono il «prima» del giro dopo: il testo salvato e' testo
     # semplice e non li contiene.
     sezioni_dopo[impronte.CHIAVE_LINK] = list(link_dopo)
-    testo_prima = testo_da_colonna(riga.get("testo_norm"))
+    sezioni_dopo[impronte.CHIAVE_VERSIONE] = impronte.VERSIONE_PULIZIA
+    if stantia and not testo_dopo.strip():
+        # Senza testo `comprimi_testo` non scrive `testo_norm`: si salverebbero
+        # impronta e versione nuove con il «prima» della v1, e il primo
+        # cambiamento vero produrrebbe il diff fra due pulizie (revisione
+        # avversaria del 30/09/2026). La riga resta stantia e riprova dopo.
+        esito.esito = "invariato"
+        esito.motivo = "riallineamento rinviato: testo normalizzato vuoto"
+        esito.prossimo = prossimo_controllo(riga, scenario=scenario, adesso=momento, casuale=casuale)
+        esito.colonne = _colonne_invariato(riga, esito.prossimo, momento)
+        _salva(scrittore, esito)
+        return esito
+    if stantia:
+        # Il prezzo accettato: un cambiamento vero avvenuto fra l'ultimo
+        # controllo e questo non si vede. Succede una volta per pagina.
+        esito.esito = "invariato"
+        esito.motivo = f"riallineamento alla pulizia v{impronte.VERSIONE_PULIZIA}"
+        esito.riallineato = True
+        esito.prossimo = prossimo_controllo(riga, scenario=scenario, adesso=momento, casuale=casuale)
+        esito.colonne = _colonne_invariato(
+            riga, esito.prossimo, momento, impronta=impronta_nuova,
+            risposta=risposta, testo=testo_dopo, sezioni=sezioni_dopo)
+        _salva(scrittore, esito)
+        return esito
     if impronta_nuova == riga.get("impronta_contenuto") and testo_prima is not None:
         esito.esito = "invariato"
         esito.prossimo = prossimo_controllo(riga, scenario=scenario, adesso=momento, casuale=casuale)
@@ -1015,8 +1204,16 @@ async def controlla(
     # Testo con testo e link con link. Fino al 29/09/2026 qui si confrontava il
     # `testo_norm` salvato con l'HTML nuovo: la pagina intera risultava nuova a
     # ogni cambio d'impronta, e tutti i link «comparsi».
+    # I link salvati con un'altra pulizia non sono un «prima»: una pagina cieca
+    # con `testo_norm` NULL (quindi non stantia) aveva `__link__` della v1, e
+    # tutti i link che la v2 ora vede risulterebbero «comparsi», cioe' falsi
+    # `nuovo_allegato` (revisione avversaria del 30/09/2026).
+    link_prima = (
+        _link_salvati(riga)
+        if impronte.versione_pulizia(riga.get("impronte_sezioni")) == impronte.VERSIONE_PULIZIA
+        else None)
     diff = impronte.diff_testi(
-        testo_prima, testo_dopo, link_prima=_link_salvati(riga), link_dopo=link_dopo,
+        testo_prima, testo_dopo, link_prima=link_prima, link_dopo=link_dopo,
         oggi=momento.date())
     # Decide `rumore`, non la sola lista di parole: una scadenza spostata («entro
     # il 5 ottobre» → «entro il 30 ottobre») non contiene «proroga» ma non e'
@@ -1127,24 +1324,54 @@ async def controlla(
     respinti: list[dict[str, Any]] = []
     colonne: dict[str, Any] = {}
     date_cambiate: list[tuple[dict[str, Any], str, date_cls | None, date_cls]] = []
+    # Le sole date APPLICATE: sono quelle che la prosa deve ripetere. In attivo
+    # coincidono con `date_cambiate`; in ombra ci sono solo i tipi attivi.
+    date_applicate: list[tuple[dict[str, Any], str, date_cls | None, date_cls]] = []
+    tipi_da_attivare = (
+        frozenset() if ctx.modalita == eventi_mod.MODALITA_ATTIVO or scrittore is None
+        else frozenset(tipi_attivi))
     for proposta in ordina_proposte(proposte):
         applicazione = eventi_mod.applica(proposta, ctx)
-        voce = applicazione.come_dizionario()
         if applicazione.giudizio and applicazione.giudizio.ammesso:
-            ammessi.append(voce)
-            attivo = ctx.modalita == eventi_mod.MODALITA_ATTIVO
+            tipo = str(applicazione.riga.get("tipo") or proposta.tipo)
+            per_tipo = tipo in tipi_da_attivare
+            stato_attivazione = ""
+            if per_tipo:
+                applicazione, stato_attivazione = _attiva_per_tipo(
+                    scrittore, applicazione,
+                    proposto=eventi_mod.stato_solo_proposto(proposta, ctx))
+                if stato_attivazione == ATTIVAZIONE_INVISIBILE:
+                    esito.eventi_invisibili += 1
+                    esito.tipi_non_applicati.append(tipo)
+                    esito.ids_non_applicati.append(applicazione.riga.get("id"))
+                elif stato_attivazione == ATTIVAZIONE_NON_VERIFICATO:
+                    esito.eventi_non_verificati += 1
+                elif stato_attivazione == ATTIVAZIONE_VERIFICA_ILLEGGIBILE:
+                    esito.errori_verifica += 1
+            ammessi.append(applicazione.come_dizionario())
+            attivo = ctx.modalita == eventi_mod.MODALITA_ATTIVO or per_tipo
             # In attivo contano solo le colonne che la RPC ha scritto davvero:
             # con la RPC fallita, o l'evento registrato ma non applicato, la
             # prosa rigenerata direbbe una data che la colonna non ha. In ombra
             # restano le colonne «che si scriverebbero», per il report.
             colonne_evento = applicazione.colonne if (applicazione.applicato or not attivo) else {}
-            if attivo:
+            # Un evento gia' registrato prima (dedup della RPC) non e' nato in
+            # questo giro: non si applica, e non e' un'applicazione fallita.
+            # Nemmeno il non verificato: resta in ombra per scelta.
+            if attivo and stato_attivazione not in (
+                    ATTIVAZIONE_GIA_REGISTRATO, ATTIVAZIONE_NON_VERIFICATO,
+                    ATTIVAZIONE_VERIFICA_ILLEGGIBILE):
                 if applicazione.applicato:
                     esito.eventi_applicati += 1
+                    esito.tipi_applicati.append(tipo)
                 else:
                     esito.eventi_non_applicati += 1
-            date_cambiate.extend(
-                _date_da_rigenerare(ctx, colonne_evento, applicazione.riga))
+                    esito.tipi_non_applicati.append(tipo)
+                    esito.ids_non_applicati.append(applicazione.riga.get("id"))
+            nuove_date = _date_da_rigenerare(ctx, colonne_evento, applicazione.riga)
+            date_cambiate.extend(nuove_date)
+            if attivo:
+                date_applicate.extend(nuove_date)
             colonne.update(colonne_evento)
             # Il contesto avanza con l'evento appena accettato: il prossimo
             # deve essere giudicato sulle date NUOVE, non su quelle vecchie, e
@@ -1164,7 +1391,7 @@ async def controlla(
                 if _rifiutato(scrittore, riga_db):
                     esito.eventi_non_scritti += 1
         else:
-            respinti.append(voce)
+            respinti.append(applicazione.come_dizionario())
             # I respinti vanno **a DB**, non solo nel riepilogo del giro.
             # Difetto misurato il 24/09/2026 sulla semina: 390 classificazioni
             # pagate 5,17 dollari, 691 proposte, **zero** eventi registrati, e
@@ -1185,6 +1412,11 @@ async def controlla(
     esito.eventi = tuple(ammessi)
     esito.respinti = tuple(respinti)
     esito.da_rigenerare = bool(date_cambiate)
+    # Da riscrivere in prosa solo le date che sostituiscono una data vecchia:
+    # una data nuova dove prima non ce n'era (un'apertura fissata per la prima
+    # volta) non puo' essere sbagliata nel testo, che non la diceva.
+    date_da_riscrivere = [d for d in date_applicate if d[2] is not None]
+    esito.rigenerazione_dovuta = bool(date_da_riscrivere)
     esito.prossimo = prossimo_controllo(
         dict(riga, eventi_verificati=len(ammessi)),
         scenario=scenario, adesso=momento, casuale=casuale,
@@ -1199,19 +1431,27 @@ async def controlla(
     _salva(scrittore, esito)
 
     # 5. rigenerazione mirata: la prosa deve dire la stessa data delle colonne.
-    #    Solo in attivo, solo sulle date, e solo se il chiamante ha fornito il
-    #    punto di iniezione. Senza, `run()` non mette lo slug fra quelli da
-    #    notificare: avvisare Google di una pagina rimasta com'era e' peggio
-    #    che non avvisarlo.
-    if date_cambiate and rigenerazione is not None and modalita == eventi_mod.MODALITA_ATTIVO \
-            and not dry_run:
+    #    Solo sulle date APPLICATE (in attivo, o di un tipo attivo), e solo se
+    #    il chiamante ha fornito il punto di iniezione. Senza, `run()` non mette
+    #    lo slug fra quelli da notificare: avvisare Google di una pagina rimasta
+    #    com'era e' peggio che non avvisarlo.
+    if date_da_riscrivere and rigenerazione is not None and not dry_run:
+        # La riga del monitor non porta `contenuto` ne' `descrizione_breve`:
+        # si rileggono e si convertono come fa il lotto L7 (revisione
+        # avversaria del 30/09/2026, P1). Senza, `rigenera` usciva «solo box»
+        # e il giro lo contava come riscritto.
+        preparata = _da_rigenerare(scrittore, riga, rigenerazione)
+        if preparata is None:
+            esito.rigenerazioni = ({"via": "box", "scritto": False,
+                                    "motivi": ["contenuto del bando non leggibile"]},)
+            return esito
+        corrente_riga, rigenerazione = preparata
         # Le rigenerazioni si INCATENANO. Il differimento arriva in coppia
         # (apertura e scadenza): se la seconda ripartisse dal contenuto
         # originale sovrascriverebbe la prima, e l'ultima scrittura
         # vincerebbe — cioe' una delle due date resterebbe vecchia in prosa
         # proprio mentre la colonna dice il contrario.
-        corrente_riga = dict(riga)
-        for evento_riga, ruolo, vecchia, nuova in date_cambiate:
+        for evento_riga, ruolo, vecchia, nuova in date_da_riscrivere:
             try:
                 prodotto = await rigenerazione(
                     corrente_riga, evento_riga, vecchia=vecchia, nuova=nuova, ruolo=ruolo)
@@ -1222,6 +1462,193 @@ async def controlla(
             esito.rigenerazioni = esito.rigenerazioni + (_esito_rigenerazione(prodotto),)
             corrente_riga.update(_payload_rigenerazione(prodotto))
     return esito
+
+
+def _da_rigenerare(
+    scrittore: FonteDati | None,
+    riga: Mapping[str, Any],
+    rigenerazione: Callable[..., Awaitable[Any]],
+) -> tuple[dict[str, Any], Callable[..., Awaitable[Any]]] | None:
+    """(riga con `contenuto` come testo, adattatore) per `rigenera`, o None.
+
+    Stessa conversione del lotto L7 (`rigenera._lotto_date`): il `contenuto`
+    e' un jsonb con `sections`, `rigenera` lavora sul testo dei soli nodi, e
+    lo scrittore lo rimonta in jsonb un attimo prima dell'UPDATE. Aggiungere
+    la colonna alla select del monitor non basterebbe: si scriverebbe il
+    testo, o `str(dict)`, dentro il jsonb.
+
+    Lo scrittore di produzione e' il `scrivi` dell'adattatore
+    (`functools.partial(rigenera.rigenera, attivo=True, scrivi=…)`, costruito
+    dalla pipeline e dalla CLI): lo si avvolge con `_scrittore_json`. Un
+    adattatore senza `scrivi` (i test) riceve il testo e basta.
+
+    None se il contenuto non si legge o non si scompone in nodi: la prosa non
+    si riscrive, e il giro lo conta in `prosa_non_riscritta`.
+    """
+    if scrittore is None:
+        return None
+    testi = scrittore.testi_del_bando(riga.get("id"))
+    if not testi or not testi.get("contenuto"):
+        logger.warning("[monitor] bando {}: contenuto non leggibile, prosa non riscritta",
+                       riga.get("id"))
+        return None
+    from . import rigenera as rigenera_mod
+    trasformato = rigenera_mod._testo_del_contenuto(dict(riga, **testi))
+    if trasformato is None:
+        return None
+    corrente, struttura, era_stringa = trasformato
+    if not str(corrente.get("contenuto") or "").strip():
+        # Un jsonb senza nodi di testo: non c'e' prosa da riscrivere.
+        return None
+    scrivi = (getattr(rigenerazione, "keywords", None) or {}).get("scrivi")
+    if scrivi is not None:
+        rigenerazione = functools.partial(
+            rigenerazione, scrivi=rigenera_mod._scrittore_json(scrivi, struttura, era_stringa))
+    return corrente, rigenerazione
+
+
+#: Il motivo con cui `rigenera` dice «niente da scrivere, il testo dice gia'
+#: la data giusta»: e' l'unico `via="box"` che non e' un ripiego.
+_GIA_IN_LINEA = "contenuto gia' in linea"
+
+
+def _rigenerazione_riuscita(esito: Mapping[str, Any]) -> bool:
+    """Una rigenerazione ha portato la prosa sulla data nuova (o ce l'ha trovata)."""
+    if esito.get("scritto"):
+        return True
+    return any(str(m).startswith(_GIA_IN_LINEA) for m in (esito.get("motivi") or ()))
+
+
+#: Esiti di `_attiva_per_tipo`.
+ATTIVAZIONE_APPLICATO = "applicato"
+ATTIVAZIONE_NON_APPLICATO = "non_applicato"
+ATTIVAZIONE_INVISIBILE = "invisibile"
+ATTIVAZIONE_GIA_REGISTRATO = "gia_registrato"
+ATTIVAZIONE_IN_OMBRA = "in_ombra"
+ATTIVAZIONE_NON_VERIFICATO = "non_verificato"
+ATTIVAZIONE_VERIFICA_ILLEGGIBILE = "verifica_illeggibile"
+
+
+def _comando_di_ripresa(ids: Iterable[Any], tipi: Iterable[str], giorno: date_cls) -> str:
+    """Il comando che riprende SOLO gli eventi di questo giro.
+
+    Con gli id il filtro e' esatto (`--ids`). Un filtro per tipo e giorno
+    prenderebbe anche l'arretrato: le righe d'ombra dello stesso giorno scritte
+    prima del deploy e quelle con `data_evento` futura, contro T-D5 (revisione
+    avversaria del 30/09/2026). Se anche un solo evento non ha l'id (il monitor
+    attivo del rilascio 2, la cui RPC unica qui non lo restituisce) si ripiega
+    su `--tipo` e `--dal`, e il testo chiede prima un `--dry-run`.
+    """
+    elenco_ids = list(ids)
+    if elenco_ids and all(i is not None for i in elenco_ids):
+        voci = ",".join(str(i) for i in sorted(set(elenco_ids), key=str))
+        return f"applica-eventi --ids {voci} --attivo"
+    elenco = ",".join(sorted(set(tipi))) or "<tipo>"
+    return (f"applica-eventi --tipo {elenco} --dal {giorno.isoformat()} --dry-run, "
+            f"controllare che siano solo gli eventi di oggi, poi --attivo")
+
+
+def _attiva_per_tipo(
+    scrittore: FonteDati,
+    applicazione: eventi_mod.Applicazione,
+    *,
+    proposto: bool = False,
+) -> tuple[eventi_mod.Applicazione, str]:
+    """Un evento di un tipo attivo, ammesso dai gate: applicato e leggibile.
+
+    Contratto di ottobre 2026, §3. Tre scritture, in quest'ordine:
+
+    1. `bando_registra_evento` con la riga d'ombra (non applicata, non
+       leggibile), che restituisce `{id, nuovo}`;
+    2. `bando_applica_evento(id)`, che scrive le colonne di `bando`;
+    3. `leggibile=true`, che fa scattare il cursore (RIPRESA §5.8).
+
+    Solo gli eventi NATI in questo giro: con `nuovo=false` l'indice di dedup
+    ha riconosciuto un evento registrato prima, e l'arretrato si decide a
+    parte (T-D5). La RPC unica del monitor attivo non va bene per questo: sul
+    ramo della dedup applicherebbe proprio quell'evento, lasciandolo
+    invisibile.
+
+    Mai un evento «applicato» dopo una RPC fallita: se il passo 2 non riesce
+    (5xx, 23514) l'evento resta registrato, non applicato e invisibile, e il
+    giro alza l'allarme degli eventi non applicati. Se fallisce il passo 1
+    l'evento torna all'INSERT d'ombra (`scritto=False`) e non si perde.
+    Un evento solo «proposto» (sospensione e revoca senza la 06) si rende
+    leggibile senza applicarlo, come nel monitor attivo.
+
+    Si applica solo cio' che il DB registra come **verificato**, come fa
+    `applica-eventi`. Il G4 di Python accetta anche gli host delle fonti,
+    `bando_dominio_verificante` guarda solo `dominio_ufficiale`: applicare un
+    evento non verificato scriverebbe la colonna, e poi `leggibile` con il box
+    violerebbe il CHECK (23514), lasciando la colonna cambiata e l'evento
+    invisibile (revisione avversaria del 30/09/2026). Il non verificato resta
+    registrato in ombra, e si conta.
+    """
+    from . import db
+    riga = applicazione.riga
+    registrato = scrittore.registra_evento_rpc(riga)
+    if registrato is None:
+        logger.warning("[monitor] evento {} del bando {} non registrato via RPC: resta in ombra",
+                       riga.get("tipo"), riga.get("bando_id"))
+        return replace(applicazione, applicato=False, scritto=False,
+                       motivo="registrazione fallita: evento in ombra"), ATTIVAZIONE_IN_OMBRA
+    # L'id sta nella riga da qui in poi: finisce nel report e nel comando di
+    # ripresa degli allarmi (`applica-eventi --ids`).
+    applicazione = replace(applicazione, riga=dict(riga, id=registrato.get("id")))
+    if registrato.get("nuovo") is not True:
+        # `False`: la dedup ha riconosciuto un evento registrato prima. `None`:
+        # la risposta non lo dice, e nel dubbio non si applica.
+        if registrato.get("nuovo") is None:
+            logger.warning("[monitor] evento {} del bando {} (id {}): la RPC non dice se e' "
+                           "nuovo, resta in ombra", riga.get("tipo"), riga.get("bando_id"),
+                           registrato.get("id"))
+            motivo = "la RPC non dice se e' nuovo: evento in ombra"
+        else:
+            logger.info("[monitor] evento {} del bando {} gia' registrato (id {}): non si tocca",
+                        riga.get("tipo"), riga.get("bando_id"), registrato.get("id"))
+            motivo = "gia' registrato prima: non nato in questo giro"
+        return replace(applicazione, applicato=False, scritto=True, motivo=motivo), \
+            ATTIVAZIONE_GIA_REGISTRATO
+    evento_id = registrato["id"]
+    verificato = scrittore.evento_verificato(evento_id, riga)
+    if verificato is None:
+        # Lettura fallita: in ombra anche lui, ma e' un errore, non un «non
+        # verificato» vero, e si conta a parte.
+        logger.warning("[monitor] verificato dell'evento {} ({}) illeggibile: resta in ombra",
+                       evento_id, riga.get("tipo"))
+        return replace(applicazione, applicato=False, scritto=True,
+                       motivo="verificato illeggibile: evento in ombra"), \
+            ATTIVAZIONE_VERIFICA_ILLEGGIBILE
+    if not verificato:
+        logger.info("[monitor] evento {} ({}) del bando {} non verificato per il DB: resta in ombra",
+                    evento_id, riga.get("tipo"), riga.get("bando_id"))
+        return replace(applicazione, applicato=False, scritto=True,
+                       motivo="non verificato per il DB: evento in ombra"), \
+            ATTIVAZIONE_NON_VERIFICATO
+    if not proposto:
+        esito_rpc = scrittore.applica_evento(evento_id)
+        if esito_rpc != db.ESITO_APPLICATO:
+            logger.warning("[monitor] evento {} ({}) non applicato: {}",
+                           evento_id, riga.get("tipo"), esito_rpc)
+            return replace(applicazione, applicato=False, scritto=True,
+                           motivo=f"bando_applica_evento: {esito_rpc}"), ATTIVAZIONE_NON_APPLICATO
+    if not scrittore.rendi_leggibile(evento_id, in_aggiornamenti=True):
+        if proposto:
+            return replace(applicazione, applicato=False, scritto=True,
+                           motivo="stato solo proposto, non reso leggibile"), \
+                ATTIVAZIONE_NON_APPLICATO
+        logger.warning("[ALLARME] [monitor] evento {} ({}) applicato ma NON reso leggibile: "
+                       "il box non lo mostra, lanciare {}",
+                       evento_id, riga.get("tipo"),
+                       _comando_di_ripresa((evento_id,), (str(riga.get("tipo") or ""),),
+                                           oggi_roma()))
+        return replace(applicazione, applicato=True, scritto=True,
+                       motivo="applicato ma non leggibile"), ATTIVAZIONE_INVISIBILE
+    if proposto:
+        return replace(applicazione, applicato=False, scritto=True,
+                       motivo="stato solo proposto: leggibile, non applicato"), \
+            ATTIVAZIONE_NON_APPLICATO
+    return replace(applicazione, applicato=True, scritto=True, motivo=""), ATTIVAZIONE_APPLICATO
 
 
 def _payload_rigenerazione(prodotto: Any) -> dict[str, Any]:
@@ -1615,6 +2042,7 @@ def _rendi_visibili_gli_applicati(
     dal: date_cls | None = None,
     scrive: bool = False,
     limite: int = 50,
+    ids: Sequence[Any] = (),
 ) -> int:
     """Chiude le attivazioni rimaste a meta': applicate e invisibili.
 
@@ -1634,7 +2062,7 @@ def _rendi_visibili_gli_applicati(
     try:
         righe = db.select_eventi(
             tipi=tuple(tipi), dal=dal, applicato=True, verificato=True,
-            leggibile=False, limit=max(0, int(limite)),
+            leggibile=False, limit=max(0, int(limite)), ids=tuple(ids),
         )
     except Exception as e:                                # pragma: no cover - ripiego
         logger.warning("[applica-eventi] lettura degli applicati invisibili fallita: {}", e)
@@ -1672,6 +2100,39 @@ def _rifiutato(scrittore: Any, riga: Mapping[str, Any]) -> bool:
     if esito is None:
         return not scrittore.registra_evento(riga)
     return esito(riga) == db.EVENTO_RIFIUTATO
+
+
+def riga_stantia(riga: Mapping[str, Any]) -> bool:
+    """Vero se la riga ha un «prima» calcolato con una pulizia vecchia
+    (`impronte.VERSIONE_PULIZIA`): al prossimo scarico buono si riallinea."""
+    return (
+        testo_da_colonna(riga.get("testo_norm")) is not None
+        and impronte.versione_pulizia(riga.get("impronte_sezioni")) != impronte.VERSIONE_PULIZIA
+    )
+
+
+def _pagina_cambiata(esito: EsitoControllo) -> bool:
+    """La scheda pubblica e' cambiata: un evento applicato e visibile, oppure
+    una data applicata con la prosa riscritta."""
+    visibili = esito.eventi_applicati - esito.eventi_invisibili
+    return visibili > 0 or (esito.rigenerazione_dovuta and esito.rigenerato)
+
+
+def _domani(momento: datetime) -> datetime:
+    """La mezzanotte di domani, ora di Roma: la riga torna dovuta al primo giro."""
+    return momento.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+
+def _host_senza_www(url: str) -> str:
+    """L'host per l'elenco della riga del giro: minuscolo, senza porta e `www.`,
+    come nel resolver (`scarico.host_di`). Lo scarico invece segna il nome DNS
+    esatto (`scarico.nome_host`), perche' e' quello che salta; per contare gli
+    host del giro si uniscono le due forme con `_senza_www`."""
+    return _senza_www((urlsplit(url).hostname or url).lower())
+
+
+def _senza_www(host: str) -> str:
+    return host[4:] if host.startswith("www.") else host
 
 
 def _link_salvati(riga: Mapping[str, Any]) -> tuple[str, ...] | None:
@@ -1885,6 +2346,13 @@ async def run(
     if dry_run:
         # `--dry-run` e' piu' forte di `--attivo`: non si scrive comunque.
         modalita = eventi_mod.MODALITA_OMBRA
+    # L'interruttore per tipo (contratto §3). `--ombra` e `--dry-run` lo
+    # spengono: chi li scrive vuole un giro che non tocchi niente di pubblico.
+    # In attivo non serve, perche' ogni tipo e' gia' attivo.
+    tipi_attivi: tuple[str, ...] = ()
+    if not dry_run and attivo is not False and modalita != eventi_mod.MODALITA_ATTIVO:
+        tipi_attivi = tuple(getattr(impostazioni, "monitor_tipi_attivi", ()) or ())
+    tipi_ignorati = tuple(getattr(impostazioni, "monitor_tipi_attivi_ignorati", ()) or ())
     scenario = _scenario(getattr(impostazioni, "monitor_scenario", "bilanciato"))
 
     if giro is not None and giro not in (getattr(impostazioni, "monitor_giri", ()) or ()):
@@ -1913,6 +2381,12 @@ async def run(
         # perche' un allarme che esiste solo in una riga di log e' un allarme
         # che nessuno legge il giorno in cui serve.
         allarmi: list[str] = list(getattr(dati, "allarmi", ()) or ())
+        if tipi_ignorati:
+            # Un tipo scritto male resta in ombra senza che nessuno lo decida:
+            # l'allarme si ripete a ogni giro, finche' non si corregge `.env`.
+            allarmi.append(
+                f"MONITOR_TIPI_ATTIVI: valori ignorati {', '.join(tipi_ignorati)} "
+                "(il monitor non produce questi tipi)")
         for allarme in allarmi:
             logger.warning("[ALLARME] [monitor] {}", allarme)
 
@@ -1924,6 +2398,7 @@ async def run(
             _azzera_scarico()
 
         classificatore = classifica
+        solo_riallineamenti = False
         if classificatore is None and righe and scaricatore is not None:
             classificatore = classificatore_da_impostazioni(impostazioni, contatori)
             if classificatore is None:
@@ -1933,11 +2408,22 @@ async def run(
                 # `status: ok`, exit 0. E' esattamente il caso per cui esiste
                 # `EXIT_NON_CONFIGURATO`, e la chiave `saltato` e' quella che
                 # `__main__._codice_da_contatori` traduce in 5.
+                stantie = [r for r in righe if riga_stantia(r)]
+                if not stantie:
+                    logger.error(
+                        "[monitor] nessun classificatore disponibile: {} candidati "
+                        "non controllati, giro dichiarato non configurato", len(righe))
+                    return dict(base, saltato="scarico_non_configurato",
+                                candidati=len(righe), controllati=0, allarmi=allarmi)
+                # Il riallineamento non chiama il modello: le righe stantie si
+                # riallineano lo stesso (revisione del 30/09/2026). Il giro
+                # resta dichiarato non configurato, con l'exit 5 di sempre.
                 logger.error(
-                    "[monitor] nessun classificatore disponibile: {} candidati "
-                    "non controllati, giro dichiarato non configurato", len(righe))
-                return dict(base, saltato="scarico_non_configurato",
-                            candidati=len(righe), controllati=0, allarmi=allarmi)
+                    "[monitor] nessun classificatore disponibile: si riallineano solo "
+                    "le {} righe stantie su {} candidati", len(stantie), len(righe))
+                candidati_senza_modello = len(righe)
+                righe = stantie
+                solo_riallineamenti = True
 
         # Due interruttori, uno per modello: un successo di Haiku non deve
         # azzerare il conto degli errori di Sonnet. Dopo
@@ -1989,6 +2475,7 @@ async def run(
                 modalita=modalita,
                 scenario=scenario,
                 stati_estesi=bool(getattr(impostazioni, "monitor_stati_estesi", False)),
+                tipi_attivi=tipi_attivi,
                 tabella_domini=tabella_domini,
                 adesso=momento,
                 casuale=casuale,
@@ -2018,17 +2505,31 @@ async def run(
         # notificare Google una pagina identica e' peggio che non notificarla.
         # Solo gli esiti con almeno un evento APPLICATO: un evento ammesso che la
         # RPC non ha scritto non cambia la pagina (revisione del 29/09/2026).
+        # Vale anche per i tipi attivi in ombra (contratto §3): conta l'evento
+        # applicato, non la modalita' del giro. In ombra senza tipi attivi
+        # `eventi_applicati` e' sempre zero. Un evento applicato ma invisibile
+        # non cambia la pagina (faq e allegati non toccano `bando`): conta solo
+        # se ha portato una data nuova in prosa (revisione del 30/09/2026).
         slug_modificati = tuple(
             e.slug for e in esiti
-            if e.slug and e.eventi_applicati and modalita == eventi_mod.MODALITA_ATTIVO
-            and (not e.da_rigenerare or e.rigenerato)
+            if e.slug and _pagina_cambiata(e)
+            and (not e.rigenerazione_dovuta or e.rigenerato)
         )
+        # Date applicate e prosa rimasta vecchia: rigenerazione mancante o
+        # fallita. La colonna e il box sono giusti, il testo no, e lo slug non
+        # va a IndexNow. Senza questa riga non lo diceva nessuno.
+        prosa_vecchia = sum(1 for e in esiti if e.rigenerazione_dovuta and not e.rigenerato)
+        oggi_giro = momento.date()
         # Un giro `--senza-rete` (o senza uno scarico) accodava N esiti
         # `saltato` e riferiva `controllati: N, non_modificati: 0` con exit 0:
         # somigliava a un giro vero. `controllati` conta ora le righe davvero
         # controllate, e i saltati si dichiarano con il motivo prevalente.
         saltati = [e for e in esiti if e.esito == "saltato"]
         motivo_saltati = _motivo_prevalente(saltati)
+        host_morti = sorted({e.host_irraggiungibile for e in esiti if e.host_irraggiungibile})
+        if host_morti:
+            logger.warning("[monitor] host irraggiungibili (DNS) in questo giro: {}",
+                           ", ".join(host_morti))
         riepilogo = {
             **base,
             "modalita": modalita,
@@ -2039,6 +2540,15 @@ async def run(
             "motivo_saltati": motivo_saltati,
             "fetch": contatori.fetch,
             "non_modificati": sum(1 for e in esiti if e.esito in ("304", "invariato")),
+            # Di cui: righe di una pulizia vecchia riscritte senza diff ne'
+            # modello (`impronte.VERSIONE_PULIZIA`). Dopo un cambio di pulizia
+            # scendono a zero man mano che le righe tornano in coda.
+            "riallineate": sum(1 for e in esiti if e.riallineato),
+            # Fonti con il DNS rotto: saltate senza consumare `controlli_falliti`.
+            # Il numero e i primi nomi: lo stesso host morto per giorni si vede
+            # a DB, giro dopo giro.
+            "host_irraggiungibili": len(host_morti),
+            "host_irraggiungibili_elenco": host_morti[:MAX_HOST_IRRAGGIUNGIBILI_ELENCO],
             "errori": contatori.errori,
             "classificazioni": contatori.classificazioni,
             # Controlli rimasti a meta' perche' il modello non ha risposto: NON
@@ -2049,6 +2559,22 @@ async def run(
             # Solo in attivo: ammessi ma non applicati dalla RPC. Restano a DB
             # non applicati e invisibili: li riprende `applica-eventi --attivo`.
             "eventi_non_applicati": sum(e.eventi_non_applicati for e in esiti),
+            # L'interruttore per tipo (contratto §3): la lista che questo giro ha
+            # usato (vuota con `--ombra`, `--dry-run` o in attivo) e cio' che ha
+            # applicato, per tipo, in entrambi i percorsi.
+            "tipi_attivi": list(tipi_attivi),
+            "applicati_per_tipo": dict(sorted(Counter(
+                tipo for e in esiti for tipo in e.tipi_applicati).items())),
+            # Applicati alle colonne ma non resi leggibili: la pagina e'
+            # cambiata, il box no.
+            "eventi_invisibili": sum(e.eventi_invisibili for e in esiti),
+            # Tipi attivi ammessi dai gate ma non verificati per il DB: restano
+            # in ombra, come fa `applica-eventi`.
+            "eventi_non_verificati": sum(e.eventi_non_verificati for e in esiti),
+            # Di questi tipi, quelli di cui `verificato` non si e' potuto
+            # rileggere: in ombra anche loro, ma sono errori, non giudizi.
+            "errori_verifica": sum(e.errori_verifica for e in esiti),
+            "prosa_non_riscritta": prosa_vecchia,
             # Di cui: Haiku ha risposto (e sta in `classificazioni`), Sonnet no.
             # `salute` le toglie dalle riuscite per non contarle due volte.
             "seconde_opinioni_fallite": sum(
@@ -2078,9 +2604,41 @@ async def run(
             allarmi.append(avviso)
             logger.warning("[ALLARME] [monitor] {}", avviso)
             riepilogo["allarmi"] = allarmi
+        # Il comando di ripresa porta `--tipo` e `--dal`: senza, applicherebbe
+        # l'arretrato verificato di ogni tipo (T-D5).
+        ripresa = _comando_di_ripresa(
+            [i for e in esiti for i in e.ids_non_applicati],
+            (t for e in esiti for t in e.tipi_non_applicati), oggi_giro)
         if riepilogo["eventi_non_applicati"]:
             avviso = (f"{riepilogo['eventi_non_applicati']} eventi ammessi non applicati dalla RPC: "
-                      f"restano in coda, lanciare applica-eventi --attivo")
+                      f"restano in coda, lanciare {ripresa}")
+            allarmi.append(avviso)
+            logger.warning("[ALLARME] [monitor] {}", avviso)
+            riepilogo["allarmi"] = allarmi
+        if riepilogo["eventi_invisibili"]:
+            avviso = (f"{riepilogo['eventi_invisibili']} eventi applicati ma non resi leggibili: "
+                      f"il box non li mostra, lanciare {ripresa}")
+            allarmi.append(avviso)
+            logger.warning("[ALLARME] [monitor] {}", avviso)
+            riepilogo["allarmi"] = allarmi
+        # Tanti host morti nello stesso giro: piu' probabile il resolver del
+        # server che tanti enti col DNS rotto (decisione del lead del
+        # 30/09/2026). Con lo scarico di produzione contano anche quelli trovati
+        # da resolver e ricontrolli nello stesso giro.
+        morti_nel_giro = set(host_morti) | {
+            _senza_www(h) for h in (_host_morti_dello_scarico() if proprio else ())}
+        from .scarico import SOGLIA_RESOLVER_LOCALE
+        if len(morti_nel_giro) >= SOGLIA_RESOLVER_LOCALE:
+            avviso = (f"resolver locale? {len(morti_nel_giro)} host irraggiungibili (DNS) in "
+                      f"questo giro: " + ", ".join(sorted(morti_nel_giro)[
+                          :MAX_HOST_IRRAGGIUNGIBILI_ELENCO]))
+            allarmi.append(avviso)
+            logger.warning("[ALLARME] [monitor] {}", avviso)
+            riepilogo["allarmi"] = allarmi
+        if prosa_vecchia:
+            avviso = (f"{prosa_vecchia} schede con date applicate e prosa non riscritta: "
+                      f"rigenerazione assente o fallita, lo slug non va a IndexNow "
+                      f"(lanciare rigenera sui bandi del giro)")
             allarmi.append(avviso)
             logger.warning("[ALLARME] [monitor] {}", avviso)
             riepilogo["allarmi"] = allarmi
@@ -2099,6 +2657,16 @@ async def run(
                 riepilogo["allarmi"] = allarmi
             else:
                 logger.warning("[monitor] {}", avviso)
+        if solo_riallineamenti:
+            # Il giro ha lavorato solo le righe stantie: resta un giro «non
+            # configurato» (exit 5), e l'allarme lo dice nel journal e a DB.
+            avviso = (f"nessun classificatore disponibile: solo {riepilogo['riallineate']} "
+                      f"riallineamenti su {candidati_senza_modello} candidati, "
+                      f"gli altri non controllati")
+            allarmi.append(avviso)
+            logger.warning("[ALLARME] [monitor] {}", avviso)
+            riepilogo.update(allarmi=allarmi, saltato="scarico_non_configurato",
+                             candidati=candidati_senza_modello)
         _scrivi_telemetria(riepilogo, contatori, giro, slug_modificati, interrotto,
                            tempo=time.monotonic() - avvio, passo=passo)
         logger.info("[monitor] {}", riepilogo)
@@ -2646,12 +3214,27 @@ def pagine_collegate_da_impostazioni(
 
 
 def _azzera_scarico() -> None:
-    """Inizio giro sul client unico: cache vuota e contatori a zero."""
+    """Inizio giro sul client unico: cache vuota e contatori a zero.
+
+    Gli host irraggiungibili restano: il monitor parte a meta' pipeline, e un
+    host trovato morto da resolver o ricontrolli dello stesso giro si salta
+    anche qui. Li azzera solo `svuota()` a inizio pipeline.
+    """
     try:
         from .scarico import svuota
-        svuota()
+        svuota(host_morti=False)
     except Exception as e:                                # pragma: no cover - ripiego
         logger.debug("[monitor] azzeramento dello scarico fallito: {}", e)
+
+
+def _host_morti_dello_scarico() -> tuple[str, ...]:
+    """Gli host irraggiungibili che il client unico ha segnato in questo giro."""
+    try:
+        from .scarico import scarico_corrente
+        return scarico_corrente().host_irraggiungibili
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.debug("[monitor] host morti dello scarico non leggibili: {}", e)
+        return ()
 
 
 def _contatori_scarico() -> Any:
@@ -3435,6 +4018,7 @@ def _da_applicare(
     rifiutati: frozenset[Any],
     conto: dict[str, int],
     traduzione: bool = False,
+    ids: Sequence[Any] = (),
 ) -> list[Mapping[str, Any]]:
     """Gli eventi su cui c'e' lavoro, scorrendo la selezione a pagine.
 
@@ -3453,7 +4037,7 @@ def _da_applicare(
         try:
             pagina = db.select_eventi(
                 tipi=tuple(tipi), dal=dal, applicato=False, verificato=True,
-                limit=PAGINA_SELEZIONE_EVENTI, offset=cursore,
+                limit=PAGINA_SELEZIONE_EVENTI, offset=cursore, ids=tuple(ids),
             )
         except Exception as e:                            # pragma: no cover - ripiego
             logger.warning("[applica-eventi] lettura degli eventi fallita: {}", e)
@@ -3499,6 +4083,7 @@ async def run_applica_eventi(
     tipi: Sequence[str] = (),
     offset: int = 0,
     riprova_rifiutati: bool = False,
+    ids: Sequence[Any] = (),
     righe: Sequence[Mapping[str, Any]] | None = None,
     applica: Callable[[Mapping[str, Any]], Any] | None = None,
     segnala: Callable[[Mapping[str, Any]], bool] | None = None,
@@ -3506,6 +4091,10 @@ async def run_applica_eventi(
     lock: Any = blocco,
 ) -> dict[str, Any]:
     """`applica-eventi`: riversa a posteriori gli eventi raccolti in ombra (§6.2).
+
+    `ids` (`--ids 12,13`) e' il filtro esatto che gli allarmi del monitor
+    scrivono: riprende soltanto gli eventi di quel giro, mai l'arretrato
+    dell'ombra (T-D5), che un filtro per tipo e per giorno invece prenderebbe.
 
     Senza questo comando la baseline delle impronte li perderebbe: alla lettura
     successiva la pagina non e' piu' «cambiata», l'evento non si ripresenta e
@@ -3571,7 +4160,7 @@ async def run_applica_eventi(
         # (che restano `applicato=false` all'id piu' basso, per sempre) non
         # consumano il blocco.
         candidati = _da_applicare(
-            righe, tipi=tipi, dal=dal, limit=blocco_giro, offset=offset,
+            righe, tipi=tipi, dal=dal, limit=blocco_giro, offset=offset, ids=ids,
             # Con `--limit 0` non si applica niente per costruzione (il ciclo
             # piu' sotto esce al primo giro): leggere i rifiuti noti sarebbe
             # una richiesta in piu' per un comando che e' un no-op.
@@ -3676,7 +4265,7 @@ async def run_applica_eventi(
         # box. Il recupero e' idempotente e si conta a parte: non e' lavoro
         # nuovo, e' lavoro finito a meta' che si chiude.
         resi_visibili = _rendi_visibili_gli_applicati(
-            tipi=tipi, dal=dal, scrive=scrive, limite=blocco_giro)
+            tipi=tipi, dal=dal, scrive=scrive, limite=blocco_giro, ids=ids)
 
         riepilogo = {
             "status": "ok",
@@ -3685,6 +4274,7 @@ async def run_applica_eventi(
             "dry_run": dry_run,
             "dal": dal.isoformat() if dal else None,
             "tipi": list(tipi),
+            "ids": list(ids),
             "blocco": blocco_giro,
             "offset": max(0, int(offset or 0)),
             "riprova_rifiutati": bool(riprova_rifiutati),

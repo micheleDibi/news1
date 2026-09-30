@@ -688,6 +688,9 @@ COLONNE_SEO_BASE: tuple[str, ...] = (
     "data_pubblicazione", "data_apertura", "data_scadenza",
     "tipologia_bando_id", "modalita_erogazione_id", "programma_id",
     "allegati",
+    # Il controllo dei doppioni OE (contratto di ottobre, §6) salta i bandi
+    # annullati a mano, riconoscibili solo da qui.
+    "rejection_reason",
 )
 
 #: Colonne della migrazione 01: senza di loro `bando_seo_runner.scegli_fonte`
@@ -2101,6 +2104,9 @@ def select_eventi(
     limit: int | None = None,
     offset: int = 0,
     colonne: Sequence[str] | None = None,
+    #: Filtro esatto sugli id: `applica-eventi --ids`, il comando di ripresa
+    #: che gli allarmi del monitor scrivono (solo gli eventi di quel giro).
+    ids: Sequence[Any] = (),
     client: Any | None = None,
     strumento: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -2154,6 +2160,8 @@ def select_eventi(
     def _costruisci() -> Any:
         """Una query **nuova** a ogni pagina: i builder accumulano con `add`."""
         query = _client(client).table(TABELLA_EVENTO).select(scelte)
+        if ids:
+            query = query.in_("id", list(ids))
         if bando_id is not None:
             query = query.eq("bando_id", bando_id)
         if tipi:
@@ -2339,6 +2347,27 @@ def consumo_oggi(
 TABELLA_LOCK = "pipeline_lock"
 
 
+def select_lock(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Le righe di `pipeline_lock`, scadute comprese: una per lock, poche.
+
+    Le legge il sender all'avvio per rilasciare i propri lock orfani
+    (`backend/app/lock_orfani.py`, contratto di ottobre §8). `[]` se la
+    tabella non c'e'; un errore di rete si solleva, e il chiamante lo tratta
+    come «non so, non rilascio niente».
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_LOCK):
+        return []
+    return list((
+        _client(client).table(TABELLA_LOCK)
+        .select("nome,proprietario,acquisito_at,scade_at").order("nome").execute()
+    ).data or [])
+
+
 def misure_salute(
     *,
     adesso: Any = None,
@@ -2466,6 +2495,176 @@ def select_bandi_pubblicati_contenuto(
     except Exception as e:
         logger.warning("[db] select_bandi_pubblicati_contenuto fallita: {}", e)
         return []
+
+
+#: Le controparti del controllo dei doppioni OE (contratto di ottobre, §6):
+#: quanto serve ai due criteri e a escludere fusi, non pubblicati e fonti OE.
+COLONNE_DOPPIONI_OE: tuple[str, ...] = (
+    "id", "fonte_id", "fonte_ufficiale_url", "ente_erogatore", "importo_totale_eur",
+    "data_scadenza", "bando_master_id", "pubblicato",
+)
+
+
+def select_pubblicati_per_doppioni_oe(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I pubblicati non fusi con cui confrontare i bandi OE prima della SEO.
+
+    Si scorrono tutti (sono piu' di 2 000, PostgREST ne darebbe 1 000). Un
+    errore non si nasconde: lo prende il chiamante, che salta il controllo e
+    lascia girare la SEO come prima.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_disponibili("bando", COLONNE_DOPPIONI_OE, strumento)
+
+    def _costruisci() -> Any:
+        query = _pubblicati(_client(client).table("bando").select(colonne), strumento)
+        if strumento.ha("bando", "bando_master_id"):
+            query = query.is_("bando_master_id", "null")
+        return query.order("id")
+
+    return _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto))
+
+
+def rifiuta_doppione(bando_id: Any, motivo: str, *, client: Any | None = None) -> bool:
+    """`rejected` con il motivo del §6, solo se il bando e' ancora `enriched`.
+
+    Il filtro su `enriched` fa si' che non si tocchi mai un bando pubblicato
+    o gia' lavorato da un altro giro; in quel caso la risposta e' vuota e il
+    valore di ritorno e' False. Per annullare: vedi `gemelli`, sezione dei
+    doppioni ObiettivoEuropa.
+    """
+    risposta = (
+        _client(client).table("bando")
+        .update({"stato_processing": "rejected", "rejection_reason": motivo})
+        .eq("id", bando_id).eq("stato_processing", "enriched").execute()
+    )
+    return bool(getattr(risposta, "data", None))
+
+
+#: Le colonne di `seo-rigenera` oltre a quelle dello step SEO: i due testi da
+#: confrontare e cio' che serve a rifiutare i non pubblicati.
+COLONNE_SEO_RIGENERA: tuple[str, ...] = ("slug", "contenuto", "descrizione_breve")
+
+#: Colonne nuove (migrazioni 01 e 03): si chiedono solo se lo schema le espone.
+COLONNE_SEO_RIGENERA_OPZIONALI: tuple[str, ...] = (
+    "fonte_ufficiale_url", "fonte_ufficiale_stato", "pubblicato", "bando_master_id",
+    # Il trigger della 01 lo avanza a ogni cambio di contenuto o descrizione:
+    # l'UPDATE di `aggiorna_testo_seo` lo usa per non scrivere su un testo
+    # cambiato fra il controllo e la scrittura.
+    "ultimo_cambiamento_at",
+)
+
+
+def select_bandi_per_rigenera_seo(
+    bando_ids: Sequence[Any] = (),
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Le righe di `seo-rigenera`, con le colonne dello step SEO piu' i testi.
+
+    Con `bando_ids` si leggono quegli id **senza filtro di pubblicazione**: e'
+    il comando a rifiutare i non pubblicati e i fusi, e per dirlo all'operatore
+    deve vederli. Senza id (`--solo-controllo` sull'intero archivio) si leggono
+    i pubblicati non fusi, scorsi a pagine: sono piu' di 2 000 e PostgREST ne
+    restituirebbe 1 000 senza dirlo.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_con_opzionali(
+        "bando", COLONNE_SEO_BASE + COLONNE_SEO_RIGENERA,
+        COLONNE_SEO_RIGENERA_OPZIONALI, strumento,
+    )
+    if bando_ids:
+        return _per_id(
+            lambda blocco: _client(client).table("bando").select(colonne).in_("id", blocco),
+            list(dict.fromkeys(bando_ids)),
+        )
+
+    def _costruisci() -> Any:
+        query = _pubblicati(_client(client).table("bando").select(colonne), strumento)
+        if strumento.ha("bando", "bando_master_id"):
+            query = query.is_("bando_master_id", "null")
+        return query.order("id")
+
+    return _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto))
+
+
+def select_junction_per_bandi(
+    tabella: str,
+    colonna: str,
+    bando_ids: Sequence[Any],
+    *,
+    client: Any | None = None,
+) -> dict[Any, list[Any]]:
+    """`{bando_id: [id del catalogo]}` di una junction, a blocchi di id.
+
+    E' la lettura in blocco di `_select_junction_ids`: per l'intero archivio
+    quella costerebbe una GET per bando e per tabella.
+
+    L'ordine e' `bando_id, <colonna>`, univoco sulla coppia che fa da chiave
+    della junction (come `src/lib/corpus.ts`): con il solo `bando_id` le pagine
+    oltre le 1 000 righe potevano sovrapporsi o saltare righe (§1). Non `id`:
+    le junction non sono tenute ad averlo. Le due `.order()` di postgrest si
+    sommano in `order=bando_id.asc,<colonna>.asc`.
+    """
+    righe = _per_id(
+        lambda blocco: _client(client).table(tabella).select(f"bando_id,{colonna}")
+        .in_("bando_id", blocco).order("bando_id"),
+        list(dict.fromkeys(bando_ids)),
+        ordine=colonna,
+    )
+    esito: dict[Any, list[Any]] = {}
+    for riga in righe:
+        if riga.get(colonna) is not None:
+            esito.setdefault(riga.get("bando_id"), []).append(riga[colonna])
+    return esito
+
+
+#: Le sole colonne che `seo-rigenera --attivo` puo' scrivere (contratto di
+#: ottobre, §7). Slug, titolo, date, importi, stato e junction restano fuori.
+CAMPI_TESTO_SEO: frozenset[str] = frozenset({"contenuto", "descrizione_breve"})
+
+
+def aggiorna_testo_seo(
+    bando_id: Any,
+    campi: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    ultimo_cambiamento_at: Any | None = None,
+) -> bool:
+    """UPDATE dei soli testi di una scheda pubblicata. True se la riga c'era.
+
+    Una chiave fuori da `CAMPI_TESTO_SEO` e' un errore di programmazione e ferma
+    il comando (`PayloadBandoVietato`, un AssertionError), come il chokepoint
+    del resolver. Il filtro su `stato_processing='completed'` fa si' che una
+    riga uscita dai pubblicati fra la lettura e la scrittura non venga toccata:
+    in quel caso la risposta e' vuota e il valore di ritorno e' False.
+
+    `ultimo_cambiamento_at`, se dato, e' quello letto al momento del controllo
+    dell'hash: l'UPDATE lo pretende uguale, quindi un testo riscritto nel
+    frattempo da un altro comando (`rigenera`, `monitor --attivo` da CLI, che
+    non prendono il lock `bandi_pipeline`) non viene sovrascritto. Il trigger
+    della migrazione 01 lo avanza a ogni cambio di `contenuto` e descrizione.
+    """
+    estranee = sorted(set(campi) - CAMPI_TESTO_SEO)
+    if estranee or not campi:
+        raise PayloadBandoVietato(
+            f"seo-rigenera scrive solo {sorted(CAMPI_TESTO_SEO)}: ricevuto {sorted(campi)}"
+        )
+    query = (
+        _client(client).table("bando").update(dict(campi))
+        .eq("id", bando_id).eq("stato_processing", "completed")
+    )
+    if ultimo_cambiamento_at is not None:
+        query = query.eq("ultimo_cambiamento_at", ultimo_cambiamento_at)
+    return bool(getattr(query.execute(), "data", None))
 
 
 def select_processed_da_archiviare(

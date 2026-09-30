@@ -311,12 +311,19 @@ class Stato:
     misure_db_errore: str | None = None
     #: Voci che questa esecuzione non ha misurato: finiscono negli avvisi.
     non_misurati: tuple[str, ...] = ()
+    #: `MONITOR_TIPI_ATTIVI` come letta (contratto di ottobre 2026, §3), e i
+    #: valori scartati perche' il monitor non li produce.
+    tipi_attivi: tuple[str, ...] = ()
+    tipi_attivi_ignorati: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Salute:
     allarmi: tuple[str, ...] = ()
     avvisi: tuple[str, ...] = ()
+    #: I tipi di evento che il monitor applica anche in ombra: non e' un
+    #: giudizio, e' cio' che chi legge `salute` deve sapere per leggere il box.
+    tipi_attivi: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -328,6 +335,7 @@ class Salute:
             "allarmi": list(self.allarmi),
             "avvisi": list(self.avvisi),
             "exit_code": self.exit_code,
+            "tipi_attivi": list(self.tipi_attivi),
         }
 
 
@@ -385,9 +393,16 @@ def salute(stato: Stato) -> Salute:
             and stato.residuo_piano_su_tetto_mensile < 3):
         allarmi.append(
             "residuo del piano Firecrawl < 3x il tetto mensile: valutare MONITOR_SCENARIO=economico")
-    # M15: la chiave IndexNow serve solo quando il monitor pubblica davvero.
+    # M15: la chiave IndexNow serve solo quando il monitor pubblica davvero:
+    # in attivo, o in ombra con almeno un tipo attivo.
     if stato.modalita_monitor == "attivo" and not stato.indexnow_configurata:
         allarmi.append("INDEXNOW_API_KEY assente con MONITOR_MODALITA=attivo")
+    elif stato.tipi_attivi and not stato.indexnow_configurata:
+        allarmi.append("INDEXNOW_API_KEY assente con MONITOR_TIPI_ATTIVI valorizzata")
+    if stato.tipi_attivi_ignorati:
+        allarmi.append(
+            "MONITOR_TIPI_ATTIVI contiene valori che il monitor non produce: "
+            f"{', '.join(stato.tipi_attivi_ignorati)} (ignorati, quei tipi restano in ombra)")
     # M13: un `MONITOR_GIRI` che non coincide con le ore dello scheduler e' un
     # monitor spento in silenzio. Si dice subito, senza aspettare le 24 h di
     # «nessun monitor OK» (che oggi nessuno misura ancora).
@@ -401,7 +416,7 @@ def salute(stato: Stato) -> Salute:
     if stato.non_misurati:
         avvisi.append("non misurato da salute: " + ", ".join(stato.non_misurati))
 
-    return Salute(tuple(allarmi), tuple(avvisi))
+    return Salute(tuple(allarmi), tuple(avvisi), tipi_attivi=tuple(stato.tipi_attivi))
 
 
 def _istante(valore: Any) -> datetime | None:

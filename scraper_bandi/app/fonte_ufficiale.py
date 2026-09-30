@@ -37,6 +37,7 @@ migrazioni v11 non sono ancora applicate.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
@@ -87,6 +88,16 @@ SEGNALI_RICHIESTI: frozenset[str] = frozenset({SEGNALE_DOMINIO, SEGNALE_TITOLO, 
 GIORNI_RICONTROLLO_BREVE = 14
 TENTATIVI_BREVI = 3
 GIORNI_RICONTROLLO_LUNGO = 60
+
+#: Tetto di tempo per un solo bando, nel resolver e nei ricontrolli. Il
+#: 28/09/2026, con il DNS di regione.basilicata.it rotto, un bando ha impiegato
+#: 247 secondi, e i 101 URL di quell'host rischiavano cento minuti di giro.
+#: Oltre il tetto il bando passa al giro dopo senza consumare un tentativo.
+TETTO_TEMPO_BANDO_S = 120.0
+
+#: Quanti host irraggiungibili la riga del giro elenca per nome: oltre si
+#: legge solo il numero (`host_irraggiungibili`).
+MAX_HOST_IRRAGGIUNGIBILI_ELENCO = 20
 
 PRIORITA_IN_VERIFICA = 70
 PRIORITA_NON_TROVATA = 30
@@ -170,6 +181,8 @@ class Pagina:
     html: str = ""
     testo: str = ""
     intestazioni: str = ""          # <title> + h1 + og:title, gia' concatenati
+    #: L'host non risolve (DNS): la pagina non e' stata letta (`scarico.py`).
+    host_irraggiungibile: bool = False
 
     @property
     def ok(self) -> bool:
@@ -316,6 +329,13 @@ class Contatori:
     #: perche' un giro che ne salta 800 e ne lavora 2 deve poterlo dire.
     saltate: int = 0
     errori: int = 0
+    #: Bandi lasciati al giro dopo senza verdetto e senza tentativo: oltre il
+    #: `TETTO_TEMPO_BANDO_S`, o senza `trovata` con un candidato su un host
+    #: che non risolve. Non sono in `trovate`/`in_verifica`/`non_trovate`.
+    rinviati_tempo: int = 0
+    rinviati_dns: int = 0
+    #: Gli host che non risolvevano (DNS) fra i candidati di questo step.
+    host_morti: set[str] = field(default_factory=set)
     interrotto_per_tetto: bool = False
     motivo: str = ""
 
@@ -336,6 +356,13 @@ class Contatori:
             "scarti_blocklist": self.scarti_blocklist,
             "saltate": self.saltate,
             "errori": self.errori,
+            "rinviati_tempo": self.rinviati_tempo,
+            "rinviati_dns": self.rinviati_dns,
+            # Il numero e i primi nomi: lo stesso host morto per giorni si vede
+            # a DB, giro dopo giro, in `pipeline_run`.
+            "host_irraggiungibili": len(self.host_morti),
+            "host_irraggiungibili_elenco": sorted(self.host_morti)[
+                :MAX_HOST_IRRAGGIUNGIBILI_ELENCO],
         }
 
 
@@ -379,6 +406,7 @@ class Ambiente:
     da_segnale: bool = False        # su segnale C: solo passi 1, 2 e 3a
     max_sonda: int = 3
     max_candidati: int = 12
+    tetto_tempo_bando_s: float = TETTO_TEMPO_BANDO_S
     #: Quanto di `spesa_scarico()` e' gia' stato sommato in `spesa`: i contatori
     #: dello scarico sono cumulativi sul giro, quindi si somma solo il delta.
     assorbito: dict[str, int] = field(default_factory=dict)
@@ -537,6 +565,7 @@ def pagina_da_risposta(risposta: Any) -> Pagina:
         html=html,
         testo=getattr(risposta, "testo", "") or "",
         intestazioni=intestazioni_pagina(html),
+        host_irraggiungibile=bool(getattr(risposta, "host_irraggiungibile", False)),
     )
 
 
@@ -2035,7 +2064,28 @@ async def run(
                 arricchito = dict(bando)
                 arricchito.setdefault(
                     "tentativi_resolver", riga_controllo.get("tentativi_resolver") or 0)
-                esito = await risolvi(arricchito, ambiente)
+                try:
+                    esito = await asyncio.wait_for(
+                        risolvi(arricchito, ambiente), timeout=ambiente.tetto_tempo_bando_s)
+                except asyncio.TimeoutError:
+                    # Il tetto morde al primo `await`: la verifica degli
+                    # allegati e' sincrona, e una in corso finisce prima.
+                    contatori.rinviati_tempo += 1
+                    _rinvia(bando, modo=modo, ambiente=ambiente, dry_run=dry_run,
+                            motivo=f"oltre {ambiente.tetto_tempo_bando_s:g} s", avviso=True)
+                    continue
+                morti = _host_irraggiungibili(esito)
+                contatori.host_morti.update(morti)
+                if morti and esito.stato != STATO_TROVATA:
+                    # Un candidato non letto per un DNS rotto non dice niente
+                    # del bando: nessun verdetto, nessun tentativo, stato della
+                    # fonte invariato. Se un altro candidato e' `trovata`, il
+                    # verdetto c'e' e si scrive come sempre.
+                    contatori.rinviati_dns += 1
+                    _togli_verdetto(contatori, esito.stato)
+                    _rinvia(bando, modo=modo, ambiente=ambiente, dry_run=dry_run,
+                            motivo=f"host irraggiungibile (DNS): {', '.join(sorted(morti))}")
+                    continue
                 if contatori.interrotto_per_tetto:
                     # Cascata monca: scrivere un `non_trovata` ricavato da mezzo
                     # giro significherebbe condannare il bando a sessanta giorni
@@ -2059,6 +2109,10 @@ async def run(
             ambiente.chiudi_verifica()
         blocco.rilascia(lock)
 
+    if contatori.host_morti:
+        logger.warning(
+            "[resolver] host irraggiungibili (DNS) in questo giro: {} (bandi rinviati: {})",
+            ", ".join(sorted(contatori.host_morti)), contatori.rinviati_dns)
     durata = time.monotonic() - avvio
     risultato: dict[str, Any] = {
         "status": "ok",
@@ -2078,6 +2132,52 @@ async def run(
     _registra(run_telemetria, durata, contatori, ambiente.spesa)
     logger.info("[resolver] === DONE | {} ===", risultato)
     return risultato
+
+
+def _host_irraggiungibili(esito: Esito) -> set[str]:
+    """Gli host dei candidati che non hanno risolto il DNS, scritti come li
+    scrive `scarico.py` (minuscolo, senza porta ne' `www.`)."""
+    from .scarico import host_di
+    return {
+        host_di(candidato.url) or candidato.url
+        for candidato, _punteggio in esito.valutati
+        if candidato.pagina is not None and candidato.pagina.host_irraggiungibile
+    }
+
+
+def _togli_verdetto(contatori: Contatori, stato: str) -> None:
+    """`_componi_esito` ha gia' contato il verdetto: un bando rinviato non ne
+    ha uno, e i contatori dicono cio' che e' stato scritto (RIPRESA §5.4)."""
+    nome = {STATO_TROVATA: "trovate", STATO_IN_VERIFICA: "in_verifica"}.get(stato, "non_trovate")
+    setattr(contatori, nome, max(0, getattr(contatori, nome) - 1))
+
+
+def _rinvia(
+    bando: Mapping[str, Any], *, modo: str, ambiente: Ambiente, dry_run: bool, motivo: str,
+    avviso: bool = False,
+) -> None:
+    """Il bando passa al giro dopo: niente verdetto, niente tentativo, stato
+    della fonte invariato (contratto di ottobre 2026, §5).
+
+    Solo nei `ricontrolli` il prossimo controllo slitta a domani, e nient'altro:
+    la selezione ne prende 60 per giro in ordine di id, e senza lo slittamento
+    riprenderebbe gli stessi bandi a ogni giro finche' l'host resta morto, e gli
+    altri non passerebbero piu'. Nei `nuovi` non si scrive niente: una riga mai
+    vista si lavora comunque al giro dopo.
+
+    `avviso=True` (il rinvio per tempo) scrive un WARNING con l'id: un bando
+    lento ma sano verrebbe rinviato a ogni giro, e nei `nuovi` non lascia
+    traccia a DB (revisione #23). Il rinvio per DNS resta a INFO: il giro ha
+    gia' la sua riga WARNING con l'elenco degli host.
+    """
+    scrivi = logger.warning if avviso else logger.info
+    scrivi("[resolver] bando {} rinviato al giro dopo: {}", bando.get("id"), motivo)
+    if modo != "ricontrolli" or dry_run:
+        return
+    db.aggiorna_controllo(
+        bando.get("id"),
+        {"prossimo_controllo_at": (ambiente.oggi + timedelta(days=1)).isoformat()},
+    )
 
 
 def _registra(

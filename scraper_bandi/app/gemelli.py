@@ -30,7 +30,9 @@ da PostgREST (o i record composti da `bando_runner._build_record`).
 from __future__ import annotations
 
 import difflib
+import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Iterable, Mapping, Sequence
@@ -589,3 +591,202 @@ def trova_master(
     if master is None:
         return None
     return master, per_id[master.get("id")]
+
+
+# --- doppioni ObiettivoEuropa prima della SEO (contratto di ottobre, §6) -----
+#
+# Il 29/09 quattro dei venti bandi pubblicati dal giro delle 12 erano schede di
+# ObiettivoEuropa di avvisi gia' pubblicati dalla fonte dell'ente (F3-F6 di
+# `docs/bandi-monitor/correzioni-2026-09-29.sql`). Qui li si riconosce PRIMA
+# della chiamata a Opus: un bando OE non ancora pubblicato e' un «doppione
+# probabile» se esiste un pubblicato non fuso di una fonte NON OE con
+#
+#   1. la stessa `fonte_ufficiale_url` normalizzata, oppure
+#   2. lo stesso ente normalizzato, lo stesso importo e la stessa scadenza.
+#
+# La controparte non OE e' una correzione del 30/09: OE contro OE dava circa un
+# falso su tre (lotti diversi sulla stessa pagina elenco, come la formazione
+# della Toscana 759891-759895). E all'ingresso della SEO un bando OE ha
+# `ente_erogatore` e `importo_totale_eur` NULL, perche' li scrive la SEO: per il
+# candidato l'ente viene dal prefisso del titolo OE («Piemonte - …») e
+# l'importo da `raw_data.budget`.
+#
+# L'esito e' un rifiuto con motivo, **mai una fusione**: le fusioni restano a
+# Michele, con `bando_fondi`. Un rifiuto sbagliato si annulla con un UPDATE:
+#
+#   update bando
+#      set stato_processing = 'enriched',
+#          rejection_reason = 'doppione escluso a mano'
+#    where id = <id> and stato_processing = 'rejected';
+#
+# e da quel momento il controllo non lo rifiuta piu' (`candidato_oe`).
+
+CRITERIO_URL = "url"
+CRITERIO_CHIAVE = "ente-importo-scadenza"
+MOTIVO_ESCLUSO_A_MANO = "doppione escluso a mano"
+
+_RE_SEPARATORE_ENTE = re.compile(r"\s[-–—]\s")
+#: «di» e le preposizioni articolate, dopo la normalizzazione («dell'» -> «dell»).
+_ARTICOLATE = r"(?:di|del|dello|della|dell|dei|degli|delle)"
+_RE_GENERICI_ENTE = re.compile(
+    r"^(?:"
+    # «Regione Piemonte», «Regione Autonoma della Sardegna», «Regione del Veneto».
+    rf"regione(?: autonoma)?(?: {_ARTICOLATE})? "
+    # «Provincia autonoma di Trento», «Provincia di Cuneo».
+    rf"|provincia(?: autonoma)?(?: {_ARTICOLATE})? "
+    rf"|comune {_ARTICOLATE} "
+    # Tutto fino al primo «di» (o articolata): la ragione sociale della camera
+    # varia («Industria Artigianato e Agricoltura», con o senza «e»).
+    rf"|camera di commercio (?:(?:[a-z0-9]+ )*?{_ARTICOLATE} )?"
+    # «CCIAA» e «C.C.I.A.A.», che la normalizzazione rende «c c i a a».
+    rf"|(?:cciaa|c c i a a)(?: {_ARTICOLATE})? "
+    r"|gal "
+    r")+"
+)
+
+
+def ente_normalizzato(testo: Any) -> str:
+    """«Regione Piemonte - Direzione Welfare» e «Piemonte» -> «piemonte».
+
+    Minuscole, niente accenti, taglio a « - » o «(», via le parole generiche
+    in testa (regione, provincia, comune, camera di commercio fino al primo
+    «di», cciaa o c.c.i.a.a., gal) con la preposizione che le segue.
+    Vuoto se non resta niente: un ente vuoto non fa scattare il criterio 2.
+    """
+    if not testo:
+        return ""
+    s = unicodedata.normalize("NFKD", str(testo))
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    s = _RE_SEPARATORE_ENTE.split(s, maxsplit=1)[0].split("(", 1)[0]
+    s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+    return _RE_GENERICI_ENTE.sub("", s + " ").strip()
+
+
+def _e_oe(riga: Mapping[str, Any]) -> bool:
+    try:
+        return int(riga.get("fonte_id")) in FONTI_OE
+    except (TypeError, ValueError):
+        return False
+
+
+def _importo(valore: Any) -> int | None:
+    """Un importo positivo e finito, o None.
+
+    Il `budget` arriva dall'API di ObiettivoEuropa: un «Infinity» o un 1e400
+    (che il JSON legge come infinito) facevano sollevare a `int()` un
+    OverflowError, e lo step SEO si fermava a ogni giro finche' il record
+    restava com'era (revisione avversaria, S3).
+    """
+    try:
+        decimale = float(valore)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(decimale):
+        return None
+    try:
+        numero = int(decimale)
+    except (OverflowError, ValueError):                   # pragma: no cover - difesa
+        return None
+    return numero if numero > 0 else None
+
+
+def ente_del_candidato(riga: Mapping[str, Any]) -> str:
+    """L'ente del bando OE: la colonna, oppure il prefisso del titolo OE."""
+    ente = _testo(riga, "ente_erogatore")
+    if ente:
+        return ente
+    pezzi = _RE_SEPARATORE_ENTE.split(_testo(riga, "titolo_raw"), maxsplit=1)
+    return pezzi[0] if len(pezzi) == 2 else ""
+
+
+def importo_del_candidato(riga: Mapping[str, Any]) -> int | None:
+    """L'importo del bando OE: la colonna, oppure `raw_data.budget`."""
+    importo = _importo(riga.get("importo_totale_eur"))
+    return importo if importo is not None else _importo(_raw(riga).get("budget"))
+
+
+def chiave_doppione(ente: Any, importo: Any, scadenza: Any) -> tuple[str, int, str] | None:
+    """(ente normalizzato, importo, scadenza), o None se ne manca uno."""
+    ente_n = ente_normalizzato(ente)
+    importo_n = _importo(importo)
+    giorno = str(scadenza or "")[:10]
+    if not (ente_n and importo_n and giorno):
+        return None
+    return ente_n, importo_n, giorno
+
+
+def candidato_oe(riga: Mapping[str, Any]) -> bool:
+    """Il controllo guarda questa riga? Solo OE, `enriched`, non annullata a mano.
+
+    Annullamento di un rifiuto sbagliato (contratto di ottobre, §6), un solo
+    UPDATE nel SQL Editor:
+
+        update bando
+           set stato_processing = 'enriched',
+               rejection_reason = 'doppione escluso a mano'
+         where id = <id> and stato_processing = 'rejected';
+
+    Da quel momento la riga non e' piu' candidata, e al giro dopo va alla SEO.
+    """
+    return (
+        _e_oe(riga)
+        and riga.get("stato_processing") == "enriched"
+        and not riga.get("pubblicato")
+        and riga.get("rejection_reason") != MOTIVO_ESCLUSO_A_MANO
+    )
+
+
+@dataclass(frozen=True)
+class IndiceDoppioniOE:
+    """Le controparti possibili: pubblicati non fusi di fonti NON OE."""
+    per_url: Mapping[str, Any]
+    per_chiave: Mapping[tuple[str, int, str], Any]
+
+    @classmethod
+    def da_pubblicati(cls, righe: Iterable[Mapping[str, Any]]) -> "IndiceDoppioniOE":
+        """A parita' di URL o di chiave vince l'id piu' basso: la scelta non
+        deve cambiare fra un giro e l'altro."""
+        per_url: dict[str, Any] = {}
+        per_chiave: dict[tuple[str, int, str], Any] = {}
+        for riga in righe:
+            if _e_oe(riga) or riga.get("bando_master_id") is not None:
+                continue
+            if "pubblicato" in riga and not riga.get("pubblicato"):
+                continue
+            bando_id = riga.get("id")
+            if bando_id is None:
+                continue
+            url = _url_normalizzato(_testo(riga, "fonte_ufficiale_url") or None)
+            if url and (url not in per_url or bando_id < per_url[url]):
+                per_url[url] = bando_id
+            chiave = chiave_doppione(
+                riga.get("ente_erogatore"), riga.get("importo_totale_eur"), riga.get("data_scadenza"),
+            )
+            if chiave and (chiave not in per_chiave or bando_id < per_chiave[chiave]):
+                per_chiave[chiave] = bando_id
+        return cls(per_url, per_chiave)
+
+
+def doppione_oe(
+    candidato: Mapping[str, Any], indice: IndiceDoppioniOE,
+) -> tuple[Any, str] | None:
+    """(id del pubblicato, criterio) se il candidato ne e' un doppione probabile.
+
+    L'URL si guarda prima della chiave: e' la prova piu' forte, e il motivo
+    scritto nel rifiuto deve dire quella.
+    """
+    url = _url_normalizzato(_testo(candidato, "fonte_ufficiale_url") or None)
+    if url and url in indice.per_url:
+        return indice.per_url[url], CRITERIO_URL
+    chiave = chiave_doppione(
+        ente_del_candidato(candidato), importo_del_candidato(candidato),
+        candidato.get("data_scadenza"),
+    )
+    if chiave and chiave in indice.per_chiave:
+        return indice.per_chiave[chiave], CRITERIO_CHIAVE
+    return None
+
+
+def motivo_doppione(master_id: Any, criterio: str) -> str:
+    """Il `rejection_reason` del §6."""
+    return f"doppione probabile di {master_id}: {criterio}"

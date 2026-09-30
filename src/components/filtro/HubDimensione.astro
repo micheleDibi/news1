@@ -11,6 +11,7 @@ import Layout from '../../layouts/Layout.astro';
 import Sorelle from './Sorelle.astro';
 import TestataBandi from '../bandi/TestataBandi.astro';
 import { generateBreadcrumbStructuredData } from '../../lib/seo';
+import { proteggiJsonLd } from '../../lib/bandi/jsonld';
 import { configSezione, dimensione as trovaDimensione, type Sezione } from '../../config/pagine-filtro';
 import { vociPubblicate, hrefFiltro, hubDisponibili, hrefHub } from '../../lib/pagine-filtro';
 
@@ -74,7 +75,7 @@ const altreDimensioni = hubDisponibili(sezione)
   .map((d) => ({ etichetta: d.etichettaPlurale, href: hrefHub(sezione, d.slug) }));
 ---
 <Layout title={`${titolo} - EduNews24`} description={descrizione} canonicalUrl={canonical}>
-  <script type="application/ld+json" set:html={breadcrumb} slot="head" />
+  <script type="application/ld+json" set:html={proteggiJsonLd(breadcrumb)} slot="head" />
   {sezione === 'bandi' ? (
   // Bandi: la testata scura e i colori del design «Bandi Redesign», come la
   // lista e le pagine filtro. Interpelli e selezione restano com'erano.

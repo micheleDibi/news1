@@ -27,6 +27,10 @@ blocco = carica_modulo("blocco")
 ADESSO = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
 OGGI = date(2026, 9, 23)
 
+#: Le righe dei test sono della pulizia corrente: una riga senza versione con
+#: un `testo_norm` salvato verrebbe riallineata invece che confrontata.
+VERSIONE = {"__versione__": monitoraggio.impronte.VERSIONE_PULIZIA}
+
 
 def _impostazioni(**extra):
     base = dict(
@@ -60,6 +64,7 @@ def _bando(**extra):
         "data_scadenza": None,
         "prossimo_controllo_at": (ADESSO - timedelta(hours=1)).isoformat(),
         "impronta_contenuto": "",
+        "impronte_sezioni": dict(VERSIONE),
         "controlli_falliti": 0,
     }
     base.update(extra)
@@ -1118,7 +1123,7 @@ class TestDiffTestoConTesto(unittest.IsolatedAsyncioTestCase):
 
         riga = _bando(testo_norm="Avviso\nDomande entro il 5 ottobre 2026.",
                       impronta_contenuto="vecchia",
-                      impronte_sezioni={"__link__": []})
+                      impronte_sezioni={"__link__": [], **VERSIONE})
 
         async def scarica(url, **kw):
             return _Risposta(html="<main><h1>Avviso</h1><p>Domande entro il 30 ottobre 2026.</p></main>")
@@ -1137,7 +1142,7 @@ class TestDiffTestoConTesto(unittest.IsolatedAsyncioTestCase):
             return []
 
         riga = _bando(testo_norm="Avviso\nLe domande entro il 6 ottobre 2026.",
-                      impronta_contenuto="vecchia", impronte_sezioni={"avviso": "x"})
+                      impronta_contenuto="vecchia", impronte_sezioni={"avviso": "x", **VERSIONE})
 
         async def scarica(url, **kw):
             return _Risposta(html=self.DOPO)
@@ -1146,6 +1151,415 @@ class TestDiffTestoConTesto(unittest.IsolatedAsyncioTestCase):
             riga, scarica=scarica, classifica=classifica,
             fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
         self.assertEqual(visti[-1].link_aggiunti, ())
+
+
+class TestLinkDiUnAltraPulizia(unittest.IsolatedAsyncioTestCase):
+    """Revisione avversaria del 30/09/2026 (R9): una pagina cieca aveva testo
+    vuoto con la v1, quindi `testo_norm` NULL (non e' stantia) ma `__link__`
+    salvato. Con la v2 i link del contenuto diventerebbero tutti «comparsi»."""
+
+    DOPO = TestDiffTestoConTesto.DOPO
+
+    async def _link_aggiunti(self, impronte_sezioni):
+        visti = []
+
+        async def classifica(ctx):
+            visti.append(ctx.diff)
+            return []
+
+        async def scarica(url, **kw):
+            return _Risposta(html=self.DOPO)
+
+        await monitoraggio.controlla(
+            _bando(testo_norm=None, impronta_contenuto="v1", impronte_sezioni=impronte_sezioni),
+            scarica=scarica, classifica=classifica, fonte_dati=monitoraggio.FonteDati(),
+            adesso=ADESSO, casuale=lambda: 0.5)
+        return visti[-1].link_aggiunti
+
+    async def test_link_della_v1_non_sono_un_prima(self):
+        self.assertEqual(await self._link_aggiunti({"__link__": []}), ())
+
+    async def test_link_della_versione_corrente_si_confrontano(self):
+        aggiunti = await self._link_aggiunti({"__link__": [], **VERSIONE})
+        self.assertTrue(aggiunti)
+
+
+class TestRiallineamento(unittest.IsolatedAsyncioTestCase):
+    """Cambio di pulizia (v1 → v2, 30/09/2026): la riga si riallinea, non si
+    confronta (contratto di ottobre 2026, §4).
+
+    Con la v1 il `testo_norm` delle pagine cieche era il solo `<title>`: un
+    diff con la v2 renderebbe «nuova» la pagina intera, e il primo giro dopo il
+    deploy classificherebbe tutte le 164 pagine cieche.
+    """
+
+    HTML = ('<html><head><title>Avviso | Regione</title></head><body>'
+            '<main class="main-content sidebar-offcanvas"><h1>Avviso</h1>'
+            '<p>Domande prorogate al 30 ottobre 2026.</p>'
+            '<p><a href="https://www.lazioeuropa.it/proroga.pdf">Determina di proroga</a></p>'
+            '</main></body></html>')
+
+    def _stantia(self, **extra):
+        # Com'e' oggi una pagina cieca del Piemonte: impronta e testo della v1,
+        # `__link__` del rilascio 2, nessuna versione.
+        base = dict(testo_norm="Avviso | Regione", impronta_contenuto="impronta-v1",
+                    impronte_sezioni={"__link__": []}, etag='W/"v1"',
+                    last_modified="Mon, 28 Sep 2026 10:00:00 GMT", controlli_falliti=2)
+        base.update(extra)
+        return _bando(**base)
+
+    async def _controlla(self, riga, *, scarica=None, dati=None, **kw):
+        chiamate = []
+
+        async def classifica(ctx):
+            chiamate.append(ctx)
+            return [eventi.Evento(tipo="proroga", valore="2026-10-30",
+                                  citazione="prorogate al 30 ottobre 2026", url_prova="x")]
+
+        async def scarica_ok(url, **_kw):
+            return _Risposta(html=self.HTML, etag='W/"v2"')
+
+        esito = await monitoraggio.controlla(
+            riga, scarica=scarica or scarica_ok, classifica=classifica,
+            fonte_dati=dati if dati is not None else monitoraggio.FonteDati(),
+            adesso=ADESSO, casuale=lambda: 0.5, **kw)
+        return esito, chiamate
+
+    async def test_riga_stantia_si_riallinea_senza_modello(self):
+        dati = monitoraggio.FonteDati()
+        esito, chiamate = await self._controlla(self._stantia(), dati=dati)
+        self.assertEqual(chiamate, [])                      # nessuna classificazione
+        self.assertEqual(esito.esito, "invariato")
+        self.assertTrue(esito.riallineato)
+        self.assertIn("riallineamento", esito.motivo)
+        self.assertFalse(esito.classificato)
+        self.assertEqual(esito.eventi, ())
+        self.assertEqual(esito.respinti, ())
+        self.assertEqual(dati.registrati, [])               # nessun evento a DB
+
+        colonne = esito.colonne
+        impronte = monitoraggio.impronte
+        self.assertEqual(colonne["impronta_contenuto"], impronte.impronta_contenuto(self.HTML))
+        self.assertEqual(monitoraggio.testo_da_colonna(colonne["testo_norm"]),
+                         impronte.testo_normalizzato(self.HTML))
+        self.assertIn("Domande prorogate al 30 ottobre 2026.",
+                      monitoraggio.testo_da_colonna(colonne["testo_norm"]))
+        sezioni = colonne["impronte_sezioni"]
+        self.assertEqual(sezioni["__versione__"], impronte.VERSIONE_PULIZIA)
+        self.assertEqual(sezioni["__link__"],
+                         [impronte.normalizza_url("https://www.lazioeuropa.it/proroga.pdf")])
+        self.assertEqual(colonne["etag"], 'W/"v2"')
+        # Il prossimo controllo come per una pagina invariata.
+        self.assertEqual(colonne["controlli_falliti"], 0)
+        self.assertEqual(colonne["prossimo_controllo_at"], esito.prossimo.isoformat())
+        self.assertEqual(esito.prossimo, monitoraggio.prossimo_controllo(
+            self._stantia(), adesso=ADESSO, casuale=lambda: 0.5))
+        self.assertEqual(dati.scritture, [(1, colonne)])
+
+    async def test_dopo_il_riallineamento_il_diff_torna_normale(self):
+        primo, _ = await self._controlla(self._stantia())
+        riga = dict(self._stantia(), **primo.colonne)
+        # Stessa pagina: invariata per impronta, niente modello.
+        secondo, chiamate = await self._controlla(riga)
+        self.assertEqual(chiamate, [])
+        self.assertFalse(secondo.riallineato)
+        self.assertEqual(secondo.esito, "invariato")
+
+        # Pagina cambiata davvero: questa volta il modello la vede.
+        async def scarica_nuova(url, **kw):
+            return _Risposta(html=self.HTML.replace("30 ottobre", "15 novembre"))
+
+        terzo, chiamate = await self._controlla(riga, scarica=scarica_nuova)
+        self.assertEqual(len(chiamate), 1)
+        self.assertFalse(terzo.riallineato)
+        self.assertIn("Domande prorogate al 15 novembre 2026.", chiamate[0].diff.righe_aggiunte)
+
+    async def test_la_get_e_piena_sulla_riga_stantia(self):
+        intestazioni = []
+
+        async def scarica(url, **kw):
+            intestazioni.append((kw.get("etag"), kw.get("modificata_dopo")))
+            return _Risposta(html=self.HTML)
+
+        await self._controlla(self._stantia(), scarica=scarica)
+        self.assertEqual(intestazioni, [(None, None)])
+        # Una riga della versione corrente manda le sue testate come sempre.
+        corrente = self._stantia(impronte_sezioni={"__link__": [], **VERSIONE})
+        await self._controlla(corrente, scarica=scarica)
+        self.assertEqual(intestazioni[-1], ('W/"v1"', "Mon, 28 Sep 2026 10:00:00 GMT"))
+
+    async def test_un_304_senza_etag_non_riallinea_e_riprova_dopo(self):
+        # Il server ignora l'assenza dell'etag e risponde 304: niente corpo,
+        # niente riallineamento. La versione resta la vecchia e il controllo
+        # dopo ci riprova.
+        async def scarica_304(url, **kw):
+            return _Risposta(stato=304)
+
+        esito, chiamate = await self._controlla(self._stantia(), scarica=scarica_304)
+        self.assertEqual(esito.esito, "304")
+        self.assertFalse(esito.riallineato)
+        self.assertEqual(chiamate, [])
+        self.assertNotIn("impronte_sezioni", esito.colonne)
+        self.assertNotIn("testo_norm", esito.colonne)
+
+        dopo = dict(self._stantia(), **esito.colonne)
+        self.assertEqual(monitoraggio.impronte.versione_pulizia(dopo["impronte_sezioni"]), 1)
+        secondo, chiamate = await self._controlla(dopo)
+        self.assertTrue(secondo.riallineato)
+        self.assertEqual(chiamate, [])
+
+    async def test_uno_scarico_fallito_non_riallinea(self):
+        async def scarica_503(url, **kw):
+            return _Risposta(stato=503)
+
+        esito, chiamate = await self._controlla(self._stantia(), scarica=scarica_503)
+        self.assertEqual(esito.esito, "errore")
+        self.assertFalse(esito.riallineato)
+        self.assertEqual(chiamate, [])
+        self.assertEqual(esito.colonne["controlli_falliti"], 3)
+        self.assertNotIn("impronte_sezioni", esito.colonne)
+
+    async def test_il_segnale_macchina_non_ferma_il_riallineamento(self):
+        async def fermo(_riga):
+            return False                                    # «non e' cambiato niente»
+
+        esito, _ = await self._controlla(self._stantia(), segnale_macchina=fermo)
+        self.assertTrue(esito.riallineato)
+        corrente = self._stantia(impronte_sezioni={"__link__": [], **VERSIONE})
+        esito, _ = await self._controlla(corrente, segnale_macchina=fermo)
+        self.assertEqual(esito.motivo, "segnale macchina: nessuna modifica")
+
+    async def test_la_prima_lettura_resta_una_prima_lettura(self):
+        # Nessun `testo_norm`: niente da riallineare, il modello vede la pagina.
+        prima = _bando(impronte_sezioni=None)
+        esito, chiamate = await self._controlla(prima)
+        self.assertFalse(esito.riallineato)
+        self.assertEqual(len(chiamate), 1)
+        self.assertEqual(esito.colonne["impronte_sezioni"]["__versione__"],
+                         monitoraggio.impronte.VERSIONE_PULIZIA)
+
+    async def test_ogni_salvataggio_scrive_la_versione(self):
+        # Anche dopo una classificazione: la riga non deve tornare stantia.
+        corrente = self._stantia(impronte_sezioni={"__link__": [], **VERSIONE})
+        esito, chiamate = await self._controlla(corrente)
+        self.assertEqual(len(chiamate), 1)
+        self.assertEqual(esito.colonne["impronte_sezioni"]["__versione__"],
+                         monitoraggio.impronte.VERSIONE_PULIZIA)
+
+    async def test_dry_run_riallinea_senza_scrivere(self):
+        dati = monitoraggio.FonteDati()
+        esito, _ = await self._controlla(self._stantia(), dati=dati, dry_run=True)
+        self.assertTrue(esito.riallineato)
+        self.assertEqual(dati.scritture, [])
+
+    async def test_testo_vuoto_non_riallinea(self):
+        # Revisione avversaria del 30/09/2026: con il testo normalizzato vuoto
+        # `testo_norm` non si scriverebbe, e impronta e versione nuove
+        # starebbero accanto al «prima» della v1.
+        async def scarica_vuota(url, **kw):
+            return _Risposta(html="<html><body><script>app()</script><p> </p></body></html>")
+
+        dati = monitoraggio.FonteDati()
+        esito, chiamate = await self._controlla(self._stantia(), scarica=scarica_vuota, dati=dati)
+        self.assertEqual(chiamate, [])
+        self.assertFalse(esito.riallineato)
+        self.assertEqual(esito.esito, "invariato")
+        self.assertIn("rinviato", esito.motivo)
+        for colonna in ("impronta_contenuto", "impronte_sezioni", "testo_norm"):
+            self.assertNotIn(colonna, esito.colonne)
+        self.assertTrue(monitoraggio.riga_stantia(dict(self._stantia(), **esito.colonne)))
+
+    async def test_senza_classificatore_la_riga_stantia_si_riallinea(self):
+        # Revisione del 30/09/2026 (P2.1): il riallineamento non chiama il
+        # modello, quindi avviene anche senza classificatore.
+        async def scarica(url, **kw):
+            return _Risposta(html=self.HTML)
+
+        dati = monitoraggio.FonteDati()
+        esito = await monitoraggio.controlla(
+            self._stantia(), scarica=scarica, classifica=None, fonte_dati=dati,
+            adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertTrue(esito.riallineato)
+        self.assertEqual(esito.colonne["impronte_sezioni"]["__versione__"],
+                         monitoraggio.impronte.VERSIONE_PULIZIA)
+        self.assertEqual(len(dati.scritture), 1)
+        # Una riga della versione corrente, senza modello, resta saltata e
+        # non paga nemmeno la GET.
+        chiamate = []
+
+        async def scarica_contata(url, **kw):
+            chiamate.append(url)
+            return _Risposta(html=self.HTML)
+
+        corrente = self._stantia(impronte_sezioni={"__link__": [], **VERSIONE})
+        esito = await monitoraggio.controlla(
+            corrente, scarica=scarica_contata, classifica=None, fonte_dati=dati,
+            adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(esito.esito, "saltato")
+        self.assertEqual(esito.motivo, "nessun classificatore disponibile")
+        self.assertEqual(chiamate, [])
+
+    async def test_il_giro_senza_modello_riallinea_e_resta_non_configurato(self):
+        righe = [self._stantia(id=1), self._stantia(id=2),
+                 self._stantia(id=3, impronte_sezioni={"__link__": [], **VERSIONE})]
+
+        async def scarica(url, **kw):
+            return _Risposta(html=self.HTML)
+
+        with patch.object(monitoraggio, "classificatore_da_impostazioni",
+                          lambda *a, **k: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(), fonte_dati=_FonteSenzaLimite(righe=righe),
+                scarica=scarica, tabella_domini={}, lock=_lock_libero(), adesso=ADESSO,
+                casuale=lambda: 0.5)
+        self.assertEqual(esito["riallineate"], 2)
+        self.assertEqual(esito["classificazioni"], 0)
+        # Resta un giro non configurato (exit 5), e lo dice.
+        self.assertEqual(esito["saltato"], "scarico_non_configurato")
+        self.assertEqual(esito["candidati"], 3)
+        self.assertTrue(any("nessun classificatore" in a for a in esito["allarmi"]))
+
+    async def test_il_giro_conta_le_righe_riallineate(self):
+        righe = [self._stantia(id=1), self._stantia(id=2),
+                 self._stantia(id=3, impronte_sezioni={"__link__": [], **VERSIONE})]
+        dati = _FonteSenzaLimite(righe=righe)
+        chiamate = []
+
+        async def classifica(ctx):
+            chiamate.append(ctx)
+            return []
+
+        async def scarica(url, **kw):
+            return _Risposta(html=self.HTML)
+
+        esito = await monitoraggio.run(
+            impostazioni=_impostazioni(), fonte_dati=dati, scarica=scarica,
+            classifica=classifica, tabella_domini={}, lock=_lock_libero(), adesso=ADESSO,
+            casuale=lambda: 0.5)
+        self.assertEqual(esito["riallineate"], 2)
+        self.assertEqual(esito["non_modificati"], 2)        # le riallineate ne fanno parte
+        self.assertEqual(esito["classificazioni"], 1)       # solo la riga della v2
+        self.assertEqual(len(chiamate), 1)
+
+
+class TestHostIrraggiungibile(unittest.IsolatedAsyncioTestCase):
+    """DNS rotto (contratto di ottobre 2026, §5): la fonte non si e' letta e
+    non e' colpa della pagina. Fino al 30/09/2026 era un errore: cinque giri
+    di DNS rotto e la fonte tornava al resolver."""
+
+    HOST = "portalebandi.regione.basilicata.it"
+
+    async def _scarica_morto(self, url, **kw):
+        return SimpleNamespace(url=url, stato=None, html="", testo="", ok=False, vuota=True,
+                               host_irraggiungibile=True)
+
+    async def test_saltato_solo_il_prossimo_controllo_a_domani(self):
+        dati = monitoraggio.FonteDati()
+        riga = _bando(fonte_ufficiale_url=f"https://{self.HOST}/avvisi-e-bandi/a/",
+                      testo_norm="Avviso", impronta_contenuto="x", controlli_falliti=4)
+        esito = await monitoraggio.controlla(
+            riga, scarica=self._scarica_morto, classifica=_nessun_evento, fonte_dati=dati,
+            adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(esito.esito, "saltato")
+        self.assertEqual(esito.motivo, "host irraggiungibile (DNS)")
+        self.assertEqual(esito.host_irraggiungibile, self.HOST)
+        # L'unica colonna: domani, mezzanotte di Roma (ADESSO e' il 23/09 alle
+        # 14 di Roma). Niente `controlli_falliti`: al quinto fallimento la fonte
+        # sarebbe tornata al resolver.
+        self.assertEqual(esito.colonne, {"prossimo_controllo_at": "2026-09-24T00:00:00+02:00"})
+        self.assertEqual(dati.scritture, [(1, esito.colonne)])
+        self.assertEqual(esito.fetch, 0)
+
+    async def test_in_dry_run_il_saltato_non_scrive(self):
+        dati = monitoraggio.FonteDati()
+        await monitoraggio.controlla(
+            _bando(fonte_ufficiale_url=f"https://{self.HOST}/a/"), scarica=self._scarica_morto,
+            classifica=_nessun_evento, fonte_dati=dati, adesso=ADESSO, dry_run=True)
+        self.assertEqual(dati.scritture, [])
+
+    async def _giro_con_host_morti(self, quanti):
+        righe = [_bando(id=n, fonte_ufficiale_url=f"https://ente{n}.example.it/a/")
+                 for n in range(1, quanti + 1)] + [_bando(id=99)]
+
+        async def scarica(url, **kw):
+            if "example.it" in url:
+                return await self._scarica_morto(url)
+            return _Risposta(html="<main><h1>Avviso</h1><p>Testo.</p></main>")
+
+        return await monitoraggio.run(
+            impostazioni=_impostazioni(), fonte_dati=_FonteSenzaLimite(righe=righe),
+            scarica=scarica, classifica=_nessun_evento, tabella_domini={}, lock=_lock_libero(),
+            adesso=ADESSO, casuale=lambda: 0.5)
+
+    async def test_cinque_host_morti_allarme_resolver_locale(self):
+        # Decisione del lead del 30/09/2026: da cinque host distinti in su e'
+        # piu' probabile il resolver del server giu' che cinque enti.
+        esito = await self._giro_con_host_morti(5)
+        self.assertEqual(esito["host_irraggiungibili"], 5)
+        (allarme,) = [a for a in esito["allarmi"] if "resolver locale?" in a]
+        self.assertIn("5 host irraggiungibili", allarme)
+
+    async def test_quattro_host_morti_niente_allarme(self):
+        esito = await self._giro_con_host_morti(4)
+        self.assertEqual(esito["host_irraggiungibili"], 4)
+        self.assertFalse(any("resolver locale?" in a for a in esito["allarmi"]))
+
+    async def test_i_saltati_non_consumano_il_tetto_dei_fetch(self):
+        # Revisione #23: con il tetto di un fetch per giro, due righe morte in
+        # testa alla coda non devono impedire il controllo della riga viva.
+        righe = [
+            _bando(id=1, fonte_ufficiale_url=f"https://{self.HOST}/a/"),
+            _bando(id=2, fonte_ufficiale_url=f"https://{self.HOST}/b/"),
+            _bando(id=3),
+        ]
+
+        async def scarica(url, **kw):
+            if self.HOST in url:
+                return await self._scarica_morto(url)
+            return _Risposta(html="<main><h1>Avviso</h1><p>Testo.</p></main>")
+
+        esito = await monitoraggio.run(
+            impostazioni=_impostazioni(tetto_fetch_giro=1),
+            fonte_dati=_FonteSenzaLimite(righe=righe), scarica=scarica,
+            classifica=_nessun_evento, tabella_domini={}, lock=_lock_libero(), adesso=ADESSO,
+            casuale=lambda: 0.5)
+        self.assertFalse(esito["interrotto_per_tetto"])
+        self.assertEqual(esito["controllati"], 1)
+        self.assertEqual(esito["saltati"], 2)
+        self.assertEqual(esito["fetch"], 1)
+
+    async def test_un_errore_di_rete_normale_resta_un_errore(self):
+        async def scarica(url, **kw):
+            return _Risposta(stato=None)
+
+        esito = await monitoraggio.controlla(
+            _bando(testo_norm="Avviso"), scarica=scarica, classifica=_nessun_evento,
+            fonte_dati=monitoraggio.FonteDati(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(esito.esito, "errore")
+        self.assertIsNone(esito.host_irraggiungibile)
+        self.assertEqual(esito.colonne["controlli_falliti"], 1)
+
+    async def test_il_giro_elenca_gli_host(self):
+        righe = [
+            _bando(id=1, fonte_ufficiale_url=f"https://{self.HOST}/a/"),
+            _bando(id=2, fonte_ufficiale_url=f"https://www.{self.HOST}/b/"),
+            _bando(id=3),
+        ]
+
+        async def scarica(url, **kw):
+            if self.HOST in url:
+                return await self._scarica_morto(url)
+            return _Risposta(html="<main><h1>Avviso</h1><p>Testo.</p></main>")
+
+        esito = await monitoraggio.run(
+            impostazioni=_impostazioni(), fonte_dati=_FonteSenzaLimite(righe=righe),
+            scarica=scarica, classifica=_nessun_evento, tabella_domini={}, lock=_lock_libero(),
+            adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(esito["saltati"], 2)
+        self.assertEqual(esito["controllati"], 1)
+        self.assertEqual(esito["host_irraggiungibili"], 1)
+        self.assertEqual(esito["host_irraggiungibili_elenco"], [self.HOST])
+        self.assertEqual(esito["errori"], 0)
 
 
 class TestMonitorAttivoSenzaRpc(unittest.IsolatedAsyncioTestCase):
@@ -1171,10 +1585,17 @@ class TestMonitorAttivoSenzaRpc(unittest.IsolatedAsyncioTestCase):
             rigenerate.append(args)
             return {}
 
-        dati = monitoraggio.FonteDati()
+        # Il `contenuto` sta nella «tabella» della fonte dati: la riga del
+        # monitor non lo porta, e la rigenerazione lo rilegge (revisione del
+        # 30/09/2026).
+        dati = monitoraggio.FonteDati(righe=[_bando(
+            contenuto="Le domande entro il 15 novembre 2026.", descrizione_breve=None)])
         with patch.object(monitoraggio.eventi_mod, "applica", lambda proposta, ctx: applicazione):
             esito = await monitoraggio.controlla(
-                _bando(testo_norm="Avviso", impronta_contenuto="vecchia"),
+                # Una proroga sposta una scadenza che c'era: e' quella vecchia
+                # che la prosa va a sostituire.
+                _bando(testo_norm="Avviso", impronta_contenuto="vecchia",
+                       data_scadenza="2026-11-15"),
                 scarica=scarica, classifica=classifica, fonte_dati=dati,
                 rigenerazione=rigenerazione, modalita="attivo", adesso=ADESSO,
                 casuale=lambda: 0.5)
