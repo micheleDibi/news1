@@ -183,6 +183,16 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > `src/components/filtro/{HubDimensione,PaginaFiltro}.astro` e il test relativo). Fuori da questo elenco la regola
 > sopra resta in vigore.
 
+> **Deroga registrata (intervento "giro 2 dei bandi", percorso B «sorveglianza», dal 30/09/2026 sera, branch
+> `claude/bandi-giro-2`).** Su richiesta esplicita dell'utente, limitatamente a questo intervento, si modificano o creano:
+> `scraper_bandi/app/{telemetria,bando_runner,db,__main__}.py`, i nuovi `scraper_bandi/app/{riepilogo_salute,
+> sorveglianza}.py`, `scraper_bandi/deploy/` (unit di esempio), `scraper_bandi/README.md` e i relativi test;
+> `backend/app/{bandi_pipeline,bandi_sender}.py` e i loro test; `backend/sql/bando_v11_12_monitoraggio.sql` e il suo
+> rollback (**scritti e mai eseguiti**: li applica l'utente); `docs/contratto-db-bandi.md`, `docs/contracts/**`,
+> `docs/bandi-monitor/**`. Nessuna notifica push: la scelta «niente Telegram/email» è **confermata** il 30/09.
+> Contratto interno: `docs/contracts/bandi-giro-2.md`. Il percorso A («stato da verificare») avrà una sua deroga
+> quando partirà. Fuori da questo elenco la regola sopra resta in vigore.
+
 Inoltre, sempre (non toccati dalle deroghe):
 - Credenziali mai in file tracciati (vivono in `.env`, `scraper_bandi/.env`,
   `src/pages/api/tts/google-credentials.json`, tutti ignorati da git); `google-credentials.json` mai in `public/`.
