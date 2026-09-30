@@ -67,8 +67,15 @@ Le priorità interne sono sempre sulla scala **0-100**.
 
 Definita `CREATE VIEW … WITH (security_invoker = true)`, con `GRANT SELECT` ad `anon`, e filtrata
 `WHERE pubblicato`. Essendo `security_invoker`, la RLS di `bando` resta il guardiano: la vista non
-scavalca nessun permesso e resta inlinabile dal planner (gli embed PostgREST e `count=exact`
-funzionano come su una tabella).
+scavalca nessun permesso e resta inlinabile dal planner (`count=exact` funziona come su una
+tabella).
+
+**Embed di `bando_link` (aggiornamento del 30/09/2026).** È garantito l'embed
+`bando_pubblico?select=…,bando_link!bando_id(<colonne concesse, per nome>)`, con la stessa RLS e le stesse colonne
+di §5. Filtri, ordine e limite sul figlio sono ammessi (`bando_link.tipo=in.(…)&bando_link.order=id&bando_link.limit=200`)
+e non tolgono righe al padre. `bando_link(*)`, o una colonna non concessa, fa fallire l'intera richiesta (42501).
+Usare sempre l'hint `!bando_id`: sulla tabella `bando` l'embed senza hint è ambiguo (PGRST201). Una modifica della
+vista che crea una seconda relazione con `bando_link` è un cambio di contratto annunciato.
 
 **La vista contiene i soli bandi pubblicati e non fusi.** Un `id` o uno slug che non si trova qui
 va risolto su `bando_fusione` / `bando_slug_storico` (§6).
@@ -107,6 +114,12 @@ va risolto su `bando_fusione` / `bando_slug_storico` (§6).
 **Assenti per scelta**, e non torneranno: `raw_data`, `hash_bando`, `fonte_id`,
 `confidence_score`, `rejection_reason`, `canonical_key`, `fonti_aggiuntive`, `updated_at`,
 `bando_master_id`, e tutte le colonne di controllo del monitor.
+
+**`stato_effettivo` è NOT NULL** su ogni riga della vista. Lo garantiscono insieme il CHECK
+`bando_pubblicato_implica_completed` della 01 (pubblicato ⇒ `stato_bando` NOT NULL) e il CHECK a cinque valori
+`bando_stato_bando_check` della 06. La vista non espone la colonna `pubblicato`: un filtro `pubblicato=eq.true`
+risponde 42703 (N4 = leggere la vista). Il jsonb `allegati` non ha un CHECK sulla forma: il consumatore tratta un
+non-array come `[]` e scarta ogni elemento senza `url` stringa.
 
 Fino alla fase (d) la tabella `bando` resta leggibile con la anon key con tutte le colonne di
 oggi e la RLS attuale. Nella (d) escono dalla vista `stato_processing`, `link_bando`,
@@ -174,10 +187,16 @@ Colonne concesse: `id`, `bando_id`, `url`, `dominio`, `tipo`, `etichetta`, `cont
 pagina di riferimento. La garanzia è data sia dal worker sia dal database: due CHECK negano
 `pubblicabile = true` senza un `esito_http` 2xx e senza la data in cui il link è stato trovato
 nella fonte, e un trigger nega la pubblicabilità di qualunque riga su un dominio aggregatore.
+Le garanzie valgono per le righe leggibili di `bando_link`, non per `fonte_ufficiale_url`, che è NOT NULL se e solo
+se `fonte_ufficiale_stato='trovata'` (CHECK `bando_fonte_coerente`): il DB non verifica che la riga puntata sia ancora
+`pubblicabile`. `content_type` non ha un formato fisso (estensione o MIME): va usato solo come indizio. Oggi 20 righe
+`allegato` hanno spazi non codificati nell'URL: fino a nuovo avviso il consumatore codifica lo spazio come `%20`.
 
 **CTA consigliata**, in ordine: una riga `tipo='candidatura'` → altrimenti
 `fonte_ufficiale_url` → altrimenti una riga `tipo='portale'`.
-Fino alla fase (d) vale l'ordine esteso di §5.1, con i ripieghi sulle colonne deprecate.
+Fino alla fase (d) vale l'ordine esteso di §5.1, con i ripieghi sulle colonne deprecate. Fra più righe leggibili
+dello stesso `tipo` vince quella con l'id più basso (lettura con `order=id`); non si usa `ultimo_visto_at`, che
+avanza a ogni verifica. `pagina_bando` non entra nell'ordine del pulsante finché il produttore non decide per iscritto.
 
 Upsert lato produttore su `(bando_id, url_normalizzato)`; `url` è immutabile.
 
@@ -197,6 +216,15 @@ Alla stessa blocklist appartengono i domini social, video e di messaggistica
 
 L'elenco vive nella tabella interna `dominio_ufficiale` (righe `tipo='aggregatore'`); ogni
 modifica viene annunciata con un avviso.
+
+**Cintura del consumatore (30/09/2026).** Il filtro del DB ha tre limiti noti, da chiudere lato produttore:
+`dominio_di` non tratta `\` come `/`; sul jsonb un host non riconosciuto passa; lo schema dell'URL non è
+controllato. Perciò il consumatore applica a ogni URL che mostra (colonne deprecate, jsonb, `bando_link`,
+`fonte_ufficiale_url`): parsing WHATWG riuscito; protocollo `http:` o `https:`; host (minuscolo, senza `www.` né
+punto finale) fuori dai domini elencati e dai loro sottodomini; scarto della stringa grezza con `\`, caratteri di
+controllo o un secondo `http(s)://` dopo uno spazio. Un URL che fallisce non si mostra e si passa al passo
+successivo dell'ordine. `rpc/dominio_di` e `rpc/bando_host_aggregatore` non vanno usate come oracolo: la 07 le
+revoca ad anon.
 
 ### 5.1 Dove si legge dopo la 07 (aggiornamento del 30/09/2026)
 
@@ -231,7 +259,12 @@ tiene non pubblicabili, quindi anon non le legge.
      `fonte_ufficiale_url` → riga `tipo='portale'` → `link_bando`. Con quest'ordine nessuno degli
      827 bandi con pulsante lo perde o cambia destinazione;
    - **allegati**: le righe `atto`/`allegato` di `bando_link`, più il jsonb `allegati`, senza
-     doppioni per URL.
+     doppioni per URL. La chiave dei doppioni è la normalizzazione di `bando_normalizza_url`, replicata dal
+     consumatore (`url_normalizzato` non è concesso): trim; schema e host minuscoli; via `www.`, porta :80/:443,
+     frammento, `utm_*`/`fbclid`/`gclid`/`msclkid`/`_ga` e slash finale; http e https restano diversi. A parità vince
+     la riga di `bando_link`. Etichetta: `etichetta` se non vuota, poi `label` del jsonb, poi il nome del file. Ordine:
+     righe per id, poi il jsonb nell'ordine dell'array. Si toglie dagli allegati un URL uguale al pulsante. Misura
+     del 30/09 alle 17:30 con il filtro reale del consumatore: 433 bandi con almeno un allegato.
 
    `link_candidatura`, `link_bando` e `allegati` sono colonne deprecate. Restano nella vista fino
    alla (d), ma **senza le garanzie di §5**: 2xx e link visto nella fonte non sono verificati.
@@ -309,8 +342,21 @@ leggibili solo gli eventi nati dopo l'attivazione. L'arretrato raccolto in ombra
 
 `bando_fusione(bando_id, slug_originale, master_id, master_slug, motivo, fuso_at)`, leggibile su
 tutte le righe. Da un `bando_id` o da uno slug salvato prima della fusione si risale al master;
-la riga resta finché esiste il master; le catene vengono appiattite dal produttore, quindi
-`master_id` è sempre il master corrente.
+la riga resta finché il doppione non viene separato (`bando_separa` la cancella, porta a «annullato» il 301 dello
+storico e lascia sul master i link copiati); le catene vengono appiattite dal produttore, quindi `master_id` è
+sempre il master corrente. `fuso_at` non cambia quando una catena viene appiattita: non segnala i cambiamenti.
+La fusione è atomica rispetto alla vista (una sola transazione). Dopo una fusione le righe `bando_link` del
+doppione si **copiano** sul master (a parità di URL normalizzato vince il master), mentre le junction restano sul
+doppione: link e junction si leggono solo per gli id presenti nella vista. Primo allineamento:
+`order=bando_id.asc&limit=1000`, poi `bando_id=gt.<ultimo>`; una riconciliazione periodica per id su
+`bando_fusione` equivale al cursore sugli eventi `fusione`.
+
+**Separazione.** L'evento `separazione` nasce solo sul bando separato: origine `redazione`, campo
+`bando_master_id`, `in_aggiornamenti=false`, `valore_prima` NULL, `valore_dopo` `{"master_id": null,
+"separato_da": <ex master>}`. Riceve il cursore solo se il bando torna subito pubblicato. Il bando torna nella vista
+con lo stesso id, slug e `pubblicato_at`. Lato consumatore si ripristina (inverso della rimappatura) solo se il
+doppione è di nuovo in `bando_pubblico`; mai verso un id assente dalla vista, e mai cancellando righe dell'utente
+sul master. news1 avvisa prima di ogni separazione.
 
 **Regola per i consumatori.** La vista contiene solo i pubblicati non fusi; un doppione fuso ha
 `pubblicato = false` (e resta `completed` con il suo slug fino alla fase (d)). Le fusioni
@@ -382,6 +428,11 @@ errori PostgREST in 5xx restituirebbe 502.
 
 **Timeout.** Il ruolo `anon` ha `statement_timeout = 3 s`. Un superamento si manifesta come
 errore PostgREST `57014`.
+
+**Paginazione.** Con `Prefer: count=exact`, un offset oltre il numero di righe risponde HTTP 416 `PGRST103`, non
+200 `[]`: chi pagina due segmenti salta la query quando offset ≥ count del segmento, oppure tratta `PGRST103` come
+pagina vuota. **Identificatori.** `bando.id` è int4 (massimo 2^31-1, oggi 1 262 520); gli id hanno buchi ampi e non
+misurano il numero di righe; un cambio di tipo è un cambio di contratto annunciato.
 
 **Indici utilizzabili.** La vista è `security_invoker` e inlinabile: i filtri su `stato_bando`,
 `data_scadenza`, `data_apertura`, le FK dei cataloghi, gli importi, le junction (`!inner` con
@@ -475,6 +526,20 @@ Cose che è meglio sapere prima che succedano.
 | **(c)** | il consumatore passa a leggere `bando_pubblico`, `bando_link`, `bando_evento`, `bando_fusione`, `bando_slug_storico`; rimappa i `bando_id` fusi e risolve i miss; ricerca su `ricerca` | nessuna migrazione |
 | **(d)** | conferma scritta che la (c) è in produzione, **e** la misura di §5.1 senza bandi aperti o in apertura che perdono pulsante o allegati | migrazione 07: RLS su `pubblicato`, REVOKE di colonna su `bando`, vista senza le colonne deprecate |
 
+**Stato al 30/09/2026.** La fase (c) di BandoFit, passo **c1**, è in produzione dal 30/09/2026 (commit 878acb0 e
+f5e232d di BandoFit, conferma scritta del 30/09). Legge `bando_pubblico`, `bando_link`, `bando_slug_storico` e
+`bando_fusione`, mai la tabella `bando`. Mantiene i ripieghi deprecati di §5.1 e rimappa i fusi con una
+riconciliazione oraria su `bando_fusione`. Il passo **c2**, cioè togliere i ripieghi, parte dopo una nuova misura di
+§5.1 annunciata con almeno 7 giorni di preavviso; solo dopo il c2 si propone la 07. Prima di ogni lotto di fusioni
+(per esempio L4) o di una separazione, news1 avvisa BandoFit, che si mette in modalità `prova`.
+
+**Conferma scritta del c2** (quella che sblocca la proposta della 07): data del deploy e commit; i punti 1-5 della
+precondizione in testa alla 07; la dichiarazione che nessun percorso (elenco, dettaglio, alert, calendario,
+rimappatura, partenariati, AI-check, script) legge la tabella `bando` né una delle 7 colonne tolte dalla 07; le
+richieste R1-R8 prese dai log di produzione; la rimappatura attiva con l'ultimo report; il degrado su 42703/PGRST
+senza 5xx. news1 riesegue con la anon key i controlli (c) di §11 prima di proporre la 07 e quelli (d) subito dopo, e
+avvisa BandoFit prima della prima applicazione attiva di sospensioni o revoche.
+
 ### 10.2 Le migrazioni
 
 Ordine di applicazione della fase (b): **01 → 02 → seed → 03 → 04 → 05**, più la **08**, che è
@@ -535,8 +600,9 @@ risposte, colonne, embed, header `Content-Range`).
 - nessuna funzione dello schema `public` eseguibile da `anon` oltre a quelle di `pg_trgm` e alle
   tre dell'allowlist (`bando_stato_effettivo`, `dominio_di`, `bando_host_aggregatore`).
 
-**Nella fase (c)**: le stesse richieste, rieseguite **sulla vista**, rispondono in meno di 3
-secondi e restituiscono `stato_effettivo` e `fonte_ufficiale_url`; per un `id` fuso la vista non
+**Nella fase (c)**: le stesse richieste, rieseguite **sulla vista**, non danno nessun `57014` e hanno un p95 lato
+client sotto 3 s su almeno 20 ripetizioni a connessione calda (ogni picco singolo oltre 3 s si riporta a parte);
+restituiscono `stato_effettivo` e `fonte_ufficiale_url`; per un `id` fuso la vista non
 risponde con righe e `bando_fusione` risponde con il `master_id`.
 
 **Nella fase (d)**: `bando?select=link_bando` con la anon key → **42501**;
@@ -653,6 +719,10 @@ Origine: `apply_closed_tier`, `services/bandi_service.py:208-210`; costruzione d
 
 ### R3 — Elenco con tutti i filtri e la ricerca full-text
 
+*Nota del 30/09/2026:* la forma con tutti i filtri può dare 0 righe: misura il piano, non la correttezza. La
+correttezza si verifica con una forma larga (per esempio regioni 12 e 9, settori 39 e 78, beneficiari 16 e 27, ATECO
+76 e 1). L'id ATECO 881 dell'esempio originale non esiste ed è stato sostituito con 76.
+
 Forma massima della stessa richiesta: è quella che produce i timeout `57014`.
 
 ```
@@ -672,7 +742,7 @@ GET /rest/v1/bando
     &f_reg.regione_id=in.(9,12)
     &f_set.settore_id=in.(4)
     &f_ben.beneficiario_id=in.(2)
-    &f_ate.codice_ateco_id=in.(881)
+    &f_ate.codice_ateco_id=in.(76)
     &or=(stato_bando.neq.chiuso,stato_bando.is.null)
     &or=(data_scadenza.gte.<OGGI>,data_scadenza.is.null)
     &order=data_scadenza.asc.nullslast,id.asc
