@@ -50,6 +50,10 @@ Le verifiche visive le ha fatte il committente.
   R0-a di BandoFit, confermato per iscritto dal committente il 27/09/2026 (commit `a9d520a` di
   BandoFit). Dal 28/09 la colonna ammette i cinque valori. Oggi però nessun bando è sospeso o
   revocato, e nessun evento di quei tipi è stato applicato (§4.3 passo 7).
+- La **07** aspetta la fase (c) di BandoFit. **R0-b è in produzione dal 30/09/2026** (`main`
+  6ce5cfd di BandoFit): ricerca su `ricerca`, miss risolti su `bando_slug_storico` e
+  `bando_fusione`, colonne `fonte_ufficiale_*`. BandoFit legge ancora `bando` con il predicato
+  storico, quindi fino alla (c) un doppione fuso resta visibile nelle sue liste.
 - La **11** (`bando_v11_11_traduzione_stato_proposto.sql`) fa tradurre a `bando_applica_evento`
   lo `stato_proposto` degli eventi raccolti in ombra. Senza, la RPC della 04 li marca applicati
   senza cambiare lo stato. Il marcatore `bando_capacita_eventi()` risponde, dal 28/09,
