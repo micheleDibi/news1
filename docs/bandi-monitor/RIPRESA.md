@@ -935,6 +935,17 @@ ufficiali, un verificatore più uno scettico per ogni difetto grave o importante
 - **Corretti a DB con B1-B2** (da lanciare): la proroga del 1262082 al 19/10, che il monitor non
   ha visto perché la pagina del Piemonte è cieca; apertura e scadenza del 1262080.
 
+**Correzioni eseguite il 30/09/2026** dal committente nel SQL Editor, verificate sul DB e sulle
+pagine pubbliche:
+- 13 proroghe di bandi in scadenza il 30/09 (blocco C);
+- A1-A4;
+- B1-B3;
+- F1-F6: i 6 doppioni rispondono 301 verso il master.
+
+I due file `correzioni-2026-09-2{8,9}.sql` portano in testa «NON rieseguire». Sul 112862 l'RPC ha
+riusato per dedup l'evento 11295 del monitor, che non è verificato: la scadenza è giusta, ma la
+proroga non compare nel box «Aggiornamenti».
+
 **Scadenze nate dalla prova:**
 - 07/10: la Basilicata. Col DNS rotto, il giro delle 06 dell'08/10 rischia 100 minuti di
   ricontrolli su 101 URL morti.

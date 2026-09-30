@@ -1,3 +1,6 @@
+-- >>> ESEGUITO dal committente il 30/09/2026 (in forma equivalente, con comandi a
+-- >>> righe corte dati in chat) e verificato sul DB e sulle pagine pubbliche.
+-- >>> NON rieseguire.
 -- ============================================================================
 -- Correzioni B e fusioni F dopo il giro delle 12 del 29/09/2026 — DB «bandi»
 -- ============================================================================
