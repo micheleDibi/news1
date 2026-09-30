@@ -420,7 +420,7 @@ La pipeline bandi usa un venv e un `.env` propri: `cd scraper_bandi && python3 -
 
 Sul **DB A** (news1) le migrazioni sono in `backend/sql/articles_alter_*.sql`, `backend/sql/selezione_personale.sql`, `backend/sql/persona_jobs.sql` e `backend/app/interpelli_tables.sql`.
 
-Sul **DB B** (bandi) le migrazioni correnti sono i file idempotenti `backend/sql/bando_v11_*.sql` (ognuno con il suo `_rollback`, tranne il seed `bando_v11_seed_dominio_ufficiale.sql`): si applicano a mano nello SQL Editor del pannello Supabase B, nell'ordine scritto nelle intestazioni, e dopo ognuna va riavviato `edunews-bandi-sender` (`docs/bandi-monitor/RIPRESA.md` §3.5). Quali sono applicate (al 25/09/2026 mancano la 06 e la 07) e le regole: RIPRESA §1 e §7.
+Sul **DB B** (bandi) le migrazioni correnti sono i file idempotenti `backend/sql/bando_v11_*.sql` (ognuno con il suo `_rollback`, tranne il seed `bando_v11_seed_dominio_ufficiale.sql`): si applicano a mano nello SQL Editor del pannello Supabase B, nell'ordine scritto nelle intestazioni, e dopo ognuna va riavviato `edunews-bandi-sender` (`docs/bandi-monitor/RIPRESA.md` §3.5). Quali sono applicate (al 30/09/2026 tutte tranne la 07, rimandata; la 06 e la 11 dal 28/09) e le regole: RIPRESA §1 e §7.
 
 ### 7. Avvio in sviluppo
 

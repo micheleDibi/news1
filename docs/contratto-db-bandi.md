@@ -177,6 +177,7 @@ nella fonte, e un trigger nega la pubblicabilità di qualunque riga su un domini
 
 **CTA consigliata**, in ordine: una riga `tipo='candidatura'` → altrimenti
 `fonte_ufficiale_url` → altrimenti una riga `tipo='portale'`.
+Fino alla fase (d) vale l'ordine esteso di §5.1, con i ripieghi sulle colonne deprecate.
 
 Upsert lato produttore su `(bando_id, url_normalizzato)`; `url` è immutabile.
 
@@ -196,6 +197,51 @@ Alla stessa blocklist appartengono i domini social, video e di messaggistica
 
 L'elenco vive nella tabella interna `dominio_ufficiale` (righe `tipo='aggregatore'`); ogni
 modifica viene annunciata con un avviso.
+
+### 5.1 Dove si legge dopo la 07 (aggiornamento del 30/09/2026)
+
+Colonne che la 07 toglie dalla vista, con il loro sostituto e la copertura **misurata** con la
+anon key il 30/09/2026 alle 13:26 su 2 180 bandi (misura completa, con gli elenchi degli id:
+`docs/bandi-monitor/misure-colonne-07.md` di news1).
+
+| colonna tolta | sostituto | copertura del sostituto oggi |
+|---|---|---|
+| `allegati` | righe `bando_link` con `tipo` in (`atto`, `allegato`) | **151 bandi su 160** con allegati nel jsonb non hanno nessuna riga sostitutiva (57 aperti, 62 in apertura). Nessuno dei 408 URL del jsonb è fra le righe `atto`/`allegato` leggibili **dello stesso bando** (2 lo sono come `pagina_bando`, 23 come `allegato` di un altro bando). In compenso 276 bandi senza jsonb hanno righe `allegato` |
+| `link_candidatura` | riga `bando_link` con `tipo='candidatura'` | **1 bando su 146**. Per 71 resta la fonte ufficiale, 74 restano senza nulla |
+| `link_candidatura_source` | nessuno. news1 lo usa sul suo sito per scartare i link non `extracted`, per scelta più severa; per BandoFit il filtro è facoltativo: il suo ordine di §5.1 non lo richiede | — |
+| `link_bando` | `fonte_ufficiale_url` | 131 su 334, sempre con lo stesso URL; **203 senza fonte** (quasi tutti `in_verifica`) |
+| `titolo_raw` | `titolo` per mostrare, `ricerca` per cercare | completa |
+| `descrizione_raw` | nessuno: è NULL ovunque | — |
+| `stato_processing` | nessuno: la vista è già filtrata | completa |
+
+Il pulsante principale calcolato come in §5 («CTA consigliata») sarebbe presente su 616 bandi
+invece di 827: **211 lo perderebbero, 183 dei quali aperti o in apertura.**
+
+**Perché.** Le righe sostitutive esistono quasi tutte (405 URL degli allegati su 408, 122 moduli su
+146, 196 pagine su 203), ma sono `origine='raw'`: le ha create la 02 copiando le vecchie colonne,
+o il resolver, e nessuno le ha mai verificate. Il vincolo di §5 (2xx *e* link trovato nella pagina ufficiale) le
+tiene non pubblicabili, quindi anon non le legge.
+
+**Cosa vale da oggi, fino a nuovo avviso di news1:**
+1. **La 07 è rimandata.** news1 non la propone finché nessun bando aperto o in apertura perde il
+   pulsante o gli allegati. Prima di proporla news1 rifà questa misura e la manda a BandoFit.
+   Resta la regola di §10: serve anche la conferma scritta che la fase (c) è in produzione.
+2. **Nella fase (c)** BandoFit legge `bando_pubblico` e `bando_link`, con questo ordine esplicito:
+   - **pulsante principale**: riga `tipo='candidatura'` → `link_candidatura` →
+     `fonte_ufficiale_url` → riga `tipo='portale'` → `link_bando`. Con quest'ordine nessuno degli
+     827 bandi con pulsante lo perde o cambia destinazione;
+   - **allegati**: le righe `atto`/`allegato` di `bando_link`, più il jsonb `allegati`, senza
+     doppioni per URL.
+
+   `link_candidatura`, `link_bando` e `allegati` sono colonne deprecate. Restano nella vista fino
+   alla (d), ma **senza le garanzie di §5**: 2xx e link visto nella fonte non sono verificati.
+3. Chiudere il buco è lavoro di news1, e **richiede codice nuovo**, non solo un comando:
+   - oggi nessun codice crea righe `tipo='candidatura'`, mentre la pipeline continua a scrivere
+     `link_candidatura` sui bandi nuovi. Senza un intervento il buco cresce a ogni giro;
+   - le righe `raw` vanno verificate sulla pagina ufficiale o su quella di riferimento del bando;
+   - per i 203 senza fonte bisogna prima trovare la fonte.
+
+   Non ha ancora una data. Quando cambia la copertura, news1 aggiorna questa tabella.
 
 ---
 
@@ -256,7 +302,8 @@ ore** nella configurazione in uso (≤ 24 h nella configurazione economica, ≤ 
 massima). Il valore corrente è pubblicato in `pipeline_run` e in questo documento, e cambia solo
 con avviso. Un consumatore che sincronizza una volta al giorno somma il proprio intervallo.
 Durante la messa in ombra, un evento diventa leggibile alla data di attivazione del suo tipo,
-indicata da `pubblicato_at`.
+indicata da `pubblicato_at`. **Aggiornamento del 30/09/2026:** con l'attivazione per tipo del giro di ottobre diventano
+leggibili solo gli eventi nati dopo l'attivazione. L'arretrato raccolto in ombra **non** si pubblica.
 
 ### 6.2 `bando_fusione`
 
@@ -426,7 +473,7 @@ Cose che è meglio sapere prima che succedano.
 | **(a)** | il rilascio R0-a del consumatore, confermato per iscritto | nulla sul DB |
 | **(b)** | le migrazioni 01-05 (tutte additive), poi la 06 solo dopo la (a) | nulla si rompe: si aggiunge senza togliere |
 | **(c)** | il consumatore passa a leggere `bando_pubblico`, `bando_link`, `bando_evento`, `bando_fusione`, `bando_slug_storico`; rimappa i `bando_id` fusi e risolve i miss; ricerca su `ricerca` | nessuna migrazione |
-| **(d)** | conferma scritta che la (c) è in produzione | migrazione 07: RLS su `pubblicato`, REVOKE di colonna su `bando`, vista senza le colonne deprecate |
+| **(d)** | conferma scritta che la (c) è in produzione, **e** la misura di §5.1 senza bandi aperti o in apertura che perdono pulsante o allegati | migrazione 07: RLS su `pubblicato`, REVOKE di colonna su `bando`, vista senza le colonne deprecate |
 
 ### 10.2 Le migrazioni
 

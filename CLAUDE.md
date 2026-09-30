@@ -173,6 +173,16 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > dello stesso pacchetto (chiave `valore`, 23514, INSERT del monitor attivo, gate G1/G2/G3, allarme di ingresso) ha la
 > stessa deroga su `scraper_bandi/`. Fuori da questo elenco la regola sopra resta in vigore.
 
+> **Deroga registrata (intervento "ripresa bandi, ottobre 2026", dal 30/09/2026, branch
+> `claude/bandi-ripresa-ottobre`).** Su richiesta esplicita dell'utente, limitatamente a questo intervento, si
+> modificano: `scraper_bandi/` (monitor, SEO, resolver, ingresso) e i suoi test, `backend/app/{bandi_pipeline,
+> bandi_sender}.py` e i loro test, il nuovo `backend/app/lock_orfani.py` (lock orfani all'avvio del sender), `docs/contratto-db-bandi.md`, `docs/contracts/**` e `docs/bandi-monitor/**` (file
+> SQL di correzione **scritti e mai eseguiti**: li lancia l'utente). Contratto interno dell'intervento:
+> `docs/contracts/bandi-ripresa-ottobre.md`. Nel terzo ciclo di correzione, sempre su richiesta dell'utente, anche
+> l'escape del JSON-LD nelle pagine bandi (`src/pages/bandi/**`, `src/pages/bandi.astro`, `src/lib/bandi/jsonld.ts`,
+> `src/components/filtro/{HubDimensione,PaginaFiltro}.astro` e il test relativo). Fuori da questo elenco la regola
+> sopra resta in vigore.
+
 Inoltre, sempre (non toccati dalle deroghe):
 - Credenziali mai in file tracciati (vivono in `.env`, `scraper_bandi/.env`,
   `src/pages/api/tts/google-credentials.json`, tutti ignorati da git); `google-credentials.json` mai in `public/`.
