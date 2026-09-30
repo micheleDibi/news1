@@ -3,7 +3,9 @@
 -- compatta per la chat. DB «bandi».
 -- ==========================================
 -- NON rieseguire dopo l'esecuzione:
--- segnare qui la data: __/__/2026
+-- ESEGUITO il 30/09/2026 sera (Michele):
+--   blocchi 0, A (13), B (18), verifica
+--   31 | 31 | {}. NON rieseguire.
 -- ==========================================
 -- Scritto il 30/09/2026 da «db» (T-D3). È la
 -- stessa correzione di

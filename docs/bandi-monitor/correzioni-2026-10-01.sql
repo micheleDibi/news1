@@ -2,7 +2,9 @@
 -- Correzioni dell'01/10/2026, DB «bandi»
 -- ==========================================
 -- NON rieseguire dopo l'esecuzione:
--- segnare qui la data: __/__/2026
+-- ESEGUITO il 30/09/2026 sera nella
+--   versione chat (stessi 31 eventi).
+--   NON rieseguire.
 -- ==========================================
 -- Scritto il 30/09/2026 da «db», giro
 -- «ripresa bandi, ottobre 2026» (task T-D3).

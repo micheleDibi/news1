@@ -3,7 +3,9 @@
 -- DB «bandi»
 -- ==========================================
 -- NON rieseguire dopo l'esecuzione:
--- segnare qui la data: __/__/2026
+-- ESEGUITO il 30/09/2026 sera (Michele):
+--   T3 e T2, tutti gli esiti attesi.
+--   NON rieseguire.
 -- ==========================================
 -- Scritto il 30/09/2026 da «db», giro
 -- «ripresa bandi, ottobre 2026» (task T-D4).

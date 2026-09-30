@@ -64,6 +64,12 @@ Cosa porta il codice (dettagli in §4.2):
   fonte ufficiale rifiutati prima della SEO;
 - all'avvio il sender rilascia i lock orfani dei propri processi precedenti.
 
+**Stato al 30/09/2026 sera: passi 1-4 FATTI da Michele.** Backup di oggi presente; SQL delle date
+(versione chat: 13 + 18 eventi, verifica `31 | 31 | {}`) e SQL dei testi (18278 chiuso con i beneficiari giusti,
+112862 verificato) eseguiti; deploy fatto alle 18:47 (giro di avvio finito alle 18:52, `salute` stampa i cinque tipi
+attivi; nuovo allarme «INDEXNOW_API_KEY assente con MONITOR_TIPI_ATTIVI valorizzata», vedi §4.1 h); frontend
+ricostruito e riavviato (`/bandi` risponde 200). Restano i passi 5-9.
+
 **I passi, in ordine** (le verifiche con un clic o un comando sono in
 `verifiche-michele-2026-10.md`):
 1. controllare backup e PITR del progetto bandi (voci 1-2 del foglio);
