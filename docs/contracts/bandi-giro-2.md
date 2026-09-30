@@ -38,8 +38,9 @@ Decisioni di Michele del 30/09, vincolanti:
   - §14 per le funzioni del riepilogo e di `misure_salute`;
   - §16 per la §14 del contratto DB;
   - §17 per la parte B.
-- **SOSPESE fino all'esito dello studio (percorso A)**: §2.2, §3, §4, §5, §6, §7, §15 e le parti A delle sezioni
-  sopra. Nessun operatore le implementa finché il lead non le libera con una versione aggiornata di questo file.
+- **Percorso A: LIBERATO il 30/09 notte con §19** (versione 2 dallo studio sugli aperti senza prova, con le risposte di
+  Michele). §2.2, §3, §4, §5, §6, §7, §15 e le parti A delle altre sezioni valgono **con le modifiche di §19**, che
+  prevale in caso di differenza.
 
 ---
 
@@ -729,3 +730,226 @@ Il modello è `_scelta_env`, come `MONITOR_MODALITA`. `MONITOR_TIPI_ATTIVI` e `T
 
 ## 18. Messaggi `CONTRATTO:`
 Servono per: un nome o una chiave che manca qui; un ramo di salute senza codice; un host da aggiungere agli estrattori; un id di verità nota cambiato; un file da toccare fuori dal proprio task.
+---
+
+## 19. Percorso A, versione 2 (studio del 30/09, risposte di Michele del 30/09 notte)
+
+Fonte: `docs/contracts/studio-aperti-senza-prova-2026-09-30.md` («Soluzione» e «Modifiche al contratto del giro 2»).
+Questa sezione **libera** le sezioni del percorso A (§2.2, §3, §4, §5, §6, §7, §15 e le parti A di §8, §11, §12,
+§13, §14, §16, §17) e le **modifica** come scritto qui sotto. Dove §19 e una sezione precedente dicono cose diverse,
+vale §19. Tutto il resto delle sezioni A vale com'è scritto.
+
+**Risposte di Michele (30/09 notte), vincolanti:**
+- **D1, aperti senza prova: bollino «Aperto · da verificare»** (motivo `senza_conferma` sul ramo A), dal 7° giorno dopo
+  la pubblicazione e solo dopo una lettura in attivo; rilettura ogni 14 giorni. Il bando resta fra gli aperti, nei
+  contatori e nei filtri. A2 resta intatta: **nessun timer, nessuna chiusura senza evento**.
+- **D2, doppioni certi: fusione automatica**, solo con criteri esatti (stesso URL normalizzato, oppure stessa riga di
+  calendario della stessa fonte), al massimo `GEMELLI_FUSIONI_PER_GIRO` (10) per giro. Il doppione già pubblicato va
+  in 301 verso il master tramite `bando_fondi` (nessuna riga cancellata, id e slug congelati). Una riga nuova gemella
+  esatta di un pubblicato non viene mai pubblicata. Chiude RIPRESA §4.1 g.
+- **D3, IndicePA: import COMPLETO e automatico** (non filtrato sugli host già usati), ogni mese. Vedi §19.8.
+- Michele ha delegato al lead le decisioni rimanenti fino al suo ritorno. Quelle prese sono marcate **[lead]**.
+
+### 19.1 Regole per tutti (aggiunte a §1)
+- Dal Mac `domini --import` e `gemelli` solo con `--dry-run`; la fase ingresso di `verifica-stato` solo con
+  `--dry-run --senza-modello`.
+- Nessuna scrittura su `dominio_ufficiale` dal Mac, nemmeno di prova.
+
+### 19.2 Migrazione 13 (modifica §2.2)
+- In `bando_controllo` entrano **5 colonne additive** in più (da 12 a **17**):
+  - `esaminato_attivo_at timestamptz`: si scrive **solo in attivo**, a ogni lettura con qualunque esito;
+  - `termine_indicato_fonte text` CHECK IN ('calendario_ufficiale','pagina','testo','aggregatore'), con il vincolo
+    `bando_controllo_termine_con_fonte`: `termine_indicato` e `termine_indicato_fonte` entrambi NULL o entrambi NOT NULL;
+  - `segnale_aggregatore text` CHECK IN ('assente_dal_listing','in_uscita','scadenza_passata');
+  - `segnale_aggregatore_at timestamptz`;
+  - `trattenuto_dal timestamptz`.
+- GRANT SELECT ad anon anche su `esaminato_attivo_at`, `segnale_aggregatore_at`, `termine_indicato_fonte` (la vista è
+  `security_invoker`).
+- `bando_stato_da_verificare` riceve `p_esaminato_attivo_at timestamptz` e `p_segnale_aggregatore_at timestamptz`
+  **prima** di `p_adesso`. Nessuna funzione nuova per anon: l'insieme delle funzioni eseguibili da anon previsto dalla
+  guardia della 12 non cambia.
+- La vista riceve **5 colonne in coda**: le 4 di §2.2 più `termine_indicato_fonte` (NULL quando `termine_indicato` è
+  NULL). La verifica attende colonne della vista = prima + 5. La 07 e il suo rollback portano le 5 colonne.
+- Casi PG17 nuovi: in ombra (`esaminato_attivo_at` NULL) un aperto senza scadenza pubblicato da 30 giorni → NULL; lo
+  stesso con `esaminato_attivo_at` → `senza_conferma`; segnale più recente di una conferma → `senza_conferma`;
+  `termine_indicato` senza fonte → 23514; `SET ROLE anon`: la SELECT della vista restituisce le 5 colonne.
+- **[lead] Verifica 7 della 05 con l'import completo.** Il blocco di verifica della 13 contiene, commentata, la query
+  EXPLAIN (ANALYZE, BUFFERS) come anon della Verifica 7 della 05. La prova PG17 di `db` la esegue con
+  **25 000 righe sintetiche `tipo='ente'`** in `dominio_ufficiale` (più le righe aggregatore del seed) e riporta nel
+  commit: tempo < 300 ms su 2 000 bandi sintetici e **nessun Seq Scan su `dominio_ufficiale`**. Se il piano mostra un
+  Seq Scan, la 13 aggiunge l'indice che manca (additivo) e la prova si ripete.
+
+### 19.3 Regola `stato_da_verificare` v2 (modifica §3)
+- `versione: 2`; parametri `{giorni_grazia_pubblicazione: 3, giorni_validita_conferma: 30, giorni_grazia_ramo_a: 7}`;
+  motivi invariati (5). La firma nei tre linguaggi riceve `esaminato_attivo_at` e `segnale_aggregatore_at` subito
+  prima di `adesso`.
+- Ramo I invariato. **Ramo A v2** (vince la prima):
+  - **A1.** lettura valida chiuso / uscito / in apertura prossimamente → `smentito_dalla_fonte`;
+  - **A2.** lettura valida 'aperto' con metodo 'estrattore', `stato_letto_at` al massimo 30 giorni fa, E
+    (`segnale_aggregatore_at` NULL oppure `stato_letto_at` > `segnale_aggregatore_at`) → NULL;
+  - **A3.** `termine_indicato` non NULL e < oggi → `termine_passato`;
+  - **A4.** `esaminato_attivo_at` NULL → NULL (l'ombra non accende nulla);
+  - **A5.** `segnale_aggregatore_at` non NULL → `senza_conferma`;
+  - **A6.** `termine_indicato` ≥ oggi → NULL;
+  - **A7.** `pubblicato_at` al massimo 7 giorni fa → NULL (grazia);
+  - **A8.** altrimenti → `senza_conferma`.
+- «Non esiste un motivo debole» vale ora solo per il ramo I e per l'ombra.
+- Casi obbligatori nuovi: A4-A8, il confine dei 7 giorni a mezzanotte di Roma, il segnale prima e dopo la conferma, il
+  termine futuro con il segnale (→ `senza_conferma`), la conferma del modello che non spegne A8, l'ombra. **Almeno 80
+  casi** nella sezione `certezza`.
+
+### 19.4 Verifica-stato (modifica §5)
+- **§5.2** Priorità nuova: `segnale_aggregatore` non NULL e non letto dopo il segnale → 88. Fase `ingresso`: candidati
+  = righe `stato_processing='enriched'` con stato 'aperto' e `data_scadenza` NULL, oppure con status OE '2'; le prende
+  `db.select_enriched_da_leggere()`, con il tetto `VERIFICA_STATO_TETTO_INGRESSO` (30).
+- **§5.3** Il punto 2 usa `normalizza_link_bando(testo)` (puro, in `verifica_stato.py`): divide sugli spazi e tiene gli
+  http(s); un host in `dominio_ufficiale.ACCORCIATORI` (rpu.gl, bit.ly, tinyurl.com, goo.gl, t.ly) si segue con
+  redirect 'tutti' e vale solo se l'URL finale è verificante. Nuovo tipo **(ii-c)**: `bando_controllo.candidato_prioritario`
+  con host uguale all'host della fonte di scraping, verificante, fuori da FONTI_OE e con G3v 'medio'; ammette eventi
+  come (ii). Il punto 3 (iv) resta senza eventi; una conferma A2 da una pagina (iv) vale solo con un lettore per ente,
+  titolo 'alto' e `segnale_aggregatore` NULL. Il punto 4 (illeggibile) calcola `termine_indicato` con le quattro fonti
+  di §19.5. `verificabile` si calcola sulla tabella letta dal DB (`db.select_domini_ufficiali`), non sul solo seed.
+- **§5.4** Dopo i lettori per ente, sulle pagine i-iv senza lettore dedicato gira il lettore `generico` (§19.5): solo
+  'chiuso' con `solo_segnale`, altrimenti None. Il modello resta limitato a (i), (ii), (iii); un suo 'aperto' non
+  conferma.
+- **§5.7** Solo in attivo: `esaminato_attivo_at` insieme alle sei colonne `stato_letto*`. Sempre: `termine_indicato_fonte`
+  insieme a `termine_indicato`. `segnale_aggregatore(_at)` li scrive `bando_runner` (§19.7), non il passo. Nella fase
+  ingresso, sulle righe NON pubblicate: `data_scadenza`, `ora_scadenza` e stato 'chiuso' da un lettore per ente o dalla
+  finestra, tramite `db.aggiorna_ingresso` (che rifiuta le righe pubblicate); `data_scadenza_verificata` non si tocca
+  (CHECK della 03); in più `lettura_stato.storia` e `trattenuto_dal`.
+- **§5.9** Cadenza: `senza_conferma` → 14 giorni; segnalato → 3 giorni. Contatori nuovi: `senza_conferma`,
+  `segnalati`, `smentiti_generico`, `termini_per_fonte {fonte:n}`, `pagine_ii_c`, `link_normalizzati`; fase ingresso:
+  `ingresso_letti`, `ingresso_date_scritte`, `ingresso_chiusi`, `trattenuti`, `rilasciati_a_tempo`,
+  `trattenuti_senza_appiglio`, `fusi_prima_della_pubblicazione`. VERITA_NOTA estesa come nello studio (2475, 2520,
+  5698, 5699, 5700, 803614/803615/803623, 562317, 17773, 18178, 17883, 18186, 18231, 18312, 18276, 18262, 18407).
+- **§5.10 nuova, fase ingresso e sosta.** `esegui_passo(giro, fase='ingresso')` gira fra i ricontrolli e la SEO, con
+  tetto di 30 letture e 300 s, **senza modello**. `ingresso.pubblicabile(riga, controllo, adesso) -> (bool, motivo)`
+  (puro) è il filtro usato da `bando_seo_runner.run`. Trattiene: un 'aperto' senza `data_scadenza`, senza conferma
+  d'estrattore nella storia e senza `termine_indicato` ≥ oggi, per al massimo `INGRESSO_SOSTA_GIRI` (4) giri da
+  `trattenuto_dal`; sempre una riga senza link_bando, fonte_ufficiale_url, bando_link e senza alcuna data (motivo
+  'senza_appiglio'). In ombra la sosta conta e basta: si pubblica come oggi.
+
+### 19.5 Estrattori, date e ingresso (modifica §6)
+- **§6.1** Nuova chiave `generico` in ESTRATTORI: frasi compiute (`bando|avviso|sportello|domande` a non più di 60
+  caratteri da `chius[oa]|scadut[oa]|sospes[oa]|esaurit[ae]|non è più possibile presentare`) nell'h1, nei badge/label e
+  nei primi 2 000 caratteri del corpo principale, con le esclusioni di §5.4. Sempre `solo_segnale=True`,
+  `puo_chiudere=False`, mai 'aperto'. Fixture positive: so.camcom (Bando Chiuso), va.camcom (CHIUSURA SPORTELLO),
+  regione.puglia 5699 (sospeso), calabria 18231; negative: «fino ad esaurimento», un «Aperto» generico, una sidebar
+  con altri bandi chiusi. **Secondo lotto di lettori per ente**: host con almeno 5 bandi fra i ~410 e un'etichetta
+  strutturata nelle pagine già scaricate; li sceglie `backend` con un report e fixture reali.
+- **§6.2** Nuove funzioni in `date_validation.py`, ognuna restituisce `(data, fonte)`: `termine_nella_pagina(testo)`
+  (regole di termine_nel_testo sul testo della pagina), `termine_da_calendario(raw_data, fonte_id, host_verificante)`
+  (colonne «chiusura domande», «in corso fino a», DATA_CHIUSURA, con e_presunta), `termine_da_etichetta_oe(raw_data)`
+  (riusa `segnali.scadenza_da_label`). Precedenza: calendario_ufficiale > pagina > testo > aggregatore. Negativi in
+  più: la data della fiera di 1257980 e l'avvio attività di ER 940320.
+- **§6.3** Preprocess: blocco del prompt = `testo[:1500]` + `impronte.seleziona_sezioni(testo[1500:], 6500)`,
+  `BUDGET_PROMPT_CHAR = 8000` (costante unica, per tornare a 4000 se la quota con scadenza deriva). Dopo il modello:
+  lettore per ente sulla pagina (termine_finale → data_scadenza se il modello non l'ha data; 'chiuso' con puo_chiudere
+  → stato 'chiuso'). OE: data dal deadline_label solo con status '1', data ≥ oggi e citazione «Scadenza: …» presente
+  nel testo della scheda (validate_date_candidate con provenienza aggregatore). Status '2' → 'in apertura
+  prossimamente'; `on_arrival` escluso. Prompt invariati. «Nessun rifiuto all'ingresso» resta: la sosta è in §5.10.
+
+### 19.6 Salute (aggiunte a §8, codici A)
+`allarmi_verifica_stato()` comprende: `aperti_senza_conferma` (avviso: quota di senza_conferma sugli aperti senza
+scadenza > 60%), `ingresso_trattenuti` (avviso: trattenuti_senza_appiglio > 10, oppure rilasciati_a_tempo > 50% in 7
+giorni), `indicepa_non_aggiornato` (avviso: ultimo import riuscito più vecchio di 40 giorni), **[lead]**
+`vista_lenta` (allarme: la lettura di prova di `bando_pubblico` con `limit=24`, misurata da `misure_salute` come chiave
+`vista_ms`, supera 2 000 ms; protegge il sito dall'effetto dell'import completo) e **[lead]** `indicepa_import_anomalo`
+(avviso: l'ultimo import ha scartato più del 20% delle righe o ne ha trovate meno di 15 000).
+
+### 19.7 Segnale dell'aggregatore (nuovo)
+`segnali.segnale_aggregatore(record_listing, riga, adesso, *, copertura_piena, giri_assenza=3)` (puro): NULL visto vale
+`DATA_SEMINA_VISTO = 2026-09-23`; status '2' → `in_uscita`; `scadenza_da_label` < oggi → `scadenza_passata`;
+`assente_dal_listing` solo con copertura piena e dopo 3 giri. `bando_runner`, al passo 6-bis, lo scrive con
+`db.aggiorna_segnale_aggregatore` e lo azzera quando la riga ricompare con status '1' e senza etichetta scaduta.
+`spariti()` e gli eventi del monitor restano INVARIATI.
+
+### 19.8 Lista bianca dal DB e IndicePA completo (nuovo)
+- `_tabella_corrente()` passa a `costruisci()` le righe di `db.select_domini_ufficiali()` (con `_scorri`, `order=id`),
+  in testa: **le righe del DB vincono**. Una sola lettura per processo di giro (cache in memoria).
+- `ACCORCIATORI` in `dominio_ufficiale.py`.
+- `run_domini_import(..., scarica_enti=True)`: GET di `INDICEPA_URL` (risorsa CKAN pubblica di `enti.xlsx`), lettura
+  con `openpyxl` (già installato), import **completo**.
+- **[lead] Scrittura prudente**, perché l'import è completo e automatico:
+  - si inseriscono **solo host assenti** dalla tabella; una riga esistente (seed, fonte, manuale, aggregatore,
+    blocklist, o indicepa di un mese precedente) **non si modifica mai**; **nessuna DELETE** e nessuna disattivazione
+    automatica (le righe uscite da IndicePA si contano nel report e basta);
+  - scritture a lotti da 500, ognuno idempotente (`on_conflict=host`, `ignore-duplicates`);
+  - **host condivisi esclusi**: un host presente in `PIATTAFORME_CONDIVISE` (sites.google.com, wixsite.com,
+    wordpress.com, blogspot.com, altervista.org, jimdo.com, weebly.com, github.io, facebook.com, linktr.ee, e i
+    domini degli accorciatori), oppure che IndicePA associa a **3 o più `codice_ipa` diversi**, non entra. Ogni
+    esclusione ha un motivo nel report;
+  - un host che cade su un aggregatore o sulla blocklist non entra (la blocklist prevale, come oggi);
+  - soglie di sanità prima di scrivere: se il foglio ha meno di 15 000 righe utili o manca una delle colonne attese,
+    **non si scrive niente** e l'esito va in `indicepa_import_anomalo`;
+  - se il download fallisce la tabella resta com'è e l'esito (data, righe lette, inserite, escluse per motivo) si
+    registra per `indicepa_non_aggiornato` (nella riga `pipeline_run` del passo, contatori `indicepa_*`).
+- Il passo `domini` gira nel **primo giro delle 06 di ogni mese** (e al primo giro delle 06 dopo il deploy, se non c'è
+  un import riuscito negli ultimi 40 giorni: così non si aspetta il mese successivo). Modalità: segue
+  `VERIFICA_STATO_MODALITA` (in ombra: scarica, compone, conta, non scrive).
+
+### 19.9 Gemelli (D2)
+- Quarto criterio esatto `riga_calendario` in `gemelli.criteri_esatti`: stessa `fonte_id`, `link_bando` NULL su
+  entrambe, descrizione del calendario normalizzata identica e non vuota (almeno 3 token), e stesso raw `source_url`
+  oppure stessa data di chiusura del calendario. Positivi: 803614=803633, 803615=803634, 803623=803642,
+  1260432=1260443. Negativi: stessa fonte con date diverse; fonti diverse.
+- Passo `gemelli` nel giro delle 06, con tetto `GEMELLI_FUSIONI_PER_GIRO` (10; 0 = spento). **[lead] Modalità:
+  segue `VERIFICA_STATO_MODALITA`**: in ombra elenca e conta le fusioni che farebbe (riga `pipeline_run`), in attivo
+  fonde. Così la prima fusione automatica arriva dopo almeno 7 giorni dal messaggio a BandoFit, che il contratto DB
+  chiede prima di ogni lotto di fusioni.
+- Prima della pubblicazione `bando_seo_runner` fonde i gemelli esatti (la riga nuova è il doppione) con
+  `db.fondi_bandi`, con la stessa modalità.
+
+### 19.10 Sender e pipeline (aggiunte a §11)
+Nuovi passi, tutti con `_passo_se_esiste` e dentro il lock del giro esistente:
+- `verifica_stato` (fase controlli) dopo il monitor, come in §11; `ids_da_rigenerare` passati a
+  `_rigenerazione_di_produzione`, slug solo per gli eventi applicati;
+- `verifica_stato` con `fase='ingresso'` prima della SEO, in ogni giro;
+- `domini` come in §19.8;
+- `gemelli` come in §19.9.
+
+### 19.11 Variabili (aggiunte a §12)
+`VERIFICA_STATO_MODALITA` (ombra|attivo, default ombra), `INGRESSO_SOSTA_GIRI` (4, da 0 a 12),
+`VERIFICA_STATO_TETTO_INGRESSO` (30), `GEMELLI_FUSIONI_PER_GIRO` (10, 0 = spento), `INDICEPA_URL` (default nel codice:
+la risorsa pubblica; la variabile serve solo a cambiarla). In `.env.example` solo i nomi.
+
+### 19.12 CLI (aggiunte a §13)
+`domini --import --scarica-enti [--dry-run]`; `verifica-stato --dry-run [--fase ingresso] [--ids] [--senza-modello]
+[--limit]`; `report-verifica-stato [--json] [--ramo aperto|apertura] [--motivo M] [--verita]`; `gemelli --dry-run`
+elenca le fusioni che farebbe. `test_cli_argv` aggiornato.
+
+### 19.13 db.py (aggiunte a §14)
+`COLONNE_LETTURA_STATO` a 17 colonne. Funzioni nuove: `select_da_verificare`, `select_letture_stato`,
+`aggiorna_lettura_stato` (scarta le colonne assenti come `aggiorna_controllo`), `select_enriched_da_leggere()`,
+`aggiorna_ingresso(bando_id, colonne_bando, colonne_controllo)` (rifiuta le righe pubblicate),
+`select_domini_ufficiali()`, `select_host_dei_link()`, `aggiorna_segnale_aggregatore(righe)`,
+`inserisci_domini_nuovi(righe, lotto=500)` (solo host assenti) e la misura `vista_ms` in `misure_salute`.
+
+### 19.14 Sito e API (modifica §15)
+- Badge «Aperto · da verificare» anche per (aperto, `senza_conferma`). Sottotesto: «Non abbiamo una conferma recente
+  dalla pagina ufficiale dell'ente: verifica prima di presentare domanda.»
+- Il sottotesto del termine futuro dipende da `termine_indicato_fonte`: calendario_ufficiale «Il calendario ufficiale
+  indica come termine il <data>»; pagina «La pagina dell'ente indica come termine il <data>»; testo «Il testo del
+  bando indica come termine il <data>, non ancora verificato sulla pagina ufficiale»; aggregatore «Un portale
+  aggregatore indica come termine il <data>, non verificato». Il sottotesto di `termine_passato` segue la stessa
+  provenienza.
+- `supabase-bandi.ts` chiede anche `termine_indicato_fonte` (solo alla vista).
+- Contatori, filtri, sitemap e JSON-LD INVARIATI. API v1: l'enum dei 5 motivi contiene già `senza_conferma`; si
+  aggiorna solo la documentazione del significato.
+
+### 19.15 Documenti (aggiunte a §16)
+Contratto DB: §3 con la quinta colonna; §4 certezza v2 (`senza_conferma` anche sugli aperti; «certo solo con IS
+NULL»); `dominio_ufficiale.origine='indicepa'` e import completo mensile; fusioni automatiche con i criteri esatti,
+compreso `riga_calendario`, e la regola dell'avviso (§19.9). RIPRESA: §4.1 d risolta con l'import completo; §4.1 g
+risolta con D2; §4.1 c resta aperta; la trappola «resolver e monitor non leggono la tabella» è chiusa per resolver e
+verifica-stato. Il messaggio a BandoFit comprende la colonna nuova, il nuovo significato di `senza_conferma`, le fusioni
+automatiche (volume atteso: 18 nella prima settimana attiva, poi pochi al mese) e il cambio visibile in blocco
+(circa 220-260 schede con «da verificare» nelle 2-3 settimane dopo l'attivazione).
+
+### 19.16 Ordine di rilascio (modifica §17)
+Invariato nella forma: la 12, la 13 estesa, un solo deploy, 7 giorni d'ombra, `report-verifica-stato --verita` con 0
+difformi, poi attivo. In ombra: nessun `senza_conferma` pubblico; la sosta conta soltanto; gemelli e domini contano
+soltanto; il preprocess a 8 000 caratteri è attivo subito (per 7 giorni si confrontano la quota con scadenza, oggi
+87%, e la distribuzione degli stati; se derivano si torna a 4 000 con la costante). **[lead]** Dopo il primo import in
+attivo Michele esegue una volta la query EXPLAIN della Verifica 7 (righe corte, in RIPRESA); il codice `vista_lenta`
+resta come rete automatica.

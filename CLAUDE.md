@@ -193,6 +193,19 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > Contratto interno: `docs/contracts/bandi-giro-2.md`. Il percorso A («stato da verificare») avrà una sua deroga
 > quando partirà. Fuori da questo elenco la regola sopra resta in vigore.
 
+> **Deroga registrata (intervento "giro 2 dei bandi", percorso A «stato da verificare», dal 30/09/2026 notte, stesso
+> branch).** Su richiesta esplicita dell'utente («A e B insieme»; soluzione per gli aperti senza prova approvata il
+> 30/09 notte con bollino «da verificare», fusione automatica dei doppioni certi e import completo di IndicePA), e
+> limitatamente a questo intervento, si modificano o creano, oltre all'elenco del percorso B:
+> `scraper_bandi/app/{stato_bando,date_validation,scarico,etichette_stato,eventi,preprocessor,
+> bando_preprocess_runner,ingresso,verifica_stato,settings,segnali,dominio_ufficiale,fonte_ufficiale,gemelli,
+> bando_seo_runner}.py`, `scraper_bandi/.env.example` (solo nomi) e i relativi test e fixture;
+> `backend/sql/bando_v11_13_stato_da_verificare.sql` e il rollback, `backend/sql/bando_v11_07_fase_d.sql` e il
+> rollback (**scritti e mai eseguiti**); la parte bandi di `src/` (`src/lib/stato-bando.ts`, `src/lib/supabase-bandi.ts`,
+> `src/lib/bandi/**`, `src/lib/liste/bandi.ts`, `src/lib/corpus.ts`, card e pagine dei bandi, `src/lib/api-v1/**` per il
+> campo `stato_da_verificare`), `tests/**`, `docs/api-v1.md`. Contratto interno: `docs/contracts/bandi-giro-2.md` §19.
+> Fuori da questo elenco la regola sopra resta in vigore.
+
 Inoltre, sempre (non toccati dalle deroghe):
 - Credenziali mai in file tracciati (vivono in `.env`, `scraper_bandi/.env`,
   `src/pages/api/tts/google-credentials.json`, tutti ignorati da git); `google-credentials.json` mai in `public/`.
