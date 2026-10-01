@@ -1,7 +1,7 @@
 # Richiesta al consumatore: pannello di monitoraggio del DB bandi
 
-> **01/10/2026: la prima parte (§1-§5, il pannello) è ANNULLATA** per decisione del committente: non va inoltrata.
-> Resta valida solo la seconda parte (§6).
+> **01/10/2026: la prima parte (§1-§5, il pannello) è RIMANDATA**: il committente la realizzerà in futuro sul
+> progetto del consumatore. Per ora non si inoltra; la seconda parte (§6) resta valida.
 
 Messaggio unico, da inoltrare alla sessione del consumatore **dopo l'ok del committente**. Tutto il testo è neutro e si
 può incollare così com'è. La specifica è la §14 «Interfaccia di monitoraggio» del contratto del DB bandi, da copiare
