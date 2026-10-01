@@ -188,10 +188,28 @@ function senzaDuplicati(valori: readonly string[]): string[] {
   return risultato;
 }
 
-/** Sintesi, riga "Scadenza" e attribuzione, separate da una riga vuota. */
-function testoVoce(sintesi: string | null, scadenza: string | null, rimando: string): string {
+/**
+ * La riga «Stato» delle opportunità che non accettano domande pur avendo una
+ * scadenza. Il JSON Feed porta lo status anche in `_edunews24`, ma l'RSS non ha
+ * estensioni: senza questa riga un bando revocato usciva con la sola
+ * «Scadenza», cioè come un bando a cui si può partecipare.
+ */
+const RIGHE_STATO: Partial<Record<StatoOpportunita, string>> = {
+  suspended: 'Stato: sospeso dall\'ente, al momento non si può presentare domanda.',
+  revoked: 'Stato: revocato dall\'ente, non si può presentare domanda.',
+};
+
+/** Sintesi, riga "Stato", riga "Scadenza" e attribuzione, separate da una riga vuota. */
+function testoVoce(
+  sintesi: string | null,
+  scadenza: string | null,
+  rimando: string,
+  status: StatoOpportunita | null = null,
+): string {
   const righe: string[] = [];
   if (sintesi !== null && sintesi !== '') righe.push(sintesi);
+  const rigaStato = status === null ? undefined : RIGHE_STATO[status];
+  if (rigaStato !== undefined) righe.push(rigaStato);
   if (scadenza !== null) righe.push(`Scadenza: ${formatDataBando(scadenza)}`);
   righe.push(rimando);
   return righe.join('\n\n');
@@ -225,7 +243,7 @@ function voceOpportunita(o: OpportunitaDto): VoceFeed {
     url: o.url,
     titolo: o.title,
     sintesi: o.summary,
-    testo: testoVoce(o.summary, o.deadline_on, `Scheda completa su EduNews24: ${o.url}`),
+    testo: testoVoce(o.summary, o.deadline_on, `Scheda completa su EduNews24: ${o.url}`, o.status),
     immagine: null,
     pubblicazione: o.published_at,
     modifica: o.updated_at,

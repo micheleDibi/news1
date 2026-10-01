@@ -135,6 +135,6 @@ export interface EventoBando {
   readonly url_prova?: string | null;
   /** `true` = da mostrare a chi legge; `false` = transizione tecnica. */
   readonly in_aggiornamenti?: boolean | null;
-  /** `false` = verificato ma non ancora riversato nella colonna (pre-06). */
+  /** `false` = non (ancora) riversato nella colonna del bando. Lo stato si legge solo dalla colonna. */
   readonly applicato?: boolean | null;
 }

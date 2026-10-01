@@ -7,7 +7,7 @@ import {
   F2_DISPONIBILE, caricaLinkEEventi, risolviSlugStorico,
   type Bando, type BandoDetail,
 } from '../../lib/supabase-bandi';
-import { motivoDellaRiga, statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
+import { motivoDellaRiga, statoEffettivo, todayRomeISO, type StatoBando } from '../../lib/stato-bando';
 import { corpoBando } from '../../lib/bandi/contenuto';
 import { soloPubblicabili } from '../../lib/bandi/domini';
 import {
@@ -18,7 +18,8 @@ import { aspettoConVerifica, inScadenza, PALETTE_SCADENZA } from '../../lib/band
 import { calendario } from '../../lib/bandi/calendario';
 import { eur } from '../../lib/bandi/elenco';
 import { sceltaCta } from '../../lib/bandi/cta';
-import { statoDaEventi, vociAggiornamento } from '../../lib/bandi/aggiornamenti';
+import { vociAggiornamento } from '../../lib/bandi/aggiornamenti';
+import { dividiStorico, vociStorico } from '../../lib/bandi/storico';
 import { jsonLdBando, proteggiJsonLd, serializzaJsonLd } from '../../lib/bandi/jsonld';
 import { esitoSlug, RITENTA_DOPO_SECONDI, type Lettura } from '../../lib/bandi/slug-storico';
 import BandiExpertCta from '../../components/BandiExpertCta.astro';
@@ -190,17 +191,23 @@ const campoTesto = (nome: string): string | null => {
   return typeof valore === 'string' && valore !== '' ? valore : null;
 };
 
-// I link e gli eventi del bando: due letture sole, e solo se la fonte le ha.
+// I link e tutti gli eventi pubblici del bando, e solo se la fonte li ha. Il box
+// «Aggiornamenti» ne sceglie le notizie (`in_aggiornamenti`); lo storico in fondo
+// alla scheda li mostra tutti, dal piu' recente.
 const { link: linkBando, eventi } = await caricaLinkEEventi(bando.id);
 const aggiornamenti = vociAggiornamento(eventi);
+const storicoEventi = dividiStorico(vociStorico(eventi));
+const totaleStorico = storicoEventi.visibili.length + storicoEventi.altre.length;
 
-// Lo stato: dalla vista arriva gia' calcolato (`stato_effettivo`), altrimenti si
-// calcola qui dalla colonna. In piu', finche' la migrazione 06 non estende il
-// CHECK a cinque valori, una sospensione o una revoca verificata resta
-// `applicato=false`: la colonna dice «aperto» e la verita' sta nell'evento.
+// Lo stato viene solo dalla colonna (contratto interno del giro 3, §14): dalla
+// vista arriva gia' calcolato (`stato_effettivo`), sulla tabella si calcola qui
+// con la stessa regola. Gli eventi non lo cambiano: raccontano che cosa e'
+// successo (box e storico), e una sospensione o una revoca arrivano qui solo
+// quando la RPC le ha scritte nella colonna. Cosi' scheda, lista, API e
+// BandoFit dicono la stessa cosa anche dopo una correzione della redazione.
 const statoDalDb = (bando as unknown as Record<string, unknown>).stato_effettivo;
-const statoRegistrato = typeof statoDalDb === 'string' && statoDalDb !== ''
-  ? (statoDalDb as typeof stato)
+const stato: StatoBando = typeof statoDalDb === 'string' && statoDalDb !== ''
+  ? (statoDalDb as StatoBando)
   : statoEffettivo({
       stato: bando.stato_bando,
       data_scadenza: bando.data_scadenza,
@@ -209,10 +216,9 @@ const statoRegistrato = typeof statoDalDb === 'string' && statoDalDb !== ''
       ora_apertura: campoTesto('ora_apertura'),
       ora_scadenza: campoTesto('ora_scadenza'),
     });
-const stato = statoDaEventi(eventi) ?? statoRegistrato;
 // Il motivo «da verificare»: dalla vista, o ricalcolato sulla tabella. Vale solo
-// se compatibile con lo stato mostrato, quindi uno stato preso da un evento
-// (una sospensione) spegne il bollino.
+// se compatibile con lo stato mostrato: un sospeso o un revocato spengono il
+// bollino.
 const motivo = motivoDellaRiga(colonne, stato);
 const aspetto = aspettoConVerifica(stato, motivo);
 const sottotesto = sottotestoStato({
@@ -813,6 +819,57 @@ const classiNumero = 'font-heading text-[24px] font-bold leading-[1.05] tabular-
                   </li>
                 ))}
               </ul>
+            </section>
+          )}
+
+          {/* Storico: tutti gli eventi pubblici del bando, dal piu' recente
+              (contratto interno del giro 3, §15). Il box «Aggiornamenti» in
+              alto ne mostra solo le notizie; qui c'e' anche cio' che e' tecnico
+              o automatico. Senza JavaScript: i primi dieci visibili, gli altri
+              in un <details>. Le due liste hanno la stessa riga. */}
+          {totaleStorico > 0 && (
+            <section aria-labelledby="scheda_storico" class="mt-12">
+              <h2 id="scheda_storico" class="font-heading text-[22px] font-bold text-[#0a2244]">Storico del bando</h2>
+              <p class="mb-3 mt-1 text-[13px] text-[#5b6576]">{totaleStorico === 1 ? '1 evento' : `${totaleStorico} eventi`}, dal più recente.</p>
+              <ol class="border-t border-[#eef1f5]">
+                {storicoEventi.visibili.map((voce) => (
+                  <li class="grid grid-cols-1 gap-x-3 border-b border-[#eef1f5] py-2.5 text-[14px] leading-[1.5] sm:grid-cols-[140px_minmax(0,1fr)]">
+                    <span class="tabular-nums text-[#5b6576]">{voce.giorno && voce.quando && <time datetime={voce.giorno}>{voce.quando}</time>}</span>
+                    <span class="text-[#1a2233]">{voce.correzione && (
+                      <Fragment><span class="mr-2 inline-block rounded-full bg-[#fff1d6] px-2 py-0.5 text-[12px] font-semibold text-[#8a4b00]">Correzione</span><span class="sr-only">: </span></Fragment>
+                    )}{voce.testo}{voce.dataAtto && <span class="text-[#5b6576]"> (data dell'atto: {voce.dataAtto})</span>}{voce.url && voce.host && (
+                      <Fragment>{' · '}<a
+                          href={voce.url}
+                          target="_blank"
+                          rel="noopener noreferrer nofollow"
+                          class="break-words text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
+                        >{voce.host}<span class="sr-only"> (si apre in una nuova scheda)</span></a></Fragment>
+                    )}</span>
+                  </li>
+                ))}
+              </ol>
+              {storicoEventi.altre.length > 0 && (
+                <details class="mt-1">
+                  <summary class="inline-flex min-h-11 cursor-pointer list-none items-center text-[13.5px] font-medium text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c] [&::-webkit-details-marker]:hidden">{storicoEventi.altre.length === 1 ? 'Mostra l\'evento precedente' : `Mostra i ${storicoEventi.altre.length} eventi precedenti`}</summary>
+                  <ol start={storicoEventi.visibili.length + 1} class="border-t border-[#eef1f5]">
+                    {storicoEventi.altre.map((voce) => (
+                      <li class="grid grid-cols-1 gap-x-3 border-b border-[#eef1f5] py-2.5 text-[14px] leading-[1.5] sm:grid-cols-[140px_minmax(0,1fr)]">
+                        <span class="tabular-nums text-[#5b6576]">{voce.giorno && voce.quando && <time datetime={voce.giorno}>{voce.quando}</time>}</span>
+                        <span class="text-[#1a2233]">{voce.correzione && (
+                          <Fragment><span class="mr-2 inline-block rounded-full bg-[#fff1d6] px-2 py-0.5 text-[12px] font-semibold text-[#8a4b00]">Correzione</span><span class="sr-only">: </span></Fragment>
+                        )}{voce.testo}{voce.dataAtto && <span class="text-[#5b6576]"> (data dell'atto: {voce.dataAtto})</span>}{voce.url && voce.host && (
+                          <Fragment>{' · '}<a
+                              href={voce.url}
+                              target="_blank"
+                              rel="noopener noreferrer nofollow"
+                              class="break-words text-[#004e9c] underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c]"
+                            >{voce.host}<span class="sr-only"> (si apre in una nuova scheda)</span></a></Fragment>
+                        )}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              )}
             </section>
           )}
         </article>

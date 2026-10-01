@@ -138,8 +138,10 @@ export const GUIDA_SINCRONIZZAZIONE: readonly PassoSincronizzazione[] = [
     risorse: 'selezione-personale e bandi',
     per: ['selezione-personale', 'bandi'],
     testo: 'usare updated_since = massimo updated_at visto − 3 ore, poi deduplicare. Lo scadere di una ' +
-      'scheda non aggiorna updated_at: lo stato va ricalcolato da deadline_on quando non è null; altrimenti ' +
-      'vale status.',
+      'scheda non aggiorna updated_at: quando deadline_on non è null, da deadline_on si ricalcola solo il ' +
+      'passaggio da open o upcoming a closed; closed, suspended e revoked non si ricalcolano dalla data ' +
+      '(un cambio arriva solo come nuovo status in una risposta successiva). Quando deadline_on è null vale ' +
+      'status.',
   },
   {
     risorse: 'interpelli',
@@ -240,14 +242,19 @@ export const PARAGRAFI_TESTO: readonly string[] = [
 
 export const PARAGRAFO_STATUS =
   'status vale open, closed, upcoming e, dalla 1.1, suspended (bando fermato dall\'ente) e revoked (bando ' +
-  'annullato, stato definitivo). Su suspended e revoked non si pu\u00f2 presentare domanda, qualunque cosa dica ' +
+  'annullato dall\'ente; ne esce solo con un annullamento della revoca o una correzione della redazione). ' +
+  'Su suspended e revoked non si pu\u00f2 presentare domanda, qualunque cosa dica ' +
   'deadline_on: chi deduceva «si pu\u00f2 partecipare» da status !== closed va corretto. ' +
   'status usa deadline_on, confrontato con la data dell\'header Date della risposta ' +
-  'nel calendario di Roma: il giorno della scadenza la scheda è ancora open, dal giorno dopo è closed. Per i ' +
+  'nel calendario di Roma: il giorno della scadenza la scheda è ancora open, dal giorno dopo è closed. La ' +
+  'scadenza non cambia suspended e revoked: un bando sospeso o revocato resta tale anche dopo deadline_on. Per i ' +
   'bandi, finché la scadenza non è passata, vale lo stato indicato dalla fonte (anche upcoming); per gli ' +
   'interpelli status è sempre null. Per la selezione del personale deadline_on è il giorno UTC di ' +
   'data_scadenza (vedi le avvertenze sulle date). Una copia in cache può restare indietro di qualche minuto ' +
-  'dopo la mezzanotte. Per il proprio archivio conviene ricalcolare lo stato da deadline_on. Una scadenza ' +
+  'dopo la mezzanotte. Per il proprio archivio, da deadline_on si ricalcola solo il passaggio da open o ' +
+  'upcoming a closed; closed, suspended e revoked non si ricalcolano dalla data: una riapertura, una ' +
+  'proroga, una sospensione, una revoca o il suo annullamento arrivano solo come nuovo status (e nuova ' +
+  'deadline_on) in una risposta successiva. Una scadenza ' +
   'della fonte che supera di oltre 8 anni published_at è considerata implausibile: deadline_on e ' +
   'deadline_at sono null. Per la selezione del personale status è allora open; per i bandi resta quello ' +
   'indicato dalla fonte. Quando deadline_on è null lo stato non si può ricalcolare: usare status così com\'è. ' +

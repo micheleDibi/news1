@@ -280,6 +280,44 @@ test('JSON Feed: i due status nuovi escono tali e quali', () => {
   assert.deepEqual(voci[1]._edunews24, { type: 'bando', status: 'revoked', deadline_on: '2026-01-01' });
 });
 
+test('feed: sospesi e revocati dicono lo stato anche nel testo, in JSON e in RSS', () => {
+  // L'RSS non ha `_edunews24`: un revocato usciva con la sola «Scadenza», cioè
+  // come un bando aperto. La riga «Stato» sta prima della scadenza.
+  const elementi = [
+    bando({ id: 1, status: 'suspended' }),
+    bando({ id: 2, status: 'revoked', deadline_on: '2026-01-01' }),
+    bando({ id: 3, status: 'revoked', deadline_on: null }),
+  ];
+  const { voci } = jsonFeed(elementi);
+  assert.equal(voci[0].content_text, [
+    'Contributi a fondo perduto.',
+    'Stato: sospeso dall\'ente, al momento non si può presentare domanda.',
+    'Scadenza: 30 novembre 2026',
+    'Scheda completa su EduNews24: https://edunews24.it/bandi/voucher-pmi',
+  ].join('\n\n'));
+  assert.equal(voci[1].content_text, [
+    'Contributi a fondo perduto.',
+    'Stato: revocato dall\'ente, non si può presentare domanda.',
+    'Scadenza: 1 gennaio 2026',
+    'Scheda completa su EduNews24: https://edunews24.it/bandi/voucher-pmi',
+  ].join('\n\n'));
+  assert.ok((voci[2].content_text as string).includes('Stato: revocato'), 'anche senza scadenza');
+  const rss = serializzaRss(metadatiFeed({ risorsa: 'bandi', categoria: null, formato: 'xml' }, null), elementi);
+  verificaXmlBenFormato(rss);
+  for (const voce of voci) {
+    assert.ok(rss.includes(`<description>${testoXml(voce.content_text as string)}</description>`), String(voce.id));
+  }
+  assert.ok(rss.includes(testoXml('Stato: revocato dall\'ente, non si può presentare domanda.')));
+});
+
+test('feed: aperti, chiusi e in apertura non hanno la riga «Stato»', () => {
+  const { voci } = jsonFeed([
+    bando({ status: 'open' }), bando({ status: 'closed' }), bando({ status: 'upcoming' }), bando({ status: null }),
+    selezione(), interpello(),
+  ]);
+  for (const voce of voci) assert.equal((voce.content_text as string).includes('Stato:'), false, String(voce.id));
+});
+
 test('JSON Feed: _edunews24 esatto per tipo, null conservati', () => {
   const { voci } = jsonFeed([articolo(), interpello(), selezione(), bando({ status: 'upcoming', deadline_on: null })]);
   assert.deepEqual(voci[0]._edunews24, { type: 'article', category: 'scuola' });

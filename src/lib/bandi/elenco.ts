@@ -14,6 +14,7 @@
 import type { Valori } from '../liste/parametri';
 import { ASPETTO_STATO, aspettoStato, inScadenza, type AspettoStato } from './aspetto';
 import { dataBreve } from './calendario';
+import { statiRichiesti } from './filtro-stato';
 import { giornoItaliano, giorniAllaScadenza, testoGiorniMancanti } from './testi-stato';
 
 // ---------------------------------------------------------------------------
@@ -270,15 +271,35 @@ export interface Chip {
 
 export type UrlDa = (valori: Valori) => string;
 
-/** Le chip nell'ordine del mock: ricerca, stato, in scadenza, gruppi, importo, scadenza. */
-export function chipFiltri(valori: Valori, gruppi: readonly GruppoFiltro[], url: UrlDa): Chip[] {
+/**
+ * Gli stati di `?stato=` che la query applica davvero: gli stessi di
+ * `caricaBandi` (`statiRichiesti`). Senza il flag degli stati estesi
+ * `?stato=sospeso` viene ignorato dalla query, e chip, segmenti e tessere non
+ * devono dire il contrario sopra una lista non filtrata (contratto interno del
+ * giro 3, §14).
+ */
+function statiApplicati(valori: Valori, estesi: boolean): string[] {
+  return statiRichiesti(valori.stato, estesi === true);
+}
+
+/**
+ * Le chip nell'ordine del mock: ricerca, stato, in scadenza, gruppi, importo, scadenza.
+ * `estesi` è `BANDI_STATI_ESTESI`: decide quali valori di `?stato=` contano.
+ */
+export function chipFiltri(valori: Valori, gruppi: readonly GruppoFiltro[], url: UrlDa, estesi: boolean): Chip[] {
   const chip: Chip[] = [];
   const q = valore1(valori, 'q').trim();
   if (q) chip.push({ chiave: 'Ricerca', valore: `“${q}”`, href: url(senzaValore(valori, 'q')) });
 
-  const stato = valore1(valori, 'stato');
-  if (stato) {
-    chip.push({ chiave: 'Stato', valore: aspettoStato(stato)?.etichetta ?? stato, href: url(senzaValore(valori, 'stato')) });
+  // Una chip per stato applicato; il suo link toglie quello stato e anche i
+  // valori che la query ignorava, così l'URL che ne esce è pulito.
+  const stati = statiApplicati(valori, estesi);
+  for (const stato of stati) {
+    chip.push({
+      chiave: 'Stato',
+      valore: aspettoStato(stato)?.etichetta ?? stato,
+      href: url(conValori(valori, { stato: stati.filter((s) => s !== stato) })),
+    });
   }
   if (valore1(valori, 'in_scadenza')) {
     chip.push({ chiave: '', valore: 'In scadenza', href: url(senzaValore(valori, 'in_scadenza')) });
@@ -338,9 +359,12 @@ export interface Tessera {
   nota?: string;
 }
 
-/** Le tre tessere dell'hero: cliccarne una imposta stato e «in scadenza» come nel mock. */
-export function tessere(valori: Valori, c: ConteggiStato, url: UrlDa): Tessera[] {
-  const stato = valore1(valori, 'stato');
+/**
+ * Le tre tessere dell'hero: cliccarne una imposta stato e «in scadenza» come nel mock.
+ * `estesi` come in `chipFiltri`: una tessera è attiva solo per uno stato applicato.
+ */
+export function tessere(valori: Valori, c: ConteggiStato, url: UrlDa, estesi: boolean): Tessera[] {
+  const stato = statiApplicati(valori, estesi)[0] ?? '';
   const urgenti = valore1(valori, 'in_scadenza') === 'si';
   return [
     {
@@ -378,9 +402,12 @@ export interface Segmento {
   attivo: boolean;
 }
 
-/** I quattro segmenti di stato della barra. */
-export function segmentiStato(valori: Valori, c: ConteggiStato): Segmento[] {
-  const stato = valore1(valori, 'stato');
+/**
+ * I quattro segmenti di stato della barra. `estesi` come in `chipFiltri`: con
+ * un `?stato=` che la query ignora è attivo «Tutti», perché la lista è quella.
+ */
+export function segmentiStato(valori: Valori, c: ConteggiStato, estesi: boolean): Segmento[] {
+  const stato = statiApplicati(valori, estesi)[0] ?? '';
   const s = (etichetta: string, valore: string, n: number): Segmento =>
     ({ etichetta, valore, conteggio: numeroGrande(n), attivo: stato === valore });
   return [

@@ -2,7 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 import { fonteBandiDa } from './bandi/pubblicazione';
 import type { StatoBando } from './stato-bando';
 import type { FonteBandi } from './bandi/pubblicazione';
-import type { Allegato, ContenutoBando, EventoBando, LinkBando } from './bandi/tipi';
+import type { Allegato, ContenutoBando, LinkBando } from './bandi/tipi';
+import type { EventoStorico } from './bandi/storico';
 
 const url = import.meta.env.PUBLIC_SUPABASE_BANDI_URL;
 const key = import.meta.env.PUBLIC_SUPABASE_BANDI_ANON_KEY;
@@ -347,54 +348,84 @@ export const BANDO_SELECT_DETTAGLIO = selectConMotivo([
  */
 export const F2_DISPONIBILE: boolean = FONTE_BANDI.tabella === 'bando_pubblico';
 
+/** Righe per pagina: il massimo che PostgREST restituisce, senza dirlo. */
+const EVENTI_PER_PAGINA = 1000;
 /**
- * I link pubblicabili e gli eventi visibili di un bando: due letture, non un
- * embed.
+ * Guardia contro un ciclo senza fine, non un tetto: oggi un bando ha al massimo
+ * cinque eventi, e ventimila vorrebbero dire un guasto a monte.
+ */
+const EVENTI_PAGINE_MAX = 20;
+
+/**
+ * Tutti gli eventi che la anon key legge di un bando (contratto interno del
+ * giro 3, §15): il box «Aggiornamenti» ne sceglie le notizie, lo storico in
+ * fondo alla scheda li mostra tutti. Niente filtro su `in_aggiornamenti` e
+ * niente tetto: si legge a pagine da mille, ordinate per `id`, finché una
+ * pagina torna corta.
+ *
+ * `null` se una pagina fallisce: uno storico a metà sembrerebbe completo.
+ */
+async function caricaEventi(bandoId: number | string): Promise<EventoStorico[] | null> {
+  const eventi: EventoStorico[] = [];
+  for (let pagina = 0; pagina < EVENTI_PAGINE_MAX; pagina += 1) {
+    const da = pagina * EVENTI_PER_PAGINA;
+    const risposta = await supabaseBandi
+      .from('bando_evento')
+      // Solo colonne concesse ad anon (contratto DB §6.1), una per una: `*`
+      // risponde 42501. `cursore` e' anche il gate della RLS: chiederlo rende
+      // esplicito che si leggono solo gli eventi visibili.
+      .select('id, bando_id, tipo, campo, valore_dopo, data_evento, rilevato_at, '
+        + 'verificato, url_prova, in_aggiornamenti, applicato, cursore, riferisce_a')
+      .eq('bando_id', bandoId)
+      .order('id', { ascending: true })
+      .range(da, da + EVENTI_PER_PAGINA - 1);
+    if (risposta.error) {
+      console.warn('[bandi] eventi del bando non letti:', risposta.error.message);
+      return null;
+    }
+    const righe = (risposta.data ?? []) as unknown as EventoStorico[];
+    eventi.push(...righe);
+    if (righe.length < EVENTI_PER_PAGINA) return eventi;
+  }
+  console.warn(`[bandi] eventi del bando ${bandoId}: oltre ${EVENTI_PAGINE_MAX} pagine, lettura fermata`);
+  return eventi;
+}
+
+/**
+ * I link pubblicabili e gli eventi visibili di un bando: letture separate, non
+ * un embed.
  *
  * L'embed non si puo' usare per due ragioni indipendenti: `bando_link` e
  * `bando_evento` concedono ad anon **colonne** e non la tabella, quindi un
  * `select=*` dentro un embed risponde 42501; e la vista non ha una relazione
  * dichiarata verso quelle tabelle, perche' le chiavi esterne stanno su `bando`.
  *
- * Non solleva mai: una scheda deve rendersi anche se queste due letture
+ * Non solleva mai: una scheda deve rendersi anche se queste letture
  * fallissero. Il prezzo di un guasto e' una scheda senza il box degli
- * aggiornamenti, non una scheda che non c'e'.
+ * aggiornamenti e senza lo storico, non una scheda che non c'e'.
  */
 export async function caricaLinkEEventi(bandoId: number | string): Promise<{
   link: LinkBando[];
-  eventi: EventoBando[];
+  eventi: EventoStorico[];
 }> {
   if (!F2_DISPONIBILE) return { link: [], eventi: [] };
-  const [risposteLink, risposteEventi] = await Promise.all([
+  const [risposteLink, eventi] = await Promise.all([
     supabaseBandi
       .from('bando_link')
       // Le colonne del contratto (§13.4), una per una: `*` risponde 42501.
       .select('id, bando_id, url, dominio, tipo, etichetta, content_type, ultimo_visto_at')
       .eq('bando_id', bandoId),
-    supabaseBandi
-      .from('bando_evento')
-      // Come sopra (§13.5). `cursore` non serve al render ma e' il gate della
-      // RLS: chiederlo rende esplicito che si leggono solo gli eventi visibili.
-      .select('id, tipo, campo, valore_dopo, data_evento, rilevato_at, verificato, '
-        + 'url_prova, in_aggiornamenti, applicato, cursore')
-      .eq('bando_id', bandoId)
-      .eq('in_aggiornamenti', true)
-      .order('data_evento', { ascending: false, nullsFirst: false })
-      .order('id', { ascending: false })
-      .limit(20),
+    caricaEventi(bandoId),
   ]);
 
   if (risposteLink.error) {
     console.warn('[bandi] link del bando non letti:', risposteLink.error.message);
   }
-  if (risposteEventi.error) {
-    console.warn('[bandi] eventi del bando non letti:', risposteEventi.error.message);
-  }
   return {
     // Solo le righe pubblicabili escono ad anon per effetto della RLS: qui non
     // si filtra di nuovo, ma i moduli puri a valle ricontrollano il dominio.
     link: (risposteLink.data ?? []) as unknown as LinkBando[],
-    eventi: (risposteEventi.data ?? []) as unknown as EventoBando[],
+    eventi: eventi ?? [],
   };
 }
 

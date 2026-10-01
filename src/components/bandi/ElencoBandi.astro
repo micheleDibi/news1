@@ -34,7 +34,7 @@ import {
 import { VOCI_ORDINA } from '../../lib/bandi/ordinamento';
 import { DEF_BANDI } from '../../lib/liste/bandi';
 import { urlLista, type Valori } from '../../lib/liste/parametri';
-import type { Bando } from '../../lib/supabase-bandi';
+import { BANDI_STATI_ESTESI, type Bando } from '../../lib/supabase-bandi';
 
 interface Props {
   valori: Valori;
@@ -64,10 +64,10 @@ const vista: 'elenco' | 'griglia' = valori.vista?.[0] === 'griglia' ? 'griglia' 
 const filtrata = contaFiltriContenuto(valori) > 0;
 const hrefReset = url(valoriReset(valori));
 const avanzati = contaAvanzati(valori);
-const segmenti = segmentiStato(valori, conteggi);
+const segmenti = segmentiStato(valori, conteggi, BANDI_STATI_ESTESI);
 const inScadenzaAttivo = valori.in_scadenza?.[0] === 'si';
 const ordina = valori.ordina?.[0] ?? '';
-const chip = chipFiltri(valori, gruppi, url);
+const chip = chipFiltri(valori, gruppi, url, BANDI_STATI_ESTESI);
 
 const perChiave = new Map(gruppi.map((g) => [g.chiave, g]));
 const rapidi = GRUPPI_RAPIDI.map((chiave) => {
@@ -108,7 +108,7 @@ const legenda = 'mb-2 p-0 font-heading text-[16px] font-semibold text-[#0a2244]'
         <button type="submit" data-cerca-invio class="h-[52px] cursor-pointer rounded-[10px] border-0 bg-[#004e9c] px-5 text-[15px] font-semibold text-white hover:bg-[#003d7a] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#004e9c] sm:px-7">Cerca</button>
       </div>
 
-      <TessereBandi tessere={tessere(valori, conteggi, url)} />
+      <TessereBandi tessere={tessere(valori, conteggi, url, BANDI_STATI_ESTESI)} />
     </div>
   </section>
 

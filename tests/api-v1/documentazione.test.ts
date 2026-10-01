@@ -10,7 +10,8 @@ import { sezioniDocumentazione } from '../../src/lib/api-v1/documentazione.ts';
 import { CODICI_ERRORE, DEFINIZIONE_ERRORE } from '../../src/lib/api-v1/errori.ts';
 import { ORDINE_PARAMETRI, SPEC_PARAMETRI } from '../../src/lib/api-v1/parametri.ts';
 import { CONTENT_SIGNAL, URL_TERMINI } from '../../src/lib/api-v1/costanti.ts';
-import { descrizioneOpenApi } from '../../src/lib/api-v1/testi-doc.ts';
+import { descrizioneOpenApi, GUIDA_SINCRONIZZAZIONE } from '../../src/lib/api-v1/testi-doc.ts';
+import { documentoOpenApi } from '../../src/lib/api-v1/openapi.ts';
 import type { Blocco, SezioneDoc } from '../../src/lib/api-v1/documentazione.ts';
 
 const sezioni = sezioniDocumentazione();
@@ -100,6 +101,65 @@ test('sezioni richieste presenti', () => {
   for (const frammento of ['_edunews24', 'application/feed+json', 'application/rss+xml', '<rss version="2.0"', '"version": "https://jsonfeed.org/version/1.1"']) {
     assert.ok(feed.includes(frammento), frammento);
   }
+});
+
+test('lo stato non si ricalcola dalla scadenza per suspended e revoked', () => {
+  // Il vecchio testo diceva «Per il proprio archivio conviene ricalcolare lo
+  // stato da deadline_on»: falso per un bando sospeso o revocato, che resta
+  // tale anche a scadenza passata (garanzia A3; contratto interno del giro 3,
+  // §14). Stessa regola nella pagina e nella descrizione OpenAPI.
+  for (const [dove, testo] of [['pagina', testoDi(sezione('testo'))], ['openapi', descrizioneOpenApi()]] as const) {
+    assert.equal(testo.includes('conviene ricalcolare lo stato da deadline_on'), false, dove);
+    assert.ok(testo.includes('un bando sospeso o revocato resta tale anche dopo deadline_on'), dove);
+    assert.ok(testo.includes('da deadline_on si ricalcola solo il passaggio da open o upcoming a closed'), dove);
+    assert.ok(testo.includes('closed, suspended e revoked non si ricalcolano dalla data'), dove);
+  }
+});
+
+test('la guida alla sincronizzazione dice la stessa regola dello status', () => {
+  // `GUIDA_SINCRONIZZAZIONE` diceva ancora «lo stato va ricalcolato da
+  // deadline_on» per selezione e bandi: falso per suspended e revoked
+  // (revisione avversaria, ciclo 2, §19.7). La regola deve coincidere con
+  // `PARAGRAFO_STATUS` ovunque la guida compaia: pagina, OpenAPI (descrizione
+  // generale e descrizioni per risorsa) e la guida Markdown per chi mantiene.
+  const passo = GUIDA_SINCRONIZZAZIONE.find((p) => p.per.includes('bandi'));
+  assert.ok(passo, 'un passo della guida per i bandi');
+  const operazioni = Object.values((documentoOpenApi() as { paths: Record<string, Record<string, { description?: string }>> }).paths)
+    .flatMap((percorso) => Object.values(percorso).map((op) => op.description ?? ''))
+    .join('\n');
+  const guida = readFileSync(new URL('../../docs/api-v1.md', import.meta.url), 'utf8');
+  for (const [dove, testo] of [
+    ['guida', passo.testo],
+    ['pagina', testoDi(sezione('paginazione'))],
+    ['openapi', descrizioneOpenApi()],
+    ['openapi per risorsa', operazioni],
+    ['docs/api-v1.md', guida],
+  ] as const) {
+    assert.equal(testo.includes('lo stato va ricalcolato da deadline_on'), false, dove);
+    assert.equal(/ricalcol\w+ (lo stato )?da deadline_on quando/.test(testo), false, dove);
+  }
+  for (const [dove, testo] of [
+    ['guida', passo.testo], ['pagina', testoDi(sezione('paginazione'))], ['openapi', descrizioneOpenApi()],
+    ['openapi per risorsa', operazioni],
+  ] as const) {
+    assert.ok(testo.includes('da deadline_on si ricalcola solo il passaggio da open o upcoming a closed'), dove);
+    assert.ok(testo.includes('closed, suspended e revoked non si ricalcolano dalla data'), dove);
+  }
+});
+
+test('revoked non è «stato definitivo»: si esce con un annullamento o una correzione', () => {
+  // La migrazione 14 dà al revocato due uscite (annullamento della revoca,
+  // correzione della redazione): «stato definitivo» contraddiceva anche la
+  // frase dello stesso paragrafo sull'annullamento (§18.10). La guida per chi
+  // mantiene l'API non dice più che la 06 manca.
+  const guida = readFileSync(new URL('../../docs/api-v1.md', import.meta.url), 'utf8');
+  for (const [dove, testo] of [
+    ['pagina', testoDi(sezione('testo'))], ['openapi', descrizioneOpenApi()], ['docs/api-v1.md', guida],
+  ] as const) {
+    assert.equal(testo.includes('stato definitivo'), false, dove);
+    assert.ok(testo.includes('annullamento della revoca o una correzione della'), dove);
+  }
+  assert.equal(guida.includes('non compariranno finché il CHECK della colonna non li ammette'), false);
 });
 
 test('la promessa sugli URL nomina official_source (§16.3.9)', () => {

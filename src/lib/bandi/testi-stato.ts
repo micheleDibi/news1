@@ -363,9 +363,10 @@ const OPZIONI_ESTESE: readonly OpzioneStato[] = [
 ];
 
 /**
- * I chip che la lista mostra. `sospeso` e `revocato` compaiono solo quando il
- * DB può contenerli: prima della migrazione 06 il CHECK ne ammette tre, e un
- * chip che restituisce sempre zero risultati è peggio di un chip assente.
+ * I chip che la lista mostra. `sospeso` e `revocato` compaiono solo con il flag
+ * `BANDI_STATI_ESTESI`: prima della migrazione 06 (applicata il 28/09/2026) il
+ * CHECK ne ammetteva tre, e un chip che restituisce sempre zero risultati è
+ * peggio di un chip assente.
  */
 export function opzioniStato(estesi: boolean): OpzioneStato[] {
   return estesi ? [...OPZIONI_BASE, ...OPZIONI_ESTESE] : [...OPZIONI_BASE];

@@ -24,6 +24,7 @@ import {
   chipFiltri, conValori, contaFiltriContenuto, normalizzaPresentazione, numeroGrande, segmentiStato, tessere,
   TESTATA_LISTA, titoloLista, valoriReset,
 } from '../../../lib/bandi/elenco';
+import { BANDI_STATI_ESTESI } from '../../../lib/supabase-bandi';
 
 Astro.response.headers.set('X-Robots-Tag', 'noindex');
 Astro.response.headers.set('Cache-Control', 'no-store');
@@ -51,9 +52,9 @@ const hrefReset = url(valoriReset(valori));
   <ListaBandi righe={righe} filtrata={contaFiltriContenuto(valori) > 0} vista={vista} errore={errore} hrefReset={hrefReset} />
   <PaginazioneBandi base={url(valori)} pagina={pagina} pagine={pagine} />
   <TestataBandi {...TESTATA_LISTA} />
-  <TessereBandi tessere={tessere(valori, conteggi, url)} />
-  <ChipBandi chip={chipFiltri(valori, gruppi, url)} hrefReset={hrefReset} />
+  <TessereBandi tessere={tessere(valori, conteggi, url, BANDI_STATI_ESTESI)} />
+  <ChipBandi chip={chipFiltri(valori, gruppi, url, BANDI_STATI_ESTESI)} hrefReset={hrefReset} />
   <VistaBandi vista={vista} hrefElenco={url(conValori(valori, { vista: [] }))} hrefGriglia={url(conValori(valori, { vista: ['griglia'] }))} />
   <span data-testo="mostra">{numeroGrande(totale)}</span>
-  {segmentiStato(valori, conteggi).map((s, i) => <span data-testo={`segmento-${i}`}>{s.conteggio}</span>)}
+  {segmentiStato(valori, conteggi, BANDI_STATI_ESTESI).map((s, i) => <span data-testo={`segmento-${i}`}>{s.conteggio}</span>)}
 </div>

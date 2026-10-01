@@ -4,12 +4,14 @@
  *
  * Due difetti da chiudere.
  *
- * 1. **Quali valori accettare.** `STATI_BANDO` è a cinque valori, ma finché la
- *    migrazione 06 non estende il CHECK la colonna ne ammette tre: un
- *    `?stato=sospeso` arriverebbe a PostgREST e tornerebbe una lista vuota,
- *    indistinguibile da «nessun bando sospeso». Il flag
- *    `PUBLIC_BANDI_STATI_ESTESI` (default: assente, cioè no) decide, e un
- *    valore non ammesso viene semplicemente ignorato come oggi.
+ * 1. **Quali valori accettare.** `STATI_BANDO` è a cinque valori, ma prima
+ *    della migrazione 06 (applicata il 28/09/2026) la colonna ne ammetteva
+ *    tre: un `?stato=sospeso` sarebbe arrivato a PostgREST e sarebbe tornata
+ *    una lista vuota, indistinguibile da «nessun bando sospeso». Decide ancora
+ *    il flag `PUBLIC_BANDI_STATI_ESTESI` (default: assente, cioè no), e un
+ *    valore non ammesso viene semplicemente ignorato. Chip, segmenti e
+ *    tessere della lista (`elenco.ts`) usano `statiRichiesti` con lo stesso
+ *    flag, così non mostrano un filtro che la query ignora.
  *
  * 2. **`chiuso` catturava troppo.** La condizione era
  *    `or(stato_bando.eq.chiuso, data_scadenza.lt.oggi)`: un bando sospeso o
