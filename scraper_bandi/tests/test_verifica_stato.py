@@ -16,7 +16,7 @@ import sys
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from bs4 import BeautifulSoup
@@ -50,9 +50,10 @@ def _titolo(html):
 
 
 def _impostazioni(**kwargs):
-    base = dict(verifica_stato_modalita="ombra", verifica_stato_tetto_letture=40, verifica_stato_tetto_s=900,
-                verifica_stato_max_chiusure=20, verifica_stato_usa_modello=False,
-                verifica_stato_tetto_ingresso=30, ingresso_sosta_giri=4)
+    # Senza i tetti di numero dismessi (giro 3, §3 e §13): se il passo li
+    # leggesse ancora, SimpleNamespace solleverebbe AttributeError.
+    base = dict(verifica_stato_modalita="ombra", verifica_stato_tetto_s=900,
+                verifica_stato_usa_modello=False, ingresso_sosta_giri=4)
     base.update(kwargs)
     return SimpleNamespace(**base)
 
@@ -155,7 +156,8 @@ class FonteFinta(vs.FonteDati):
         return next((r["stato_bando"] for r in self.righe if r["id"] == bando_id), None)
 
     def consumo_oggi(self):
-        return dict(self.consumo)
+        # None = lettura fallita (§18.5), come `db.consumo_oggi`.
+        return None if self.consumo is None else dict(self.consumo)
 
     def scrivi_lettura(self, bando_id, colonne):
         self.scritte[bando_id] = dict(colonne)
@@ -315,18 +317,19 @@ class TestAttivo(unittest.TestCase):
             _passo(fonte, rete, modalita="attivo")
         self.assertIs(spia.call_args.args[1].tabella_domini, fonte.tabella)
 
-    def test_la_ventunesima_chiusura_va_in_coda(self):
+    def test_nessun_tetto_di_chiusure_per_giro(self):
+        # Giro 3, §13: niente VERIFICA_STATO_MAX_CHIUSURE (20). Le 21 chiusure
+        # ammesse si registrano tutte nello stesso giro; resta il freno per host.
         url, html = _pagina("lombardia_chiuso_18344.html")
         ids = list(range(100, 121))
         fonte = FonteFinta([_riga(i, url, html) for i in ids], {i: _gia_letto(url, html) for i in ids},
                            _tabella(url))
         esito = _passo(fonte, Rete({url: (200, html)}), modalita="attivo")
-        self.assertEqual(len(fonte.registrate), 20)
-        self.assertEqual(esito["counters"]["chiusure_oltre_tetto"], 1)
-        in_coda = [p for p in esito["proposte"] if p["esito"] == "in_coda"]
-        self.assertEqual([(p["bando_id"], p["trattenuta"]) for p in in_coda], [(120, "tetto")])
-        self.assertEqual(fonte.scritte[120]["prossima_lettura_at"], (ADESSO + timedelta(days=1)).isoformat())
-        self.assertNotIn(120, [r["bando_id"] for r in fonte.registrate])
+        self.assertEqual(sorted(r["bando_id"] for r in fonte.registrate), ids)
+        self.assertNotIn("chiusure_oltre_tetto", esito["counters"])
+        self.assertEqual([p for p in esito["proposte"] if p["trattenuta"] == "tetto"], [])
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 21, "fatti": 21, "rimasti": 0, "motivo_rimasti": None})
 
 
 class TestFreno(unittest.TestCase):
@@ -591,6 +594,27 @@ class TestModello(unittest.TestCase):
                 self.assertEqual(chiamate, chiamate_attese)
                 self.assertEqual(esito["counters"]["modello_saltato_per_bilancio"], saltati)
 
+    def test_consumo_illeggibile_niente_modello(self):
+        # §18.5: se `db.consumo_oggi()` fallisce (None) il modello non si
+        # chiama; la pagina si legge lo stesso con i lettori per ente.
+        tetti = dict(tetto_fetch_giro=0, tetto_ricerche_giorno=0, tetto_crediti_giorno=0,
+                     tetto_classificazioni_giorno=0, tetto_usd_giorno=1.0, tetto_crediti_mese=0,
+                     tetto_usd_mese=0, backfill_tetto_crediti=0, backfill_tetto_usd=0)
+        fonte, rete, modello, chiamate = self._sicilia()
+        fonte.consumo = None
+        esito = _passo(fonte, rete, leggi_modello=modello,
+                       impostazioni=_impostazioni(verifica_stato_usa_modello=True, **tetti))
+        self.assertEqual(chiamate, [])
+        self.assertEqual(esito["counters"]["modello_saltato_per_bilancio"], 1)
+        self.assertEqual(esito["counters"]["lavorati"], 1)
+
+    def test_fonte_supabase_consumo_illeggibile_e_none(self):
+        # La fonte di produzione non trasforma l'errore in «niente speso».
+        fonte = vs.FonteDatiSupabase.__new__(vs.FonteDatiSupabase)
+        db = carica_modulo("db")
+        with patch.object(db, "consumo_oggi", side_effect=RuntimeError("503")):
+            self.assertIsNone(fonte.consumo_oggi())
+
     def test_gate_di_parola(self):
         testo = "Il bando è chiuso dal 3 marzo. Le domande sono ammesse fino ad esaurimento delle risorse."
         self.assertIsNotNone(vs.lettura_modello_valida(testo, {"stato": "chiuso", "citazione": "Il bando è chiuso"}))
@@ -825,8 +849,8 @@ class TestIngresso(unittest.TestCase):
         con_link = {**nuda, "id": 2}
         fonte._enriched = [nuda, con_link, leggibile]
         fonte.link = {2: [{"bando_id": 2, "url": "https://altro-esempio.it/allegato.pdf", "tipo": "allegato"}]}
-        esito = _passo(fonte, rete, fase="ingresso", impostazioni=_impostazioni(verifica_stato_tetto_ingresso=2))
-        # La riga nuda non si legge e non occupa il tetto; quella con un bando_link si'.
+        esito = _passo(fonte, rete, fase="ingresso")
+        # La riga nuda non si legge e non conta fra i candidati; quella con un bando_link si'.
         self.assertEqual([i for i, _, _ in fonte.ingressi], [2, 2339])
         self.assertEqual((esito["counters"]["trattenuti_senza_appiglio"], esito["counters"]["candidati"]), (1, 2))
         self.assertEqual(esito["counters"]["trattenuti"], 2)  # la nuda e la 2, in sosta senza lettura
@@ -890,12 +914,83 @@ class TestGuardie(unittest.TestCase):
         self.assertEqual(esito["counters"]["errori_rete"], 1)
         self.assertEqual(fonte.scritte[18344]["lettura_stato"]["esito"], "errore_rete")
 
-    def test_tetto_di_letture_e_limit(self):
+    def test_limit_solo_da_riga_di_comando(self):
         url, html = _pagina("lombardia_chiuso_18344.html")
         fonte = FonteFinta([_riga(i, url, html) for i in (1, 2, 3)], {}, _tabella(url))
         esito = _passo(fonte, Rete({url: (200, html)}), limit=2)
         self.assertEqual(esito["counters"]["letti"], 2)
         self.assertEqual(sorted(fonte.scritte), [1, 2])
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 3, "fatti": 2, "rimasti": 1, "motivo_rimasti": None})
+
+
+class TestGiro3SenzaTettiDiNumero(unittest.TestCase):
+    """Contratto `bandi-giro-3` §1 e §13: tempo con rotazione, freno per host, copertura."""
+
+    def test_senza_limit_si_leggono_tutti(self):
+        # Il vecchio VERIFICA_STATO_TETTO_LETTURE (40) non c'e' piu'.
+        url, html = _pagina("lombardia_chiuso_18344.html")
+        ids = list(range(1, 46))
+        fonte = FonteFinta([_riga(i, url, html) for i in ids], {}, _tabella(url))
+        esito = _passo(fonte, Rete({url: (200, html)}))
+        self.assertEqual(esito["counters"]["letti"], 45)
+        self.assertEqual(sorted(fonte.scritte), ids)
+        self.assertEqual(esito["copertura"]["rimasti"], 0)
+        self.assertEqual(fonte.runs[0].contatori["copertura"], esito["copertura"])
+
+    def test_rotazione_a_parita_di_priorita(self):
+        # Stessa priorita' (rinnovo): prima chi e' stato letto meno di recente,
+        # l'id decide solo a parita'.
+        url, html = _pagina("lombardia_chiuso_18344.html")
+        letture = {1: _gia_letto(url, html, ore_fa=30), 2: _gia_letto(url, html, ore_fa=90),
+                   3: _gia_letto(url, html, ore_fa=60)}
+        righe = [_riga(i, url, html) for i in (1, 2, 3)]
+        candidati = vs.scegli_candidati(righe, letture, {}, _tabella(url), ADESSO)
+        self.assertEqual({c.priorita for c in candidati}, {candidati[0].priorita})
+        self.assertEqual([c.riga["id"] for c in candidati], [2, 3, 1])
+
+    def test_mai_letto_prima_di_tutti(self):
+        self.assertLess(vs._chiave_rotazione({}), vs._chiave_rotazione(
+            {"lettura_stato_at": "2020-01-01T00:00:00+00:00"}))
+        self.assertLess(vs._chiave_rotazione({"lettura_stato_at": "2026-09-01T00:00:00+00:00"}),
+                        vs._chiave_rotazione({"lettura_stato_at": "2026-09-20T00:00:00+00:00"}))
+
+    def test_il_tempo_lascia_fuori_con_motivo_tempo(self):
+        url, html = _pagina("lombardia_chiuso_18344.html")
+        fonte = FonteFinta([_riga(i, url, html) for i in (1, 2, 3)], {}, _tabella(url))
+        orologio = iter([0, 0, 0, 0, 10_000, 10_000, 10_000, 10_000])
+        esito = _passo(fonte, Rete({url: (200, html)}), orologio=lambda: next(orologio, 10_000))
+        self.assertTrue(esito["counters"]["interrotto_per_tetto_tempo"])
+        self.assertEqual(esito["copertura"]["motivo_rimasti"], "tempo")
+        self.assertGreater(esito["copertura"]["rimasti"], 0)
+        self.assertEqual(esito["copertura"]["fatti"] + esito["copertura"]["rimasti"], 3)
+
+    def test_tempo_predefinito_trenta_minuti(self):
+        # VERIFICA_STATO_TETTO_S: 1800 per difetto (giro 3, §3) anche con
+        # impostazioni parziali.
+        url, html = _pagina("lombardia_chiuso_18344.html")
+        fonte = FonteFinta([_riga(1, url, html)], {}, _tabella(url))
+        impostazioni = SimpleNamespace(verifica_stato_modalita="ombra", verifica_stato_usa_modello=False,
+                                       ingresso_sosta_giri=4)
+        orologio = iter([0, 0, 1700, 1700, 1700, 1700])
+        esito = _passo(fonte, Rete({url: (200, html)}), impostazioni=impostazioni,
+                       orologio=lambda: next(orologio, 1700))
+        self.assertFalse(esito["counters"]["interrotto_per_tetto_tempo"])
+        self.assertEqual(esito["counters"]["letti"], 1)
+
+    def test_errore_copertura_con_motivo_errore(self):
+        url, html = _pagina("lombardia_chiuso_18344.html")
+        fonte = FonteFinta([_riga(i, url, html) for i in (1, 2)], {}, _tabella(url))
+        with patch.object(vs, "_leggi_candidato", AsyncMock(side_effect=RuntimeError("rotto"))), \
+                patch.object(vs, "logger", MagicMock()):
+            esito = _passo(fonte, Rete({url: (200, html)}))
+        self.assertEqual(esito["status"], "errore")
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 2, "fatti": 1, "rimasti": 1, "motivo_rimasti": "errore"})
+
+    def test_saltato_senza_copertura(self):
+        fonte, rete, _, _ = _chiusura_lombardia(migrazione=False)
+        self.assertNotIn("copertura", _passo(fonte, rete))
 
 
 class TestReport(unittest.TestCase):
@@ -953,6 +1048,66 @@ class TestReport(unittest.TestCase):
         self.assertIn({"id": 2892, "atteso": "chiusura", "trovato": None}, difformi)
 
 
+class TestVeritaConfermataDalloStato(unittest.TestCase):
+    """Giro 3, §13: un bando uscito dai candidati con lo stato gia' atteso non e' difforme."""
+
+    VERITA = {661135: "chiusura", 1072674: "apertura", 2892: "chiusura", 150489: "smentito",
+              2339: "rettifica:2027-01-19", 18337: "smentito"}
+
+    def test_661135_chiuso_dal_job_orario_e_confermato(self):
+        # Il caso vero: chiuso il 30/09 dal job orario, assente dal report.
+        report = [{"id": 18337, "esito": "smentito"}]
+        stati = {661135: "chiuso", 1072674: "aperto", 2892: "aperto", 150489: "chiuso", 2339: "aperto"}
+        difformi = vs.confronta_verita(report, self.VERITA, stati=stati)
+        self.assertNotIn(661135, [d["id"] for d in difformi])
+        self.assertNotIn(1072674, [d["id"] for d in difformi])
+        self.assertEqual(vs.confermati_da_stato(report, self.VERITA, stati=stati), [
+            {"id": 661135, "atteso": "chiusura", "stato": "chiuso"},
+            {"id": 1072674, "atteso": "apertura", "stato": "aperto"},
+        ])
+        # Assente ma aperto: difforme. «smentito» e «rettifica» usciti dai
+        # candidati restano difformi anche con uno stato coerente.
+        self.assertEqual([d["id"] for d in difformi], [2339, 2892, 150489])
+
+    def test_presente_con_esito_diverso_resta_difforme(self):
+        report = [{"id": 661135, "esito": "non_decisiva"}]
+        difformi = vs.confronta_verita(report, {661135: "chiusura"}, stati={661135: "chiuso"})
+        self.assertEqual(difformi, [{"id": 661135, "atteso": "chiusura", "trovato": "non_decisiva"}])
+        self.assertEqual(vs.confermati_da_stato(report, {661135: "chiusura"}, stati={661135: "chiuso"}), [])
+
+    def test_senza_stati_tutto_come_prima(self):
+        difformi = vs.confronta_verita([], {661135: "chiusura"})
+        self.assertEqual(difformi, [{"id": 661135, "atteso": "chiusura", "trovato": None}])
+        self.assertEqual(vs.confermati_da_stato([], {661135: "chiusura"}), [])
+
+    def test_solo_chiusura_e_apertura(self):
+        self.assertEqual(vs.ESITO_STATO_ATTESO, {"chiusura": "chiuso", "apertura": "aperto"})
+        self.assertIn(661135, vs.VERITA_NOTA)
+        self.assertEqual(vs.VERITA_NOTA[661135], "chiusura")
+
+    def test_stati_effettivi_dalle_colonne(self):
+        chiamate = []
+
+        def leggi(blocco):
+            chiamate.append(list(blocco))
+            return [
+                {"id": 661135, "stato_bando": "chiuso", "data_scadenza": "2026-09-30"},
+                # Aperto per colonna ma con la scadenza passata: l'effettivo e' chiuso.
+                {"id": 7, "stato_bando": "aperto", "data_scadenza": "2026-09-01"},
+                {"id": 8, "stato_bando": "aperto", "data_scadenza": "2027-01-01"},
+            ]
+
+        stati = vs.stati_effettivi([661135, 7, 8, 7, None], leggi=leggi, adesso=ADESSO)
+        self.assertEqual(chiamate, [[661135, 7, 8]])
+        self.assertEqual(stati, {661135: "chiuso", 7: "chiuso", 8: "aperto"})
+        self.assertEqual(vs.stati_effettivi([], leggi=leggi), {})
+
+    def test_stati_effettivi_a_blocchi_di_cento(self):
+        blocchi = []
+        vs.stati_effettivi(list(range(250)), leggi=lambda b: blocchi.append(len(b)) or [], adesso=ADESSO)
+        self.assertEqual(blocchi, [100, 100, 50])
+
+
 class TestComeLaChiamaLaCli(unittest.TestCase):
     """`__main__` chiama esegui_passo, righe_report e confronta_verita cosi'."""
 
@@ -979,8 +1134,10 @@ class TestComeLaChiamaLaCli(unittest.TestCase):
         letture = {2387: {"lettura_stato": {"esito": "letta", "stato": "chiuso",
                                             "proposta": {"tipo": "chiusura", "ammessa": True}}}}
         uscita = io.StringIO()
+        stati = MagicMock(return_value={661135: "chiuso", 2892: "aperto"})
         with patch.object(db, "select_da_verificare", return_value=righe), \
                 patch.object(db, "select_letture_stato", return_value=letture), \
+                patch.object(vs, "stati_effettivi", stati), \
                 patch.object(cli, "logger", MagicMock()), contextlib.redirect_stdout(uscita), \
                 contextlib.redirect_stderr(io.StringIO()):
             codice = cli.main(["report-verifica-stato", "--verita", "--json"])
@@ -988,6 +1145,13 @@ class TestComeLaChiamaLaCli(unittest.TestCase):
         self.assertEqual(codice, 1)
         self.assertEqual(dati["report"][0]["esito"], "chiusura")
         self.assertNotIn(2387, [d["id"] for d in dati["difformi"]])
+        # Gli stati si chiedono solo per gli id della verita' assenti dal report.
+        chiesti = set(stati.call_args.args[0])
+        self.assertNotIn(2387, chiesti)
+        self.assertIn(661135, chiesti)
+        self.assertNotIn(661135, [d["id"] for d in dati["difformi"]])
+        self.assertIn(2892, [d["id"] for d in dati["difformi"]])
+        self.assertEqual(dati["confermati_da_stato"], [{"id": 661135, "atteso": "chiusura", "stato": "chiuso"}])
 
 
 class TestRun(unittest.TestCase):

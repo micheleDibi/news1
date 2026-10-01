@@ -120,20 +120,91 @@ class PipelineRun:
         """
         riga = asdict(self)
         riga["slug_modificati"] = list(self.slug_modificati)
+        crediti, usd = self.crediti_effettivi, self.usd_effettivo
+        riga["crediti"], riga["costo_usd"] = crediti, usd
         contatori = dict(self.contatori)
         contatori.update({
             "durata_s": self.durata_s,
-            "crediti": self.crediti,
-            "costo_usd": self.costo_usd,
+            "crediti": crediti,
+            "costo_usd": usd,
             # `usd` e' il nome che `bilancio.verifica_giornalieri` cerca in
             # `gia_oggi`: scrivere solo `costo_usd` renderebbe il tetto
             # giornaliero in dollari sempre zero.
-            "usd": self.costo_usd,
+            "usd": usd,
             "slug_modificati": list(self.slug_modificati),
             "saltato_per_lock": self.saltato_per_lock,
         })
         riga["contatori"] = contatori
         return riga
+
+    @property
+    def usd_effettivo(self) -> float:
+        """`costo_usd`, o il `usd` dei contatori se `costo_usd` non e' stato dato.
+
+        Il meccanismo unico della spesa (contratto `bandi-giro-3` §4) scrive la
+        riga con `contatori=spesa.come_dizionario()`, che porta gia' `usd`.
+        Prima `come_riga` lo sovrascriveva con `costo_usd` (0 se non passato):
+        un passo che dimenticava `costo_usd=` risultava gratis, e il tetto
+        giornaliero non lo vedeva.
+        """
+        if self.costo_usd:
+            return self.costo_usd
+        return round(_numero(self.contatori.get("usd")), 6)
+
+    @property
+    def crediti_effettivi(self) -> int:
+        """`crediti`, o quelli dei contatori (`crediti`, poi `crediti_firecrawl`)."""
+        if self.crediti:
+            return self.crediti
+        for chiave in ("crediti", "crediti_firecrawl"):
+            valore = int(_numero(self.contatori.get(chiave)))
+            if valore:
+                return valore
+        return 0
+
+
+# --- copertura (contratto `bandi-giro-3` §1) ----------------------------------
+
+#: Perche' un passo ha lasciato fuori dei candidati. Nessun tetto di numero:
+#: restano fuori solo per tempo (rotazione), spesa, crediti, lock o errori.
+MOTIVI_RIMASTI: tuple[str, ...] = ("tempo", "spesa", "crediti", "lock", "errore")
+#: Il motivo che prende un valore fuori elenco: un motivo inventato non deve
+#: sparire, ne' far fallire il passo che lo scrive.
+MOTIVO_RIMASTI_IGNOTO = "errore"
+
+
+def _conteggio(valore: Any) -> int:
+    """Un conteggio non negativo; ogni cosa che non e' un numero vale 0."""
+    if isinstance(valore, bool):
+        return int(valore)
+    try:
+        return max(0, int(valore or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def copertura(candidati: Any, fatti: Any, motivo_rimasti: str | None = None) -> dict[str, Any]:
+    """La chiave `copertura` dei contatori di un passo. Funzione pura.
+
+    `{"candidati", "fatti", "rimasti", "motivo_rimasti"}` con `rimasti =
+    candidati - fatti`. Un passo non puo' aver fatto piu' dei suoi candidati:
+    se succede (la coda e' cresciuta durante il giro), i candidati diventano
+    i fatti. `motivo_rimasti` vale null se non resta niente; fuori da
+    `MOTIVI_RIMASTI` diventa `errore`, con un warning. Ogni passo mette il
+    risultato al primo livello del dizionario che restituisce: la riga del
+    giro lo conserva in `contatori.<passo>.copertura`, e `salute` lo legge.
+    """
+    fatti_n = _conteggio(fatti)
+    candidati_n = max(_conteggio(candidati), fatti_n)
+    rimasti = candidati_n - fatti_n
+    motivo: str | None = None
+    if rimasti > 0 and motivo_rimasti is not None:
+        motivo = str(motivo_rimasti)
+        if motivo not in MOTIVI_RIMASTI:
+            logger.warning("[telemetria] motivo dei rimasti fuori elenco: {}", motivo[:40])
+            motivo = MOTIVO_RIMASTI_IGNOTO
+    return {"candidati": candidati_n, "fatti": fatti_n, "rimasti": rimasti,
+            "motivo_rimasti": motivo}
 
 
 @dataclass(frozen=True)
@@ -234,8 +305,8 @@ def riepilogo(run: PipelineRun) -> str:
             "giro": run.giro,
             "esito": run.esito,
             "durata_s": run.durata_s,
-            "crediti": run.crediti,
-            "usd": run.costo_usd,
+            "crediti": run.crediti_effettivi,
+            "usd": run.usd_effettivo,
             "interrotto_per_tetto": run.interrotto_per_tetto,
             "saltato_per_lock": run.saltato_per_lock,
             "motivo": run.motivo,
@@ -297,16 +368,38 @@ ESTRATTORI_SALUTE: tuple[str, ...] = (
     "piemonte", "lazioeuropa", "lombardia", "calabria", "calabria_rc", "puglia",
     "formazionelavoro_er", "fesr_er", "pninclusione", "invitalia", "toscana", "fvg",
 )
+#: I passi del giro (contratto `bandi-giro-3` §2) col loro nome neutro: e' il
+#: suffisso di `copertura_incompleta`, che arriva al pannello (niente nomi di
+#: processi). Le chiavi sono `db.PASSI_DEL_GIRO`, i nomi gli stessi di
+#: `riepilogo_salute.NOMI_PASSI_NEUTRI`: un test confronta tutti e due.
+PASSI_NEUTRI: dict[str, str] = {
+    "discover": "ingresso", "scrape": "lettura", "domini": "elenco_enti",
+    "resolver_precoce": "ricerca_fonti_precoce", "preprocess": "estrazione",
+    "enrich": "arricchimento", "resolver": "ricerca_fonti", "ricontrolli": "ricontrolli",
+    "verifica_stato_ingresso": "verifica_ingresso", "seo": "redazione",
+    "link_verifica": "verifica_link", "rielaborazione": "rielaborazione",
+    "monitor": "controllo_pagine", "verifica_stato": "verifica_stato", "gemelli": "doppioni",
+}
+#: Le variabili del giro 3 che `Settings.configurazione_scartate` puo' nominare
+#: (`settings.INTERVALLI_TEMPI` e `MODALITA_GIRO_3`, copiate: un test le
+#: confronta), in minuscolo: sono il suffisso di `configurazione:<nome>`.
+VARIABILI_GIRO_3: tuple[str, ...] = (
+    "gemelli_modalita", "domini_modalita", "tempo_precoce_s", "tempo_ricontrolli_s",
+    "tempo_link_verifica_s", "tempo_rielaborazione_s", "tempo_monitor_s",
+)
 #: I suffissi ammessi, per prefisso: una lista chiusa, come i codici.
 SUFFISSI_CODICE: dict[str, tuple[str, ...]] = {
     "lavorazione_lunga": SUFFISSI_LAVORAZIONE,
     "lavorazione_orfana": SUFFISSI_LAVORAZIONE,
-    "configurazione": ("modalita", "tipi_attivi", "giri", "indicizzazione", "verifica_stato"),
+    "configurazione": ("modalita", "tipi_attivi", "giri", "indicizzazione", "verifica_stato",
+                       *VARIABILI_GIRO_3),
     "passo_degradato": ("estrazione", "arricchimento", "redazione"),
     # percorso A: i lettori dedicati di `etichette_stato.ESTRATTORI` (il
     # generico no: ha di regola zero esiti, e sarebbe «muto» per sempre).
     "estrattore_muto": ESTRATTORI_SALUTE,
     "freno_chiusure": ESTRATTORI_SALUTE,
+    # giro 3 (§1): un passo che lascia fuori dei bandi per GIRI_COPERTURA_INCOMPLETA giri di fila.
+    "copertura_incompleta": tuple(PASSI_NEUTRI.values()),
 }
 #: I codici senza suffisso. Quelli del percorso A («stato da verificare»)
 #: arrivano con il percorso A: qui non ci sono di proposito.
@@ -447,6 +540,27 @@ class Stato:
     aperti_senza_scadenza: int | None = None
     verifica_stato_modalita: str = "ombra"
     verifica_stato_config_valida: bool = True
+    # --- giro 3 (contratto `bandi-giro-3` §1, §3, §14) ----------------------
+    #: `Settings.configurazione_scartate`: i NOMI delle variabili del giro 3
+    #: fuori intervallo o fuori elenco (tornate al default). Mai i valori.
+    configurazione_scartate: tuple[str, ...] = ()
+    #: `Settings.variabili_dismesse`: i NOMI delle variabili dismesse ancora
+    #: nel `.env`. Un'informazione, non un allarme.
+    variabili_dismesse: tuple[str, ...] = ()
+    #: `db.capacita_sospensioni()`: la migrazione 14 c'e'? None = non misurato.
+    sospensioni_attive: bool | None = None
+    #: `GEMELLI_MODALITA` e `DOMINI_MODALITA` (§18.8): la fusione prima della
+    #: pubblicazione e l'import di IndicePA seguono questi interruttori, non
+    #: quello della verifica.
+    gemelli_modalita: str = "ombra"
+    domini_modalita: str = "ombra"
+    #: `transizioni_da_decidere` dell'ultima riga `backfill:rielaborazione`
+    #: (§18.2): date che chiedono un cambio di stato, lasciate alla redazione.
+    #: None = non misurato.
+    transizioni_da_decidere: int | None = None
+    #: Eventi marcati dalla 14 (`scartato_per`) per motivo: `{superato,
+    #: transizione_non_ammessa}` (§19.2). None = non misurato.
+    eventi_marcati: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -458,6 +572,12 @@ class Salute:
     tipi_attivi: tuple[str, ...] = ()
     #: Le stesse voci di `allarmi` e `avvisi`, nello stesso ordine, con il codice.
     voci: tuple[Voce, ...] = ()
+    #: La copertura dell'ultimo giro per passo (§1): `{passo: {candidati,
+    #: fatti, rimasti, motivo_rimasti}}`, dalla riga piu' recente che la porta.
+    copertura: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: Righe da mostrare che non sono ne' allarmi ne' avvisi (giro 3): la
+    #: copertura per passo, le variabili dismesse, le sospensioni in attesa.
+    informazioni: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -471,6 +591,8 @@ class Salute:
             "exit_code": self.exit_code,
             "tipi_attivi": list(self.tipi_attivi),
             "voci": [asdict(voce) for voce in self.voci],
+            "copertura": {passo: dict(valore) for passo, valore in self.copertura.items()},
+            "informazioni": list(self.informazioni),
         }
 
 
@@ -572,9 +694,18 @@ def salute(stato: Stato, *, adesso: datetime | None = None) -> Salute:
         _voce(voci, "configurazione:giri", LIVELLO_ALLARME,
               "MONITOR_GIRI contiene ore fuori dallo scheduler: voci ignorate, "
               "il monitor potrebbe non partire mai")
+    # Giro 3 (§3): una variabile nuova fuori intervallo o fuori elenco torna al
+    # default, e si dice. Il nome si', il valore mai.
+    for nome in stato.configurazione_scartate:
+        suffisso = str(nome).strip().lower()
+        if suffisso in VARIABILI_GIRO_3:
+            _voce(voci, f"configurazione:{suffisso}", LIVELLO_ALLARME,
+                  f"{suffisso.upper()} non valida: vale il default")
 
     voci.extend(voci_sorveglianza(stato, momento))
     voci.extend(allarmi_verifica_stato(stato, momento))
+    copertura_giro = copertura_dei_passi(stato.ultime_pipeline)
+    voci.extend(voci_copertura(stato.ultime_pipeline))
 
     for modello in stato.modelli_fuori_listino:
         _voce(voci, "modello_fuori_listino", LIVELLO_AVVISO, f"modello non a listino: {modello}")
@@ -587,7 +718,99 @@ def salute(stato: Stato, *, adesso: datetime | None = None) -> Salute:
         tuple(v.testo_cli for v in voci if v.livello == LIVELLO_AVVISO),
         tipi_attivi=tuple(stato.tipi_attivi),
         voci=tuple(voci),
+        copertura=copertura_giro,
+        informazioni=informazioni(stato, copertura_giro),
     )
+
+
+# --- giro 3: copertura e informazioni (contratto `bandi-giro-3` §1, §3, §14) --
+
+#: Quanti giri di fila con dei bandi lasciati fuori fanno `copertura_incompleta`.
+GIRI_COPERTURA_INCOMPLETA = 4
+#: L'informazione di `salute` finche' la migrazione 14 non c'e' (§3).
+INFO_SOSPENSIONI_IN_ATTESA = "sospensioni in attesa della migrazione 14"
+
+
+def _copertura_valida(valore: Any) -> dict[str, Any] | None:
+    """La copertura di un passo, normalizzata, o None se non ha la forma di §1."""
+    if not isinstance(valore, Mapping):
+        return None
+    if not all(isinstance(valore.get(k), (int, float)) and not isinstance(valore.get(k), bool)
+               for k in ("candidati", "fatti", "rimasti")):
+        return None
+    motivo = valore.get("motivo_rimasti")
+    return {"candidati": int(valore["candidati"]), "fatti": int(valore["fatti"]),
+            "rimasti": int(valore["rimasti"]),
+            "motivo_rimasti": motivo if isinstance(motivo, str) else None}
+
+
+def _coperture_per_passo(
+    righe: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, list[tuple[Mapping[str, Any], dict[str, Any]]]]:
+    """Per ogni passo di `PASSI_NEUTRI`, le (riga, copertura) delle righe del
+    giro eseguite che la portano, la piu' recente prima."""
+    per_passo: dict[str, list[tuple[Mapping[str, Any], dict[str, Any]]]] = {}
+    for riga in _eseguite(righe):
+        for passo in PASSI_NEUTRI:
+            valore = _copertura_valida(_passo(riga, passo).get("copertura"))
+            if valore is not None:
+                per_passo.setdefault(passo, []).append((riga, valore))
+    return per_passo
+
+
+def copertura_dei_passi(righe: Sequence[Mapping[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    """La copertura piu' recente di ogni passo, nell'ordine di §2. Pura.
+
+    Una riga di boot o un giro che non prevede il passo non porta la sua
+    copertura: vale quella del giro piu' recente che l'ha.
+    """
+    per_passo = _coperture_per_passo(righe)
+    return {passo: per_passo[passo][0][1] for passo in PASSI_NEUTRI if passo in per_passo}
+
+
+def voci_copertura(righe: Sequence[Mapping[str, Any]] | None) -> list[Voce]:
+    """`copertura_incompleta:<passo>`: rimasti > 0 nelle ultime 4 coperture del passo.
+
+    Contano solo le righe del giro eseguite che portano la copertura di quel
+    passo: il boot e i giri che il passo non fa si saltano, invece di
+    azzerare il conto. La misura e' quanti bandi l'ultimo giro ha lasciato fuori.
+    """
+    voci: list[Voce] = []
+    for passo, coperture in _coperture_per_passo(righe).items():
+        ultime = [valore for _riga, valore in coperture[:GIRI_COPERTURA_INCOMPLETA]]
+        if len(ultime) < GIRI_COPERTURA_INCOMPLETA or not all(v["rimasti"] > 0 for v in ultime):
+            continue
+        motivo = ultime[0]["motivo_rimasti"] or "senza motivo"
+        _voce(voci, f"copertura_incompleta:{PASSI_NEUTRI[passo]}", LIVELLO_ALLARME,
+              f"{passo}: bandi lasciati fuori in {GIRI_COPERTURA_INCOMPLETA} giri di fila "
+              f"(l'ultimo: {ultime[0]['rimasti']} su {ultime[0]['candidati']}, {motivo})",
+              ultime[0]["rimasti"])
+    return voci
+
+
+def informazioni(stato: Stato, copertura_giro: Mapping[str, Mapping[str, Any]]) -> tuple[str, ...]:
+    """Le righe informative di `salute` (giro 3). Pura; mai valori del `.env`."""
+    righe: list[str] = []
+    for passo, valore in copertura_giro.items():
+        testo = f"copertura {passo}: {valore['fatti']}/{valore['candidati']}"
+        if valore["rimasti"]:
+            testo += f" (rimasti {valore['rimasti']}: {valore['motivo_rimasti'] or 'senza motivo'})"
+        righe.append(testo)
+    if stato.variabili_dismesse:
+        righe.append("variabili dismesse nel .env (non piu' lette): "
+                     + ", ".join(sorted(str(n) for n in stato.variabili_dismesse)))
+    if stato.sospensioni_attive is False:
+        righe.append(INFO_SOSPENSIONI_IN_ATTESA)
+    if stato.transizioni_da_decidere:
+        righe.append(f"rielaborazione: {int(stato.transizioni_da_decidere)} transizioni di stato "
+                     "da decidere nell'ultimo giro (rettifiche registrate e non applicate)")
+    if stato.eventi_marcati is not None:
+        superati = int(stato.eventi_marcati.get("superato") or 0)
+        non_ammessi = int(stato.eventi_marcati.get("transizione_non_ammessa") or 0)
+        if superati or non_ammessi:
+            righe.append(f"eventi marcati e non applicati: {superati} superati, "
+                         f"{non_ammessi} con transizione non ammessa")
+    return tuple(righe)
 
 
 # --- rami del giro 2 (§8): il produttore visto da fuori ----------------------
@@ -600,11 +823,12 @@ FUSO_SCHEDULER = ZoneInfo("Europe/Rome")
 #: Il giro lanciato all'avvio del sender (`bandi_sender.GIRO_BOOT`).
 GIRO_AVVIO = "boot"
 #: Il lock del giro e la sua durata (`bandi_pipeline.LOCK_PIPELINE` e
-#: `LOCK_TTL_S = 4 * 3600`, misure del giro 2, M7).
+#: `LOCK_TTL_S = 6 * 3600`: giro 3, §2, perche' i tempi dei passi della
+#: manutenzione piu' la catena d'ingresso possono superare 5 ore).
 LOCK_GIRO = "bandi_pipeline"
 #: Il proprietario del lock del giro (`bandi_pipeline._proprietario`): pid del sender.
 PROPRIETARIO_GIRO = "bandi_pipeline@"
-ORE_TTL_LOCK_GIRO = 4
+ORE_TTL_LOCK_GIRO = 6
 #: Nessun giro di regime completato da tante ore: ne e' saltato almeno uno.
 ORE_PRODUTTORE_FERMO = 7
 #: Oltre questa soglia l'allarme scatta anche con un giro in corso: un giro
@@ -766,7 +990,8 @@ def voci_sorveglianza(stato: Stato, adesso: datetime) -> list[Voce]:
     eseguite = _eseguite(righe)
 
     # produttore_fermo: nessun giro di regime completato da 7 h, salvo un giro
-    # in corso partito dopo l'ultima ora di schedulazione; da 11 h comunque.
+    # in corso partito dopo l'ultima ora di schedulazione; da 13 h comunque
+    # (7 + `ORE_TTL_LOCK_GIRO`).
     if righe:
         ore = _ore_dall_ultimo_giro(righe, adesso)
         if ore is not None and ore >= ORE_PRODUTTORE_FERMO and (
@@ -818,11 +1043,11 @@ def voci_sorveglianza(stato: Stato, adesso: datetime) -> list[Voce]:
                   int(arricchiti))
         seo = _passo(ultima, "seo")
         # `doppioni_oe` manca sulle righe di prima del 30/09 sera: vale 0. Le
-        # righe trattenute dalla sosta (§5.10) o fuse con un gemello non si
-        # redigono per scelta, ma SOLO con la verifica attiva: in ombra la SEO
-        # le redige lo stesso, e toglierle nasconderebbe un guasto vero.
-        chiavi = (CONTATORI_SEO_NON_DA_REDIGERE if stato.verifica_stato_modalita == "attivo"
-                  else CONTATORI_SEO_NON_DA_REDIGERE[:1])
+        # righe trattenute dalla sosta (§5.10) non si redigono per scelta solo
+        # con la verifica attiva, quelle fuse con un gemello solo con i gemelli
+        # attivi (§18.8): in ombra la SEO le redige lo stesso, e toglierle
+        # nasconderebbe un guasto vero.
+        chiavi = contatori_seo_non_da_redigere(stato)
         da_redigere = _numero(seo.get("selected")) - sum(_numero(seo.get(chiave)) for chiave in chiavi)
         if da_redigere >= MINIMO_DA_REDIGERE and _numero(seo.get("payload_ok")) == 0:
             _voce(voci, "passo_degradato:redazione", LIVELLO_ALLARME,
@@ -909,12 +1134,26 @@ def voci_sorveglianza(stato: Stato, adesso: datetime) -> list[Voce]:
 
 #: Nessun passo di verifica riuscito da tante ore: ne sono saltati quattro.
 #: I contatori della seo che tolgono righe da `selected` senza che sia un
-#: guasto: doppioni OE (sempre, per primi), sosta dell'ingresso e fusioni con
-#: un gemello (solo con VERIFICA_STATO_MODALITA=attivo).
+#: guasto: doppioni OE (sempre, per primi), sosta dell'ingresso (solo con
+#: VERIFICA_STATO_MODALITA=attivo) e fusioni con un gemello (solo con
+#: GEMELLI_MODALITA=attivo, giro 3 §11 e §18.8).
 CONTATORI_SEO_NON_DA_REDIGERE: tuple[str, ...] = (
     "doppioni_oe", "trattenuti", "trattenuti_senza_appiglio",
     "fusi_prima_della_pubblicazione", "fusioni_non_riuscite",
 )
+CONTATORI_SEO_SOSTA: tuple[str, ...] = ("trattenuti", "trattenuti_senza_appiglio")
+CONTATORI_SEO_FUSIONI: tuple[str, ...] = ("fusi_prima_della_pubblicazione", "fusioni_non_riuscite")
+
+
+def contatori_seo_non_da_redigere(stato: Stato) -> tuple[str, ...]:
+    """Le chiavi di `CONTATORI_SEO_NON_DA_REDIGERE` che valgono con le
+    modalita' dello stato: ognuna segue il proprio interruttore."""
+    chiavi = list(CONTATORI_SEO_NON_DA_REDIGERE[:1])
+    if stato.verifica_stato_modalita == "attivo":
+        chiavi.extend(CONTATORI_SEO_SOSTA)
+    if stato.gemelli_modalita == "attivo":
+        chiavi.extend(CONTATORI_SEO_FUSIONI)
+    return tuple(chiavi)
 ORE_VERIFICA_FERMA = 26
 #: Un estrattore con almeno tante letture e nessun esito in 7 giorni e' muto.
 MINIMO_LETTURE_MUTO = 5
@@ -1053,7 +1292,9 @@ def allarmi_verifica_stato(stato: Stato, adesso: datetime) -> list[Voce]:
             _voce(voci, "ingresso_trattenuti", LIVELLO_AVVISO, "ingresso: " + "; ".join(pezzi), max(misure))
 
     if stato.ultimi_import_indicepa is not None:
-        riusciti_ammessi = ("ok", "ombra") if stato.verifica_stato_modalita != "attivo" else ("ok",)
+        # La scrittura dei domini segue DOMINI_MODALITA (§18.8): solo con i
+        # domini attivi un import in ombra non e' riuscito.
+        riusciti_ammessi = ("ok", "ombra") if stato.domini_modalita != "attivo" else ("ok",)
         imports = _dalla_piu_recente(stato.ultimi_import_indicepa)
         riusciti = [
             t for t in (_istante(_contatori(r).get("indicepa_at")) or _istante(r.get("concluso_at"))

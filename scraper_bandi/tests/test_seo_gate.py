@@ -417,6 +417,8 @@ class _Finti:
 
     def lancia(self, bandi, **opzioni):
         opzioni.setdefault("attivo", True)
+        # I due interruttori insieme, salvo che il test li separi (giro 3, §11).
+        opzioni.setdefault("attivo_gemelli", opzioni["attivo"])
         opzioni.setdefault("colonna_sosta", True)
         return asyncio.run(runner.trattieni_e_fondi(
             bandi, adesso=ADESSO_SOSTA, sosta_giri=4,
@@ -619,7 +621,8 @@ class TestGemelliPrimaDellaPubblicazione(unittest.TestCase):
         rimasti, contatori = finti.lancia([dict(self.NUOVO)], limite_lettura=2)
         self.assertEqual((rimasti, contatori["controllo_gemelli_troncato"]), ([], False))
 
-    def test_la_lettura_dei_pubblicati_porta_il_limite(self):
+    def test_la_lettura_dei_pubblicati_e_completa(self):
+        # Giro 3, §1 e §11: niente TETTO_GEMELLI, si leggono tutti i pubblicati.
         db_vero = carica_modulo("db")
         chiamate: list = []
 
@@ -630,12 +633,187 @@ class TestGemelliPrimaDellaPubblicazione(unittest.TestCase):
         finti = _Finti()
         with patch.object(db_vero, "select_pubblicati_per_gemelli", leggi):
             asyncio.run(runner.trattieni_e_fondi(
-                [dict(self.NUOVO)], attivo=True, adesso=ADESSO_SOSTA, sosta_giri=4,
-                colonna_sosta=True, leggi_controlli=finti.leggi_controlli,
+                [dict(self.NUOVO)], attivo=True, attivo_gemelli=True, adesso=ADESSO_SOSTA,
+                sosta_giri=4, colonna_sosta=True, leggi_controlli=finti.leggi_controlli,
                 leggi_link=finti.leggi_link, fondi=finti.fondi, rifiuta=finti.rifiuta,
                 segna_trattenuto=finti.segna))
-        limite = carica_modulo("gemelli").LIMITE_LETTURA_PUBBLICATI
-        self.assertEqual(chiamate, [{"limit": limite, "con_calendario": True}])
+        self.assertEqual(chiamate, [{"limit": None, "con_calendario": True}])
+        self.assertFalse(hasattr(carica_modulo("gemelli"), "LIMITE_LETTURA_PUBBLICATI"))
+
+    def test_la_fusione_segue_gemelli_modalita_non_la_verifica(self):
+        # Sosta in ombra e gemelli attivi: si fonde.
+        finti = _Finti(pubblicati=[self.PUBBLICATO])
+        rimasti, contatori = finti.lancia([dict(self.NUOVO)], attivo=False, attivo_gemelli=True)
+        self.assertEqual((rimasti, len(finti.fusioni)), ([], 1))
+        self.assertEqual((contatori["modalita_ingresso"], contatori["modalita_gemelli"]),
+                         ("ombra", "attivo"))
+        # Sosta attiva e gemelli in ombra: si conta e si pubblica.
+        finti = _Finti(pubblicati=[self.PUBBLICATO])
+        rimasti, contatori = finti.lancia([dict(self.NUOVO)], attivo=True, attivo_gemelli=False)
+        self.assertEqual(([b["id"] for b in rimasti], finti.fusioni), ([942936], []))
+        self.assertEqual(contatori["gemelli_trovati"], 1)
+
+    def test_l_interruttore_viene_da_gemelli_modalita(self):
+        from types import SimpleNamespace
+        for valore, attesa in (("attivo", "attivo"), ("ombra", "ombra")):
+            with self.subTest(valore=valore), patch.object(
+                    runner, "get_settings", lambda v=valore: SimpleNamespace(
+                        gemelli_modalita=v, verifica_stato_modalita="ombra", ingresso_sosta_giri=4)):
+                finti = _Finti(pubblicati=[self.PUBBLICATO])
+                _rimasti, contatori = finti.lancia([dict(self.NUOVO)], attivo=None,
+                                                   attivo_gemelli=None)
+                self.assertEqual(contatori["modalita_gemelli"], attesa)
+                self.assertEqual(contatori["modalita_ingresso"], "ombra")
+        # Il dry-run vince sempre.
+        finti = _Finti(pubblicati=[self.PUBBLICATO])
+        _rimasti, contatori = finti.lancia([dict(self.NUOVO)], attivo_gemelli=True, dry_run=True)
+        self.assertEqual((contatori["modalita_gemelli"], finti.fusioni), ("ombra", []))
+
+    def test_un_gia_fuso_non_rende_l_url_condiviso(self):
+        # B4 (giro 3, §11): il fuso e' lo stesso bando del suo master.
+        fuso = dict(self.PUBBLICATO, id=905316, bando_master_id=905315)
+        finti = _Finti(pubblicati=[self.PUBBLICATO, fuso])
+        rimasti, _ = finti.lancia([dict(self.NUOVO)])
+        self.assertEqual((rimasti, len(finti.fusioni)), ([], 1))
+
+
+class TestSpesaDellaSeo(unittest.TestCase):
+    """Giro 3, §4: la SEO conta la spesa e scrive la propria riga `pipeline_run`."""
+
+    def _giro(self, *, dry_run=False, payload_ok=(True, False)):
+        from types import SimpleNamespace
+        bilancio = carica_modulo("bilancio")
+        bandi = [{"id": i, "stato_processing": "enriched"} for i in range(len(payload_ok))]
+        esiti = dict(zip([b["id"] for b in bandi], payload_ok))
+        contatori_visti = []
+
+        async def genera(b, input_ctx, *, contatori=None, **k):
+            contatori_visti.append(contatori)
+            bilancio.registra_chiamata(contatori, "opus", {"input_tokens": 1_000_000}, {"opus": (5.0, 0.0)})
+            payload = {"titolo": "x"} if esiti[b["id"]] else None
+            return SimpleNamespace(payload=payload, affermazioni=(), motivo="no")
+
+        async def scrivi(bando_id, payload, *, gia_pubblicato):
+            return True
+
+        async def nessun_doppione(bandi, **k):
+            return list(bandi), {}
+
+        async def niente_sosta(bandi, **k):
+            return list(bandi), {}
+
+        impostazioni = SimpleNamespace(seo_model="opus", seo_concurrency=2)
+        with patch.object(runner, "get_settings", lambda: impostazioni), \
+                patch.object(runner, "select_bandi_to_complete", lambda **k: list(bandi)), \
+                patch.object(runner, "escludi_doppioni_oe", nessun_doppione), \
+                patch.object(runner, "trattieni_e_fondi", niente_sosta), \
+                patch.object(runner, "load_catalogo", lambda: {}), \
+                patch.object(runner, "build_bando_input_context", lambda b, c: {"id": b["id"]}), \
+                patch.object(runner, "genera_per_bando", genera), \
+                patch.object(runner, "update_bando_completed", scrivi), \
+                patch.object(runner, "_tabella_dei_domini", lambda: None), \
+                patch.object(runner, "scrivi_righe_link", lambda *a, **k: 0), \
+                patch.object(runner.telemetria, "scrivi_pipeline_run") as riga:
+            counters = asyncio.run(runner.run(dry_run=dry_run, giro="06:00"))
+        return counters, riga, contatori_visti
+
+    def test_spesa_e_copertura_nella_riga_del_passo(self):
+        counters, riga, contatori_visti = self._giro()
+        # Uno stesso oggetto per tutti i bandi: la spesa del passo.
+        self.assertEqual(len({id(c) for c in contatori_visti}), 1)
+        self.assertEqual(counters["costo_usd"], 10.0)
+        self.assertEqual(counters["copertura"],
+                         {"candidati": 2, "fatti": 1, "rimasti": 1, "motivo_rimasti": "errore"})
+        scritta = riga.call_args.args[0]
+        self.assertEqual((scritta.step, scritta.giro), ("seo", "06:00"))
+        self.assertEqual(scritta.come_riga()["contatori"]["usd"], 10.0)
+        self.assertEqual(scritta.contatori["copertura"], counters["copertura"])
+
+    def test_dry_run_niente_riga(self):
+        counters, riga, _ = self._giro(dry_run=True)
+        riga.assert_not_called()
+        self.assertEqual(counters["costo_usd"], 10.0)
+
+
+class TestRigheLinkDeiNuovi(unittest.TestCase):
+    """Giro 3, §10: dopo la pubblicazione, le righe `bando_link` dal payload."""
+
+    def test_scegli_fonte_viene_da_dominio_ufficiale(self):
+        dominio = carica_modulo("dominio_ufficiale")
+        self.assertIs(runner.scegli_fonte, dominio.scegli_fonte)
+        # La guardia sui PDF di B3 vale anche per la SEO.
+        pdf = {"fonte_ufficiale_url": "https://www.regione.lazio.it/bando.pdf",
+               "fonte_ufficiale_stato": "trovata", "link_bando": "https://www.lazioeuropa.it/b"}
+        self.assertEqual(runner.scegli_fonte(pdf)[0], "https://www.lazioeuropa.it/b")
+
+    def test_passa_html_e_url_effettivo_e_scrive(self):
+        from types import SimpleNamespace
+        chiamate, scritte = [], []
+
+        def righe_da(b, payload, html, *, url_riferimento=None, tabella=None):
+            chiamate.append((b["id"], html, url_riferimento, tabella))
+            return [{"bando_id": b["id"], "url": "https://ente.it/modulo.pdf", "tipo": "allegato"}]
+
+        generazione = SimpleNamespace(html="<a href='/modulo.pdf'>m</a>", url_finale="https://ente.it/b")
+        n = runner.scrivi_righe_link({"id": 7}, {"allegati": []}, generazione, tabella="T",
+                                     righe_da=righe_da, scrivi=lambda r: scritte.append(r) or len(r))
+        self.assertEqual(n, 1)
+        self.assertEqual(chiamate, [(7, "<a href='/modulo.pdf'>m</a>", "https://ente.it/b", "T")])
+        self.assertEqual(scritte[0][0]["url"], "https://ente.it/modulo.pdf")
+
+    def test_senza_righe_niente_upsert_e_un_errore_non_ferma(self):
+        from types import SimpleNamespace
+        scritte = []
+        n = runner.scrivi_righe_link({"id": 7}, {}, SimpleNamespace(), righe_da=lambda *a, **k: [],
+                                     scrivi=lambda r: scritte.append(r) or 1)
+        self.assertEqual((n, scritte), (0, []))
+
+        def rotto(*a, **k):
+            raise RuntimeError("giu'")
+
+        with patch.object(runner, "logger"):
+            self.assertIsNone(runner.scrivi_righe_link({"id": 7}, {}, SimpleNamespace(), righe_da=rotto))
+
+    def test_html_solo_dalla_cache_dello_scarico(self):
+        from types import SimpleNamespace
+        scarico = carica_modulo("scarico")
+        finto = SimpleNamespace(_da_cache=lambda url: SimpleNamespace(
+            html="<html>x</html>", url_finale="https://ente.it/finale") if url == "https://ente.it/b" else None)
+        with patch.object(scarico, "scarico_corrente", lambda: finto):
+            self.assertEqual(runner._pagina_in_cache("https://ente.it/b"),
+                             ("<html>x</html>", "https://ente.it/finale"))
+            self.assertEqual(runner._pagina_in_cache("https://ente.it/altra"), ("", ""))
+
+    def test_solo_i_nuovi_pubblicati(self):
+        # Un rerun dei completed (gia' pubblicati) non riscrive le righe.
+        from types import SimpleNamespace
+        bandi = [{"id": 1, "stato_processing": "enriched"}, {"id": 2, "stato_processing": "completed"}]
+        visti = []
+
+        async def genera(b, input_ctx, *, contatori=None, **k):
+            return SimpleNamespace(payload={"titolo": "x"}, affermazioni=(), motivo="")
+
+        async def scrivi(bando_id, payload, *, gia_pubblicato):
+            return True
+
+        async def passa(bandi, **k):
+            return list(bandi), {}
+
+        with patch.object(runner, "get_settings", lambda: SimpleNamespace(seo_model="o", seo_concurrency=1)), \
+                patch.object(runner, "select_bandi_to_complete", lambda **k: list(bandi)), \
+                patch.object(runner, "escludi_doppioni_oe", passa), \
+                patch.object(runner, "trattieni_e_fondi", passa), \
+                patch.object(runner, "load_catalogo", lambda: {}), \
+                patch.object(runner, "build_bando_input_context", lambda b, c: {"id": b["id"]}), \
+                patch.object(runner, "genera_per_bando", genera), \
+                patch.object(runner, "update_bando_completed", scrivi), \
+                patch.object(runner, "_tabella_dei_domini", lambda: None), \
+                patch.object(runner, "scrivi_righe_link",
+                             lambda b, p, g, **k: visti.append(b["id"]) or 2), \
+                patch.object(runner.telemetria, "scrivi_pipeline_run"):
+            counters = asyncio.run(runner.run(include_completed=True))
+        self.assertEqual(visti, [1])
+        self.assertEqual((counters["righe_link_scritte"], counters["righe_link_fallite"]), (2, 0))
 
 
 if __name__ == "__main__":                              # pragma: no cover

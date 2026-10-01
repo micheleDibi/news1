@@ -468,13 +468,44 @@ class TestCascata(unittest.TestCase):
             chiamate.append(1)
             return []
 
-        spesa = bilancio.Contatori(ricerche=5)
-        amb = ambiente(
-            ricerca=ricerca, spesa=spesa, tetti=bilancio.Tetti(ricerche_giorno=5),
-        )
-        esegui(fu.risolvi(self._bando(raw_data={}), amb))
-        self.assertEqual(chiamate, [])
-        self.assertTrue(amb.contatori.interrotto_per_tetto)
+        # Giro 3 (§4): la catena d'ingresso (`resolver`, `resolver_precoce`)
+        # non si ferma per nessun tetto; i ricontrolli a tetto saltano il
+        # passo a pagamento e proseguono; un lotto di backfill si ferma.
+        # Un lotto risponde solo ai tetti del backfill (M19): crediti e $.
+        casi = (("ricontrolli", False, bilancio.Contatori(ricerche=5),
+                 bilancio.Tetti(ricerche_giorno=5)),
+                ("backfill:L2", True, bilancio.Contatori(crediti_firecrawl=9),
+                 bilancio.Tetti(backfill_crediti=5)))
+        for step, interrotto, spesa, tetti in casi:
+            with self.subTest(step=step):
+                chiamate.clear()
+                amb = ambiente(ricerca=ricerca, spesa=spesa, tetti=tetti, step=step)
+                esegui(fu.risolvi(self._bando(raw_data={}), amb))
+                self.assertEqual(chiamate, [])
+                self.assertEqual(amb.contatori.interrotto_per_tetto, interrotto)
+                self.assertEqual(amb.contatori.passi_saltati_per_spesa, 0 if interrotto else 1)
+                if not interrotto:
+                    self.assertIn("ricerche", amb.contatori.motivo_spesa)
+
+    def test_l_ingresso_non_si_ferma_per_nessun_tetto(self):
+        chiamate = []
+
+        async def ricerca(_testo, _domini):
+            chiamate.append(1)
+            return []
+
+        for step in ("resolver", "resolver_precoce"):
+            with self.subTest(step=step):
+                chiamate.clear()
+                amb = ambiente(
+                    ricerca=ricerca,
+                    spesa=bilancio.Contatori(ricerche=50, crediti_firecrawl=900),
+                    tetti=bilancio.Tetti(ricerche_giorno=5, crediti_giorno=10), step=step,
+                )
+                esegui(fu.risolvi(self._bando(raw_data={}), amb))
+                self.assertEqual(len(chiamate), 1, "la ricerca parte anche oltre i tetti")
+                self.assertFalse(amb.contatori.interrotto_per_tetto)
+                self.assertEqual(amb.contatori.passi_saltati_per_spesa, 0)
 
     def test_sonda_prima_della_ricerca(self):
         ordine = []
@@ -1266,7 +1297,9 @@ class TestRunnerAusiliari(unittest.TestCase):
 
         with unittest.mock.patch.object(fu.db, "select_pubblicati_per_gemelli", _selezione):
             esegui(fu.run_fondi_doppioni(dry_run=True, limit=3))
-        self.assertEqual(visti[0].get("limit"), fu.TETTO_GEMELLI)
+        # Giro 3 (§1): tutto il corpus, senza tetto di lettura.
+        self.assertIsNone(visti[0].get("limit"))
+        self.assertFalse(hasattr(fu, "TETTO_GEMELLI"))
 
     def test_domini_import_limit_zero_non_importa_tutto(self):
         # `if limit:` faceva scrivere l'intera whitelist con `--limit 0`.
@@ -1471,18 +1504,32 @@ class TestSpesaDelloScarico(unittest.TestCase):
                 "data_scadenza": "2026-09-30", "importo_totale_eur": IMPORTO,
                 "raw_data": {"external_link": URL_BUONO}}
 
-    def test_i_crediti_del_ripiego_fermano_il_giro(self):
+    def test_i_crediti_del_ripiego_fermano_un_lotto(self):
         spesi = self._ContatoriScarico(fetch=4, crediti=9)
         amb = ambiente(
             spesa_scarico=lambda: spesi,
-            tetti=bilancio.Tetti(crediti_giorno=5),
+            tetti=bilancio.Tetti(backfill_crediti=5),
             pagine={URL_BUONO: pagina(URL_BUONO, corpo=CORPO_COMPLETO)},
+            step="backfill:L2",
         )
         esegui(fu.risolvi(self._bando(), amb))
         self.assertTrue(amb.contatori.interrotto_per_tetto)
         self.assertIn("crediti", amb.contatori.motivo)
         self.assertEqual(amb.spesa.crediti_firecrawl, 9)
         self.assertEqual(amb.spesa.fetch, 4)
+
+    def test_a_tetto_i_ricontrolli_scaricano_lo_stesso(self):
+        # Giro 3 (§4): la manutenzione a tetto continua i controlli gratuiti.
+        spesi = self._ContatoriScarico(fetch=4, crediti=9)
+        amb = ambiente(
+            spesa_scarico=lambda: spesi,
+            tetti=bilancio.Tetti(crediti_giorno=5),
+            pagine={URL_BUONO: pagina(URL_BUONO, corpo=CORPO_COMPLETO)},
+            step="ricontrolli",
+        )
+        esito = esegui(fu.risolvi(self._bando(), amb))
+        self.assertFalse(amb.contatori.interrotto_per_tetto)
+        self.assertEqual(esito.stato, fu.STATO_TROVATA)
 
     def test_si_somma_il_delta_non_il_totale_ogni_volta(self):
         # I contatori dello scarico sono cumulativi sul giro: risommarli a
@@ -1497,11 +1544,14 @@ class TestSpesaDelloScarico(unittest.TestCase):
         amb.assorbi_spesa()
         self.assertEqual((amb.spesa.fetch, amb.spesa.crediti_firecrawl), (5, 3))
 
-    def test_il_tetto_per_giro_sul_fetch_morde(self):
-        spesi = self._ContatoriScarico(fetch=30)
+    def test_il_tetto_giornaliero_dei_crediti_morde_su_un_lotto(self):
+        # Dal giro 3 il fetch non e' piu' un tetto (M1): morde la spesa, e si
+        # ferma solo un lotto di backfill.
+        spesi = self._ContatoriScarico(fetch=30, crediti=10)
         amb = ambiente(
-            spesa_scarico=lambda: spesi, tetti=bilancio.Tetti(fetch_giro=10),
+            spesa_scarico=lambda: spesi, tetti=bilancio.Tetti(backfill_crediti=10),
             pagine={URL_BUONO: pagina(URL_BUONO, corpo=CORPO_COMPLETO)},
+            step="backfill:L2",
         )
         esito = esegui(fu.risolvi(self._bando(), amb))
         self.assertTrue(amb.contatori.interrotto_per_tetto)
@@ -1563,11 +1613,25 @@ class TestGiroCompleto(unittest.TestCase):
     def test_al_tetto_il_bando_a_meta_resta_intatto(self):
         # Scrivere un `non_trovata` ricavato da mezza cascata condannerebbe il
         # bando a sessanta giorni di attesa per colpa di un tetto.
-        spesi = TestSpesaDelloScarico._ContatoriScarico(fetch=99)
-        amb = ambiente(spesa_scarico=lambda: spesi, tetti=bilancio.Tetti(fetch_giro=1))
-        risultato, chiamate = self._run(self._bandi(), ambiente=amb)
+        spesi = TestSpesaDelloScarico._ContatoriScarico(fetch=99, crediti=5)
+        amb = ambiente(spesa_scarico=lambda: spesi, tetti=bilancio.Tetti(backfill_crediti=1),
+                       step="backfill:L5")
+        risultato, chiamate = self._run(self._bandi(), ambiente=amb, lotto="L5")
         self.assertEqual(chiamate, [])
         self.assertTrue(risultato["interrotto_per_tetto"])
+        self.assertEqual(risultato["copertura"],
+                         {"candidati": 3, "fatti": 0, "rimasti": 3, "motivo_rimasti": "crediti"})
+
+    def test_a_tetto_i_ricontrolli_lavorano_tutti_i_bandi(self):
+        # Giro 3 (§4): niente da perdere a tetto, si saltano solo i passi a
+        # pagamento.
+        spesi = TestSpesaDelloScarico._ContatoriScarico(fetch=99, crediti=5)
+        amb = ambiente(spesa_scarico=lambda: spesi, tetti=bilancio.Tetti(crediti_giorno=1),
+                       step="ricontrolli")
+        risultato, chiamate = self._run(self._bandi(), ambiente=amb, modo="ricontrolli")
+        self.assertEqual(sorted(e.bando_id for e in chiamate), [1, 2, 3])
+        self.assertNotIn("interrotto_per_tetto", risultato)
+        self.assertEqual(risultato["copertura"]["rimasti"], 0)
 
     def test_il_giro_riporta_i_crediti_spesi(self):
         spesi = TestSpesaDelloScarico._ContatoriScarico(fetch=3, crediti=7)
@@ -1577,9 +1641,107 @@ class TestGiroCompleto(unittest.TestCase):
         self.assertEqual(risultato["fetch"], 3)
 
 
+class TestCreditiUnaVolta(unittest.TestCase):
+    """§19.1: in un giro con le tre passate del resolver (precoce, nuovi,
+    ricontrolli) e preprocess/enrich in mezzo, ogni credito Firecrawl finisce in
+    una riga sola. Scarico vero, `_ambiente_predefinito` vero, delta di
+    preprocess con `preprocessor.aggiungi_delta_scarico` vero."""
+
+    def setUp(self):
+        scarico_mod = carica_modulo("scarico")
+        self.scarico = scarico_mod.Scarico()
+        scarico_mod.imposta_scarico(self.scarico)
+        self.addCleanup(scarico_mod.imposta_scarico, None)
+        self.pre = carica_modulo("preprocessor")
+
+    def _passata(self, step, crediti):
+        with unittest.mock.patch.object(fu, "_tabella_corrente", return_value=TABELLA_ENTE), \
+                unittest.mock.patch.object(fu.oe_scheda, "scarico_predefinito", return_value=None), \
+                unittest.mock.patch.object(db, "consumo_oggi", lambda *a, **k: {}):
+            amb = fu._ambiente_predefinito(step=step, attivo=False)
+        self.scarico.contatori.crediti_firecrawl += crediti       # gli scarichi della passata
+        amb.assorbi_spesa()                                     # a meta' passata
+        amb.assorbi_spesa()                                     # e a fine `run`
+        return amb.spesa.crediti_firecrawl
+
+    def test_il_giro_non_moltiplica_i_crediti(self):
+        self.scarico.contatori.crediti_firecrawl = 5            # i passi prima del giro
+        inizio = self.scarico.contatori.crediti_firecrawl
+        righe = [self._passata("resolver_precoce", 2)]
+        for passo in ("preprocess", "enrich"):
+            spesa = bilancio.Contatori()
+            prima = self.pre.istantanea_scarico()
+            self.scarico.contatori.crediti_firecrawl += 3
+            self.pre.aggiungi_delta_scarico(spesa, prima)
+            righe.append(spesa.crediti_firecrawl)
+        righe.append(self._passata("resolver", 1))
+        righe.append(self._passata("ricontrolli", 4))
+        self.assertEqual(righe, [2, 3, 3, 1, 4])
+        self.assertEqual(sum(righe), self.scarico.contatori.crediti_firecrawl - inizio,
+                         "ogni credito in una riga sola")
+
+    def test_contatori_azzerati_a_meta_passata(self):
+        self.scarico.contatori.crediti_firecrawl = 9
+        with unittest.mock.patch.object(fu, "_tabella_corrente", return_value=TABELLA_ENTE), \
+                unittest.mock.patch.object(fu.oe_scheda, "scarico_predefinito", return_value=None):
+            amb = fu._ambiente_predefinito(step="resolver", attivo=False)
+        self.scarico.contatori.crediti_firecrawl = 2            # `svuota`, poi 2 crediti
+        amb.assorbi_spesa()
+        self.assertEqual(amb.spesa.crediti_firecrawl, 2)
+
+
+class TestConsumoIlleggibile(unittest.TestCase):
+    """§18.5: `db.consumo_oggi()` None vale tetto raggiunto per la manutenzione
+    (niente passi a pagamento, i controlli gratuiti continuano); l'ingresso
+    non lo legge nemmeno. Con `_ambiente_predefinito` e `bilancio` veri."""
+
+    def _ambiente(self, step, consumo):
+        def leggi(*_a, **_k):
+            if isinstance(consumo, Exception):
+                raise consumo
+            return consumo
+
+        with unittest.mock.patch.object(fu, "_tabella_corrente", return_value=TABELLA_ENTE), \
+                unittest.mock.patch.object(fu.oe_scheda, "scarico_predefinito", return_value=None), \
+                unittest.mock.patch.object(db, "consumo_oggi", leggi):
+            amb = fu._ambiente_predefinito(step=step, attivo=False)
+        amb.tetti = bilancio.Tetti(usd_giorno=10.0, crediti_giorno=100)
+        amb.spesa_scarico = None
+        return amb
+
+    def test_manutenzione_con_consumo_illeggibile_non_spende(self):
+        amb = self._ambiente("ricontrolli", None)
+        self.assertTrue(amb.consumo_illeggibile)
+        self.assertFalse(amb.puo_spendere())
+        self.assertEqual(amb.contatori.passi_saltati_per_spesa, 1)
+        self.assertFalse(amb.deve_fermarsi(), "i controlli gratuiti continuano")
+
+    def test_anche_un_eccezione_vale_illeggibile(self):
+        amb = self._ambiente("ricontrolli", RuntimeError("503"))
+        self.assertTrue(amb.consumo_illeggibile)
+        self.assertFalse(amb.puo_spendere())
+
+    def test_manutenzione_con_consumo_letto(self):
+        amb = self._ambiente("ricontrolli", {"usd": 2.0, "crediti": 10.0})
+        self.assertFalse(amb.consumo_illeggibile)
+        self.assertEqual(amb.gia_oggi, {"usd": 2.0, "crediti": 10.0})
+        self.assertTrue(amb.puo_spendere())
+
+    def test_ingresso_non_lo_legge_e_spende(self):
+        amb = self._ambiente("resolver", AssertionError("l'ingresso non legge il consumo"))
+        self.assertFalse(amb.consumo_illeggibile)
+        self.assertTrue(amb.puo_spendere())
+
+
 class TestAmbientePredefinito(unittest.TestCase):
     """La sorgente principale della resa dev'essere raggiungibile da un
     ingresso di produzione: `scheda_oe` non puo' restare `None`."""
+
+    def setUp(self):
+        # La cache delle schede del giorno (giro 3) vive nel modulo: ogni test
+        # parte senza, altrimenti l'esito dipenderebbe dall'ordine dei test.
+        fu._SCHEDE_OE_DEL_GIORNO.clear()
+        self.addCleanup(fu._SCHEDE_OE_DEL_GIORNO.clear)
 
     def _ambiente(self, schede):
         with unittest.mock.patch.object(fu, "_tabella_corrente", return_value=TABELLA_ENTE), \
@@ -3041,15 +3203,18 @@ class ImportIndicePACompleto(unittest.TestCase):
         self.assertEqual(esito["indicepa_esito"], "ombra")
         self.assertEqual((self.inserite, self.righe_run), ([], []))
 
-    def test_la_modalita_segue_verifica_stato(self):
+    def test_la_modalita_segue_domini_modalita(self):
+        # Giro 3 (§3, §12): DOMINI_MODALITA, non piu' VERIFICA_STATO_MODALITA.
         from types import SimpleNamespace
-        with unittest.mock.patch("scraper_app.settings.get_settings",
-                                 return_value=SimpleNamespace(verifica_stato_modalita="attivo")):
+        with unittest.mock.patch("scraper_app.settings.get_settings", return_value=SimpleNamespace(
+                domini_modalita="attivo", verifica_stato_modalita="ombra")):
             self.assertTrue(fu._modalita_indicepa(None))
-        with unittest.mock.patch("scraper_app.settings.get_settings",
-                                 return_value=SimpleNamespace(verifica_stato_modalita="ombra")):
+        with unittest.mock.patch("scraper_app.settings.get_settings", return_value=SimpleNamespace(
+                domini_modalita="ombra", verifica_stato_modalita="attivo")):
             self.assertFalse(fu._modalita_indicepa(None))
+        # Un `--attivo`/`--ombra` esplicito vince ancora.
         self.assertFalse(fu._modalita_indicepa(False))
+        self.assertTrue(fu._modalita_indicepa(True))
 
     def test_url_da_settings(self):
         from types import SimpleNamespace
@@ -3101,3 +3266,408 @@ class TabellaCorrente(unittest.TestCase):
             fu._tabella_corrente()
             fu._tabella_corrente()
         self.assertEqual(self.letture, 2)
+
+
+# --- giro 3 (contratto `bandi-giro-3` §7) -------------------------------------
+
+class _QueryConNot(_Query):
+    """`_Query` che registra anche `not_.in_(...)` (una proprieta' di postgrest)."""
+
+    @property
+    def not_(self):
+        query = self
+
+        class _Not:
+            def __getattr__(self, nome):
+                def _chiama(*argomenti):
+                    query.filtri.append((f"not.{nome}", *argomenti))
+                    return query
+                return _chiama
+
+        return _Not()
+
+
+class TestSelezioneGiro3(unittest.TestCase):
+    """I modi della selezione: `precoce` esplicito, `ricontrolli` senza chiusi,
+    un modo sconosciuto e' un errore (revisione #143, P2)."""
+
+    def _filtri(self, modo):
+        query = _QueryConNot([{"id": 1}])
+        strumento = TestSelezione._strumento(None, {
+            "bando": ["id", "titolo", "link_bando", "stato_processing", "stato_bando",
+                      "fonte_ufficiale_stato", "pubblicato", "fonte_id"]})
+        db.select_bandi_da_risolvere(client=query, strumento=strumento, modo=modo)
+        return query.filtri
+
+    def test_precoce(self):
+        filtri = self._filtri("precoce")
+        self.assertIn(("in_", "stato_processing", ["scraped", "processed"]), filtri)
+        self.assertIn(TestSelezione.SENZA_FONTE, filtri)
+        self.assertNotIn(("eq", "stato_processing", "enriched"), filtri)
+
+    def test_ricontrolli_senza_chiusi_ne_revocati(self):
+        filtri = self._filtri("ricontrolli")
+        self.assertIn(("in_", "fonte_ufficiale_stato", ["in_verifica", "non_trovata"]), filtri)
+        self.assertIn(("not.in_", "stato_bando", ["chiuso", "revocato"]), filtri)
+
+    def test_un_modo_sconosciuto_solleva(self):
+        with self.assertRaises(ValueError):
+            self._filtri("tutti")
+        with self.assertRaises(ValueError):
+            db._filtra_selezione(_Query(), None, modo="boh", solo_oe=False,
+                                 solo_in_verifica=False, forza=False, fonti_oe=())
+        self.assertEqual(db.MODI_RESOLVER, ("nuovi", "backlog", "ricontrolli", "precoce"))
+
+    def test_la_selezione_legge_lo_stato_della_fonte(self):
+        self.assertIn("fonte_ufficiale_stato", db.COLONNE_RESOLVER)
+
+
+class TestScadenzaProvvisoriaNelPunteggio(unittest.TestCase):
+    """Giro 3 (§7): la scadenza provvisoria vale solo +15, mai -15 ne' proroga."""
+
+    CORPO_ALTRA_DATA = "Le domande devono essere presentate entro il 15/10/2026."
+
+    def _punteggio(self, *, provvisoria, scadenza, corpo):
+        ctx = contesto(data_scadenza=scadenza, scadenza_provvisoria=provvisoria)
+        return fu.punteggia(candidato(pag=pagina(URL_BUONO, corpo=corpo)), ctx)
+
+    def test_conferma_vale_quindici(self):
+        punteggio = self._punteggio(provvisoria=True, scadenza=SCADENZA, corpo=CORPO_COMPLETO)
+        self.assertIn(("scadenza", fu.PUNTI["scadenza"]), punteggio.voci)
+        self.assertIn(fu.SEGNALE_CONTENUTO, punteggio.segnali)
+
+    def test_una_data_diversa_non_toglie_e_non_e_proroga(self):
+        provvisoria = self._punteggio(provvisoria=True, scadenza=SCADENZA,
+                                      corpo=self.CORPO_ALTRA_DATA)
+        self.assertNotIn("scadenza_diversa", dict(provvisoria.voci))
+        self.assertFalse(provvisoria.proroga)
+        # Senza il flag la stessa pagina toglie punti ed e' una proroga possibile.
+        vera = self._punteggio(provvisoria=False, scadenza=SCADENZA, corpo=self.CORPO_ALTRA_DATA)
+        self.assertIn("scadenza_diversa", dict(vera.voci))
+        self.assertTrue(vera.proroga)
+
+    def test_una_parola_di_proroga_non_accende_la_proroga(self):
+        punteggio = self._punteggio(provvisoria=True, scadenza=SCADENZA,
+                                    corpo="Termine prorogato al 15/10/2026.")
+        self.assertFalse(punteggio.proroga)
+
+    def test_il_contesto_prende_la_scadenza_dalla_riga_grezza(self):
+        bando = {"id": 1, "titolo": TITOLO, "data_scadenza": None,
+                 "raw_data": {"deadline_label": "30 settembre 2026"}}
+        ctx = fu.contesto_da_bando(bando, provvisoria=True)
+        self.assertEqual(ctx.data_scadenza, SCADENZA)
+        self.assertTrue(ctx.scadenza_provvisoria)
+        # Senza scadenza grezza vale `data_scadenza` della riga, sempre come conferma.
+        ctx = fu.contesto_da_bando({"id": 1, "data_scadenza": "2026-11-30", "raw_data": {}},
+                                   provvisoria=True)
+        self.assertEqual(ctx.data_scadenza, date(2026, 11, 30))
+        # Fuori dal precoce nulla cambia.
+        self.assertFalse(fu.contesto_da_bando(bando).scadenza_provvisoria)
+        self.assertIsNone(fu.contesto_da_bando(bando).data_scadenza)
+
+
+class _RunGiro3(unittest.TestCase):
+    """`run()` con selezione, controlli e scritture finti."""
+
+    def _run(self, righe, *, controlli=None, amb=None, **kwargs):
+        scritti: list[Any] = []
+        acquisiti: list[Any] = []
+
+        def _acquisisci(nome, proprietario, ttl):
+            acquisiti.append(ttl)
+            return _LockFinto()
+
+        def _seleziona(*, limit=None, offset=0, modo="nuovi", **_k):
+            fetta = [r for r in righe if r.get("_modo", modo) == modo]
+            return fetta[offset:offset + (limit or len(fetta))]
+
+        amb = amb or ambiente()
+        with unittest.mock.patch.object(fu.blocco, "acquisisci", _acquisisci), \
+                unittest.mock.patch.object(fu.blocco, "rilascia", lambda _l: None), \
+                unittest.mock.patch.object(fu.db, "select_bandi_da_risolvere", _seleziona), \
+                unittest.mock.patch.object(fu.db, "select_controlli",
+                                           lambda ids, **_k: {i: (controlli or {}).get(i, {})
+                                                              for i in ids}), \
+                unittest.mock.patch.object(fu.db, "select_pubblicati_per_gemelli",
+                                           return_value=[]), \
+                unittest.mock.patch.object(fu.db, "select_link_da_verificare",
+                                           return_value=[]), \
+                unittest.mock.patch.object(fu, "schede_gia_lette", return_value=frozenset()), \
+                unittest.mock.patch.object(fu, "_registra", lambda *_a, **_k: None), \
+                unittest.mock.patch.object(
+                    fu, "scrivi_esito",
+                    lambda esito, **k: scritti.append((esito, k)) or {"status": "ok"}):
+            risultato = esegui(fu.run(ambiente=amb, **kwargs))
+        return risultato, scritti, acquisiti, amb
+
+
+def _riga(id_, url, **extra):
+    valori = {"id": id_, "titolo": TITOLO, "ente_erogatore": ENTE,
+              "importo_totale_eur": IMPORTO, "data_scadenza": None,
+              "titolo_raw": TITOLO, "link_bando": url,
+              "raw_data": {"external_link": url, "deadline_label": "30 settembre 2026"},
+              "stato_processing": "scraped", "stato_bando": None}
+    valori.update(extra)
+    return valori
+
+
+class TestPrecoce(_RunGiro3):
+    URL_ALTRO = "https://regione.marche.it/bandi/altro"
+
+    def _righe(self):
+        return [
+            _riga(1, URL_BUONO),
+            _riga(2, self.URL_ALTRO),
+            _riga(3, URL_BUONO, stato_processing="processed", stato_bando="chiuso"),
+            _riga(4, "", titolo_raw="", raw_data={}),
+            _riga(5, URL_BUONO, stato_processing="processed", stato_bando="aperto"),
+        ]
+
+    def test_scrive_solo_le_trovate_e_il_resto_non_lascia_traccia(self):
+        amb = ambiente(pagine={URL_BUONO: pagina(URL_BUONO, corpo=CORPO_COMPLETO)})
+        risultato, scritti, _a, amb = self._run(self._righe(), amb=amb, modo="precoce")
+        self.assertEqual(sorted(e.bando_id for e, _k in scritti), [1, 5])
+        self.assertTrue(all(e.stato == fu.STATO_TROVATA for e, _k in scritti))
+        self.assertEqual(risultato["senza_traccia"], 1)
+        self.assertEqual(risultato["non_trovate"], 0, "il verdetto non scritto non si conta")
+        self.assertEqual(risultato["esclusi_chiusi"], 1)
+        self.assertEqual(risultato["esclusi_auto_reject"], 1)
+        self.assertEqual(risultato["copertura"],
+                         {"candidati": 3, "fatti": 3, "rimasti": 0, "motivo_rimasti": None})
+
+    def test_niente_ricerca_ne_arbitro_e_scadenza_provvisoria(self):
+        cercati: list[Any] = []
+
+        async def ricerca(testo, domini):
+            cercati.append(testo)
+            return []
+
+        async def arbitro(ctx, candidati):
+            cercati.append("arbitro")
+            return 0
+
+        amb = ambiente(ricerca=ricerca, arbitro=arbitro)
+        risultato, scritti, _a, amb = self._run([_riga(2, self.URL_ALTRO)], amb=amb,
+                                                modo="precoce")
+        self.assertEqual(cercati, [])
+        self.assertEqual(scritti, [])
+        self.assertTrue(amb.da_segnale)
+        self.assertIsNone(amb.arbitro)
+        self.assertIsNone(amb.ricerca)
+        self.assertTrue(amb.scadenza_provvisoria)
+
+    def test_tempo_finito_lascia_il_resto_alla_passata_nuovi(self):
+        risultato, scritti, _a, _amb = self._run(self._righe(), modo="precoce", tempo_s=0.0)
+        self.assertEqual(scritti, [])
+        self.assertEqual(risultato["copertura"],
+                         {"candidati": 3, "fatti": 0, "rimasti": 3, "motivo_rimasti": "tempo"})
+
+    def test_lo_step_della_riga(self):
+        self.assertEqual(fu.STEP_PER_MODO["precoce"], "resolver_precoce")
+        self.assertEqual(fu.STEP_PER_MODO["nuovi"], "resolver")
+        self.assertEqual(fu.STEP_PER_MODO["ricontrolli"], "ricontrolli")
+        visti: list[str] = []
+        vero = fu.telemetria.PipelineRun
+
+        def _riga_run(*, step, giro=None):
+            visti.append(step)
+            return vero(step=step, giro=giro)
+
+        with unittest.mock.patch.object(fu.telemetria, "PipelineRun", _riga_run):
+            self._run([], modo="precoce")
+            self._run([], modo="ricontrolli")
+        self.assertEqual(visti, ["resolver_precoce", "ricontrolli"])
+
+
+class TestRicontrolliGiro3(_RunGiro3):
+    def _righe(self, quante, *, host_diversi=False):
+        righe = []
+        for i in range(1, quante + 1):
+            host = f"ente{i}.it" if host_diversi else "regione.marche.it"
+            righe.append(_riga(i, f"https://{host}/bandi/{i}", stato_processing="enriched",
+                               fonte_ufficiale_stato="in_verifica", _modo="ricontrolli"))
+        return righe
+
+    def test_tutti_senza_cadenza_in_ordine_di_ultimo_controllo(self):
+        scaricati: list[str] = []
+
+        async def scarica(url):
+            scaricati.append(url)
+            return fu.Pagina(url=url, stato=404)
+
+        controlli = {
+            1: {"ultimo_controllo_at": "2026-09-30T10:00:00+00:00",
+                "prossimo_controllo_at": "2027-01-01"},
+            2: {"ultimo_controllo_at": None, "prossimo_controllo_at": "2027-01-01"},
+            3: {"ultimo_controllo_at": "2026-09-29T08:00:00+00:00",
+                "prossimo_controllo_at": "2027-01-01"},
+            4: {"ultimo_controllo_at": "2026-09-30T09:00:00.5+00:00",
+                "prossimo_controllo_at": "2027-01-01"},
+        }
+        amb = ambiente(scarica=scarica)
+        risultato, scritti, _a, _amb = self._run(
+            self._righe(4), controlli=controlli, amb=amb, modo="ricontrolli", parallelo=1)
+        ordine = [int(u.rsplit("/", 1)[1]) for u in scaricati]
+        self.assertEqual(ordine, [2, 3, 4, 1])
+        self.assertEqual(len(scritti), 4, "il prossimo controllo nel futuro non conta piu'")
+        self.assertEqual(risultato["copertura"]["fatti"], 4)
+        self.assertEqual(risultato["saltate"], 0)
+
+    def test_fino_a_cinque_in_parallelo(self):
+        stato = {"ora": 0, "massimo": 0}
+
+        async def scarica(url):
+            stato["ora"] += 1
+            stato["massimo"] = max(stato["massimo"], stato["ora"])
+            await asyncio.sleep(0.01)
+            stato["ora"] -= 1
+            return fu.Pagina(url=url, stato=404)
+
+        amb = ambiente(scarica=scarica)
+        risultato, scritti, _a, _amb = self._run(
+            self._righe(12, host_diversi=True), amb=amb, modo="ricontrolli")
+        self.assertEqual(stato["massimo"], fu.PARALLELO_RICONTROLLI)
+        self.assertEqual(len(scritti), 12)
+        self.assertEqual(risultato["copertura"]["rimasti"], 0)
+
+    def test_tempo_finito_con_rotazione(self):
+        risultato, scritti, _a, _amb = self._run(self._righe(3), modo="ricontrolli", tempo_s=0.0)
+        self.assertEqual(scritti, [])
+        self.assertEqual(risultato["copertura"],
+                         {"candidati": 3, "fatti": 0, "rimasti": 3, "motivo_rimasti": "tempo"})
+
+    def test_il_lucchetto_dura_il_tempo_dei_ricontrolli_piu_mezz_ora(self):
+        impostazioni = carica_modulo("settings")
+        finte = unittest.mock.MagicMock(tempo_ricontrolli_s=1200)
+        with unittest.mock.patch.object(impostazioni, "get_settings", return_value=finte):
+            _r, _s, acquisiti, _amb = self._run([], modo="ricontrolli")
+        self.assertEqual(acquisiti, [1200 + 1800])
+        self.assertEqual(fu.ttl_lock_resolver.__name__, "ttl_lock_resolver")
+
+    def test_un_modo_sconosciuto_non_prende_il_lucchetto(self):
+        risultato, scritti, acquisiti, _amb = self._run([], modo="tutti")
+        self.assertEqual(risultato["status"], "errore")
+        self.assertEqual((scritti, acquisiti), ([], []))
+
+    def test_scrive_se_la_fonte_era_gia_trovata(self):
+        righe = [_riga(1, URL_BUONO, fonte_ufficiale_stato="trovata", _modo="nuovi")]
+        amb = ambiente(pagine={URL_BUONO: pagina(URL_BUONO, corpo=CORPO_COMPLETO)})
+        _r, scritti, _a, _amb = self._run(righe, amb=amb, bando_id=1)
+        self.assertEqual(len(scritti), 1)
+        self.assertTrue(scritti[0][1]["gia_trovata"])
+
+
+class TestColonneDelMonitor(unittest.TestCase):
+    """Giro 3 (§7): la data e la priorita' di un bando gia' `trovata` sono del
+    monitor; uno che diventa `trovata` adesso riceve `oggi`."""
+
+    def _esito(self, stato):
+        return fu.Esito(bando_id=1, stato=stato, prossimo_controllo=date(2026, 10, 1),
+                        priorita=fu.PRIORITA_TROVATA, tentativi=2)
+
+    def test_gia_trovata_non_tocca_data_e_priorita(self):
+        payload = fu.payload_controllo(self._esito(fu.STATO_TROVATA), gia_trovata=True)
+        self.assertNotIn("prossimo_controllo_at", payload)
+        self.assertNotIn("priorita_controllo", payload)
+        self.assertEqual(payload["tentativi_resolver"], 2)
+        self.assertIn("ultimo_controllo_at", payload)
+
+    def test_trovata_adesso_prende_oggi(self):
+        payload = fu.payload_controllo(self._esito(fu.STATO_TROVATA))
+        self.assertEqual(payload["prossimo_controllo_at"], "2026-10-01")
+        self.assertEqual(payload["priorita_controllo"], fu.PRIORITA_TROVATA)
+
+    def test_gia_trovata_ma_ora_in_verifica_scrive_come_sempre(self):
+        payload = fu.payload_controllo(self._esito(fu.STATO_IN_VERIFICA), gia_trovata=True)
+        self.assertIn("prossimo_controllo_at", payload)
+
+
+class TestCortesiaInParallelo(unittest.TestCase):
+    """Giro 3 (§7): una scheda OE al giorno per bando, mai due richieste
+    insieme allo stesso host."""
+
+    def setUp(self):
+        fu._SCHEDE_OE_DEL_GIORNO.clear()
+        self.addCleanup(fu._SCHEDE_OE_DEL_GIORNO.clear)
+
+    def test_la_cache_del_giorno(self):
+        oggi, domani = date(2026, 10, 1), date(2026, 10, 2)
+        self.assertEqual(fu.scheda_oe_del_giorno(7, oggi), (False, None))
+        fu.ricorda_scheda_oe(7, oggi, "scheda")
+        self.assertEqual(fu.scheda_oe_del_giorno(7, oggi), (True, "scheda"))
+        # Il giorno dopo la voce sparisce: la scheda si puo' rileggere.
+        self.assertEqual(fu.scheda_oe_del_giorno(7, domani), (False, None))
+        self.assertNotIn(7, fu._SCHEDE_OE_DEL_GIORNO)
+
+    def test_la_scheda_si_legge_una_volta_sola_al_giorno(self):
+        letti: list[str] = []
+
+        class _Schede:
+            fermato = ""
+
+            async def scheda(self, url, archiviato=False):
+                letti.append(url)
+                return "scheda-letta"
+
+        with unittest.mock.patch.object(fu, "_tabella_corrente", return_value=TABELLA_ENTE), \
+                unittest.mock.patch.object(
+                    fu.oe_scheda, "scarico_predefinito", return_value=_Schede()):
+            amb = fu._ambiente_predefinito(step="resolver", attivo=False)
+        url = "https://www.obiettivoeuropa.com/bandi/x"
+        bando = {"id": 9, "link_bando": url, "raw_data": {"status": "1"}}
+        prima = esegui(amb.scheda_oe(bando))
+        seconda = esegui(amb.scheda_oe(bando))
+        self.assertEqual(letti, [url])
+        self.assertEqual((prima, seconda), ("scheda-letta", "scheda-letta"))
+
+    def test_un_none_non_si_ricorda(self):
+        # §18.7: None (429, tetto, rete, 5xx) non e' «niente da leggere».
+        oggi = date(2026, 10, 1)
+        self.assertFalse(fu.ricorda_scheda_oe(7, oggi, None))
+        self.assertEqual(fu.scheda_oe_del_giorno(7, oggi), (False, None))
+        self.assertTrue(fu.ricorda_scheda_oe(7, oggi, "scheda"))
+
+    def test_dopo_un_429_la_scheda_si_riprova(self):
+        letti: list[str] = []
+        risposte = [None, "scheda-letta"]
+
+        class _Schede:
+            fermato = ""
+
+            async def scheda(self, url, archiviato=False):
+                letti.append(url)
+                return risposte.pop(0)
+
+        with unittest.mock.patch.object(fu, "_tabella_corrente", return_value=TABELLA_ENTE), \
+                unittest.mock.patch.object(
+                    fu.oe_scheda, "scarico_predefinito", return_value=_Schede()):
+            amb = fu._ambiente_predefinito(step="resolver", attivo=False)
+        url = "https://www.obiettivoeuropa.com/bandi/x"
+        bando = {"id": 9, "link_bando": url, "raw_data": {"status": "1"}}
+        prima = esegui(amb.scheda_oe(bando))
+        seconda = esegui(amb.scheda_oe(bando))
+        terza = esegui(amb.scheda_oe(bando))
+        self.assertEqual((prima, seconda, terza), (None, "scheda-letta", "scheda-letta"))
+        self.assertEqual(letti, [url, url], "la terza viene dalla cache")
+
+    def test_lucchetto_per_host(self):
+        lucchetti: dict = {}
+        stesso = fu.lucchetto_host(lucchetti, "https://www.ente.it/a")
+        self.assertIs(stesso, fu.lucchetto_host(lucchetti, "https://ente.it/b"))
+        self.assertIsNot(stesso, fu.lucchetto_host(lucchetti, "https://altro.it/a"))
+
+        dentro = {"ora": 0, "massimo": 0}
+
+        async def richiesta(url):
+            async with fu.lucchetto_host(lucchetti, url):
+                dentro["ora"] += 1
+                dentro["massimo"] = max(dentro["massimo"], dentro["ora"])
+                await asyncio.sleep(0.005)
+                dentro["ora"] -= 1
+
+        async def tutte():
+            await asyncio.gather(*(richiesta(f"https://ente.it/{i}") for i in range(4)))
+
+        lucchetti.clear()
+        asyncio.run(tutte())
+        self.assertEqual(dentro["massimo"], 1)

@@ -365,6 +365,56 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(contatori["payload_failed_altri"], 0)
 
 
+class TestCreditiDellaSeo(unittest.TestCase):
+    """§19.1: la riga `seo` porta il proprio delta di crediti Firecrawl."""
+
+    def test_delta_crediti(self):
+        for prima, dopo, atteso in ((10, 13, 3), (10, 10, 0), (10, 4, 4), (None, 5, 0),
+                                    (5, None, 0), (None, None, 0), (0, 0, 0)):
+            with self.subTest(prima=prima, dopo=dopo):
+                self.assertEqual(runner.delta_crediti(prima, dopo), atteso)
+
+    def _giro(self, letture):
+        async def arricchisci(ctx, markdown, **kwargs):
+            return {"slug": "x", "titolo": "T", "descrizione_breve": "",
+                    "contenuto": {"sections": []}, "livello": "flash_bando"}
+
+        bandi = [{"id": 2, "link_bando": ""}]
+        scritte = []
+        with mock.patch.object(runner, "select_bandi_to_complete", return_value=bandi), \
+             mock.patch.object(runner, "escludi_doppioni_oe",
+                               new=mock.AsyncMock(return_value=(bandi, {}))), \
+             mock.patch.object(runner, "trattieni_e_fondi",
+                               new=mock.AsyncMock(return_value=(bandi, {}))), \
+             mock.patch.object(runner, "load_catalogo", return_value={}), \
+             mock.patch.object(runner, "build_bando_input_context", return_value={"id": 2}), \
+             mock.patch.object(runner, "_link_del_bando", return_value=([], False)), \
+             mock.patch.object(runner, "enrich_seo", new=arricchisci), \
+             mock.patch.object(runner, "update_bando_completed",
+                               new=mock.AsyncMock(return_value=True)), \
+             mock.patch.object(runner, "_tabella_dei_domini", return_value=None), \
+             mock.patch.object(runner, "_crediti_scarico", side_effect=list(letture)), \
+             mock.patch.object(runner.telemetria, "scrivi_pipeline_run", side_effect=scritte.append), \
+             mock.patch.object(runner, "logger", mock.MagicMock()), \
+             mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEDUP_CANONICAL", None)
+            contatori = asyncio.run(runner.run(giro="06:00"))
+        return contatori, scritte
+
+    def test_la_riga_seo_porta_i_crediti_del_passo(self):
+        contatori, scritte = self._giro([40, 43])
+        self.assertEqual(contatori["crediti_firecrawl"], 3)
+        self.assertEqual(len(scritte), 1)
+        riga = scritte[0].come_riga()
+        self.assertEqual(riga["step"], "seo")
+        self.assertEqual(riga["contatori"]["crediti_firecrawl"], 3)
+
+    def test_contatori_illeggibili_niente_crediti_inventati(self):
+        contatori, scritte = self._giro([None, 43])
+        self.assertEqual(contatori["crediti_firecrawl"], 0)
+        self.assertEqual(scritte[0].come_riga()["contatori"]["crediti_firecrawl"], 0)
+
+
 class TestTitoloCongelato(unittest.TestCase):
     """Su un pubblicato il titolo non si scrive mai (rerun dei completed,
     seo-rigenera): la sua lunghezza non deve buttare il payload pagato. La
@@ -471,6 +521,110 @@ class TestPrompt(unittest.TestCase):
         self.assertIn("un titolo più lungo viene rifiutato e dovrai riscriverlo",
                       seo_skill.SEO_SYSTEM_PROMPT)
         self.assertNotIn("tagliato all'ultima parola intera", seo_skill.SEO_SYSTEM_PROMPT)
+
+
+
+class TestLinkCandidaturaIndirizzi(unittest.TestCase):
+    """§19.6: HEAD/GET del `link_candidatura` con la guardia su ogni salto.
+
+    Rete finta (`httpx.MockTransport`) e IP scritti nell'URL o un DNS finto:
+    niente rete vera.
+    """
+
+    def _rete(self, mappa):
+        import httpx
+        chieste = []
+
+        def gestore(request):
+            chieste.append((request.method, str(request.url)))
+            return mappa.get((request.method, str(request.url))) or mappa.get(
+                str(request.url), httpx.Response(404))
+
+        return httpx.MockTransport(gestore), chieste
+
+    @staticmethod
+    def _redirect(verso, stato=302):
+        import httpx
+        return httpx.Response(stato, headers={"Location": verso})
+
+    @staticmethod
+    async def _pubblici(url):
+        http = carica_modulo("http")
+        return http.indirizzo_pubblico(url, risolvi=lambda host: {
+            "sportello.regione.it": ["93.184.216.34"],
+            "intranet.regione.it": ["10.0.0.9"],
+        }.get(host, []))
+
+    def _verifica(self, url, mappa):
+        rete, chieste = self._rete(mappa)
+        esito = asyncio.run(seo_skill._reachability_check(
+            url, pubblico=self._pubblici, transport=rete))
+        return esito, chieste
+
+    def test_302_verso_127_0_0_1_non_si_segue(self):
+        import httpx
+        interno = "http://127.0.0.1:8000/summarize_news"
+        esito, chieste = self._verifica("https://sportello.regione.it/domanda", {
+            "https://sportello.regione.it/domanda": self._redirect(interno),
+            interno: httpx.Response(200),
+        })
+        self.assertFalse(esito)
+        self.assertNotIn(interno, [u for _m, u in chieste])
+
+    def test_redirect_verso_un_nome_interno_non_si_segue(self):
+        import httpx
+        interno = "https://intranet.regione.it/admin"
+        esito, chieste = self._verifica("https://sportello.regione.it/domanda", {
+            "https://sportello.regione.it/domanda": self._redirect(interno, 301),
+            interno: httpx.Response(200),
+        })
+        self.assertFalse(esito)
+        self.assertEqual(chieste, [("HEAD", "https://sportello.regione.it/domanda")])
+
+    def test_url_interno_nessuna_richiesta(self):
+        for url in ("http://127.0.0.1/x", "http://169.254.169.254/latest/meta-data",
+                    "https://intranet.regione.it/modulo"):
+            with self.subTest(url=url):
+                esito, chieste = self._verifica(url, {})
+                self.assertFalse(esito)
+                self.assertEqual(chieste, [])
+
+    def test_redirect_pubblici_si_seguono(self):
+        import httpx
+        finale = "https://sportello.regione.it/domanda/nuova"
+        esito, chieste = self._verifica("https://sportello.regione.it/domanda", {
+            "https://sportello.regione.it/domanda": self._redirect(finale),
+            finale: httpx.Response(200),
+        })
+        self.assertTrue(esito)
+        self.assertEqual([u for _m, u in chieste], ["https://sportello.regione.it/domanda", finale])
+
+    def test_head_rifiutata_ripiega_su_get_con_la_guardia(self):
+        import httpx
+        url = "https://sportello.regione.it/domanda"
+        interno = "http://10.0.0.1/dentro"
+        esito, chieste = self._verifica(url, {
+            ("HEAD", url): httpx.Response(405),
+            ("GET", url): self._redirect(interno),
+            interno: httpx.Response(200),
+        })
+        self.assertFalse(esito)
+        self.assertEqual(chieste, [("HEAD", url), ("GET", url)])
+
+    def test_troppi_salti(self):
+        url = "https://sportello.regione.it/a"
+        esito, chieste = self._verifica(url, {url: self._redirect(url)})
+        self.assertFalse(esito)
+        self.assertEqual(len(chieste), seo_skill.MAX_REDIRECT_LINK + 1)
+
+    def test_guardia_vera_con_ip_nell_url(self):
+        # La guardia di produzione (`http.indirizzo_pubblico_async`): con l'IP
+        # scritto nell'URL non serve il DNS, e la richiesta non parte.
+        rete, chieste = self._rete({})
+        for url in ("http://127.0.0.1:8000/summarize_news", "http://[::1]/x"):
+            with self.subTest(url=url):
+                self.assertFalse(asyncio.run(seo_skill._reachability_check(url, transport=rete)))
+        self.assertEqual(chieste, [])
 
 
 if __name__ == "__main__":

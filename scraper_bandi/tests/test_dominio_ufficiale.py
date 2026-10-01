@@ -548,3 +548,82 @@ class RigheDelDB(unittest.TestCase):
         self.assertEqual(dominio_ufficiale.corrispondenza("lazioeuropa.it", tabella).origine,
                          "manuale")
         self.assertFalse(dominio_ufficiale.verificabile("lazioeuropa.it", tabella))
+
+
+class B29HostDaNonImportare(unittest.TestCase):
+    """B29 (giro 3, §8): i 16 host spenti con SQL l'01/10/2026 (RIPRESA §8.1)
+    non rientrano al prossimo import: 12 di una sola etichetta e quattro
+    fornitori di posta e hosting di privati."""
+
+    UNA_ETICHETTA = ("apofil", "blank", "ccmm", "htt", "http", "https", "inesistente",
+                     "ipabriposto", "server-verolanuova", "unionecomunialtoverduragebbia",
+                     "wsthmsjl", "www")
+    FORNITORI = ("libero.it", "yahoo.it", "gmail.com", "register.it")
+
+    def test_i_sedici_host_spenti_restano_fuori(self):
+        righe = [_ente(f"c_{i:03d}", f"http://{host}") for i, host in enumerate(
+            self.UNA_ETICHETTA + self.FORNITORI)]
+        righe.append(_ente("c_ok", "https://www.comune.esempio.it", "Comune di Esempio"))
+        esito = dominio_ufficiale.analizza_indicepa(righe)
+        self.assertEqual([d.host for d in esito.domini], ["comune.esempio.it"])
+        self.assertEqual(esito.esclusi, {"una_etichetta": 12, "fornitore_privato": 4})
+
+    def test_le_pagine_personali_dei_fornitori(self):
+        for host in ("digilander.libero.it", "web.tiscali.it", "xoomer.virgilio.it"):
+            with self.subTest(host=host):
+                self.assertTrue(dominio_ufficiale.fornitore_privato(host))
+        for host in ("comune.libero-esempio.it", "regione.marche.it", "", None):
+            with self.subTest(host=host):
+                self.assertFalse(dominio_ufficiale.fornitore_privato(host))
+
+
+class ScegliFonte(unittest.TestCase):
+    """`scegli_fonte` (giro 3, §8): la regola della SEO, piu' la guardia PDF."""
+
+    UFFICIALE = "https://www.regione.marche.it/bandi/contributi"
+    OE = "https://www.obiettivoeuropa.com/bandi/contributi"
+
+    def _scegli(self, **campi):
+        return dominio_ufficiale.scegli_fonte(campi)
+
+    def test_la_fonte_trovata_vince(self):
+        self.assertEqual(self._scegli(fonte_ufficiale_url=self.UFFICIALE,
+                                      fonte_ufficiale_stato="trovata", link_bando=self.OE),
+                         (self.UFFICIALE, True))
+
+    def test_una_fonte_non_trovata_non_vale(self):
+        self.assertEqual(self._scegli(fonte_ufficiale_url=self.UFFICIALE,
+                                      fonte_ufficiale_stato="in_verifica", link_bando=self.OE),
+                         (self.OE, False))
+
+    def test_un_pdf_ufficiale_torna_a_link_bando(self):
+        for url in (self.UFFICIALE + "/avviso.pdf", self.UFFICIALE + "/avviso.PDF?x=1"):
+            with self.subTest(url=url):
+                self.assertEqual(self._scegli(fonte_ufficiale_url=url,
+                                              fonte_ufficiale_stato="trovata", link_bando=self.OE),
+                                 (self.OE, False))
+
+    def test_link_bando_d_ente_e_ufficiale(self):
+        link = "https://www.comune.esempio.it/bando"
+        self.assertEqual(self._scegli(link_bando=link), (link, True))
+        self.assertEqual(self._scegli(), ("", False))
+
+    def test_senza_colonna_dello_stato_vale_trovata(self):
+        # DB non ancora migrato: la regola della SEO di sempre.
+        self.assertEqual(self._scegli(fonte_ufficiale_url=self.UFFICIALE, link_bando=self.OE),
+                         (self.UFFICIALE, True))
+
+    def test_stessa_regola_della_seo_fuori_dal_pdf(self):
+        seo = carica_modulo("bando_seo_runner")
+        casi = (
+            {"fonte_ufficiale_url": self.UFFICIALE, "fonte_ufficiale_stato": "trovata",
+             "link_bando": self.OE},
+            {"fonte_ufficiale_url": self.UFFICIALE, "fonte_ufficiale_stato": "non_trovata",
+             "link_bando": self.OE},
+            {"link_bando": "https://www.comune.esempio.it/bando"},
+            {"link_bando": self.OE},
+            {},
+        )
+        for bando in casi:
+            with self.subTest(bando=bando):
+                self.assertEqual(dominio_ufficiale.scegli_fonte(bando), seo.scegli_fonte(bando))

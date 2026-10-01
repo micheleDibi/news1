@@ -1,30 +1,35 @@
 """Orchestratore completo del pipeline scraping bandi.
 
-Chaining sequenziale degli step (la numerazione e' quella del piano §16.3.10):
-  1. discover       — fonti da OpenCoesione → tabella `fonte`
-  2. scrape-bandi   — scraping di ~108 fonti → tabella `bando`
-  3. preprocess     — validazione + 3 date + reconciliation stato (Haiku + Sonnet fallback)
-  4. enrich         — FK + junction tables (7 LLM call parallele)
-  5. resolver       — fonte ufficiale del bando (modulo `app.fonte_ufficiale`):
-                      cascata a 5 passi, lock `bandi_resolver` e riga propria in
-                      `pipeline_run`; se il modulo manca, lo step e' saltato
-  6. seo            — skill SEO (Opus 4.7) → contenuto editoriale + meta
-  7. monitor        — ricontrollo delle pagine ufficiali (modulo `app.monitoraggio`):
-                      coda per fase, eventi con i gate G1-G9, lock `monitor` e riga
-                      propria in `pipeline_run`; se il modulo manca, lo step e' saltato
+Ordine del giro 3 (contratto `bandi-giro-3` §2; la chiave e' quella di
+`state["steps"]`):
+   1. discover               — fonti da OpenCoesione → tabella `fonte`
+   2. scrape                 — scraping delle fonti → tabella `bando`
+   3. domini                 — import completo di IndicePA, solo alle 06 e se
+                               nel mese non ce n'e' uno fatto (`domini_dovuto`)
+   4. resolver_precoce       — fonte ufficiale dei bandi appena entrati
+                               (`fonte_ufficiale.run(modo="precoce")`), cosi'
+                               preprocess ed enrich leggono gia' l'ente
+   5. preprocess             — validazione + date + stato, sulla fonte ufficiale
+   6. enrich                 — FK + junction, sulla fonte ufficiale
+   7. resolver               — seconda passata, `modo="nuovi"`
+   8. ricontrolli            — fonti `in_verifica`/`non_trovata`, senza limit
+   9. verifica_stato_ingresso — fase ingresso di verifica-stato, prima della SEO
+  10. seo                    — skill SEO → contenuto editoriale + meta
+  11. link_verifica          — `fonte_ufficiale.run_link_verifica`
+  12. rielaborazione         — `rielabora_fonte.run`, i pubblicati sulla fonte
+  13. monitor                — ricontrollo delle pagine ufficiali
+  14. verifica_stato         — fase controlli, dopo il monitor
+  15. gemelli                — fusioni dei gemelli certi
 
-Giro 2 (contratto `bandi-giro-2` §11 e §19.10), tutti con `_passo_se_esiste`
-e dentro il lock del giro, nessun lock nuovo:
-  4-bis. domini          — import completo di IndicePA, solo alle 06 e se nel
-                           mese non ce n'e' uno fatto (`domini_dovuto`)
-  5-ter. verifica_stato_ingresso — fase ingresso di verifica-stato, ogni giro,
-                           prima della SEO (che poi applica la sosta)
-  8. verifica_stato      — fase controlli, nei giri del monitor, dopo il monitor
-  9. gemelli             — fusioni dei gemelli certi, solo alle 06
+I passi 8 e 11-15 sono la manutenzione: girano solo nei giri di
+`MONITOR_GIRI` (per difetto tutte e quattro le ore dello scheduler); il giro
+di avvio (`boot`) non la fa. Nessun passo ha un tetto sul numero di bandi
+(§1): ciascuno ha il proprio tempo, con rotazione. I passi opzionali passano
+da `_passo_se_esiste`: un modulo assente vale «saltato, tutto bene».
 
 Giro esplicito (§16.2 M13): `run_bandi_pipeline(giro="06:00")`. Gli step che
-girano solo in alcuni giri (il monitor) confrontano `giro` con
-`settings.monitor_giri`; `giro=None` (CLI) vale «sempre».
+girano solo in alcuni giri confrontano `giro` con `settings.monitor_giri`;
+`giro=None` (CLI) vale «sempre».
 
 IndexNow (§6.2, §7.5): il giro chiama `submit_to_indexnow` **una volta sola**,
 in fondo, con gli `slug_modificati` che gli step hanno restituito — oggi solo il
@@ -55,12 +60,10 @@ di sintesi e loggato al termine.
 Idempotenza: ogni step opera solo sui record nella propria coda
 (stato_processing iniziale). Re-eseguire e' sicuro.
 
-Tempi attesi per ciclo (~80 min totali):
-  discover    ~1 min
-  scrape      ~20-30 min
-  preprocess  ~10 min
-  enrich      ~8 min
-  seo         ~30 min
+Tempi attesi per ciclo: la catena d'ingresso (discover, scrape, preprocess,
+enrich, seo) ~80 min; la manutenzione al massimo la somma dei suoi tempi
+(`TEMPO_*_S` e `VERIFICA_STATO_TETTO_S`, 4 h con i default), da cui
+`LOCK_TTL_S` di 6 ore.
 """
 from __future__ import annotations
 
@@ -100,10 +103,12 @@ from .logger import logger
 # Nome del lock: uno per l'intera pipeline. Un secondo processo che parta
 # mentre il primo e' ancora dentro lo scrape trova la riga e si ferma.
 LOCK_PIPELINE = "bandi_pipeline"
-# TTL piu' lungo del giro piu' lento misurato (~80 minuti) con margine: se un
-# processo muore senza rilasciare, il lock scade da solo invece di bloccare
-# tutti i giri successivi.
-LOCK_TTL_S = 4 * 3600
+# TTL piu' lungo del giro piu' lento possibile: se un processo muore senza
+# rilasciare, il lock scade da solo invece di bloccare tutti i giri
+# successivi. Giro 3 (§2): la somma dei tempi dei passi della manutenzione
+# (4 h con i default) piu' la catena d'ingresso (~80') supera 5 ore nel primo
+# giro dopo il deploy, quindi 6 ore, cioe' la distanza fra due giri.
+LOCK_TTL_S = 6 * 3600
 
 #: Base degli URL pubblici. `indexnow.submit_to_indexnow` scarta da se' tutto
 #: cio' che non comincia cosi', ma comporre l'URL qui e' l'unico modo perche'
@@ -114,14 +119,6 @@ PERCORSO_BANDO = "/bandi"
 
 
 MODULO_ASSENTE = "modulo_assente"
-
-#: Quante righe arretrate il resolver ricontrolla per giro (step 5-bis).
-#: Con la cadenza di A33 i ricontrolli che maturano sono ~90 al giorno su
-#: 1 648 righe da seguire; con due giri al posto di quattro, 60 per giro li
-#: coprono con margine. Il numero sta qui e non nell'ambiente perche' non e'
-#: una scelta di esercizio: e' il tetto che impedisce alla manutenzione di
-#: rubare la finestra ai bandi nuovi, che senza lo step 5 escono senza fonte.
-RICONTROLLI_PER_GIRO = 60
 
 
 def _valore_rpc(risposta: Any) -> bool:
@@ -205,8 +202,9 @@ def _passo_opzionale(modulo: str, funzione: str = "run") -> tuple[Callable | Non
 
 
 def _giro_previsto(giro: str | None) -> bool:
-    """Il monitor gira solo alle ore di `MONITOR_GIRI`; da CLI (`giro=None`)
-    gira sempre (§16.2 M13)."""
+    """La manutenzione (ricontrolli, link, rielaborazione, monitor, verifica,
+    gemelli) gira solo alle ore di `MONITOR_GIRI`; da CLI (`giro=None`) gira
+    sempre (§16.2 M13), al giro di avvio (`boot`) mai."""
     if giro is None:
         return True
     try:
@@ -270,11 +268,8 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
           "steps": {
             "discover":    {status, elapsed_s, counters? | error?},
             "scrape":      {...},
-            "preprocess":  {...},
-            "enrich":      {...},
-            "resolver":    {...},
-            "seo":         {...},
-            "monitor":     {...},
+            ...            (le chiavi di §2, nell'ordine del giro)
+            "gemelli":     {...},
           }
         }
     """
@@ -321,16 +316,11 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
         # Step 2: scrape-bandi (no kwargs)
         state["steps"]["scrape"] = await _safe_run("scrape", _scrape_run)
 
-        # Step 3: preprocess (parametri di default: tutti i 'scraped')
-        state["steps"]["preprocess"] = await _safe_run("preprocess", _preprocess_run)
-
-        # Step 4: enrich (no kwargs: opera su 'processed')
-        state["steps"]["enrich"] = await _safe_run("enrich", _enrich_run)
-
-        # Step 4-bis (giro 2, §19.8): l'import COMPLETO di IndicePA, nel giro
-        # delle 06 se nel mese di calendario non ce n'e' ancora uno fatto.
-        # Prima del resolver, perche' il resolver del giro veda gli host nuovi
-        # (l'import azzera da se' la tabella in memoria).
+        # Step 3 (giro 2 §19.8, spostato dal giro 3 §2): l'import COMPLETO di
+        # IndicePA, nel giro delle 06 se nel mese di calendario non ce n'e'
+        # ancora uno fatto. Prima del resolver precoce, perche' entrambe le
+        # passate del resolver vedano gli host nuovi (l'import azzera da se'
+        # la tabella in memoria).
         if giro == GIRO_DELLE_06:
             if _import_domini_dovuto():
                 state["steps"]["domini"] = await _passo_se_esiste(
@@ -340,59 +330,83 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
             else:
                 state["steps"]["domini"] = {"status": "ok", "saltato": "gia_fatto_nel_mese"}
 
-        # Step 5: resolver della fonte ufficiale — fra enrich e seo, cosi' la
-        # skill SEO puo' gia' leggere la pagina ufficiale invece di quella
-        # dell'aggregatore (§5). Lo step prende il proprio lock
-        # (`bandi_resolver`) e scrive la propria riga di `pipeline_run`: cosi'
-        # vale anche quando lo stesso codice parte da `python -m app
-        # risolvi-fonte`, dove il lock della pipeline non c'e'. Come tutti gli
-        # step opzionali non solleva mai `SystemExit`: lock occupato e tetto
-        # raggiunto tornano come chiavi del dizionario (A15).
-        state["steps"]["resolver"] = await _passo_se_esiste(
-            "resolver", "app.fonte_ufficiale", giro=giro,
+        # Step 4 (giro 3, §7): il resolver precoce, sui bandi appena entrati
+        # (`scraped`/`processed`), con una scadenza provvisoria senza modello:
+        # cosi' preprocess ed enrich leggono gia' la pagina dell'ente invece di
+        # quella dell'aggregatore. Chi non trova la fonte qui non lascia
+        # traccia e lo riprende la passata `nuovi` (step 7). Ogni passata
+        # prende il proprio lock (`bandi_resolver`) e scrive la propria riga
+        # di `pipeline_run`; come tutti gli step opzionali non solleva mai
+        # `SystemExit`: lock occupato e tetto tornano come dati (A15).
+        state["steps"]["resolver_precoce"] = await _passo_se_esiste(
+            "resolver_precoce", "app.fonte_ufficiale", giro=giro, modo="precoce",
         )
 
-        # Step 5-bis: i ricontrolli delle fonti rimaste indietro.
-        # Lo step 5 gira in modo `nuovi`, cioe' sulle sole righe appena
-        # arrivate a `enriched`. La cadenza di A33 (`in_verifica` a 14 giorni
-        # per tre tentativi, poi 60; `non_trovata` a 60) vive in
-        # `bando_controllo.prossimo_controllo_at`, ma **nessuno step la
-        # consumava**: misurato il 24/09/2026, 1 141 righe `in_verifica` e 507
-        # `non_trovata` avevano una data di ricontrollo che nessun giro
-        # avrebbe mai letto. Senza questo passaggio quella colonna e' un
-        # promemoria che nessuno apre, e una fonte che oggi non si trova non
-        # si trova mai piu' — nemmeno dopo un `domini --import` che rende
-        # riconoscibili centinaia di host.
-        #
-        # Solo nei giri del monitor, e con un tetto proprio: i ricontrolli
-        # sono manutenzione, non devono mai rubare la finestra ai bandi nuovi
-        # (che escono senza fonte se lo step 5 non li lavora) ne' consumare da
-        # soli il tetto giornaliero delle ricerche.
+        # Step 5: preprocess (parametri di default: tutti i 'scraped')
+        state["steps"]["preprocess"] = await _safe_run("preprocess", _preprocess_run)
+
+        # Step 6: enrich (no kwargs: opera su 'processed')
+        state["steps"]["enrich"] = await _safe_run("enrich", _enrich_run)
+
+        # Step 7: la seconda passata del resolver, sulle righe appena arrivate
+        # a `enriched` senza fonte, con la scadenza vera del preprocess. Fra
+        # enrich e seo, cosi' la skill SEO legge la pagina ufficiale (§5).
+        state["steps"]["resolver"] = await _passo_se_esiste(
+            "resolver", "app.fonte_ufficiale", giro=giro, modo="nuovi",
+        )
+
+        # Step 8: i ricontrolli delle fonti `in_verifica`/`non_trovata`, nei
+        # giri di MONITOR_GIRI. Senza `limit` (giro 3, §1 e §7: niente
+        # lotti): tutti a ogni giro, in ordine di ultimo controllo, con il
+        # solo tetto di tempo `TEMPO_RICONTROLLI_S` e la rotazione. Viene
+        # dopo la passata `nuovi`: la manutenzione non ruba la finestra ai
+        # bandi del giorno.
         if _giro_previsto(giro):
             state["steps"]["ricontrolli"] = await _passo_se_esiste(
-                "ricontrolli", "app.fonte_ufficiale", giro=giro,
-                modo="ricontrolli", limit=RICONTROLLI_PER_GIRO,
+                "ricontrolli", "app.fonte_ufficiale", giro=giro, modo="ricontrolli",
             )
         else:
             state["steps"]["ricontrolli"] = {
                 "status": "ok", "saltato": "giro_non_previsto",
             }
 
-        # Step 5-ter (giro 2, §19.4 §5.10): la fase ingresso di verifica-stato,
+        # Step 9 (giro 2, §19.4 §5.10): la fase ingresso di verifica-stato,
         # in ogni giro, prima della SEO: cerca una scadenza ai bandi nuovi che
         # la SEO altrimenti pubblicherebbe «aperti» senza data. Senza modello.
         state["steps"]["verifica_stato_ingresso"] = await _passo_se_esiste(
             "verifica_stato_ingresso", "app.verifica_stato", giro=giro, fase="ingresso",
         )
 
-        # Step 6: seo (no kwargs: opera su 'enriched')
-        state["steps"]["seo"] = await _safe_run("seo", _seo_run)
+        # Step 10: seo (opera su 'enriched'). Il giro arriva alla riga di spesa
+        # della SEO (giro 3, §4; `bando_seo_runner.run(giro=None)`, M3).
+        state["steps"]["seo"] = await _safe_run("seo", _seo_run, giro=giro)
 
-        # Step 7: monitor delle pagine ufficiali, solo nei giri di MONITOR_GIRI.
+        # Step 11 (giro 3, §10): la verifica delle righe di `bando_link`,
+        # senza tetto di numero, con il tempo `TEMPO_LINK_VERIFICA_S`. Dopo la
+        # SEO, che scrive le righe dei bandi appena pubblicati.
+        if _giro_previsto(giro):
+            state["steps"]["link_verifica"] = await _passo_se_esiste(
+                "link_verifica", "app.fonte_ufficiale", giro=giro,
+                funzione="run_link_verifica",
+            )
+        else:
+            state["steps"]["link_verifica"] = {"status": "ok", "saltato": "giro_non_previsto"}
+
+        # Step 12 (giro 3, §9): la rielaborazione dei pubblicati sulla fonte
+        # ufficiale. Prima del monitor: un bando rielaborato ha gia' le date
+        # e la scheda nuove quando il monitor ne semina l'impronta.
+        if _giro_previsto(giro):
+            state["steps"]["rielaborazione"] = await _passo_se_esiste(
+                "rielaborazione", "app.rielabora_fonte", giro=giro,
+            )
+        else:
+            state["steps"]["rielaborazione"] = {"status": "ok", "saltato": "giro_non_previsto"}
+
+        # Step 13: monitor delle pagine ufficiali, solo nei giri di MONITOR_GIRI.
         # Dopo la SEO apposta: un bando appena pubblicato ha gia' il suo
         # `contenuto`, quindi la prima impronta che il monitor semina e'
         # quella della pagina vera e non di una riga a meta'.
-        # Come lo step 5 non solleva mai: lock occupato e tetto raggiunto
+        # Come il resolver non solleva mai: lock occupato e tetto raggiunto
         # tornano come chiavi del dizionario (A15).
         if _giro_previsto(giro):
             state["steps"]["monitor"] = await _passo_se_esiste(
@@ -404,9 +418,8 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
             logger.info("--- bandi_pipeline: STEP monitor SALTATO (giro {} non previsto) ---", giro)
             state["steps"]["monitor"] = {"status": "ok", "saltato": "giro_non_previsto"}
 
-        # Step 8 (giro 2, §11 e §19.10): verifica-stato, fase controlli. Come il
-        # monitor, solo nei suoi giri (06 e 18: decisione del lead, per
-        # dimezzare costo e ritmo delle chiusure). La prosa la riallinea il
+        # Step 14 (giro 2, §11 e §19.10): verifica-stato, fase controlli. Come
+        # il monitor, solo nei giri di MONITOR_GIRI. La prosa la riallinea il
         # passo con lo stesso adattatore del monitor; gli slug degli eventi
         # applicati li legge `_slug_da_notificare`.
         if _giro_previsto(giro):
@@ -417,13 +430,15 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
         else:
             state["steps"]["verifica_stato"] = {"status": "ok", "saltato": "giro_non_previsto"}
 
-        # Step 9 (giro 2, §19.9): le fusioni dei gemelli certi, nel giro delle
-        # 06. Modalita' e tetto dal `.env` (VERIFICA_STATO_MODALITA,
-        # GEMELLI_FUSIONI_PER_GIRO): in ombra elenca e conta.
-        if giro == GIRO_DELLE_06:
+        # Step 15 (giro 3, §11): le fusioni dei gemelli certi, a ogni giro di
+        # MONITOR_GIRI (non piu' solo alle 06). La modalita' la legge il passo
+        # (`GEMELLI_MODALITA`): in ombra elenca e conta.
+        if _giro_previsto(giro):
             state["steps"]["gemelli"] = await _passo_se_esiste(
                 "gemelli", "app.gemelli", giro=giro, funzione="esegui_passo",
             )
+        else:
+            state["steps"]["gemelli"] = {"status": "ok", "saltato": "giro_non_previsto"}
     finally:
         # Il client HTTP muore con il giro: `asyncio.run` chiude l'event loop
         # subito dopo, e un client sopravvissuto esploderebbe al giro seguente
@@ -479,8 +494,9 @@ async def _passo_se_esiste(
     restano qui e non nel corpo comune perche' passarli a tutti significherebbe
     offrire al resolver argomenti che non conosce.
 
-    `funzione` e' il nome dell'ingresso nel modulo (`run` per resolver e
-    monitor, `run_domini_import` ed `esegui_passo` per i passi del giro 2). Uno
+    `funzione` e' il nome dell'ingresso nel modulo (`run` per resolver,
+    rielaborazione e monitor, `run_domini_import`, `run_link_verifica` ed
+    `esegui_passo` per gli altri passi). Uno
     step che non solleva ma dice `status: 'errore'` nei suoi contatori
     (`gemelli`, `verifica_stato`) diventa `status: error` qui: altrimenti un
     guasto interno contava come un giro riuscito e non entrava in
@@ -507,8 +523,8 @@ async def _passo_se_esiste(
     return esito
 
 
-#: Il giro dei passi mensili e giornalieri del giro 2: l'import di IndicePA
-#: (§19.8) e i gemelli (§19.9).
+#: Il giro dell'import mensile di IndicePA (giro 2 §19.8, giro 3 §12). I
+#: gemelli, che fino al giro 2 giravano solo qui, seguono ora `MONITOR_GIRI`.
 GIRO_DELLE_06 = "06:00"
 #: Il valore di `status` con cui un passo che non solleva dice «guasto».
 STATUS_ERRORE_INTERNO = "errore"
@@ -560,7 +576,9 @@ def _import_domini_dovuto() -> bool:
             .eq("step", "domini").order("avviato_at", desc=True).limit(5).execute()
         )
         ultimi = list(getattr(risposta, "data", None) or [])
-        modalita = str(getattr(_get_settings(), "verifica_stato_modalita", "ombra") or "")
+        # Giro 3 (§3, §12): la scrittura dell'import segue DOMINI_MODALITA,
+        # non piu' VERIFICA_STATO_MODALITA.
+        modalita = str(getattr(_get_settings(), "domini_modalita", "ombra") or "")
         return domini_dovuto(adesso_roma(), ultimi, modalita.strip().lower() == "attivo")
     except Exception as e:
         logger.warning("[bandi_pipeline] ultimo import dei domini non letto, niente import: {}", e)
@@ -797,10 +815,11 @@ def _registra(
 
 
 #: Gli step il cui risultato porta elenchi per bando (`proposte`,
-#: `ids_da_rigenerare`): nella riga 'pipeline' entrano solo esito e contatori,
-#: gli elenchi stanno nelle righe proprie del passo (revisione del 01/10).
+#: `ids_da_rigenerare`): nella riga 'pipeline' entrano solo esito, contatori e
+#: copertura (giro 3, §1), gli elenchi stanno nelle righe proprie del passo
+#: (revisione del 01/10).
 PASSI_SOLO_CONTATORI: tuple[str, ...] = ("verifica_stato", "verifica_stato_ingresso")
-CHIAVI_PASSI_SOLO_CONTATORI: tuple[str, ...] = ("status", "counters")
+CHIAVI_PASSI_SOLO_CONTATORI: tuple[str, ...] = ("status", "counters", "copertura")
 
 
 def _contatori_della_riga(state: dict[str, Any]) -> dict[str, Any]:
@@ -810,6 +829,11 @@ def _contatori_della_riga(state: dict[str, Any]) -> dict[str, Any]:
         valore = passo.get("counters") or {}
         if nome in PASSI_SOLO_CONTATORI and isinstance(valore, dict):
             valore = {k: valore[k] for k in CHIAVI_PASSI_SOLO_CONTATORI if k in valore}
+        elif nome == "rielaborazione" and isinstance(valore, dict):
+            # I contatori della rielaborazione sono piatti e restano; l'elenco
+            # dei `cambi` (prima/dopo per bando) sta solo nella riga del passo,
+            # `backfill:rielaborazione` (revisione #146).
+            valore = {k: v for k, v in valore.items() if k not in ("cambi", "proposte")}
         contatori[nome] = valore
     return contatori
 

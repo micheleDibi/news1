@@ -35,6 +35,7 @@ import csv
 import functools
 import json
 import random
+import re
 import sys
 import time
 import traceback
@@ -45,7 +46,7 @@ from datetime import date as date_cls, datetime, timedelta
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
-from . import bilancio, blocco, eventi as eventi_mod, impronte, sedia, telemetria
+from . import bilancio, blocco, eventi as eventi_mod, impronte, rigenera as rigenera_mod, sedia, telemetria
 from .date_validation import estrai_date_con_ruolo, norm_cit
 from .logger import logger
 from .stato_bando import adesso_roma, oggi_roma, stato_effettivo
@@ -143,12 +144,23 @@ CONTROLLI_PER_CALMA = 3
 BACKOFF_BASE_ORE = 6
 BACKOFF_MASSIMO_ORE = 24 * 7
 FALLIMENTI_PER_BLOCCO = 5
+#: `scarico.REDIRECT_STESSO_HOST` (un test li confronta): le pagine collegate e
+#: le notizie seguono i redirect solo sullo stesso host (§19.6). Copiata e non
+#: importata: `monitoraggio` non deve fallire per un import dello scarico.
+REDIRECT_STESSO_HOST = "stesso_host"
+#: Il motivo di un controllo interrotto da un'eccezione (§19.3): esito
+#: `errore` di quel bando, che non conta fra i fatti della copertura.
+PREFISSO_ECCEZIONE = "eccezione: "
 
 MAX_PAGINE_COLLEGATE = 2
 
 #: Quanti host irraggiungibili la riga del giro elenca per nome (come nel
 #: resolver): oltre si legge solo il numero.
 MAX_HOST_IRRAGGIUNGIBILI_ELENCO = 20
+
+#: Il tetto di tempo del giro se `Settings.tempo_monitor_s` manca (giro 3, §3):
+#: l'unico freno del monitor oltre alla spesa, con la rotazione.
+TEMPO_MONITOR_S = 3600
 
 STATO_FONTE_TROVATA = "trovata"
 
@@ -299,11 +311,20 @@ def _istante(valore: Any) -> datetime | None:
     if isinstance(valore, datetime):
         return adesso_roma(valore)
     if isinstance(valore, str) and valore.strip():
+        testo = valore.strip().replace("Z", "+00:00")
+        # PostgREST manda anche frazioni a 1-5 cifre («…12.87927+00:00»), che
+        # `fromisoformat` di Python 3.10 rifiuta: si portano a sei, come in
+        # `telemetria._istante`. Un istante illeggibile varrebbe «mai
+        # controllato» e scavalcherebbe la rotazione (giro 3, §5).
+        testo = _FRAZIONE_RE.sub(lambda m: "." + (m.group(1) + "000000")[:6], testo, count=1)
         try:
-            return adesso_roma(datetime.fromisoformat(valore.strip().replace("Z", "+00:00")))
+            return adesso_roma(datetime.fromisoformat(testo))
         except ValueError:
             return None
     return None
+
+
+_FRAZIONE_RE = re.compile(r"\.(\d+)")
 
 
 def _giorno_di(valore: Any) -> date_cls | None:
@@ -512,16 +533,25 @@ def prossimo_dopo_errore(controlli_falliti: int, *, adesso: datetime | None = No
 def selezionabile(
     riga: Mapping[str, Any], *, adesso: datetime | None = None, forza: bool = False,
 ) -> bool:
-    """Il bando entra nella coda dei controlli? (§6.2, A33)
+    """Il bando entra nella coda dei controlli? (§6.2, A33, giro 3 §5)
 
-    Quattro condizioni. La terza e' quella che tiene fuori i «solo-OE»: un
+    Tre condizioni di base. La terza e' quella che tiene fuori i «solo-OE»: un
     bando la cui fonte ufficiale non e' `trovata` **non** si fetcha dal monitor,
     perche' l'unico URL che abbiamo e' quello dell'aggregatore. Quei bandi li
     ripassa il resolver, alla sua cadenza.
 
-    `forza` toglie **solo** la quarta, la cadenza. Le altre tre restano: un non
-    pubblicato, un doppione fuso o un bando senza fonte ufficiale non si
-    controllano nemmeno a mano, perche' non c'e' niente di lecito da scaricare.
+    Poi la fase (giro 3, §5, regola «niente lotti»):
+    - aperto, in apertura (quindi anche «da verificare») e sospeso: **a ogni
+      giro**, senza guardare `prossimo_controllo_at`;
+    - chiuso: la cadenza decrescente (`giorni_chiuso`, 3/10/30 poi 30) fino a
+      12 mesi, cioe' `prossimo_controllo_at`;
+    - revocato, e chiuso da oltre 12 mesi (`frequenza` None): **fuori**. Prima
+      rientravano a ogni giro, perche' una frequenza None non scriveva un
+      prossimo controllo.
+
+    `forza` toglie **solo** la cadenza dei chiusi. Il resto vale anche a mano:
+    un non pubblicato, un doppione fuso o un bando senza fonte ufficiale non
+    hanno niente di lecito da scaricare, e un revocato non si ricontrolla.
     Serve quando le regole sono cambiate sotto le righe — una correzione ai
     gate, alla whitelist o al payload — e aspettare la cadenza vorrebbe dire
     aspettare giorni: misurato il 25/09/2026, dopo la semina la coda era vuota
@@ -534,12 +564,18 @@ def selezionabile(
         return False
     if riga.get("fonte_ufficiale_stato") != STATO_FONTE_TROVATA:
         return False
+    momento = adesso_roma(adesso)
+    corrente = fase(riga, oggi=momento.date())
+    if corrente == FASE_REVOCATO:
+        return False
+    if corrente != FASE_CHIUSO:
+        return True
+    if frequenza(riga, oggi=momento.date()) is None:
+        return False
     if forza:
         return True
     quando = _istante(riga.get("prossimo_controllo_at"))
-    if quando is not None and quando > adesso_roma(adesso):
-        return False
-    return True
+    return quando is None or quando <= momento
 
 
 def seleziona(
@@ -549,24 +585,28 @@ def seleziona(
     adesso: datetime | None = None,
     forza: bool = False,
 ) -> tuple[Mapping[str, Any], ...]:
-    """I bandi da controllare in questo giro, nell'ordine di §6.2.
+    """I bandi da controllare in questo giro, nell'ordine del giro 3 (§5).
 
-    `ORDER BY priorita DESC, prossimo_controllo_at, id`: la priorita' decide
-    chi entra quando il tetto morde, e `id` e' il tiebreak che rende l'ordine
-    riproducibile (senza, due giri con lo stesso timestamp NULL scelgono
-    bandi diversi, come gia' succede su `data_pubblicazione`).
+    `ORDER BY priorita DESC, ultimo_controllo_at (mai controllato primo), id`:
+    la priorita' decide chi passa prima quando il tempo del giro
+    (`TEMPO_MONITOR_S`) finisce, l'ultimo controllo fa la rotazione (chi resta
+    fuori ha il controllo piu' vecchio e parte per primo al giro dopo), e `id`
+    rende l'ordine riproducibile. `tetto` serve solo a `--limit` della riga di
+    comando: il giro non lo passa (nessun tetto di numero, §1).
     """
     momento = adesso_roma(adesso)
     ammessi = [r for r in righe if selezionabile(r, adesso=momento, forza=forza)]
-    lontano = momento + timedelta(days=3650)
 
-    def chiave(riga: Mapping[str, Any]) -> tuple[int, str, int]:
-        quando = _istante(riga.get("prossimo_controllo_at")) or lontano
+    def chiave(riga: Mapping[str, Any]) -> tuple[int, int, float, int]:
+        ultimo = _istante(riga.get("ultimo_controllo_at"))
         try:
             identificativo = int(riga.get("id") or 0)
         except (TypeError, ValueError):
             identificativo = 0
-        return (-priorita(riga, oggi=momento.date()), quando.isoformat(), identificativo)
+        # Il confronto sull'istante, non sul testo: due offset diversi
+        # (+00:00 e +02:00) ordinerebbero male come stringhe.
+        return (-priorita(riga, oggi=momento.date()), 0 if ultimo is None else 1,
+                ultimo.timestamp() if ultimo is not None else 0.0, identificativo)
 
     ordinati = sorted(ammessi, key=chiave)
     return tuple(ordinati[:tetto] if tetto and tetto > 0 else ordinati)
@@ -602,7 +642,7 @@ class FonteDati:
 
     righe: list[dict[str, Any]] = field(default_factory=list)
     eventi: dict[Any, list[dict[str, Any]]] = field(default_factory=dict)
-    consumo: dict[str, float] = field(default_factory=dict)
+    consumo: dict[str, float] | None = field(default_factory=dict)
     scritture: list[tuple[Any, dict[str, Any]]] = field(default_factory=list)
     registrati: list[dict[str, Any]] = field(default_factory=list)
     #: Allarmi raccolti durante la selezione (§6.2): finiscono nel riepilogo e
@@ -611,6 +651,14 @@ class FonteDati:
     #: Le tre scritture dell'attivazione per tipo, nell'ordine in cui avvengono.
     registrati_rpc: list[dict[str, Any]] = field(default_factory=list)
     applicati: list[Any] = field(default_factory=list)
+    #: La migrazione 14 c'e'? (`db.capacita_sospensioni`, giro 3 §3 e §14).
+    sospensioni: bool = False
+    #: I bandi rimessi in coda alla rielaborazione (`azzera_rielaborazione`).
+    azzerati: list[Any] = field(default_factory=list)
+    #: Le righe `bando_link` dei `nuovo_allegato` (giro 3, §6).
+    link_allegati: list[dict[str, Any]] = field(default_factory=list)
+    #: `scartato_per` degli eventi marcati dalla RPC della 14 (giro 3, §14).
+    scartati: dict[Any, str] = field(default_factory=dict)
     resi_leggibili: list[tuple[Any, bool]] = field(default_factory=list)
 
     def disponibile(self) -> tuple[bool, str]:
@@ -625,8 +673,9 @@ class FonteDati:
     def eventi_recenti(self, bando_id: Any, giorni: int = 30) -> list[dict[str, Any]]:
         return list(self.eventi.get(bando_id, ()))
 
-    def consumo_oggi(self) -> dict[str, float]:
-        return dict(self.consumo)
+    def consumo_oggi(self) -> dict[str, float] | None:
+        # None = lettura fallita (§18.5): i test lo simulano con `consumo=None`.
+        return None if self.consumo is None else dict(self.consumo)
 
     def salva_controllo(self, bando_id: Any, payload: dict[str, Any]) -> bool:
         self.scritture.append((bando_id, dict(payload)))
@@ -673,6 +722,63 @@ class FonteDati:
                 return {"contenuto": riga.get("contenuto"),
                         "descrizione_breve": riga.get("descrizione_breve")}
         return None
+
+    # --- giro 3 (contratto `bandi-giro-3` §3, §5, §9) ------------------------
+
+    def capacita_sospensioni(self) -> bool:
+        """La migrazione 14 e' applicata? Senza, sospensione, revoca e
+        annullamento restano in ombra anche con `MONITOR_TIPI_ATTIVI=tutti`."""
+        return bool(self.sospensioni)
+
+    def azzera_rielaborazione(self, bando_id: Any) -> bool:
+        """Rimette il bando in coda al passo `rielaborazione` (§5, §9)."""
+        self.azzerati.append(bando_id)
+        return True
+
+    def registra_link_allegato(self, bando_id: Any, url: str, url_prova: str) -> bool:
+        """Una riga `bando_link` `allegato` per un `nuovo_allegato` (§6)."""
+        self.link_allegati.append(riga_link_allegato(bando_id, url, url_prova))
+        return True
+
+    def motivo_scarto(self, evento_id: Any) -> str | None:
+        """`scartato_per` dell'evento (superato | transizione_non_ammessa), o None."""
+        return self.scartati.get(evento_id)
+
+
+def motivo_scarto_da_db(evento_id: Any, **kwargs: Any) -> str | None:
+    """`bando_evento.scartato_per` di un evento: una GET (giro 3, §14).
+
+    Dopo un `false` della RPC distingue l'evento marcato (superato,
+    transizione non ammessa: non torna in coda) dal rifiuto di prima. Senza la
+    14 la colonna non c'e' e la select non la chiede: None. Una lettura vuota o
+    fallita vale None, cioe' «non applicato» come prima, senza eccezioni.
+    """
+    if evento_id is None:
+        return None
+    try:
+        from . import db
+        righe = db.select_eventi(ids=(evento_id,), colonne=("id", COLONNA_SCARTATO), **kwargs)
+    except Exception as e:
+        logger.warning("[monitor] scartato_per dell'evento {} non leggibile: {}", evento_id, e)
+        return None
+    for riga in righe or ():
+        if riga.get("id") == evento_id and riga.get(COLONNA_SCARTATO):
+            return str(riga[COLONNA_SCARTATO])
+    return None
+
+
+#: La colonna della 14 che marca un evento che la RPC non applichera' mai.
+COLONNA_SCARTATO = "scartato_per"
+
+
+def riga_link_allegato(bando_id: Any, url: str, url_prova: str) -> dict[str, Any]:
+    """La riga `bando_link` di un documento comparso sulla pagina ufficiale.
+
+    `origine='ente'` (l'abbiamo letto sulla pagina dell'ente), mai
+    pubblicabile da qui: lo diventa solo dopo `link_verifica` (§10).
+    """
+    return {"bando_id": bando_id, "url": url, "tipo": "allegato", "origine": "ente",
+            "url_prova": url_prova or None, "pubblicabile": False}
 
 
 class FonteDatiSupabase(FonteDati):
@@ -723,11 +829,6 @@ class FonteDatiSupabase(FonteDati):
         except Exception as e:                            # pragma: no cover - ripiego
             logger.warning("[monitor] lettura dei candidati fallita: {}", e)
             return []
-        if len(righe) >= db.TETTO_CODA_MONITOR:
-            # Il tetto di lettura ha morso: da qui in giu' la selezione per
-            # priorita' sta ordinando una FETTA del corpus, non il corpus.
-            # `db` lo scriveva solo nel log; qui diventa un allarme del giro.
-            self.allarmi.append(db.ALLARME_CODA_TRONCATA)
         if not righe:
             return []
         try:
@@ -804,13 +905,15 @@ class FonteDatiSupabase(FonteDati):
             logger.warning("[monitor] eventi recenti del bando {}: {}", bando_id, e)
             return []
 
-    def consumo_oggi(self) -> dict[str, float]:
+    def consumo_oggi(self) -> dict[str, float] | None:
+        # None se la lettura fallisce (§18.5): per il monitor vale tetto
+        # raggiunto, non «niente speso».
         from . import db
         try:
             return db.consumo_oggi(client=self._client, strumento=self._adattatore())
         except Exception as e:                            # pragma: no cover - ripiego
             logger.warning("[monitor] consumo di oggi non leggibile: {}", e)
-            return {}
+            return None
 
     def salva_controllo(self, bando_id: Any, payload: dict[str, Any]) -> bool:
         from . import db
@@ -890,6 +993,56 @@ class FonteDatiSupabase(FonteDati):
                         "descrizione_breve": riga.get("descrizione_breve")}
         return None
 
+    def capacita_sospensioni(self) -> bool:
+        # `db.capacita_sospensioni` torna False se la RPC manca o fallisce.
+        from . import db
+        funzione = getattr(db, "capacita_sospensioni", None)
+        if not callable(funzione):
+            return False
+        try:
+            return funzione(client=self._client, strumento=self._adattatore()) is True
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[monitor] marcatore della migrazione 14 illeggibile: {}", e)
+            return False
+
+    def motivo_scarto(self, evento_id: Any) -> str | None:
+        return motivo_scarto_da_db(evento_id, client=self._client, strumento=self._adattatore())
+
+    def registra_link_allegato(self, bando_id: Any, url: str, url_prova: str) -> bool:
+        # §18.6: il documento viene dal diff o dal `valore_dopo` del modello,
+        # e `link_verifica` lo chiedera' con HEAD/GET a ogni giro. Un host che
+        # risolve a loopback, rete privata, link-local o comunque non pubblico
+        # non entra in `bando_link`. DNS sincrono: succede solo per un
+        # `nuovo_allegato` applicato.
+        from . import db, http as http_mod
+        if not http_mod.indirizzo_pubblico(url):
+            logger.warning("[monitor] allegato del bando {} non registrato: indirizzo non pubblico",
+                           bando_id)
+            return False
+        try:
+            return db.upsert_bando_link([riga_link_allegato(bando_id, url, url_prova)],
+                                        client=self._client, strumento=self._adattatore()) > 0
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[monitor] link dell'allegato del bando {} non scritto: {}", bando_id, e)
+            return False
+
+    def azzera_rielaborazione(self, bando_id: Any) -> bool:
+        # Arriva con B4 (`db.azzera_rielaborazione`): finche' manca, non si fa
+        # niente e il bando aspetta la rielaborazione per id.
+        from . import db
+        funzione = getattr(db, "azzera_rielaborazione", None)
+        if not callable(funzione):
+            return False
+        try:
+            esito = funzione(bando_id)
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[monitor] marcatore della rielaborazione del bando {} non azzerato: {}",
+                           bando_id, e)
+            return False
+        # `db.azzera_rielaborazione` risponde sempre con un dict: vero solo se
+        # ha scritto davvero (§18.8), non se ha solo risposto.
+        return isinstance(esito, Mapping) and bool(esito.get("scritto"))
+
 
 def da_db() -> FonteDati:
     """La fonte dati di produzione."""
@@ -903,7 +1056,7 @@ class EsitoControllo:
     """Che cosa e' successo su un bando. E' anche la riga del report d'ombra."""
     bando_id: Any = None
     fase: str = ""
-    esito: str = "ok"            # ok | 304 | invariato | errore | saltato
+    esito: str = "ok"            # ok | 304 | invariato | errore | saltato | rinviato
     motivo: str = ""
     fetch: int = 0
     diff_rilevante: bool = False
@@ -912,6 +1065,32 @@ class EsitoControllo:
     #: giu'). Non e' una classificazione senza eventi: il controllo non salva
     #: niente, cosi' la modifica della pagina si ripresenta al giro dopo.
     classificazione_fallita: bool = False
+    #: La pagina e' cambiata ma il tetto di spesa e' raggiunto (giro 3, §5): il
+    #: modello non si chiama e, come per una classificazione fallita, nessuna
+    #: colonna si salva, cosi' il cambiamento si rivede al giro dopo. Non e' un
+    #: errore: non accende `classificazione_non_disponibile` in `salute`.
+    classificazione_rinviata: bool = False
+    #: A tetto raggiunto la pagina chiedeva il ripiego Firecrawl (WAF, JS): non
+    #: si e' letta e non si e' salvato niente (giro 3, §4).
+    scarico_rinviato: bool = False
+    #: Un evento applicato ha rimesso il bando in coda alla rielaborazione
+    #: (`azzera_rielaborazione`, giro 3 §5 e §9).
+    rielaborazione_richiesta: bool = False
+    #: Giro 3 (§6): le novita' di questo controllo che chiedono la riscrittura
+    #: della scheda con Opus, e com'e' andata (`rigenera.ESITO_*`, oppure
+    #: `abbandonata` dopo `TENTATIVI_RISCRITTURA` fallimenti).
+    novita: list[dict[str, Any]] = field(default_factory=list)
+    riscrittura: str = ""
+    slug_riscritto: str | None = None
+    #: `nuovo_allegato` applicati: righe `bando_link` scritte, e quelli di cui
+    #: il diff non ha dato l'URL del documento.
+    allegati_registrati: int = 0
+    allegati_senza_url: int = 0
+    #: Giro 3 (§14): eventi di un tipo attivo che la RPC ha marcato.
+    eventi_scartati: int = 0
+    #: Novita' oltre il limite del prompt, rimaste in coda dopo una
+    #: riscrittura riuscita (si riscrivono al giro dopo).
+    novita_rinviate: int = 0
     #: La riga era di una pulizia vecchia (`impronte.VERSIONE_PULIZIA`):
     #: impronte, `testo_norm` e link si sono riscritti senza diff ne'
     #: classificazione. E' il contatore `riallineate` del giro.
@@ -1014,6 +1193,33 @@ class EsitoControllo:
 async def controlla(
     riga: Mapping[str, Any],
     *,
+    riscrittore: Callable[[Any, list[dict[str, Any]]], Awaitable[Any]] | None = None,
+    **kwargs: Any,
+) -> EsitoControllo:
+    """Un controllo completo su un bando (`_controlla_pagina`), poi la
+    riscrittura della scheda con Opus se le novita' la chiedono (giro 3, §6).
+
+    `riscrittore(bando_id, novita)` e' `rigenera.riscrivi_scheda` con la spesa
+    del giro; senza (ombra, dry-run, test) le novita' non si riscrivono. Le
+    novita' di questo controllo si uniscono a quelle rimaste in coda
+    (`impronte_sezioni["__riscrittura__"]`): una riscrittura per bando per
+    giro, anche con piu' eventi. Rinviata (tetto di spesa) o fallita resta in
+    coda per il giro dopo; dopo `TENTATIVI_RISCRITTURA` fallimenti si
+    abbandona, e lo si dice. Non solleva mai.
+    """
+    esito = await _controlla_pagina(riga, **kwargs)
+    scrittore = None if kwargs.get("dry_run") else kwargs.get("fonte_dati")
+    try:
+        await _riscrivi_se_serve(riga, esito, riscrittore=riscrittore, scrittore=scrittore,
+                                 adesso=adesso_roma(kwargs.get("adesso")))
+    except Exception as e:                                # pragma: no cover - difesa
+        logger.warning("[monitor] riscrittura del bando {} non gestita: {}", riga.get("id"), e)
+    return esito
+
+
+async def _controlla_pagina(
+    riga: Mapping[str, Any],
+    *,
     scarica: Callable[..., Awaitable[Any]],
     classifica: Callable[[eventi_mod.Contesto], Awaitable[Sequence[eventi_mod.Evento]]] | None = None,
     seconda_opinione: Callable[[eventi_mod.Contesto], Awaitable[eventi_mod.Evento | None]] | None = None,
@@ -1030,10 +1236,22 @@ async def controlla(
     adesso: datetime | None = None,
     casuale: Callable[[], float] | None = None,
     dry_run: bool = False,
+    rinvia_classificazione: bool = False,
+    host_richiede_js: Iterable[str] = (),
+    capacita_14: bool = False,
 ) -> EsitoControllo:
     """Un controllo completo su un bando. Non solleva mai.
 
     L'ordine dei passi e' l'ordine dei costi: prima cio' che e' gratis.
+
+    `rinvia_classificazione` (tetto di spesa o di crediti raggiunto, giro 3
+    §4 e §5): restano SOLO i controlli gratuiti. La pagina si scarica senza il
+    ripiego Firecrawl (`principale=False`) e si confronta: invariato, 304 e
+    rumore si salvano come sempre. Una pagina cambiata non va al modello, e
+    una pagina che chiederebbe il ripiego a pagamento (WAF 403/406, app-shell,
+    host `host_richiede_js`) non si legge: in tutti e due i casi non si salva
+    niente (`classificazione_rinviata` / `scarico_rinviato`) e si rivede al
+    giro dopo.
 
     `tipi_attivi` (`MONITOR_TIPI_ATTIVI`) vale solo in ombra: gli eventi di
     quei tipi, ammessi dai gate e nati in questo controllo, si applicano e si
@@ -1116,7 +1334,8 @@ async def controlla(
     try:
         risposta = await scarica(
             url,
-            principale=True,
+            # A tetto raggiunto niente ripiego a pagamento (giro 3, §4).
+            principale=not rinvia_classificazione,
             etag=None if stantia else riga.get("etag"),
             modificata_dopo=None if stantia else riga.get("last_modified"),
         )
@@ -1142,6 +1361,11 @@ async def controlla(
         _salva(scrittore, esito)
         return esito
     stato_http = getattr(risposta, "stato", None)
+    if rinvia_classificazione and richiederebbe_ripiego(url, risposta, host_richiede_js):
+        # La pagina si legge solo col ripiego Firecrawl, che a tetto raggiunto
+        # non si paga: niente colonne (ne' `controlli_falliti`, ne' una
+        # baseline presa da uno scheletro JS), si riprova al giro dopo.
+        return _scarico_rinviato(esito)
     if stato_http == 304:
         esito.esito = "304"
         esito.prossimo = prossimo_controllo(riga, scenario=scenario, adesso=momento, casuale=casuale)
@@ -1229,6 +1453,13 @@ async def controlla(
         _salva(scrittore, esito)
         return esito
 
+    # 3-bis. tetto di spesa raggiunto: la pagina e' cambiata, ma il modello non
+    #    si chiama. Niente pagine collegate (servirebbero solo al modello) e
+    #    niente colonne: impronta, `testo_norm` e `__link__` restano quelli di
+    #    prima, e il cambiamento si rivede al giro dopo (giro 3, §5).
+    if rinvia_classificazione:
+        return _classificazione_rinviata(esito)
+
     # 4. pagine collegate (massimo 2, httpx-only): servono al G4 e al G7.
     pagine = [eventi_mod.Pagina(
         url=url,
@@ -1254,7 +1485,11 @@ async def controlla(
                     collegato)
                 continue
             try:
-                secondaria = await scarica(collegato, principale=False)
+                # §19.6: i redirect solo sullo stesso host. La guardia sugli
+                # indirizzi ha giudicato l'URL di partenza (adattatore di
+                # produzione); un 3xx verso un altro host si ferma li'.
+                secondaria = await scarica(collegato, principale=False,
+                                           redirect=REDIRECT_STESSO_HOST)
             except Exception:
                 continue
             if not getattr(secondaria, "ok", False):
@@ -1292,6 +1527,8 @@ async def controlla(
         ultimo_controllo=_giorno_di(riga.get("ultimo_controllo_at")),
         stati_estesi=stati_estesi,
         modalita=modalita,
+        capacita_14=capacita_14,
+        ora_apertura=riga.get("ora_apertura"),
     )
 
     try:
@@ -1330,6 +1567,7 @@ async def controlla(
     tipi_da_attivare = (
         frozenset() if ctx.modalita == eventi_mod.MODALITA_ATTIVO or scrittore is None
         else frozenset(tipi_attivi))
+    da_rielaborare = False
     for proposta in ordina_proposte(proposte):
         applicazione = eventi_mod.applica(proposta, ctx)
         if applicazione.giudizio and applicazione.giudizio.ammesso:
@@ -1348,6 +1586,8 @@ async def controlla(
                     esito.eventi_non_verificati += 1
                 elif stato_attivazione == ATTIVAZIONE_VERIFICA_ILLEGGIBILE:
                     esito.errori_verifica += 1
+                elif stato_attivazione == ATTIVAZIONE_SCARTATO:
+                    esito.eventi_scartati += 1
             ammessi.append(applicazione.come_dizionario())
             attivo = ctx.modalita == eventi_mod.MODALITA_ATTIVO or per_tipo
             # In attivo contano solo le colonne che la RPC ha scritto davvero:
@@ -1360,10 +1600,20 @@ async def controlla(
             # Nemmeno il non verificato: resta in ombra per scelta.
             if attivo and stato_attivazione not in (
                     ATTIVAZIONE_GIA_REGISTRATO, ATTIVAZIONE_NON_VERIFICATO,
-                    ATTIVAZIONE_VERIFICA_ILLEGGIBILE):
+                    ATTIVAZIONE_VERIFICA_ILLEGGIBILE, ATTIVAZIONE_SCARTATO):
                 if applicazione.applicato:
                     esito.eventi_applicati += 1
                     esito.tipi_applicati.append(tipo)
+                    da_rielaborare = da_rielaborare or rimette_in_rielaborazione(
+                        tipo, applicazione.riga.get("campo"))
+                    # Giro 3 (§6): le novita' che la sostituzione senza modello
+                    # non sa rendere vanno alla riscrittura con Opus...
+                    if rigenera_mod.chiede_riscrittura(tipo, applicazione.riga.get("campo")):
+                        esito.novita.append(rigenera_mod.novita_da_evento(applicazione.riga))
+                    # ...e un documento nuovo diventa una riga `bando_link`.
+                    if tipo == "nuovo_allegato" and scrittore is not None:
+                        _registra_allegato(scrittore, riga, applicazione.riga, diff, url, esito,
+                                           html=contenuto)
                 else:
                     esito.eventi_non_applicati += 1
                     esito.tipi_non_applicati.append(tipo)
@@ -1411,6 +1661,11 @@ async def controlla(
 
     esito.eventi = tuple(ammessi)
     esito.respinti = tuple(respinti)
+    if da_rielaborare and scrittore is not None:
+        # La pagina ufficiale ha detto qualcosa di nuovo sul contenuto, sugli
+        # allegati o su una riapertura: il passo `rielaborazione` del giro dopo
+        # rilegge la fonte e aggiorna date e classificazione (giro 3, §5 e §9).
+        esito.rielaborazione_richiesta = bool(scrittore.azzera_rielaborazione(riga.get("id")))
     esito.da_rigenerare = bool(date_cambiate)
     # Da riscrivere in prosa solo le date che sostituiscono una data vecchia:
     # una data nuova dove prima non ce n'era (un'apertura fissata per la prima
@@ -1444,6 +1699,7 @@ async def controlla(
         if preparata is None:
             esito.rigenerazioni = ({"via": "box", "scritto": False,
                                     "motivi": ["contenuto del bando non leggibile"]},)
+            _date_alla_riscrittura(esito, date_da_riscrivere)
             return esito
         corrente_riga, rigenerazione = preparata
         # Le rigenerazioni si INCATENANO. Il differimento arriva in coppia
@@ -1461,7 +1717,198 @@ async def controlla(
                 continue
             esito.rigenerazioni = esito.rigenerazioni + (_esito_rigenerazione(prodotto),)
             corrente_riga.update(_payload_rigenerazione(prodotto))
+    # Giro 3 (§6): una data applicata che la sostituzione senza modello non ha
+    # riallineato (controllo finale fallito, o nessun rigeneratore) va alla
+    # riscrittura con Opus, invece di lasciare il testo vecchio.
+    if date_da_riscrivere and not dry_run and not esito.rigenerato:
+        _date_alla_riscrittura(esito, date_da_riscrivere)
     return esito
+
+
+def _date_alla_riscrittura(
+    esito: EsitoControllo,
+    date: Sequence[tuple[Mapping[str, Any], str, date_cls | None, date_cls]],
+) -> None:
+    """Le date rimaste vecchie in prosa diventano novita' per Opus (§6)."""
+    esito.novita = rigenera_mod.unisci_novita(
+        esito.novita, (rigenera_mod.novita_da_evento(evento) for evento, *_ in date))
+
+
+#: La chiave riservata di `impronte_sezioni` con le riscritture in coda (giro 3,
+#: §6; decisione del lead: niente migrazione). Come `__link__` e `__versione__`
+#: e' memoria del monitor: `{novita: [...], tentativi: n, dal: iso}`.
+CHIAVE_RISCRITTURA = "__riscrittura__"
+#: Dopo tanti fallimenti di fila una riscrittura si abbandona (si dice nel
+#: riepilogo): senza, una scheda che la SEO non sa riscrivere ripagherebbe
+#: Opus a ogni giro per sempre.
+TENTATIVI_RISCRITTURA = 3
+#: L'esito di una riscrittura abbandonata dopo `TENTATIVI_RISCRITTURA`.
+RISCRITTURA_ABBANDONATA = "abbandonata"
+
+
+def riscrittura_in_coda(riga: Mapping[str, Any]) -> dict[str, Any] | None:
+    """La coda delle riscritture del bando, se c'e' (`impronte_sezioni`)."""
+    sezioni = riga.get("impronte_sezioni")
+    coda = sezioni.get(CHIAVE_RISCRITTURA) if isinstance(sezioni, Mapping) else None
+    return dict(coda) if isinstance(coda, Mapping) and coda.get("novita") else None
+
+
+async def _riscrivi_se_serve(
+    riga: Mapping[str, Any],
+    esito: EsitoControllo,
+    *,
+    riscrittore: Callable[[Any, list[dict[str, Any]]], Awaitable[Any]] | None,
+    scrittore: FonteDati | None,
+    adesso: datetime,
+) -> None:
+    """La riscrittura con Opus del bando, e la sua coda (giro 3, §6)."""
+    coda = riscrittura_in_coda(riga)
+    novita = rigenera_mod.unisci_novita((coda or {}).get("novita") or (), esito.novita)
+    if not novita or scrittore is None:
+        # In dry-run non si scrive niente, nemmeno la coda.
+        return
+    nuova: dict[str, Any] | None
+    if riscrittore is None:
+        # Nessuno puo' riscrivere adesso (adattatore assente): le novita'
+        # nuove restano in coda per un giro che ce l'avra'.
+        nuova = {"novita": novita, "tentativi": int((coda or {}).get("tentativi") or 0),
+                 "dal": (coda or {}).get("dal") or adesso.isoformat()}
+    else:
+        # Il prompt ne mostra al massimo `MAX_NOVITA_PER_RISCRITTURA`: le altre
+        # restano in coda per la riscrittura del giro dopo (P2 della revisione
+        # #152), invece di sparire con la coda svuotata.
+        prime = novita[:rigenera_mod.MAX_NOVITA_PER_RISCRITTURA]
+        resto = novita[rigenera_mod.MAX_NOVITA_PER_RISCRITTURA:]
+        risultato = await riscrittore(riga.get("id"), prime)
+        esito.riscrittura = str(getattr(risultato, "esito", "") or rigenera_mod.ESITO_FALLITA)
+        tentativi = int((coda or {}).get("tentativi") or 0)
+        nuova = None
+        if esito.riscrittura == rigenera_mod.ESITO_SCRITTA:
+            esito.slug_riscritto = getattr(risultato, "slug", None) or riga.get("slug")
+            if resto:
+                esito.novita_rinviate = len(resto)
+                nuova = {"novita": resto, "tentativi": 0, "dal": adesso.isoformat()}
+        elif esito.riscrittura == rigenera_mod.ESITO_RINVIATA:
+            nuova = {"novita": novita, "tentativi": tentativi,
+                     "dal": (coda or {}).get("dal") or adesso.isoformat()}
+        elif esito.riscrittura == rigenera_mod.ESITO_FALLITA:
+            tentativi += 1
+            if tentativi >= TENTATIVI_RISCRITTURA:
+                logger.warning("[ALLARME] [monitor] riscrittura del bando {} abbandonata dopo {} "
+                               "tentativi: {}", riga.get("id"), tentativi,
+                               getattr(risultato, "motivo", ""))
+                esito.riscrittura = RISCRITTURA_ABBANDONATA
+            else:
+                nuova = {"novita": novita, "tentativi": tentativi,
+                         "dal": (coda or {}).get("dal") or adesso.isoformat()}
+    if nuova != coda:
+        _salva_coda(scrittore, riga, esito, nuova, adesso)
+
+
+def _salva_coda(
+    scrittore: FonteDati,
+    riga: Mapping[str, Any],
+    esito: EsitoControllo,
+    coda: Mapping[str, Any] | None,
+    adesso: datetime,
+) -> None:
+    """Scrive (o toglie) la coda delle riscritture in `impronte_sezioni`.
+
+    Si parte dalle impronte appena salvate da questo controllo, o da quelle
+    della riga: le altre chiavi restano com'erano. Un chiuso con una
+    riscrittura in coda torna al giro dopo invece di aspettare la sua cadenza.
+    """
+    sezioni = dict(esito.colonne.get("impronte_sezioni") or riga.get("impronte_sezioni") or {})
+    if coda:
+        sezioni[CHIAVE_RISCRITTURA] = dict(coda)
+    else:
+        sezioni.pop(CHIAVE_RISCRITTURA, None)
+    colonne: dict[str, Any] = {"impronte_sezioni": sezioni}
+    if coda and fase(riga, oggi=adesso.date()) == FASE_CHIUSO:
+        colonne["prossimo_controllo_at"] = adesso.isoformat()
+    try:
+        scrittore.salva_controllo(riga.get("id"), colonne)
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.warning("[monitor] coda delle riscritture del bando {} non salvata: {}",
+                       riga.get("id"), e)
+
+
+_RE_HREF = re.compile(r"""href\s*=\s*["']([^"'<>]+)["']""", re.IGNORECASE)
+
+
+def href_originale(html: str | None, normalizzato: str, base: str = "") -> str:
+    """L'href com'e' scritto nella pagina per un link normalizzato (`www.`,
+    slash finale...), cosi' la riga `bando_link` porta l'URL vero. Se non si
+    ritrova, il normalizzato."""
+    for trovato in _RE_HREF.finditer(html or ""):
+        # §19.3: un href malformato (`http://[object Object]`,
+        # `https://www.ente.it]/x`) fa sollevare `urljoin`: si salta lui, non
+        # il giro.
+        try:
+            grezzo = urljoin(base, trovato.group(1).strip()) if base else trovato.group(1).strip()
+            if impronte.normalizza_url(grezzo) == normalizzato:
+                return grezzo
+        except ValueError:
+            continue
+    return normalizzato
+
+
+def url_allegato(evento: Mapping[str, Any], diff: Any, *, html: str | None = None,
+                 base: str = "") -> str | None:
+    """L'URL del documento di un `nuovo_allegato`, o None. Pura.
+
+    `url_prova` dell'evento e' la PAGINA dove l'abbiamo visto, non il
+    documento (regola 5 del classificatore). Il documento e' un link comparso
+    nel diff: quello di cui la citazione nomina le parole (la stessa misura
+    del G2, `eventi.QUOTA_TOKEN_G2`), oppure l'unico comparso. In ripiego un
+    URL http(s) in `valore_dopo`.
+    """
+    nuovi = [str(l) for l in (getattr(diff, "link_aggiunti", ()) or ()) if str(l).startswith("http")]
+    parole = [t for t in eventi_mod._token(str(evento.get("citazione") or ""))
+              if len(t) >= 3 and not t.isdigit()]
+    migliore, quota_migliore = None, 0.0
+    for link in nuovi:
+        nel_link = eventi_mod._token_link(link)
+        if not parole or not nel_link:
+            continue
+        quota = sum(1 for t in parole if t in nel_link) / len(parole)
+        if quota >= eventi_mod.QUOTA_TOKEN_G2 and quota > quota_migliore:
+            migliore, quota_migliore = link, quota
+    if migliore:
+        return href_originale(html, migliore, base)
+    if len(nuovi) == 1:
+        return href_originale(html, nuovi[0], base)
+    dopo = evento.get("valore_dopo")
+    for valore in (dopo.values() if isinstance(dopo, Mapping) else ()):
+        if isinstance(valore, str) and valore.startswith(("http://", "https://")):
+            return valore
+    return None
+
+
+def _registra_allegato(
+    scrittore: FonteDati,
+    riga: Mapping[str, Any],
+    evento: Mapping[str, Any],
+    diff: Any,
+    url_pagina: str,
+    esito: EsitoControllo,
+    *,
+    html: str | None = None,
+) -> None:
+    """`nuovo_allegato` applicato → riga `bando_link` `allegato` (giro 3, §6).
+
+    `url` e' il documento, `url_prova` la pagina dove e' comparso; non
+    pubblicabile finche' `link_verifica` non la verifica (§10).
+    """
+    documento = url_allegato(evento, diff, html=html, base=url_pagina)
+    if not documento:
+        esito.allegati_senza_url += 1
+        logger.info("[monitor] nuovo_allegato del bando {}: URL del documento non trovato nel diff",
+                    riga.get("id"))
+        return
+    pagina = str(evento.get("url_prova") or url_pagina or "")
+    if scrittore.registra_link_allegato(riga.get("id"), documento, pagina):
+        esito.allegati_registrati += 1
 
 
 def _da_rigenerare(
@@ -1527,6 +1974,8 @@ ATTIVAZIONE_GIA_REGISTRATO = "gia_registrato"
 ATTIVAZIONE_IN_OMBRA = "in_ombra"
 ATTIVAZIONE_NON_VERIFICATO = "non_verificato"
 ATTIVAZIONE_VERIFICA_ILLEGGIBILE = "verifica_illeggibile"
+#: Giro 3 (§14): la RPC ha marcato l'evento (`scartato_per`): non si riprende.
+ATTIVAZIONE_SCARTATO = "scartato"
 
 
 def _comando_di_ripresa(ids: Iterable[Any], tipi: Iterable[str], giorno: date_cls) -> str:
@@ -1628,6 +2077,16 @@ def _attiva_per_tipo(
     if not proposto:
         esito_rpc = scrittore.applica_evento(evento_id)
         if esito_rpc != db.ESITO_APPLICATO:
+            # Giro 3 (§14): un evento che la RPC ha marcato (superato o
+            # transizione non ammessa) non tornera' mai in coda e resta
+            # invisibile: non e' un «non applicato» da riprendere.
+            marcato = (scrittore.motivo_scarto(evento_id)
+                       if esito_rpc == db.ESITO_RIFIUTATO else None)
+            if marcato:
+                logger.info("[monitor] evento {} ({}) scartato dalla RPC: {}",
+                            evento_id, riga.get("tipo"), marcato)
+                return replace(applicazione, applicato=False, scritto=True,
+                               motivo=f"scartato: {marcato}"), ATTIVAZIONE_SCARTATO
             logger.warning("[monitor] evento {} ({}) non applicato: {}",
                            evento_id, riga.get("tipo"), esito_rpc)
             return replace(applicazione, applicato=False, scritto=True,
@@ -1961,6 +2420,11 @@ def _colonne_invariato(
             colonne["testo_norm"] = compresso
     if sezioni is not None:
         colonne["impronte_sezioni"] = dict(sezioni)
+        # La coda delle riscritture (giro 3, §6) e' memoria del monitor come i
+        # link: riscrivere le impronte non deve perderla.
+        coda = riscrittura_in_coda(riga)
+        if coda:
+            colonne["impronte_sezioni"][CHIAVE_RISCRITTURA] = coda
     return colonne
 
 
@@ -2004,7 +2468,11 @@ def _errore(
         # confrontare.
         if fonte_dati is not None and modalita == eventi_mod.MODALITA_ATTIVO:
             _sospendi_fonte(esito.bando_id)
-        if fonte_dati is not None:
+        # Il blocco si annota una volta sola, al passaggio da 4 a 5 (§18.8):
+        # aperti e sospesi tornano a ogni giro anche con la pagina morta, e un
+        # `elaborazione_bloccata` per giro (fuori dal dedup, `valore_dopo`
+        # sempre diverso) sarebbe solo rumore.
+        if fonte_dati is not None and falliti == FALLIMENTI_PER_BLOCCO:
             fonte_dati.registra_evento({
                 "bando_id": riga.get("id"),
                 "tipo": "elaborazione_bloccata",
@@ -2041,7 +2509,7 @@ def _rendi_visibili_gli_applicati(
     tipi: Sequence[str] = (),
     dal: date_cls | None = None,
     scrive: bool = False,
-    limite: int = 50,
+    limite: int | None = None,
     ids: Sequence[Any] = (),
 ) -> int:
     """Chiude le attivazioni rimaste a meta': applicate e invisibili.
@@ -2062,7 +2530,7 @@ def _rendi_visibili_gli_applicati(
     try:
         righe = db.select_eventi(
             tipi=tuple(tipi), dal=dal, applicato=True, verificato=True,
-            leggibile=False, limit=max(0, int(limite)), ids=tuple(ids),
+            leggibile=False, limit=None if limite is None else max(0, int(limite)), ids=tuple(ids),
         )
     except Exception as e:                                # pragma: no cover - ripiego
         logger.warning("[applica-eventi] lettura degli applicati invisibili fallita: {}", e)
@@ -2144,6 +2612,64 @@ def _link_salvati(riga: Mapping[str, Any]) -> tuple[str, ...] | None:
     if not isinstance(link, (list, tuple)):
         return None
     return tuple(str(u) for u in link)
+
+
+#: Gli eventi applicati che rimettono il bando in coda alla rielaborazione
+#: (giro 3, §5): `rettifica` del contenuto o degli allegati, e `riapertura`.
+CAMPI_RETTIFICA_DA_RIELABORARE: frozenset[str] = frozenset({"contenuto", "allegati"})
+
+
+def rimette_in_rielaborazione(tipo: str, campo: Any) -> bool:
+    """Un evento applicato di questo tipo (e campo) azzera il marcatore della rielaborazione?"""
+    if tipo == "riapertura":
+        return True
+    return tipo == "rettifica" and campo in CAMPI_RETTIFICA_DA_RIELABORARE
+
+
+#: Gli stati HTTP per cui lo scarico pagherebbe il ripiego Firecrawl (il WAF
+#: nega la pagina): copiati da `scarico._STATI_RIPIEGO`, un test li confronta.
+STATI_RIPIEGO: tuple[int, ...] = (403, 406)
+
+
+def richiederebbe_ripiego(url: str, risposta: Any, host_richiede_js: Iterable[str] = ()) -> bool:
+    """La pagina si leggerebbe solo con il ripiego Firecrawl? Pura.
+
+    Le stesse tre ragioni di `scarico.Scarico._serve_ripiego`: WAF (403/406),
+    host noto per il JS, app-shell (200 con uno scheletro). Un 304, un 404 o
+    un 5xx no: il ripiego non li cambierebbe.
+    """
+    from .scarico import e_app_shell, host_di
+    stato = getattr(risposta, "stato", None)
+    if stato in STATI_RIPIEGO:
+        return True
+    if not getattr(risposta, "ok", False):
+        return False
+    if host_di(url) in {str(h).lower() for h in host_richiede_js}:
+        return True
+    return bool(e_app_shell(getattr(risposta, "html", "") or "", getattr(risposta, "testo", "") or ""))
+
+
+def _scarico_rinviato(esito: EsitoControllo) -> EsitoControllo:
+    """Tetto raggiunto e pagina leggibile solo a pagamento: nessuna colonna."""
+    esito.esito = "rinviato"
+    esito.scarico_rinviato = True
+    esito.motivo = "lettura rinviata: servirebbe il ripiego a pagamento, tetto raggiunto"
+    esito.colonne = {}
+    return esito
+
+
+def _classificazione_rinviata(esito: EsitoControllo) -> EsitoControllo:
+    """Tetto di spesa: la pagina cambiata non si classifica e non si salva niente.
+
+    Come `_classificazione_fallita`, ma non e' un errore: nessuna chiamata e'
+    partita. Il prossimo controllo resta quello di prima, quindi la pagina
+    risulta ancora cambiata al giro dopo.
+    """
+    esito.esito = "rinviato"
+    esito.classificazione_rinviata = True
+    esito.motivo = "classificazione rinviata: tetto di spesa raggiunto"
+    esito.colonne = {}
+    return esito
 
 
 def _classificazione_fallita(esito: EsitoControllo, motivo: str) -> EsitoControllo:
@@ -2279,11 +2805,20 @@ async def run(
     forza: bool = False,
     contatori: bilancio.Contatori | None = None,
     lock: Any = blocco,
+    orologio: Callable[[], float] | None = None,
+    riscrittore: Callable[[Any, list[dict[str, Any]]], Awaitable[Any]] | None = None,
 ) -> dict[str, Any]:
     """Un giro di monitoraggio. Ritorna i contatori; non solleva mai.
 
     Le chiavi che `bandi_pipeline.py` e `__main__.py` leggono:
     `status`, `saltato_per_lock`, `interrotto_per_tetto`, `slug_modificati`.
+
+    Giro 3 (§1, §5): nessun tetto di numero. Tutti gli aperti a ogni giro,
+    nell'ordine di `seleziona`, entro `TEMPO_MONITOR_S` (`orologio` si inietta
+    nei test); chi resta fuori parte per primo al giro dopo. A tetto di spesa
+    raggiunto il giro NON si ferma: le pagine si scaricano e si confrontano, e
+    quelle cambiate aspettano il giro dopo (`classificazioni_rinviate`).
+    `copertura` sta al primo livello del riepilogo.
 
     `scarica` non iniettato significa «usa `scarico.py`», che e' il client
     unico del giro (http2, ripiego Firecrawl solo sulla pagina principale,
@@ -2310,15 +2845,15 @@ async def run(
     """
     # Lo step nomina la riga di `pipeline_run` E decide quali tetti valgono:
     # `bilancio.e_backfill` guarda il prefisso. Senza `--lotto` il monitor
-    # risponde ai tetti del regime (30 classificazioni e 1,5 dollari al
-    # giorno), che sono giusti a regime e sbagliati per la **semina**: il primo
-    # giro su un bando non ha un «prima» con cui confrontare, quindi passa dal
-    # modello sempre, e con 213 bandi da seminare il tetto morde al trentesimo.
-    # Misurato il 24/09/2026: `candidati: 50, controllati: 30`, fermato dal
-    # tetto dopo tre minuti. Il piano lo prevedeva (il lotto L6 sta sui tetti
-    # di backfill) e il comando non aveva il modo di dirlo.
+    # risponde ai tetti di spesa del regime (dal giro 3: 5 $ al giorno e 150 al
+    # mese; il tetto delle 30 classificazioni non c'e' piu'), che sono giusti a
+    # regime e stretti per la **semina**: il primo giro su un bando non ha un
+    # «prima» con cui confrontare, quindi passa dal modello sempre. Misurato il
+    # 24/09/2026, col vecchio tetto: `candidati: 50, controllati: 30`. Il lotto
+    # L6 sta sui tetti di backfill.
     passo = f"backfill:{lotto}" if lotto else STEP
-    avvio = time.monotonic()
+    orologio = orologio or time.monotonic
+    avvio = orologio()
     momento = adesso_roma(adesso)
     # Le chiavi che ogni uscita di `run` deve avere, comprese le quattro
     # anticipate: `allarmi` e i tre campi del G7 nascono per essere letti da
@@ -2373,11 +2908,23 @@ async def run(
         tetti = bilancio.tetti_da_impostazioni(impostazioni)
         if contatori is None:
             contatori = bilancio.Contatori()
-        tetto = tetti.fetch_giro if limit is None else min(
-            limit, tetti.fetch_giro or limit)
+        # Nessun tetto di numero (giro 3, §1): `limit` vale solo da riga di
+        # comando. Il freno e' il tempo, con la rotazione di `seleziona`.
+        tetto = max(0, int(limit)) if limit is not None else 0
+        tempo_s = float(getattr(impostazioni, "tempo_monitor_s", TEMPO_MONITOR_S) or TEMPO_MONITOR_S)
         righe = dati.candidati(limite=tetto, adesso=momento, forza=forza)
-        # Gli allarmi del giro: quelli della selezione (coda troncata) piu'
-        # quelli dei tetti. Vivono nel riepilogo e quindi in `pipeline_run`,
+        # Sospensione, revoca e annullamento solo con la migrazione 14 e gli
+        # stati estesi (§3): altrimenti restano in ombra, senza allarme.
+        tipi_in_attesa: tuple[str, ...] = ()
+        # La migrazione 14 (§14), letta una volta per giro: decide i tipi
+        # attivi e quali righe della lista bianca valgono per G9.
+        capacita_14 = bool(dati.capacita_sospensioni())
+        if tipi_attivi:
+            tipi_attivi, tipi_in_attesa = eventi_mod.tipi_attivi_effettivi(
+                tipi_attivi, capacita=capacita_14,
+                stati_estesi=bool(getattr(impostazioni, "monitor_stati_estesi", False)))
+        # Gli allarmi del giro: quelli della selezione piu' quelli dei tetti di
+        # spesa. Vivono nel riepilogo e quindi in `pipeline_run`,
         # perche' un allarme che esiste solo in una riga di log e' un allarme
         # che nessuno legge il giorno in cui serve.
         allarmi: list[str] = list(getattr(dati, "allarmi", ()) or ())
@@ -2447,40 +2994,99 @@ async def run(
         esiti: list[EsitoControllo] = []
         interrotto = False
         motivo_tetto = ""
+        # Il consumo dei passi gia' scritti (oggi e mese di Roma) si legge una
+        # volta: quello di questo giro e' in `contatori`, che crescono qui.
+        # §18.5: None = lettura fallita, e per la manutenzione vale tetto
+        # raggiunto (niente modello, niente crediti; i controlli gratuiti sì).
+        consumo_letto = dati.consumo_oggi()
+        gia_oggi = dict(consumo_letto or {})
+        # La riscrittura delle schede con Opus (giro 3, §6) ha la sua spesa
+        # (step `rigenerazione_scheda`), che conta nel tetto insieme a quella
+        # del monitor. Si costruisce solo nel giro di produzione che scrive:
+        # mai in dry-run, mai in ombra senza tipi attivi, mai con lo scarico
+        # iniettato (i test passano il proprio `riscrittore`).
+        spesa_riscritture = bilancio.Contatori()
+        if riscrittore is None and proprio and not dry_run and (
+                modalita == eventi_mod.MODALITA_ATTIVO or tipi_attivi):
+            async def riscrittore(bando_id: Any, novita: list[dict[str, Any]]) -> Any:
+                if consumo_letto is None:
+                    # Consumo illeggibile (§18.5): Opus non si chiama, le
+                    # novita' restano in coda per il giro dopo.
+                    controllo = bilancio.verifica_con_consumo(
+                        spesa_riscritture, tetti, step=rigenera_mod.STEP_RISCRITTURA, consumo=None)
+                    if not controllo.consentito:
+                        return rigenera_mod.Riscrittura(
+                            bando_id=bando_id, esito=rigenera_mod.ESITO_RINVIATA,
+                            motivo=controllo.motivo)
+                return await rigenera_mod.riscrivi_scheda(
+                    bando_id, novita, spesa=spesa_riscritture, tetti=tetti,
+                    gia_oggi=_gia_con(gia_oggi, contatori))
+        rinvia = False
+        motivo_rinvio = "spesa"
+        fuori_tempo = False
+        # Gli host che lo scarico legge solo col ripiego: a tetto raggiunto le
+        # loro pagine si rinviano invece di pagarlo (giro 3, §4).
+        host_js = _host_richiede_js_dello_scarico() if proprio else frozenset()
         for riga in righe:
-            verifica = bilancio.verifica(
-                contatori, tetti, step=passo, gia_oggi=dati.consumo_oggi())
-            if not verifica.consentito:
-                interrotto = True
-                motivo_tetto = verifica.motivo
-                allarmi.append(verifica.motivo)
-                logger.warning("[ALLARME] [monitor] {}", verifica.motivo)
+            if orologio() - avvio > tempo_s:
+                # Tetto di tempo (§1 punto 2): chi resta fuori ha l'ultimo
+                # controllo piu' vecchio e parte per primo al giro dopo.
+                fuori_tempo = True
                 break
+            if not rinvia:
+                verifica = bilancio.verifica_con_consumo(
+                    contatori, tetti, step=passo,
+                    consumo=None if consumo_letto is None else _gia_con(gia_oggi, spesa_riscritture))
+                if not verifica.consentito:
+                    # Il giro non si ferma (§4, §5): da qui in poi il modello
+                    # non si chiama, le pagine si controllano lo stesso.
+                    rinvia = True
+                    motivo_tetto = verifica.motivo
+                    motivo_rinvio = verifica.motivo_rimasti or "spesa"
+                    avviso = (f"{verifica.motivo}: il modello non si chiama piu' in questo giro, "
+                              f"le pagine cambiate si rivedono al giro dopo")
+                    allarmi.append(avviso)
+                    logger.warning("[ALLARME] [monitor] {}", avviso)
             if scaricatore is None:
                 esiti.append(EsitoControllo(
                     bando_id=riga.get("id"), fase=fase(riga, oggi=momento.date()),
                     esito="saltato",
                     motivo="senza rete" if senza_rete else "nessuno scarico disponibile"))
                 continue
-            esito = await controlla(
-                riga,
-                scarica=scaricatore,
-                classifica=classificatore,
-                seconda_opinione=seconda_opinione,
-                pagine_collegate=pagine_collegate,
-                rigenerazione=rigenerazione,
-                segnale_macchina=segnale_macchina,
-                head_allegati=head_allegati,
-                fonte_dati=dati,
-                modalita=modalita,
-                scenario=scenario,
-                stati_estesi=bool(getattr(impostazioni, "monitor_stati_estesi", False)),
-                tipi_attivi=tipi_attivi,
-                tabella_domini=tabella_domini,
-                adesso=momento,
-                casuale=casuale,
-                dry_run=dry_run,
-            )
+            try:
+                esito = await controlla(
+                    riga,
+                    scarica=scaricatore,
+                    classifica=classificatore,
+                    seconda_opinione=seconda_opinione,
+                    pagine_collegate=pagine_collegate,
+                    rigenerazione=rigenerazione,
+                    segnale_macchina=segnale_macchina,
+                    head_allegati=head_allegati,
+                    fonte_dati=dati,
+                    modalita=modalita,
+                    scenario=scenario,
+                    stati_estesi=bool(getattr(impostazioni, "monitor_stati_estesi", False)),
+                    tipi_attivi=tipi_attivi,
+                    tabella_domini=tabella_domini,
+                    adesso=momento,
+                    casuale=casuale,
+                    dry_run=dry_run,
+                    rinvia_classificazione=rinvia,
+                    host_richiede_js=host_js,
+                    capacita_14=capacita_14,
+                    riscrittore=None if dry_run else riscrittore,
+                )
+            except Exception as e:
+                # §19.3: un'eccezione su un bando e' l'errore di quel bando, non
+                # del giro. Niente colonne (la pagina non ha colpa: niente
+                # `controlli_falliti`): il bando torna al giro dopo, e la riga
+                # del giro con la spesa si scrive lo stesso.
+                logger.warning("[monitor] bando {}: controllo interrotto da un'eccezione: {}",
+                               riga.get("id"), f"{type(e).__name__}: {e}"[:200])
+                esito = EsitoControllo(
+                    bando_id=riga.get("id"), fase=fase(riga, oggi=momento.date()),
+                    esito="errore", motivo=f"{PREFISSO_ECCEZIONE}{type(e).__name__}"[:200])
             contatori.classificazioni += 1 if esito.classificato else 0
             contatori.classificazioni_fallite += 1 if esito.classificazione_fallita else 0
             contatori.eventi += len(esito.eventi)
@@ -2510,11 +3116,13 @@ async def run(
         # `eventi_applicati` e' sempre zero. Un evento applicato ma invisibile
         # non cambia la pagina (faq e allegati non toccano `bando`): conta solo
         # se ha portato una data nuova in prosa (revisione del 30/09/2026).
-        slug_modificati = tuple(
-            e.slug for e in esiti
-            if e.slug and _pagina_cambiata(e)
-            and (not e.rigenerazione_dovuta or e.rigenerato)
-        )
+        slug_modificati = tuple(dict.fromkeys([
+            *(e.slug for e in esiti
+              if e.slug and _pagina_cambiata(e)
+              and (not e.rigenerazione_dovuta or e.rigenerato)),
+            # Giro 3 (§6): una scheda riscritta con Opus e' una pagina nuova.
+            *(e.slug_riscritto for e in esiti if e.slug_riscritto),
+        ]))
         # Date applicate e prosa rimasta vecchia: rigenerazione mancante o
         # fallita. La colonna e il box sono giusti, il testo no, e lo slug non
         # va a IndexNow. Senza questa riga non lo diceva nessuno.
@@ -2586,11 +3194,32 @@ async def run(
             # nessuno poteva accorgersene.
             "eventi_non_scritti": sum(e.eventi_non_scritti for e in esiti),
             "allegati_aggiornati": sum(len(e.allegati) for e in esiti),
+            # Giro 3 (§5): pagine cambiate non classificate per il tetto di
+            # spesa (nessuna colonna salvata: si rivedono al giro dopo), bandi
+            # rimessi in coda alla rielaborazione, giro tagliato dal tempo, e i
+            # tipi che restano in ombra in attesa della migrazione 14.
+            "classificazioni_rinviate": sum(1 for e in esiti if e.classificazione_rinviata),
+            "scarichi_rinviati": sum(1 for e in esiti if e.scarico_rinviato),
+            "rielaborazioni_richieste": sum(1 for e in esiti if e.rielaborazione_richiesta),
+            # Giro 3 (§6): riscritture delle schede con Opus e documenti nuovi.
+            "riscritture": sum(1 for e in esiti if e.riscrittura == rigenera_mod.ESITO_SCRITTA),
+            "riscritture_rinviate": sum(
+                1 for e in esiti if e.riscrittura == rigenera_mod.ESITO_RINVIATA),
+            "riscritture_fallite": sum(
+                1 for e in esiti if e.riscrittura == rigenera_mod.ESITO_FALLITA),
+            "riscritture_abbandonate": sum(
+                1 for e in esiti if e.riscrittura == RISCRITTURA_ABBANDONATA),
+            "allegati_registrati": sum(e.allegati_registrati for e in esiti),
+            "eventi_scartati": sum(e.eventi_scartati for e in esiti),
+            "novita_rinviate": sum(e.novita_rinviate for e in esiti),
+            "allegati_senza_url": sum(e.allegati_senza_url for e in esiti),
+            "interrotto_per_tempo": fuori_tempo,
+            "tipi_in_attesa_migrazione_14": list(tipi_in_attesa),
             "interrotto_per_tetto": interrotto,
             "motivo": motivo_tetto,
             "allarmi": allarmi,
             "slug_modificati": list(slug_modificati),
-            "durata_s": round(time.monotonic() - avvio, 1),
+            "durata_s": round(orologio() - avvio, 1),
         }
         non_scritti = int(riepilogo["eventi_non_scritti"])
         if non_scritti:
@@ -2667,8 +3296,30 @@ async def run(
             logger.warning("[ALLARME] [monitor] {}", avviso)
             riepilogo.update(allarmi=allarmi, saltato="scarico_non_configurato",
                              candidati=candidati_senza_modello)
+        # Copertura (§1): fatti i bandi controllati fino in fondo; restano
+        # fuori quelli oltre il tempo, le pagine cambiate rinviate per spesa,
+        # quelle che il modello non ha classificato e i saltati senza nemmeno
+        # un tentativo (senza rete, senza classificatore). Un host morto (DNS)
+        # e' stato tentato: conta fra i fatti.
+        rinviate = int(riepilogo["classificazioni_rinviate"]) + int(riepilogo["scarichi_rinviati"])
+        non_classificate = sum(1 for e in esiti if e.classificazione_fallita)
+        non_tentati = sum(1 for e in esiti if e.esito == "saltato" and not e.host_irraggiungibile)
+        # §19.3: un controllo interrotto da un'eccezione non e' fatto.
+        interrotti = sum(1 for e in esiti if e.esito == "errore"
+                         and str(e.motivo).startswith(PREFISSO_ECCEZIONE))
+        motivo_rimasti = ("tempo" if fuori_tempo else motivo_rinvio if rinviate
+                          else "errore" if (non_classificate or non_tentati or interrotti
+                                            or solo_riallineamenti)
+                          else None)
+        riepilogo["copertura"] = telemetria.copertura(
+            riepilogo["candidati"],
+            len(esiti) - rinviate - non_classificate - non_tentati - interrotti,
+            motivo_rimasti)
+        if not dry_run:
+            _scrivi_telemetria_riscritture(esiti, spesa_riscritture, giro,
+                                           tempo=orologio() - avvio)
         _scrivi_telemetria(riepilogo, contatori, giro, slug_modificati, interrotto,
-                           tempo=time.monotonic() - avvio, passo=passo)
+                           tempo=orologio() - avvio, passo=passo)
         logger.info("[monitor] {}", riepilogo)
         return riepilogo
     except Exception as e:
@@ -2932,12 +3583,19 @@ def _chiave_pagina(url: str) -> str:
     except Exception:                                     # pragma: no cover - ripiego
         def chiave(valore: str) -> str:
             return valore.strip().casefold()
-    pezzi = urlsplit(url.strip())
-    parametri = sorted(parse_qsl(unquote(pezzi.query), keep_blank_values=True))
-    # Schema e host fuori dalla forma normale del percorso: l'host lo mette
-    # `_host_di`, che e' gia' quello senza `www.` dello scarico.
-    resto = urlunsplit(("", "", pezzi.path, urlencode(parametri), ""))
-    return f"{_host_di(url)}|{chiave(resto)}"
+    # §19.3: gli URL arrivano dalle pagine (ancore, `link` dei post WP). Uno
+    # malformato (`http://[object Object]`) fa sollevare `urlsplit` e
+    # `host_di`: non e' nessuna pagina, e lo scarta poi la guardia sugli
+    # indirizzi.
+    try:
+        pezzi = urlsplit(url.strip())
+        parametri = sorted(parse_qsl(unquote(pezzi.query), keep_blank_values=True))
+        # Schema e host fuori dalla forma normale del percorso: l'host lo mette
+        # `_host_di`, che e' gia' quello senza `www.` dello scarico.
+        resto = urlunsplit(("", "", pezzi.path, urlencode(parametri), ""))
+        return f"{_host_di(url)}|{chiave(resto)}"
+    except ValueError:
+        return ""
 
 
 def _stessa_pagina(uno: str, altro: str) -> bool:
@@ -3022,7 +3680,13 @@ def _ancore(html: str, base: str) -> list[tuple[str, str]]:
         href = str(ancora.get("href") or "").strip()
         if not href or href.startswith(("#", "javascript:", "mailto:")):
             continue
-        trovate.append((urljoin(base, href), ancora.get_text(" ", strip=True)))
+        # §19.3: un href malformato fa sollevare `urljoin`; si salta lui, non
+        # le pagine collegate di tutto l'host.
+        try:
+            assoluto = urljoin(base, href)
+        except ValueError:
+            continue
+        trovate.append((assoluto, ancora.get_text(" ", strip=True)))
     return trovate
 
 
@@ -3032,6 +3696,7 @@ def pagine_collegate_da_impostazioni(
     scarica: Callable[..., Awaitable[Any]] | None = None,
     news_per_host: Mapping[str, str] | None = None,
     adesso: datetime | None = None,
+    pubblico: Callable[[str], Awaitable[bool]] | None = None,
 ) -> Callable[[Mapping[str, Any]], Awaitable[Sequence[str]]]:
     """Il raccoglitore di pagine collegate di produzione (§6.2).
 
@@ -3078,6 +3743,15 @@ def pagine_collegate_da_impostazioni(
     `scarica`, `news_per_host` e `adesso` esistono per i test: in produzione
     restano `None` e si risolvono al momento della chiamata, cosi' l'adattatore
     usa il client del giro e non uno costruito all'avvio.
+
+    Indirizzi interni (§18.6): la pagina di notizie, la ricerca WordPress e
+    ogni pagina collegata proposta (ancore e `link` dei post, che possono
+    puntare a qualunque host) passano da `http.indirizzo_pubblico_async` prima
+    della GET. Un host che risolve a loopback, rete privata, link-local o
+    comunque non pubblico non si chiede: il registro delle notizie finisce in
+    `muti`, la pagina collegata non si propone. Il giudizio si tiene per host
+    per tutto il giro (una risoluzione DNS sola). `pubblico` e' per i test (un
+    DNS finto); in produzione resta `None`.
     """
     # La soglia e' configurabile come il modello del classificatore, con lo
     # stesso `getattr`: un ente che titola le notizie in modo molto diverso
@@ -3095,6 +3769,31 @@ def pagine_collegate_da_impostazioni(
     # servono a niente.
     muti: set[str] = set()
     elenchi: dict[str, list[tuple[str, str]]] = {}
+    giudicati: dict[tuple[str, str], bool] = {}
+
+    async def _pubblico(url: str) -> bool:
+        """`http.indirizzo_pubblico_async`, una volta per (schema, host) per giro.
+        Nel dubbio (errore della guardia) no."""
+        try:
+            parti = urlsplit(url)
+            chiave = (parti.scheme.lower(), (parti.hostname or "").lower())
+        except ValueError:
+            return False
+        if chiave not in giudicati:
+            try:
+                if pubblico is not None:
+                    esito = await pubblico(url)
+                else:
+                    from . import http as http_mod
+                    esito = await http_mod.indirizzo_pubblico_async(url)
+            except Exception as e:
+                logger.debug("[monitor] guardia sugli indirizzi fallita per {}: {}", chiave[1], e)
+                esito = False
+            giudicati[chiave] = bool(esito)
+            if not esito:
+                logger.info("[monitor] host {} non pubblico: nessuna pagina collegata da li'",
+                            chiave[1] or "?")
+        return giudicati[chiave]
 
     def _scarico() -> Callable[..., Awaitable[Any]] | None:
         if scarica is not None:
@@ -3122,9 +3821,16 @@ def pagine_collegate_da_impostazioni(
         host = _host_di(url)
         if host in muti:
             return None
+        if not await _pubblico(url):
+            # §18.6: niente richiesta verso un host interno, e niente altri
+            # tentativi per il resto del giro.
+            muti.add(host)
+            return None
         try:
             # `principale=False`: niente ripiego Firecrawl (§6.2).
-            risposta = await prendi(url, principale=False)
+            # §19.6: redirect solo sullo stesso host, gia' giudicato da
+            # `_pubblico`: un 302 verso un host interno non si segue.
+            risposta = await prendi(url, principale=False, redirect=REDIRECT_STESSO_HOST)
         except Exception as e:
             muti.add(host)
             logger.debug("[monitor] pagina collegata {} non scaricata: {}", url, e)
@@ -3195,6 +3901,9 @@ def pagine_collegate_da_impostazioni(
                     continue
                 if soglia and pertinenza(titolo_notizia) < soglia:
                     continue
+                # §18.6: `controlla` la scarichera' con una GET.
+                if not await _pubblico(url_notizia):
+                    continue
                 trovate.append(url_notizia)
                 if len(trovate) >= MAX_PAGINE_COLLEGATE:
                     return tuple(trovate)
@@ -3227,6 +3936,16 @@ def _azzera_scarico() -> None:
         logger.debug("[monitor] azzeramento dello scarico fallito: {}", e)
 
 
+def _host_richiede_js_dello_scarico() -> frozenset[str]:
+    """Gli host che il client unico legge solo col ripiego Firecrawl."""
+    try:
+        from .scarico import scarico_corrente
+        return frozenset(scarico_corrente().host_richiede_js)
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.debug("[monitor] host richiede_js dello scarico non leggibili: {}", e)
+        return frozenset()
+
+
 def _host_morti_dello_scarico() -> tuple[str, ...]:
     """Gli host irraggiungibili che il client unico ha segnato in questo giro."""
     try:
@@ -3255,6 +3974,61 @@ def _azzera_contatori_scarico() -> None:
         scarico_corrente().azzera_contatori()
     except Exception as e:                                # pragma: no cover - ripiego
         logger.debug("[monitor] azzeramento dei contatori fallito: {}", e)
+
+
+def _gia_con(gia_oggi: Mapping[str, Any] | None, *altri: bilancio.Contatori) -> dict[str, Any]:
+    """Il consumo gia' scritto piu' quello di altri contatori di questo giro.
+
+    Il monitor e le riscritture spendono nello stesso giro con contatori
+    separati (righe `pipeline_run` diverse): ciascuno, per il tetto, deve
+    vedere anche la spesa dell'altro, sul giorno e sul mese.
+    """
+    somma = dict(gia_oggi or {})
+    for contatori in altri:
+        for voce, valore in (("usd", contatori.usd), ("crediti", contatori.crediti_firecrawl),
+                             ("ricerche", contatori.ricerche)):
+            somma[voce] = float(somma.get(voce) or 0) + valore
+        for voce, valore in (("usd_mese", contatori.usd), ("crediti_mese", contatori.crediti_firecrawl)):
+            if voce in somma:
+                somma[voce] = float(somma.get(voce) or 0) + valore
+    return somma
+
+
+def _scrivi_telemetria_riscritture(
+    esiti: Sequence[EsitoControllo],
+    spesa: bilancio.Contatori,
+    giro: str | None,
+    *,
+    tempo: float,
+) -> None:
+    """La riga `pipeline_run` step `rigenerazione_scheda` (giro 3, §4 e §6).
+
+    Solo se nel giro c'era almeno una scheda da riscrivere. Candidati i bandi
+    con novita', fatti quelli riscritti; rimasti per spesa (rinviate) o per
+    errore (fallite, abbandonate).
+    """
+    tentate = [e for e in esiti if e.riscrittura]
+    if not tentate:
+        return
+    scritte = sum(1 for e in tentate if e.riscrittura == rigenera_mod.ESITO_SCRITTA)
+    rinviate = sum(1 for e in tentate if e.riscrittura == rigenera_mod.ESITO_RINVIATA)
+    saltate = sum(1 for e in tentate if e.riscrittura == rigenera_mod.ESITO_SALTATA)
+    motivo = "spesa" if rinviate else "errore"
+    contatori = {
+        **spesa.come_dizionario(),
+        "riscritture": scritte, "riscritture_rinviate": rinviate, "riscritture_saltate": saltate,
+        "riscritture_fallite": sum(1 for e in tentate if e.riscrittura in (
+            rigenera_mod.ESITO_FALLITA, RISCRITTURA_ABBANDONATA)),
+        "copertura": telemetria.copertura(len(tentate) - saltate, scritte, motivo),
+    }
+    riga = telemetria.PipelineRun(step=rigenera_mod.STEP_RISCRITTURA, giro=giro).concludi(
+        durata_s=tempo, contatori=contatori,
+        slug_modificati=tuple(e.slug_riscritto for e in tentate if e.slug_riscritto))
+    logger.info("[monitor] {}", telemetria.riepilogo(riga))
+    try:
+        telemetria.scrivi_pipeline_run(riga)
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.warning("[monitor] telemetria delle riscritture non scritta: {}", e)
 
 
 def _scrivi_telemetria(
@@ -3507,18 +4281,24 @@ def applica_eventi(
     *,
     dal: date_cls | None = None,
     tipo: str | None = None,
-    limit: int = 50,
+    limit: int | None = None,
     dry_run: bool = True,
     applica: Callable[[Mapping[str, Any]], Any] | None = None,
     segnala: Callable[[Mapping[str, Any]], bool] | None = None,
     stati_estesi: bool = False,
     traduzione: bool = False,
+    motivo_scarto: Callable[[Any], str | None] | None = None,
 ) -> dict[str, Any]:
     """Applica a posteriori gli eventi raccolti in ombra (§6.2).
 
+    Giro 3 (§14): dopo un `false` della RPC, `motivo_scarto(id)` rilegge
+    `scartato_per`. Un evento marcato (superato, transizione non ammessa) si
+    conta in `scartati` e NON si annota: la marcatura basta a tenerlo fuori
+    dalla coda. Senza marcatura (o senza la 14) resta il rifiuto di sempre.
+
     Senza questo comando la baseline delle impronte li perderebbe: alla seconda
     lettura la pagina non e' piu' «cambiata», quindi l'evento non si ripresenta.
-    Si lavora a blocchi di 50 per giro, e i tipi si attivano uno alla volta
+    Nessun blocco (giro 3, §1): `limit` None vuol dire tutti; i tipi si attivano uno alla volta
     (prima proroga e rettifiche di data, poi chiusura, poi sospensione e revoca
     dopo R0).
 
@@ -3569,13 +4349,14 @@ def applica_eventi(
             in_attesa_valore += 1
             continue
         scelte.append(riga)
-        if len(scelte) >= max(1, limit):
+        if limit is not None and len(scelte) >= max(1, limit):
             break
 
     applicati = 0
     rifiutati = 0
     non_tentati = 0
     segnalati = 0
+    scartati: dict[str, int] = {}
     if not dry_run and applica is not None:
         for riga in scelte:
             try:
@@ -3591,6 +4372,16 @@ def applica_eventi(
                 continue
             if esito == ESITO_NON_TENTATO:
                 non_tentati += 1
+                continue
+            marcato = None
+            if motivo_scarto is not None:
+                try:
+                    marcato = motivo_scarto(riga.get("id"))
+                except Exception as e:                    # pragma: no cover - ripiego
+                    logger.warning("[monitor] scartato_per dell'evento {} non letto: {}",
+                                   riga.get("id"), e)
+            if marcato:
+                scartati[marcato] = scartati.get(marcato, 0) + 1
                 continue
             # La RPC ha risposto `false`: transizione non ammessa, stato che il
             # CHECK non ammette, data incoerente. L'evento resta
@@ -3618,6 +4409,7 @@ def applica_eventi(
         "rifiutati": rifiutati,
         "non_tentati": non_tentati,
         "segnalati": segnalati,
+        "scartati_per_motivo": dict(sorted(scartati.items())),
         "in_attesa_traduzione": in_attesa_traduzione,
         "in_attesa_valore": in_attesa_valore,
         "ultimo_id": ultimo_id,
@@ -3639,34 +4431,23 @@ INTESTAZIONI_REPORT: tuple[str, ...] = (
 SOGLIA_PRECISIONE = 0.95
 CAMPIONE_MINIMO = 100
 
-#: Massimo di eventi applicati per giro (§6.2). `--limit` puo' solo abbassarlo:
-#: un blocco piu' grande riverserebbe in una volta sola mesi di ombra, e se una
-#: transizione fosse sbagliata non ci sarebbe un giro intermedio per accorgersene.
-BLOCCO_APPLICAZIONE = 50
+# Nessun blocco di applicazione (giro 3, §1, «niente lotti»): `applica-eventi`
+# applica tutti gli eventi in coda; `--limit` resta solo come scelta esplicita
+# di chi lancia il comando. Il vecchio `BLOCCO_APPLICAZIONE` (50) non c'e' piu'.
 
 #: Quanti eventi si chiedono per pagina mentre si cerca che cosa applicare.
 #: Non e' il blocco dell'operatore: e' la finestra su cui si scorre.
 PAGINA_SELEZIONE_EVENTI = 200
 
-#: Quanti `elaborazione_bloccata` si leggono per sapere quali eventi la RPC ha
-#: gia' rifiutato. Sono pochi per costruzione (un rifiuto per evento, non uno
-#: per giro): il tetto e' solo una difesa. Supera le 1 000 righe di
-#: `PAGINA_POSTGREST`, quindi la lettura va **scorsa**: con una `.limit(2000)`
-#: il server ne restituiva 1 000 senza dirlo e la lista dei rifiuti noti
-#: diventava incompleta proprio quando serviva.
-TETTO_RIFIUTI_NOTI = 2000
+# I rifiuti gia' noti (`elaborazione_bloccata` con `riferisce_a`) si leggono
+# TUTTI, scorrendo le pagine (`db.select_eventi(limit=None)`): il vecchio tetto
+# di 2 000 righe lasciava fuori proprio gli ultimi rifiuti, che tornavano in
+# coda a ogni lancio (giro 3, §1).
 
 #: Le sole due colonne che servono a riconoscere un rifiuto. `riferisce_a` e'
 #: il dato, `id` c'e' perche' `_colonne_disponibili` non restituisca una
 #: select vuota su uno schema che non ha ancora la colonna.
 COLONNE_RIFIUTO: tuple[str, ...] = ("id", "riferisce_a")
-
-#: I rifiuti noti non entrano tutti nel tetto: da qui in giu' la lista e' una
-#: FETTA, e gli eventi che ne restano fuori tornano in coda a ogni lancio.
-ALLARME_RIFIUTI_TRONCATI = (
-    f"rifiuti gia' noti troncati a {TETTO_RIFIUTI_NOTI} righe: gli eventi "
-    "bloccati oltre il tetto riconsumeranno il blocco a ogni lancio"
-)
 
 STEP_APPLICA = "applica-eventi"
 
@@ -3912,14 +4693,14 @@ def eventi_gia_rifiutati() -> frozenset[Any]:
     Si legge **una sola colonna**: la lettura parte a ogni lancio, anche in
     `--dry-run`, e portarsi dietro `valore_dopo`, `citazione` e il `gate`
     jsonb di duemila righe per estrarre un intero era la parte piu' cara del
-    comando. Oltre `TETTO_RIFIUTI_NOTI` il troncamento si **dichiara**: una
-    lista incompleta rimette in coda proprio gli eventi che non si possono
-    applicare, ed e' il difetto che questa funzione esiste per evitare.
+    comando. Si leggono tutti, a pagine (giro 3, §1): una lista incompleta
+    rimetterebbe in coda proprio gli eventi che non si possono applicare, ed
+    e' il difetto che questa funzione esiste per evitare.
     """
     try:
         from . import db
         righe = db.select_eventi(
-            tipi=("elaborazione_bloccata",), limit=TETTO_RIFIUTI_NOTI,
+            tipi=("elaborazione_bloccata",), limit=None,
             # Solo le annotazioni di rifiuto: lo stesso tipo lo scrivono anche
             # il monitor dopo cinque fallimenti, i gemelli e
             # `rigenera --malformati`, tutti senza `riferisce_a`. Senza il
@@ -3930,8 +4711,6 @@ def eventi_gia_rifiutati() -> frozenset[Any]:
     except Exception as e:                                # pragma: no cover - ripiego
         logger.warning("[applica-eventi] rifiuti gia' noti non leggibili: {}", e)
         return frozenset()
-    if len(righe) >= TETTO_RIFIUTI_NOTI:
-        logger.warning("[ALLARME] [applica-eventi] {}", ALLARME_RIFIUTI_TRONCATI)
     return frozenset(
         r.get("riferisce_a") for r in righe if r.get("riferisce_a") is not None)
 
@@ -4013,7 +4792,7 @@ def _da_applicare(
     *,
     tipi: Sequence[str],
     dal: date_cls | None,
-    limit: int,
+    limit: int | None,
     offset: int,
     rifiutati: frozenset[Any],
     conto: dict[str, int],
@@ -4034,10 +4813,14 @@ def _da_applicare(
     raccolti: list[Mapping[str, Any]] = []
     cursore = max(0, int(offset or 0))
     while True:
+        # Giro 3 (§14): anche `scartato_per`; senza la 14 la colonna non c'e'
+        # e la select non la chiede (`_colonne_disponibili`).
+        colonne = getattr(db, "COLONNE_EVENTO", None)
+        extra = {"colonne": tuple(colonne) + (COLONNA_SCARTATO,)} if colonne else {}
         try:
             pagina = db.select_eventi(
                 tipi=tuple(tipi), dal=dal, applicato=False, verificato=True,
-                limit=PAGINA_SELEZIONE_EVENTI, offset=cursore, ids=tuple(ids),
+                limit=PAGINA_SELEZIONE_EVENTI, offset=cursore, ids=tuple(ids), **extra,
             )
         except Exception as e:                            # pragma: no cover - ripiego
             logger.warning("[applica-eventi] lettura degli eventi fallita: {}", e)
@@ -4047,6 +4830,11 @@ def _da_applicare(
         cursore += len(pagina)
         for riga in pagina:
             conto["attraversati"] += 1
+            if riga.get(COLONNA_SCARTATO):
+                # Marcato dalla RPC della 14 (superato, transizione non
+                # ammessa): non torna in coda, si rimette a mano.
+                conto["scartati"] = conto.get("scartati", 0) + 1
+                continue
             if riga.get("id") in rifiutati:
                 # Gia' rifiutato da un giro precedente e l'annotazione e' in
                 # tabella: riproporlo significherebbe solo riconsumare il
@@ -4067,7 +4855,7 @@ def _da_applicare(
                 conto["in_attesa_valore"] += 1
                 continue
             raccolti.append(riga)
-            if len(raccolti) >= max(0, limit):
+            if limit is not None and len(raccolti) >= max(0, limit):
                 return raccolti
         if len(pagina) < PAGINA_SELEZIONE_EVENTI:
             break
@@ -4089,6 +4877,7 @@ async def run_applica_eventi(
     segnala: Callable[[Mapping[str, Any]], bool] | None = None,
     impostazioni: Any = None,
     lock: Any = blocco,
+    motivo_scarto: Callable[[Any], str | None] | None = None,
 ) -> dict[str, Any]:
     """`applica-eventi`: riversa a posteriori gli eventi raccolti in ombra (§6.2).
 
@@ -4113,7 +4902,8 @@ async def run_applica_eventi(
     perche' nulla e' stato tentato.
 
     Tre cautele, tutte volute:
-      * si lavora a blocchi di al massimo `BLOCCO_APPLICAZIONE`;
+      * nessun blocco (giro 3, §1): tutti gli eventi in coda; `--limit` e'
+        solo una scelta esplicita di chi lancia;
       * i tipi si attivano **uno alla volta** (`--tipo`): senza, il primo giro
         applicherebbe anche `sospensione` e `revoca`, che prima della 06 non
         hanno una colonna dove andare;
@@ -4137,13 +4927,13 @@ async def run_applica_eventi(
         modalita = eventi_mod.MODALITA_OMBRA
     scrive = modalita == eventi_mod.MODALITA_ATTIVO and not dry_run
 
-    blocco_giro = BLOCCO_APPLICAZIONE if limit is None else max(
-        0, min(int(limit), BLOCCO_APPLICAZIONE))
+    # Nessun blocco (giro 3, §1): None = tutti. `--limit` resta esplicito.
+    blocco_giro: int | None = None if limit is None else max(0, int(limit))
 
     preso = lock.acquisisci(NOME_LOCK, f"{STEP_APPLICA}:cli", blocco.TTL_PREDEFINITO_S)
     if not preso.proseguire:
         return lock.esito_saltato(preso)
-    conto = {"attraversati": 0, "saltati": 0, "bloccati": 0, "in_attesa_traduzione": 0,
+    conto = {"attraversati": 0, "saltati": 0, "bloccati": 0, "scartati": 0, "in_attesa_traduzione": 0,
              "in_attesa_valore": 0}
     try:
         # Il marcatore della migrazione 11, letto anche in `--dry-run` (e' una
@@ -4169,7 +4959,7 @@ async def run_applica_eventi(
             # DELETE nemmeno a `service_role` e `riferisce_a` e' immutabile.
             # Senza, un rifiuto annotato per sbaglio resterebbe tale per sempre.
             rifiutati=(eventi_gia_rifiutati()
-                       if righe is None and blocco_giro > 0
+                       if righe is None and (blocco_giro is None or blocco_giro > 0)
                        and not riprova_rifiutati else frozenset()),
             conto=conto,
             traduzione=proposti_applicabili,
@@ -4215,6 +5005,9 @@ async def run_applica_eventi(
                 # Chi inietta il proprio `applica` (i test, la pipeline) porta
                 # anche la propria annotazione: qui non si scrive per lui.
                 segnala = _segnala_rifiuto
+            if motivo_scarto is None:
+                # Giro 3 (§14): la rilettura di `scartato_per` dopo un `false`.
+                motivo_scarto = motivo_scarto_da_db
 
         gruppi: tuple[str | None, ...] = tuple(tipi) if tipi else (None,)
         candidati_totali = 0
@@ -4238,23 +5031,28 @@ async def run_applica_eventi(
                 "e revoca non vengono annotati")
         in_attesa_traduzione = conto["in_attesa_traduzione"]
         in_attesa_valore = conto["in_attesa_valore"]
+        scartati_per_motivo: dict[str, int] = {}
         per_tipo: dict[str, int] = {}
         for nome in gruppi:
-            if rimanenti <= 0:
+            if rimanenti is not None and rimanenti <= 0:
                 break
             esito = applica_eventi(
                 candidati, dal=dal, tipo=nome, limit=rimanenti,
                 dry_run=not scrive, applica=applica, segnala=segnala,
                 stati_estesi=stati_estesi, traduzione=proposti_applicabili,
+                motivo_scarto=motivo_scarto,
             )
             candidati_totali += int(esito.get("candidati") or 0)
             applicati += int(esito.get("applicati") or 0)
             rifiutati += int(esito.get("rifiutati") or 0)
             non_tentati += int(esito.get("non_tentati") or 0)
             segnalati += int(esito.get("segnalati") or 0)
+            for motivo, quanti in (esito.get("scartati_per_motivo") or {}).items():
+                scartati_per_motivo[motivo] = scartati_per_motivo.get(motivo, 0) + int(quanti)
             in_attesa_traduzione += int(esito.get("in_attesa_traduzione") or 0)
             in_attesa_valore += int(esito.get("in_attesa_valore") or 0)
-            rimanenti -= int(esito.get("candidati") or 0)
+            if rimanenti is not None:
+                rimanenti -= int(esito.get("candidati") or 0)
             per_tipo[nome or "tutti"] = int(esito.get("candidati") or 0)
 
         # Riparazione: gli eventi **applicati e mai resi visibili**. Nascono
@@ -4292,6 +5090,10 @@ async def run_applica_eventi(
             # successivo li ripresenta — se sono tanti, manca una migrazione.
             "non_tentati": non_tentati,
             "segnalati": segnalati,
+            # Giro 3 (§14): eventi marcati dalla RPC della 14 (superato,
+            # transizione non ammessa): fuori dalla coda e non annotati.
+            "scartati": conto.get("scartati", 0),
+            "scartati_per_motivo": dict(sorted(scartati_per_motivo.items())),
             "attraversati": conto["attraversati"],
             "bloccati": conto["bloccati"],
             "saltati": conto["saltati"],
@@ -4346,9 +5148,9 @@ def _scrivi_run(step: str, riepilogo: Mapping[str, Any], *, tempo: float) -> Non
 
 
 __all__ = [
-    "ALLARME_RIFIUTI_TRONCATI", "BLOCCO_APPLICAZIONE", "CAMPIONE_MINIMO",
+    "CAMPIONE_MINIMO",
     "COLONNE_RIFIUTO", "FALLIMENTI_MODELLO_DI_FILA", "INTESTAZIONI_REPORT", "MOTIVO_RIFIUTO",
-    "TETTO_RIFIUTI_NOTI", "TIPI_CON_DATA_IN_COLONNA", "TRADUZIONI_STATO_PROPOSTO",
+    "TIPI_CON_DATA_IN_COLONNA", "TRADUZIONI_STATO_PROPOSTO",
     "PAGINA_SELEZIONE_EVENTI", "SOGLIA_PRECISIONE", "STEP_APPLICA",
     "applicabile", "attende_traduzione", "eventi_gia_rifiutati", "valore_non_applicabile", "precisione", "report_ombra_da_eventi",
     "riga_report_da_evento", "run_applica_eventi", "run_report_ombra",

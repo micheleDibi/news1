@@ -14,7 +14,8 @@ Tre difetti misurati e chiusi qui:
   corpus e i doppioni con id alto erano invisibili per costruzione;
 * `select_bandi_da_monitorare` chiedeva `TETTO_CODA_MONITOR` (5 000) e ne
   riceveva 1 000 — e l'allarme scritto apposta per il troncamento era tarato
-  su 5 000, quindi non poteva scattare mai;
+  su 5 000, quindi non poteva scattare mai (dal giro 3 tetto e allarme non
+  ci sono piu': si legge tutto);
 * `select_link_da_verificare(bando_ids=[...])` con un lotto di 500 id si
   fermava a 1 000 righe: i bandi oltre quella soglia risultavano «scheda mai
   letta» e `oe-dettaglio` li riscaricava a ogni lancio (≈575 scarichi sprecati
@@ -182,7 +183,7 @@ class TestGemelli(unittest.TestCase):
 
 
 class TestCodaMonitor(unittest.TestCase):
-    """`select_bandi_da_monitorare`: il tetto e' 5 000, non 1 000."""
+    """`select_bandi_da_monitorare`: nessun tetto (giro 3, §1 e §5), non 1 000."""
 
     def _client(self, quanti):
         return _Client({"bando": [
@@ -200,12 +201,14 @@ class TestCodaMonitor(unittest.TestCase):
         righe = db.select_bandi_da_monitorare(client=client, strumento=self._strumento())
         self.assertEqual(len(righe), 2134)
 
-    def test_il_tetto_dichiarato_vale_ed_e_l_allarme(self):
-        client = self._client(db.TETTO_CODA_MONITOR + 500)
+    def test_oltre_il_vecchio_tetto_si_legge_tutto(self):
+        # Il tetto di 5 000 righe e' sparito con il giro 3 (niente lotti): la
+        # selezione per priorita' ordina il corpus intero.
+        client = self._client(5500)
         righe = db.select_bandi_da_monitorare(client=client, strumento=self._strumento())
-        # Il tetto taglia: e' dichiarato, e il chiamante lo riconosce contando
-        # le righe (`len(righe) >= TETTO_CODA_MONITOR` in `monitoraggio`).
-        self.assertEqual(len(righe), db.TETTO_CODA_MONITOR)
+        self.assertEqual(len(righe), 5500)
+        self.assertFalse([r for r in client.richieste if r["troncato"]])
+        self.assertFalse(hasattr(db, "TETTO_CODA_MONITOR"))
 
     def test_il_limite_dell_operatore_vince_sul_tetto(self):
         client = self._client(2134)

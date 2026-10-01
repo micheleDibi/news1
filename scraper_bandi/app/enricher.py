@@ -404,9 +404,14 @@ Chiama save_refinement con la tua determinazione."""
 async def _extract_single(
     bando: dict[str, Any], fonte_ctx: dict[str, Any], html_text: str,
     catalog: list[dict[str, Any]], category_descr: str, tool_name: str,
-    ateco: bool = False,
+    ateco: bool = False, *, fallite: set[str] | None = None,
 ) -> int | None:
-    """Helper per single-select FK extraction."""
+    """Helper per single-select FK extraction.
+
+    `fallite` (giro 3, §8): se la chiamata al modello fallisce, il nome della
+    dimensione finisce li'. Cosi' «il modello non ha risposto» resta distinto
+    da «il modello ha detto: nessuna voce», che restituiscono entrambi None.
+    """
     if not catalog:
         return None
     settings = get_settings()
@@ -421,6 +426,8 @@ async def _extract_single(
         system=system, user_prompt=user_prompt, tool=tool,
     )
     if not result:
+        if fallite is not None:
+            fallite.add(tool_name)
         return None
     val = result.get("id")
     if val is None:
@@ -436,9 +443,13 @@ async def _extract_single(
 async def _extract_multi(
     bando: dict[str, Any], fonte_ctx: dict[str, Any], html_text: str,
     catalog: list[dict[str, Any]], category_descr: str, tool_name: str,
-    ateco: bool = False,
+    ateco: bool = False, *, fallite: set[str] | None = None,
 ) -> list[int]:
-    """Helper per multi-select junction extraction."""
+    """Helper per multi-select junction extraction.
+
+    `fallite`: come in `_extract_single`. Una lista vuota da una chiamata
+    fallita non deve poter svuotare una dimensione piena (§9).
+    """
     if not catalog:
         return []
     settings = get_settings()
@@ -453,6 +464,8 @@ async def _extract_multi(
         system=system, user_prompt=user_prompt, tool=tool,
     )
     if not result:
+        if fallite is not None:
+            fallite.add(tool_name)
         return []
     ids = result.get("ids", []) or []
     valid_ids = {int(c["id"]) for c in catalog}
@@ -471,32 +484,52 @@ async def _extract_multi(
 
 # 7 funzioni public
 
-async def extract_tipologia(bando, fonte_ctx, html_text, tipologie) -> int | None:
-    return await _extract_single(bando, fonte_ctx, html_text, tipologie, "tipologia di bando", "tipologia")
+async def extract_tipologia(bando, fonte_ctx, html_text, tipologie, *, fallite=None) -> int | None:
+    return await _extract_single(bando, fonte_ctx, html_text, tipologie, "tipologia di bando",
+                                 "tipologia", fallite=fallite)
 
 
-async def extract_modalita(bando, fonte_ctx, html_text, modalita) -> int | None:
-    return await _extract_single(bando, fonte_ctx, html_text, modalita, "modalità di erogazione", "modalita")
+async def extract_modalita(bando, fonte_ctx, html_text, modalita, *, fallite=None) -> int | None:
+    return await _extract_single(bando, fonte_ctx, html_text, modalita, "modalità di erogazione",
+                                 "modalita", fallite=fallite)
 
 
-async def extract_programma(bando, fonte_ctx, html_text, programmi) -> int | None:
-    return await _extract_single(bando, fonte_ctx, html_text, programmi, "programma di finanziamento UE", "programma")
+async def extract_programma(bando, fonte_ctx, html_text, programmi, *, fallite=None) -> int | None:
+    return await _extract_single(bando, fonte_ctx, html_text, programmi,
+                                 "programma di finanziamento UE", "programma", fallite=fallite)
 
 
-async def extract_beneficiari(bando, fonte_ctx, html_text, beneficiari) -> list[int]:
-    return await _extract_multi(bando, fonte_ctx, html_text, beneficiari, "beneficiari ammissibili", "beneficiari")
+async def extract_beneficiari(bando, fonte_ctx, html_text, beneficiari, *, fallite=None) -> list[int]:
+    return await _extract_multi(bando, fonte_ctx, html_text, beneficiari, "beneficiari ammissibili",
+                                "beneficiari", fallite=fallite)
 
 
-async def extract_codici_ateco(bando, fonte_ctx, html_text, ateco) -> list[int]:
-    return await _extract_multi(bando, fonte_ctx, html_text, ateco, "codici ATECO", "codici_ateco", ateco=True)
+async def extract_codici_ateco(bando, fonte_ctx, html_text, ateco, *, fallite=None) -> list[int]:
+    return await _extract_multi(bando, fonte_ctx, html_text, ateco, "codici ATECO", "codici_ateco",
+                                ateco=True, fallite=fallite)
 
 
-async def extract_regioni(bando, fonte_ctx, html_text, regioni) -> list[int]:
-    return await _extract_multi(bando, fonte_ctx, html_text, regioni, "regioni geografiche coperte", "regioni")
+async def extract_regioni(bando, fonte_ctx, html_text, regioni, *, fallite=None) -> list[int]:
+    return await _extract_multi(bando, fonte_ctx, html_text, regioni, "regioni geografiche coperte",
+                                "regioni", fallite=fallite)
 
 
-async def extract_settori(bando, fonte_ctx, html_text, settori) -> list[int]:
-    return await _extract_multi(bando, fonte_ctx, html_text, settori, "settori di intervento", "settori")
+async def extract_settori(bando, fonte_ctx, html_text, settori, *, fallite=None) -> list[int]:
+    return await _extract_multi(bando, fonte_ctx, html_text, settori, "settori di intervento",
+                                "settori", fallite=fallite)
+
+
+#: Le sette dimensioni di `enrich_bando`, nell'ordine del `gather`: il nome e'
+#: quello che finisce in `_fallite` (lo stesso `tool_name` degli helper).
+DIMENSIONI_ENRICH: tuple[str, ...] = (
+    "tipologia", "modalita", "programma", "beneficiari", "codici_ateco", "regioni", "settori",
+)
+#: La chiave del catalogo (`db.load_catalogo`) di ogni dimensione.
+CATALOGO_DI: dict[str, str] = {
+    "tipologia": "tipologie", "modalita": "modalita", "programma": "programmi",
+    "beneficiari": "beneficiari", "codici_ateco": "codici_ateco", "regioni": "regioni",
+    "settori": "settori",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -515,17 +548,38 @@ async def enrich_bando(
     catalogo: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Esegue 7 extract_* di classificazione in parallelo (FK + junction).
-    Ritorna dict pronto per update_bando_enriched."""
+    Ritorna dict pronto per update_bando_enriched.
+
+    Giro 3 (§8): in piu' `_fallite`, le dimensioni la cui chiamata al modello
+    e' fallita (o ha sollevato), in ordine alfabetico. Una dimensione vuota
+    che non e' fra queste e' un «nessuna voce» vero; una che c'e' non dice
+    niente del bando, e chi aggiorna un pubblicato non la deve svuotare (§9).
+    """
+    fallite: set[str] = set()
     results = await asyncio.gather(
-        extract_tipologia(bando, fonte_ctx, html_text, catalogo.get("tipologie", [])),
-        extract_modalita(bando, fonte_ctx, html_text, catalogo.get("modalita", [])),
-        extract_programma(bando, fonte_ctx, html_text, catalogo.get("programmi", [])),
-        extract_beneficiari(bando, fonte_ctx, html_text, catalogo.get("beneficiari", [])),
-        extract_codici_ateco(bando, fonte_ctx, html_text, catalogo.get("codici_ateco", [])),
-        extract_regioni(bando, fonte_ctx, html_text, catalogo.get("regioni", [])),
-        extract_settori(bando, fonte_ctx, html_text, catalogo.get("settori", [])),
+        extract_tipologia(bando, fonte_ctx, html_text, catalogo.get("tipologie", []),
+                          fallite=fallite),
+        extract_modalita(bando, fonte_ctx, html_text, catalogo.get("modalita", []),
+                         fallite=fallite),
+        extract_programma(bando, fonte_ctx, html_text, catalogo.get("programmi", []),
+                          fallite=fallite),
+        extract_beneficiari(bando, fonte_ctx, html_text, catalogo.get("beneficiari", []),
+                            fallite=fallite),
+        extract_codici_ateco(bando, fonte_ctx, html_text, catalogo.get("codici_ateco", []),
+                             fallite=fallite),
+        extract_regioni(bando, fonte_ctx, html_text, catalogo.get("regioni", []),
+                        fallite=fallite),
+        extract_settori(bando, fonte_ctx, html_text, catalogo.get("settori", []),
+                        fallite=fallite),
         return_exceptions=True,
     )
+    for nome, esito in zip(DIMENSIONI_ENRICH, results):
+        if isinstance(esito, Exception):
+            fallite.add(nome)
+        elif not catalogo.get(CATALOGO_DI[nome]):
+            # §19.4: senza catalogo l'estrattore non chiede niente al modello
+            # e torna vuoto; non e' «nessuna voce», e' una dimensione non letta.
+            fallite.add(nome)
     # Coerce eccezioni a None/[]
     tipologia = results[0] if not isinstance(results[0], Exception) else None
     modalita = results[1] if not isinstance(results[1], Exception) else None
@@ -543,4 +597,5 @@ async def enrich_bando(
         "codici_ateco_ids": ateco,
         "regioni_ids": regioni,
         "settori_ids": settori,
+        "_fallite": tuple(sorted(fallite)),
     }

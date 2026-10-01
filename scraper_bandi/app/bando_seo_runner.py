@@ -38,7 +38,7 @@ from .db import (
 from .db import controllo, select_link_da_verificare
 from .db import rifiuta_doppione, select_pubblicati_per_doppioni_oe
 from .gemelli import IndiceDoppioniOE, candidato_oe, doppione_oe, motivo_doppione
-from .dominio_ufficiale import e_aggregatore
+from .dominio_ufficiale import e_aggregatore, scegli_fonte
 from .enricher import _firecrawl_scrape_markdown, _httpx_fetch_text
 from .impronte import seleziona_sezioni
 from .logger import logger
@@ -69,23 +69,9 @@ INTESTAZIONE_UFFICIALE = "PAGINA UFFICIALE: {url}"
 INTESTAZIONE_RIPIEGO = "TESTO DELL'AGGREGATORE (ripiego, non citare, non linkare)"
 
 
-def scegli_fonte(bando: dict[str, Any]) -> tuple[str, bool]:
-    """(URL da cui prendere il testo, e' una pagina ufficiale?).
-
-    Ordine di §5: `fonte_ufficiale_url` quando la fonte e' `trovata`, poi
-    `link_bando` se non e' un aggregatore. Se resta solo l'aggregatore il testo
-    si prende lo stesso — e' l'unico che esiste — ma con l'intestazione di
-    ripiego, che dice al modello di non citarlo e di non linkarlo. **Non** si
-    preferisce mai la scheda dell'aggregatore a una pagina d'ente.
-    """
-    ufficiale = str(bando.get("fonte_ufficiale_url") or "").strip()
-    stato = str(bando.get("fonte_ufficiale_stato") or "trovata")
-    if ufficiale and stato == "trovata" and not e_aggregatore(ufficiale):
-        return ufficiale, True
-    link = str(bando.get("link_bando") or "").strip()
-    if not link:
-        return "", False
-    return link, not e_aggregatore(link)
+# `scegli_fonte` (URL da cui prendere il testo, e' una pagina ufficiale?) vive
+# in `dominio_ufficiale` dal giro 3 (§8), perche' la usano anche preprocess ed
+# enrich, con in piu' la guardia sui PDF; qui si ri-esporta (import in testa).
 
 
 def componi_testo(
@@ -214,6 +200,11 @@ class Generazione:
     link_ammessi: tuple[str, ...] | None = None
     #: Perche' `payload` e' None («titolo 88 caratteri (1-80)», …); vuoto se c'e'.
     motivo: str = ""
+    #: L'HTML grezzo della pagina letta e il suo URL effettivo, dalla cache
+    #: dello scarico del giro (giro 3, §10): servono a
+    #: `fonte_ufficiale.righe_link_da_payload` per la prova dei link.
+    html: str = ""
+    url_finale: str = ""
 
 
 #: Quanti motivi di scarto entrano nella riga del giro; oltre si contano soli.
@@ -317,11 +308,70 @@ async def genera_per_bando(
     except Exception as e:                                # pragma: no cover - difesa
         logger.warning("[seo] bando_id={} controllo delle affermazioni fallito: {}", bando_id, e)
         affermazioni = ()
+    html, url_finale = _pagina_in_cache(link) if (link and markdown) else ("", "")
     return Generazione(
         payload, markdown, ufficiale, affermazioni,
         link_ammessi=None if link_provati is None else tuple(link_provati),
-        motivo=motivo,
+        motivo=motivo, html=html, url_finale=url_finale,
     )
+
+
+def _pagina_in_cache(url: str) -> tuple[str, str]:
+    """(HTML, URL effettivo) della pagina appena letta, SOLO dalla cache dello
+    scarico del giro: nessuna richiesta in piu' verso l'ente. Vuoti se la
+    pagina non e' in cache (per esempio letta col ripiego senza HTML)."""
+    try:
+        from .scarico import scarico_corrente
+        risposta = scarico_corrente()._da_cache(url)
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.debug("[seo] cache dello scarico non leggibile per {}: {}", url, e)
+        return "", ""
+    if risposta is None:
+        return "", ""
+    return (str(getattr(risposta, "html", "") or ""),
+            str(getattr(risposta, "url_finale", "") or url))
+
+
+def scrivi_righe_link(
+    b: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    generazione: Any,
+    *,
+    tabella: Any = None,
+    righe_da: Callable[..., list[dict[str, Any]]] | None = None,
+    scrivi: Callable[[list[dict[str, Any]]], int] | None = None,
+) -> int | None:
+    """Le righe `bando_link` (candidatura, allegati) di un bando appena
+    pubblicato (giro 3, §10): `fonte_ufficiale.righe_link_da_payload`, poi
+    `db.upsert_bando_link`. Nascono non pubblicabili: le verifica
+    `link_verifica`. Ritorna quante righe sono partite; None su un errore,
+    che non ferma la SEO (le colonne vecchie di `bando` restano scritte).
+    """
+    try:
+        if righe_da is None:
+            from .fonte_ufficiale import righe_link_da_payload as righe_da
+        opzioni: dict[str, Any] = {"url_riferimento": getattr(generazione, "url_finale", "") or None}
+        if tabella is not None:
+            opzioni["tabella"] = tabella
+        righe = righe_da(b, payload, getattr(generazione, "html", "") or None, **opzioni)
+        if not righe:
+            return 0
+        if scrivi is None:
+            from .db import upsert_bando_link as scrivi
+        return int(scrivi(righe) or 0)
+    except Exception as e:
+        logger.warning("[seo] bando_id={} righe di bando_link non scritte: {}", b.get("id"), e)
+        return None
+
+
+def _tabella_dei_domini() -> Any:
+    """La whitelist corrente dei domini, una volta per giro; None = il seed."""
+    try:
+        from .fonte_ufficiale import _tabella_corrente
+        return _tabella_corrente()
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.warning("[seo] tabella dei domini non leggibile, uso il seed: {}", e)
+        return None
 
 
 async def escludi_doppioni_oe(
@@ -400,6 +450,17 @@ def _modalita_verifica_attiva() -> bool:
     return str(valore or "").strip().lower() == "attivo"
 
 
+def _modalita_gemelli_attiva() -> bool:
+    """`GEMELLI_MODALITA=attivo`? Nel dubbio no (ombra). Giro 3, §3 e §11: la
+    fusione prima della pubblicazione segue l'interruttore dei gemelli, non
+    quello della verifica (che resta alla sosta d'ingresso)."""
+    try:
+        valore = getattr(get_settings(), "gemelli_modalita", "ombra")
+    except Exception:
+        return False
+    return str(valore or "").strip().lower() == "attivo"
+
+
 async def trattieni_e_fondi(
     bandi: Sequence[dict[str, Any]],
     *,
@@ -415,15 +476,18 @@ async def trattieni_e_fondi(
     segna_trattenuto: Callable[[Any, Mapping[str, Any]], bool] | None = None,
     colonna_sosta: bool | None = None,
     limite_lettura: int | None = None,
+    attivo_gemelli: bool | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """(bandi da mandare alla SEO, contatori): la sosta d'ingresso e i gemelli.
 
-    Contratto `bandi-giro-2` §19.4 (§5.10) e §19.9. In attivo
-    (`VERIFICA_STATO_MODALITA=attivo`, mai con `dry_run`):
-      - `ingresso.pubblicabile` trattiene un «aperto» senza scadenza ne' conferma
+    Contratto `bandi-giro-2` §19.4 (§5.10) e §19.9, `bandi-giro-3` §11. Mai
+    con `dry_run`, e ciascuno col suo interruttore:
+      - sosta (`VERIFICA_STATO_MODALITA=attivo`, parametro `attivo`):
+        `ingresso.pubblicabile` trattiene un «aperto» senza scadenza ne' conferma
         per al massimo `INGRESSO_SOSTA_GIRI` giri (e scrive `trattenuto_dal` la
         prima volta) e sempre un bando senza appigli;
-      - un bando che ha **un solo** gemello esatto fra i pubblicati, con la
+      - gemelli (`GEMELLI_MODALITA=attivo`, parametro `attivo_gemelli`): un
+        bando che ha **un solo** gemello esatto fra TUTTI i pubblicati, con la
         prudenza del passo `gemelli` (`motivo_di_prudenza`), si fonde su quel
         pubblicato (`bando_fondi`, la riga nuova e' il doppione), esce dalla coda
         (`rejected` con il motivo) e non si pubblica mai. Mai col fuzzy.
@@ -436,9 +500,9 @@ async def trattieni_e_fondi(
         riga si pubblica come prima e si conta **solo** in
         `sosta_senza_colonna`, non in `trattenuti`. Una riga senza appiglio
         resta ferma anche senza la colonna: non le serve `trattenuto_dal`;
-      - se i pubblicati letti sono `limite_lettura` o piu', il corpus e'
-        tagliato: niente fusioni (`controllo_gemelli_troncato`), come nel passo
-        `gemelli`.
+      - i pubblicati si leggono tutti (`limit=None`, giro 3 §1). Se si passa
+        un `limite_lettura` (solo i test) e la lettura lo raggiunge, il corpus
+        e' tagliato: niente fusioni (`controllo_gemelli_troncato`).
     """
     from . import gemelli as _gemelli
     from . import ingresso as _ingresso
@@ -454,6 +518,9 @@ async def trattieni_e_fondi(
         return list(bandi), contatori
     attivo = (_modalita_verifica_attiva() if attivo is None else bool(attivo)) and not dry_run
     contatori["modalita_ingresso"] = "attivo" if attivo else "ombra"
+    attivo_gemelli = (_modalita_gemelli_attiva() if attivo_gemelli is None
+                      else bool(attivo_gemelli)) and not dry_run
+    contatori["modalita_gemelli"] = "attivo" if attivo_gemelli else "ombra"
     if sosta_giri is None:
         try:
             sosta_giri = int(getattr(get_settings(), "ingresso_sosta_giri",
@@ -470,9 +537,6 @@ async def trattieni_e_fondi(
             colonna_sosta = bool(_db.controllo.ha("bando_controllo", "trattenuto_dal"))
         except Exception:
             colonna_sosta = False
-    if limite_lettura is None:
-        limite_lettura = _gemelli.LIMITE_LETTURA_PUBBLICATI
-
     # --- sosta d'ingresso ---------------------------------------------------
     try:
         from . import db as _db
@@ -527,12 +591,13 @@ async def trattieni_e_fondi(
             from . import db as _db
             pubblicati = list((leggi_pubblicati or (
                 lambda: _db.select_pubblicati_per_gemelli(
-                    limit=limite_lettura, con_calendario=True)))())
+                    limit=None, con_calendario=True)))())
         except Exception as e:
             logger.warning("[seo] controllo dei gemelli esatti saltato: {}", e)
             contatori["controllo_gemelli_saltato"] = True
             pubblicati = None
-        if pubblicati is not None and len(pubblicati) >= limite_lettura:
+        if (pubblicati is not None and limite_lettura is not None
+                and len(pubblicati) >= limite_lettura):
             # Corpus tagliato: le righe per URL sarebbero sottostimate.
             logger.warning("[seo] gemelli: {} pubblicati letti, limite {}: nessuna fusione",
                            len(pubblicati), limite_lettura)
@@ -542,9 +607,10 @@ async def trattieni_e_fondi(
             vivi = [p for p in pubblicati if p.get("bando_master_id") is None]
             per_id = {p.get("id"): p for p in vivi}
             # Le righe per URL contano anche il candidato: con due pubblicati
-            # sullo stesso URL e' una pagina condivisa, non un gemello.
+            # sullo stesso URL e' una pagina condivisa, non un gemello. I gia'
+            # fusi no (B4, giro 3 §11): sono lo stesso bando del loro master.
             righe_per_url: dict[str, int] = {}
-            for riga in [*pubblicati, *rimasti]:
+            for riga in [*vivi, *rimasti]:
                 for url in _gemelli.url_del_bando(riga):
                     righe_per_url[url] = righe_per_url.get(url, 0) + 1
             for bando in rimasti:
@@ -563,7 +629,7 @@ async def trattieni_e_fondi(
                 contatori["gemelli_trovati"] += 1
                 logger.info("[seo] gemello esatto: bando {} di {} ({})",
                             bando.get("id"), master.get("id"), corrispondenza.criterio)
-                if not attivo:
+                if not attivo_gemelli:
                     continue
                 motivo_fusione = f"{_gemelli.MOTIVO_FUSIONE}: {corrispondenza.criterio}"
                 try:
@@ -609,6 +675,7 @@ async def run(
     dry_run: bool = False,
     limit: int | None = None,
     include_completed: bool = False,
+    giro: str | None = None,
 ) -> dict[str, Any]:
     """Esegue la skill SEO su tutti i bandi 'enriched'.
 
@@ -616,9 +683,19 @@ async def run(
         dry_run: se True, NON scrive il DB.
         limit: cap totale candidati (smoke test).
         include_completed: se True, include anche 'completed' (re-run).
+        giro: l'ora del giro, per la riga di spesa (None da riga di comando).
+
+    Giro 3 (§4): la SEO conta la propria spesa (`bilancio.Contatori`, passati
+    a `genera_per_bando`) e scrive la propria riga `pipeline_run` step `seo`
+    con la copertura. E' catena d'ingresso: non si ferma mai per spesa.
     """
     settings = get_settings()
     started = time.monotonic()
+    spesa = bilancio.Contatori()
+    # §19.1: i crediti Firecrawl della SEO sono il delta dei contatori dello
+    # scarico dall'inizio del passo; vanno nella sua riga, come la
+    # rielaborazione (il monitor azzera lo scarico prima di leggerli).
+    crediti_prima = _crediti_scarico()
     logger.info(
         "[seo] === START | model={} concurrency={} dry_run={} include_completed={} ===",
         settings.seo_model,
@@ -631,7 +708,7 @@ async def run(
     bandi = select_bandi_to_complete(limit=limit, include_completed=include_completed)
     if not bandi:
         logger.info("[seo] nessun bando candidato")
-        return {"selected": 0, "elapsed_s": 0}
+        return {"selected": 0, "elapsed_s": 0, "copertura": telemetria.copertura(0, 0)}
     selezionati = len(bandi)
 
     # 1-bis. Doppioni ObiettivoEuropa (contratto di ottobre, §6): escono dal
@@ -640,7 +717,7 @@ async def run(
     if not bandi:
         logger.info("[seo] nessun bando da generare dopo il controllo dei doppioni OE")
         return {"selected": selezionati, "elapsed_s": round(time.monotonic() - started, 1),
-                **doppioni}
+                **doppioni, "copertura": telemetria.copertura(0, 0)}
 
     # 1-ter. Giro 2 (§19.4, §19.9): la sosta d'ingresso e i gemelli esatti di
     # un pubblicato. In ombra conta e basta; in attivo i trattenuti aspettano e
@@ -650,7 +727,7 @@ async def run(
     if not bandi:
         logger.info("[seo] nessun bando da generare dopo la sosta e i gemelli")
         return {"selected": selezionati, "elapsed_s": round(time.monotonic() - started, 1),
-                **doppioni}
+                **doppioni, "copertura": telemetria.copertura(0, 0)}
 
     # 2. Pre-load catalogo (lru_cache singleton)
     catalogo = load_catalogo()
@@ -670,6 +747,9 @@ async def run(
     sem = asyncio.Semaphore(max(1, settings.seo_concurrency))
     progress = {"done": 0}
     total = len(bandi)
+    # Giro 3 (§10): le righe `bando_link` dei bandi appena pubblicati.
+    righe_link = {"scritte": 0, "fallite": 0}
+    tabella_domini: Any = None if dry_run else _tabella_dei_domini()
     # Bandi il cui testo afferma forme di partecipazione che la fonte non
     # sostiene (contratto di ottobre, §7). Si contano e si scrivono nel
     # journal, ma non bloccano: un bando bloccato resterebbe `enriched` e
@@ -695,7 +775,7 @@ async def run(
                 progress["done"] += 1
                 return (bando_id, None, False, None)
 
-            generazione = await genera_per_bando(b, input_ctx)
+            generazione = await genera_per_bando(b, input_ctx, contatori=spesa)
             payload = generazione.payload
             if payload is None:
                 motivi[bando_id] = generazione.motivo
@@ -719,6 +799,12 @@ async def run(
                 except Exception as e:
                     logger.exception("[seo] bando_id={} update_bando_completed fallito: {}", bando_id, e)
                     db_ok = False
+                if db_ok and not gia_pubblicato:
+                    scritte = scrivi_righe_link(b, payload, generazione, tabella=tabella_domini)
+                    if scritte is None:
+                        righe_link["fallite"] += 1
+                    else:
+                        righe_link["scritte"] += scritte
                 # v10: dedup cross-source via canonical_key, SOLO dietro la
                 # guardia DEDUP_CANONICAL (fix 8.a.10).
                 if db_ok and _dedup_canonical_attivo():
@@ -736,6 +822,7 @@ async def run(
             return (bando_id, payload, db_ok, canonical_action)
 
     results = await asyncio.gather(*[_do_one(b) for b in bandi])
+    spesa.crediti_firecrawl += delta_crediti(crediti_prima, _crediti_scarico())
 
     # 4. Counters
     selected = selezionati
@@ -779,9 +866,70 @@ async def run(
         **motivi_del_giro(motivi),
         "dry_run": dry_run,
         "elapsed_s": round(elapsed, 1),
+        # Giro 3 (§1, §4): la spesa di Opus e la copertura. I candidati sono i
+        # bandi mandati alla generazione (doppioni, sosta e gemelli sono gia'
+        # decisi), fatti quelli scritti; chi resta fuori e' un errore.
+        "costo_usd": spesa.usd,
+        "chiamate": spesa.chiamate,
+        "crediti_firecrawl": spesa.crediti_firecrawl,
+        "righe_link_scritte": righe_link["scritte"],
+        "righe_link_fallite": righe_link["fallite"],
+        "copertura": telemetria.copertura(
+            total, completed_db_ok, "errore"),
     }
+    if not dry_run:
+        _scrivi_riga_spesa(counters, spesa, giro, durata_s=elapsed)
     logger.info("[seo] === DONE | {} ===", counters)
     return counters
+
+
+#: Lo step della riga di spesa della SEO (§4): la chiave di `state["steps"]`.
+STEP_SEO = "seo"
+
+
+def _crediti_scarico() -> int | None:
+    """I crediti Firecrawl contati finora dallo scarico del processo (§19.1).
+    None se non si leggono."""
+    try:
+        from . import scarico
+        return int(getattr(scarico.contatori(), "crediti_firecrawl", 0) or 0)
+    except Exception as e:                                # pragma: no cover - difesa
+        logger.debug("[seo] contatori dello scarico non leggibili: {}", e)
+        return None
+
+
+def delta_crediti(prima: int | None, dopo: int | None) -> int:
+    """I crediti spesi fra due letture dello scarico (§19.1). Pura.
+
+    Una lettura mancante vale zero (non si inventa una spesa). Se i contatori
+    sono stati azzerati nel frattempo (`scarico.svuota`) si conta da zero.
+    """
+    if dopo is None or prima is None:
+        return 0
+    return max(0, dopo - prima) if dopo >= prima else max(0, dopo)
+
+
+def _scrivi_riga_spesa(
+    counters: Mapping[str, Any], spesa: bilancio.Contatori, giro: str | None, *, durata_s: float,
+) -> None:
+    """La riga `pipeline_run` step `seo` con la spesa e la copertura. Non solleva."""
+    contatori = {
+        **spesa.come_dizionario(),
+        **{chiave: counters.get(chiave) for chiave in (
+            "selected", "payload_ok", "payload_failed", "completed_db_ok", "copertura")},
+    }
+    try:
+        riga = telemetria.PipelineRun(step=STEP_SEO, giro=giro).concludi(
+            durata_s=durata_s, contatori=contatori,
+            esito=telemetria.esito_da_contatori(
+                errori=int(counters.get("payload_failed") or 0)
+                + int(counters.get("payload_ok_db_failed") or 0),
+                lavorate=int(counters.get("payload_ok") or 0)
+                + int(counters.get("payload_failed") or 0)))
+        logger.info("[seo] {}", telemetria.riepilogo(riga))
+        telemetria.scrivi_pipeline_run(riga)
+    except Exception as e:                                # pragma: no cover - ripiego
+        logger.warning("[seo] riga di spesa non scritta: {}", e)
 
 
 # ---------------------------------------------------------------------------

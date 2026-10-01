@@ -1007,3 +1007,72 @@ def termine_per_precedenza(
     if not validi:
         return None
     return min(validi, key=lambda c: FONTI_TERMINE.index(c[1]))
+
+
+# --- scadenza provvisoria per il resolver precoce (giro 3, §7) ----------------
+
+#: Le chiavi di una riga di calendario che portano il termine (contratto
+#: `bandi-giro-3` §7): scad, chiusur, termine, deadline.
+_CHIAVE_TERMINE_RE = re.compile(r"scad|chiusur|termine|deadline", re.IGNORECASE)
+#: Le chiavi che somigliano a un termine e non lo sono: una data «indicativa»
+#: o «presunta» per intestazione, i giorni che mancano (`deadline_days_left`
+#: di OE), l'etichetta di OE (gia' letta con la sua regola).
+_CHIAVE_NON_TERMINE_RE = re.compile(r"indicativ|presunt|previst|days_left|giorni", re.IGNORECASE)
+_CHIAVI_GIA_LETTE: frozenset[str] = frozenset({"deadline_label", "close_date", "data_chiusura"})
+#: Il valore di `raw_data.source` delle righe di Italia Domani.
+_SOURCE_ITALIA_DOMANI = "italia_domani"
+#: I ruoli che una data di Italia Domani puo' avere per valere come termine.
+_RUOLI_TERMINE: frozenset[str] = frozenset({"scadenza", "ignoto"})
+
+
+def _termine_italia_domani(valore: Any) -> date_cls | None:
+    """La data di chiusura di Italia Domani («31/12/2026», «31 dicembre
+    2026»), letta con `estrai_date_con_ruolo`: mai una data d'apertura, mai
+    una presunta. Con piu' date nel campo vale la piu' tarda."""
+    if not isinstance(valore, str) or e_presunta(valore):
+        return None
+    date_trovate = [d.data for d in estrai_date_con_ruolo(valore) if d.ruolo in _RUOLI_TERMINE]
+    return max(date_trovate) if date_trovate else None
+
+
+def scadenza_provvisoria(bando: Any) -> date_cls | None:
+    """La scadenza che la riga dichiara prima del preprocess. Pura: niente
+    modello, niente rete (contratto `bandi-giro-3` §7).
+
+    Serve al resolver precoce, che gira sui bandi appena entrati: senza una
+    scadenza il segnale «contenuto» della pagina ufficiale si accende di rado.
+    Per questo vale solo come **conferma** (+15 se la pagina la riporta), mai
+    come smentita: la decide `fonte_ufficiale.punteggia` con
+    `Contesto.scadenza_provvisoria`.
+
+    Nell'ordine, la prima che c'e':
+      1. Obiettivo Europa: `deadline_label` (`termine_da_etichetta_oe`);
+      2. Incentivi: `close_date` (ISO);
+      3. Italia Domani: `data_chiusura` (`estrai_date_con_ruolo`);
+      4. calendari: le chiavi con scad/chiusur/termine/deadline, solo date
+         complete e non presunte; con piu' date vale la piu' tarda.
+    None se nessuna c'e' o nessuna si legge («da definire», «feb-25»).
+    """
+    raw = bando.get("raw_data") if isinstance(bando, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    oe = termine_da_etichetta_oe(raw)
+    if oe is not None:
+        return oe[0]
+    incentivi = _data_di_colonna(raw.get("close_date"))
+    if incentivi is not None:
+        return incentivi
+    if raw.get("source") == _SOURCE_ITALIA_DOMANI or "data_chiusura" in raw:
+        italia_domani = _termine_italia_domani(raw.get("data_chiusura"))
+        if italia_domani is not None:
+            return italia_domani
+    date_calendario: list[date_cls] = []
+    for chiave, valore in raw.items():
+        nome = str(chiave)
+        if (nome in _CHIAVI_GIA_LETTE or not _CHIAVE_TERMINE_RE.search(nome)
+                or _CHIAVE_NON_TERMINE_RE.search(nome)):
+            continue
+        data = _data_di_colonna(valore)
+        if data is not None:
+            date_calendario.append(data)
+    return max(date_calendario) if date_calendario else None

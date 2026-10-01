@@ -85,10 +85,15 @@ Comandi:
                  metodo, estrattore, etichetta, termine, proposta. Opzioni:
                  --json, --ramo aperto|apertura, --motivo M, --verita (stampa
                  DIFFORME e «difformi: N»; exit 1 se N > 0).
+  rielabora-fonte  Giro 3 §9: rielaborazione dei pubblicati dalla pagina
+                 ufficiale (date con evento di rettifica, junction, FK, scheda).
+                 Opzioni: --dry-run (dal Mac sempre: spende Haiku e scarica le
+                 pagine, stampa le proposte, non scrive niente), --ids 1,2,3.
+                 Senza --dry-run scrive come il passo 12 del giro.
   gemelli        `--dry-run` (obbligatorio): le fusioni dei gemelli certi che
                  il passo del giro delle 06 farebbe. --limit N = tetto.
   risolvi-fonte  Step 5 — fonte ufficiale del bando (`app/fonte_ufficiale.py`).
-                 Opzioni: --dry-run, --limit N, --nuovi|--backlog,
+                 Opzioni: --dry-run, --limit N, --nuovi|--backlog|--precoce,
                  --solo-oe, --solo-in-verifica, --id X, --ombra|--attivo,
                  --forza, --offset N, --lotto Lx.
                  `--limit` conta le righe da LAVORARE: la selezione si scorre
@@ -522,7 +527,7 @@ OPZIONI_BACKFILL = frozenset({"--lotto", "--offset"})
 # una decisione della riga di comando, non del codice che scrive.
 FLAG_RESOLVER = frozenset({
     "--nuovi", "--backlog", "--solo-oe", "--solo-in-verifica", "--forza",
-    "--anche-oggi",
+    "--anche-oggi", "--precoce",
 }) | FLAG_MODALITA
 
 # `--senza-rete` e' del solo monitor: e' l'unico step che, se non scarica, ha
@@ -636,7 +641,10 @@ def _senza_valori(resto: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _modo_selezione(resto: tuple[str, ...]) -> str:
-    """`--nuovi` (default) o `--backlog`; `--solo-in-verifica` vale ricontrolli."""
+    """`--nuovi` (default) o `--backlog`; `--solo-in-verifica` vale ricontrolli;
+    `--precoce` (giro 3, §7) e' il resolver precoce sui bandi appena entrati."""
+    if "--precoce" in resto:
+        return "precoce"
     if "--backlog" in resto:
         return "backlog"
     if "--solo-in-verifica" in resto:
@@ -1148,6 +1156,11 @@ def _cmd_salute(argv: list[str]) -> int:
         # e dei paragrafi di RIPRESA §3.1.
         print("salute: codici: "
               + (", ".join(f"{v.codice} ({v.livello})" for v in esito.voci) or "nessuno"))
+        # Giro 3 (§1, §3, §14): la copertura dell'ultimo giro per passo, le
+        # variabili dismesse ancora nel .env (solo i nomi), le sospensioni in
+        # attesa della migrazione 14. Informazioni: l'exit code non cambia.
+        for informazione in esito.informazioni:
+            print(f"salute: {informazione}")
         if not esito.allarmi and not esito.avvisi:
             print("salute: nessun allarme")
     return esito.exit_code
@@ -1279,6 +1292,12 @@ def _cmd_report_verifica_stato(argv: list[str]) -> int:
     i filtri di ramo e motivo) con `VERITA_NOTA`, stampa `DIFFORME …` per ogni
     id diverso dall'atteso e chiude con `difformi: N`; exit 1 se N > 0 (passo 7
     di §17: non si attiva con anche una sola difformita').
+
+    Giro 3 (§13): un id della verita' assente dal report e' uscito dai
+    candidati; se il suo stato effettivo e' gia' quello atteso (atteso
+    «chiusura» e stato `chiuso`, come il 661135 chiuso dal job orario) non e'
+    difforme: si stampa `CONFERMATO_DA_STATO …` e `confermati_da_stato: N`.
+    Gli stati si leggono solo per quegli id, con una GET.
     """
     opzioni = _leggi_opzioni(argv)
     valori = _opzioni_con_valore("report-verifica-stato", opzioni,
@@ -1306,64 +1325,122 @@ def _cmd_report_verifica_stato(argv: list[str]) -> int:
               "(migrazione 13 assente o passo mai girato)", file=sys.stderr)
     report = righe_report(righe, letture, ramo=ramo, motivo=motivo)
     difformi = None
+    confermati: list[Any] = []
     if "--verita" in opzioni.resto:
         intero = report if ramo is None and motivo is None else righe_report(righe, letture)
-        difformi = list(confronta(intero))
+        stati_di, _ = _modulo_opzionale("verifica_stato", "stati_effettivi", ingresso_atteso=False)
+        conferma, _ = _modulo_opzionale("verifica_stato", "confermati_da_stato", ingresso_atteso=False)
+        verita, _ = _modulo_opzionale("verifica_stato", "VERITA_NOTA", ingresso_atteso=False)
+        if stati_di is not None and conferma is not None and isinstance(verita, dict):
+            presenti = {r.get("id") for r in intero}
+            stati = stati_di([bando_id for bando_id in verita if bando_id not in presenti])
+            difformi = list(confronta(intero, stati=stati))
+            confermati = list(conferma(intero, stati=stati))
+        else:
+            difformi = list(confronta(intero))
 
     if "--json" in opzioni.resto:
         import json
-        uscita: Any = report if difformi is None else {"report": report, "difformi": difformi}
+        uscita: Any = report if difformi is None else {
+            "report": report, "difformi": difformi, "confermati_da_stato": confermati}
         print(json.dumps(uscita, ensure_ascii=False, sort_keys=True, default=str))
     else:
         print("  ".join(c.upper() for c in COLONNE_REPORT))
         for riga in report:
             print("  ".join(_cella(riga.get(c)) for c in COLONNE_REPORT))
         print(f"report-verifica-stato: {len(report)} righe")
+        for voce in confermati:
+            print(f"CONFERMATO_DA_STATO {voce.get('id')} atteso={voce.get('atteso')} "
+                  f"stato={voce.get('stato')}")
         for voce in difformi or ():
             print(f"DIFFORME {voce.get('id')} atteso={voce.get('atteso')} "
                   f"trovato={voce.get('trovato')}")
     if difformi is not None:
         if "--json" not in opzioni.resto:
+            print(f"confermati_da_stato: {len(confermati)}")
             print(f"difformi: {len(difformi)}")
         return EXIT_ERRORE if difformi else EXIT_OK
     return EXIT_OK
 
 
 def _cmd_gemelli(argv: list[str]) -> int:
-    """`gemelli --dry-run [--limit N]`: le fusioni che il passo del giro delle 06 farebbe.
+    """`gemelli --dry-run`: le fusioni che il passo del giro farebbe, TUTTE.
 
-    Solo in ombra: le fusioni automatiche le fa il passo del giro (§19.9),
-    quelle a mano `fondi-doppioni`. `--limit` e' il tetto delle fusioni
-    elencate; senza, quello del giro (`GEMELLI_FUSIONI_PER_GIRO`).
+    Solo in ombra: le fusioni automatiche le fa il passo del giro (giro 3
+    §11, a ogni giro dei MONITOR_GIRI, con `GEMELLI_MODALITA`), quelle a mano
+    `fondi-doppioni`. Nessun tetto (regola «niente lotti», §1): il passo
+    fonde tutte le coppie che passano le guardie, e qui si elencano tutte.
+    `--limit` non vale piu' niente: si dice e si ignora.
     """
     opzioni = _leggi_opzioni(argv)
     _opzioni_con_valore("gemelli", opzioni, frozenset(), ())
     if not opzioni.dry_run:
         raise ErroreOpzioni(
-            "gemelli: solo con --dry-run; le fusioni automatiche le fa il passo del giro "
-            "delle 06, quelle a mano fondi-doppioni")
+            "gemelli: solo con --dry-run; le fusioni automatiche le fa il passo del giro, "
+            "quelle a mano fondi-doppioni")
+    if opzioni.limit is not None:
+        logger.warning("[main] gemelli: --limit ignorato, nessun tetto di fusioni (niente lotti): "
+                       "si elencano tutte")
     from . import gemelli
-    tetto = opzioni.limit
-    if tetto is None:
-        tetto = int(gemelli._impostazione("gemelli_fusioni_per_giro", gemelli.FUSIONI_PER_GIRO))
-        if tetto <= 0:
-            print("gemelli: il passo del giro e' spento (GEMELLI_FUSIONI_PER_GIRO=0); "
-                  f"elenco con il tetto predefinito ({gemelli.FUSIONI_PER_GIRO})")
-            tetto = gemelli.FUSIONI_PER_GIRO
-    esito = gemelli.esegui_passo(None, modalita=gemelli.MODALITA_OMBRA, tetto=tetto)
+    esito = gemelli.esegui_passo(None, modalita=gemelli.MODALITA_OMBRA, elenco_max=None)
     print(f"gemelli: status {esito.get('status')}")
     if esito.get("status") == "errore":
         print(f"gemelli: errore ({esito.get('motivo')})", file=sys.stderr)
         return EXIT_ERRORE
     for chiave in ("esaminati", "coppie_per_criterio", "coppie_scartate_per_prudenza",
                    "hub_esclusi", "gruppi", "gruppi_oltre_due", "fusioni_previste",
-                   "oltre_tetto", "saltato"):
+                   "saltato"):
         if chiave in esito:
             print(f"  {chiave}: {esito[chiave]}")
     for doppione, master, criterio in esito.get("fusioni") or ():
         print(f"  {doppione} -> {master} ({criterio})")
     print("gemelli: --dry-run, niente fuso")
     return EXIT_OK
+
+
+def _cmd_rielabora_fonte(argv: list[str]) -> int:
+    """`rielabora-fonte [--dry-run] [--ids 1,2,3]` (giro 3, §9).
+
+    Con `--dry-run` legge e propone senza scrivere niente: ne' eventi, ne'
+    junction, ne' marcatori, ne' la riga di spesa (dal Mac solo cosi', §0).
+    Spende pero' le chiamate al modello di preprocess ed enrich. Senza
+    `--dry-run` fa cio' che fa il passo 12 del giro, sotto il lock del giro
+    (`bandi_pipeline`, come `seo-rigenera`): con un giro in corso non parte.
+    `--limit` non esiste: nessun tetto di numero (§1), solo il tempo.
+    """
+    opzioni = _leggi_opzioni(argv)
+    valori = _opzioni_con_valore("rielabora-fonte", opzioni, frozenset(), ("--ids",))
+    if opzioni.limit is not None:
+        raise ErroreOpzioni("rielabora-fonte: --limit non esiste (niente lotti); usa --ids")
+    ids = _ids_opzione(valori["--ids"])
+    from . import rielabora_fonte
+    esito = asyncio.run(rielabora_fonte.run_comando(dry_run=opzioni.dry_run, ids=ids or None))
+    print(f"rielabora-fonte: status {esito.get('status')}"
+          + (" (--dry-run: niente scritto)" if opzioni.dry_run else "")
+          + (f" (lock {esito.get('lock')} occupato: niente fatto)"
+             if esito.get("saltato_per_lock") else ""))
+    for chiave in rielabora_fonte.CONTATORI:
+        print(f"  {chiave}: {esito.get(chiave, 0)}")
+    print(f"  copertura: {esito.get('copertura')}")
+    print(f"  costo_usd: {esito.get('costo_usd')}")
+    for proposta in esito.get("proposte") or ():
+        print(f"  bando {proposta.get('bando_id')} ({proposta.get('url')}): "
+              f"{proposta.get('motivo') or 'rielaborato'}")
+        for data in proposta.get("date") or ():
+            # §18.2: una data che chiederebbe un cambio di stato si registra
+            # non applicata e non leggibile, da decidere a mano.
+            esito_data = " [da decidere: non applicata]" if data.get("da_decidere") else ""
+            print(f"    {data['campo']}: {data['prima']} -> {data['dopo']} "
+                  f"«{data['citazione']}»{esito_data}")
+        if proposta.get("transizione_da_decidere"):
+            print("    data nuova con transizione di stato: rettifica non applicata, da decidere a mano")
+        for cambio in proposta.get("cambi") or ():
+            print(f"    {cambio['dimensione']}: {cambio['prima']} -> {cambio['dopo']}")
+        if proposta.get("riscrittura"):
+            print(f"    scheda da riscrivere: {proposta['riscrittura']}")
+    if esito.get("status") == "errore":
+        return EXIT_ERRORE
+    return _codice_da_contatori(esito)
 
 
 # Ogni comando riceve l'argv residuo (senza il nome del comando) e passa da
@@ -1392,6 +1469,7 @@ _COMMANDS: dict[str, Callable[[list[str]], int | None]] = {
     "verifica-stato": _cmd_verifica_stato,
     "report-verifica-stato": _cmd_report_verifica_stato,
     "gemelli": _cmd_gemelli,
+    "rielabora-fonte": _cmd_rielabora_fonte,
 }
 
 

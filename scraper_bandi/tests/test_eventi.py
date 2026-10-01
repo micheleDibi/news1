@@ -718,11 +718,16 @@ class TestG9ETransizioni(unittest.TestCase):
                 evento = eventi.Evento(tipo=tipo, campo=campo, citazione="x", url_prova=URL)
                 self.assertEqual(eventi.transizione_evento(stato, evento), atteso)
 
-    def test_sospeso_non_si_chiude_mai(self):
-        # A3: un sospeso non viene chiuso d'ufficio da nessun evento.
-        for tipo in ("chiusura", "sospensione"):
-            evento = eventi.Evento(tipo=tipo, citazione="x", url_prova=URL)
-            self.assertNotEqual(eventi.transizione_evento("sospeso", evento), "chiuso")
+    def test_sospeso_si_chiude_solo_con_una_chiusura_e_la_14(self):
+        # A3 resta: mai d'ufficio. Con la 14 un sospeso si chiude solo con una
+        # `chiusura` letta dal worker (giro 3, §14); prima, G9 la respinge.
+        chiusura = eventi.Evento(tipo="chiusura", citazione="x", url_prova=URL)
+        self.assertEqual(eventi.transizione_evento("sospeso", chiusura), "chiuso")
+        self.assertFalse(eventi.g9_transizione(chiusura, _ctx(stato_bando="sospeso"))[0])
+        self.assertTrue(eventi.g9_transizione(
+            chiusura, _ctx(stato_bando="sospeso", capacita_14=True))[0])
+        sospensione = eventi.Evento(tipo="sospensione", citazione="x", url_prova=URL)
+        self.assertNotEqual(eventi.transizione_evento("sospeso", sospensione), "chiuso")
 
     def test_revocato_e_terminale(self):
         for tipo in ("proroga", "riapertura", "apertura", "chiusura"):
@@ -730,13 +735,221 @@ class TestG9ETransizioni(unittest.TestCase):
             self.assertIsNone(eventi.transizione_evento("revocato", evento))
 
     def test_g9_respinge_una_transizione_fuori_tabella(self):
-        # `annullamento_revoca` non e' nella lista bianca di §4: deve cadere.
+        # Una `revoca` su una riga senza stato: None -> revocato non e' nella
+        # lista bianca del worker (le righe di creazione sono della pipeline).
+        evento = eventi.Evento(tipo="revoca", citazione="il bando e' revocato", url_prova=URL)
+        self.assertEqual(eventi.transizione_evento(None, evento), "revocato")
+        self.assertFalse(eventi.transizione_ammessa(None, "revocato", "worker"))
+        ok, motivo = eventi.g9_transizione(evento, _ctx(stato_bando=None))
+        self.assertFalse(ok)
+        self.assertIn("non prevista", motivo)
+
+    def test_g9_annullamento_revoca_esce_dal_revocato(self):
+        # Migrazione 14 (giro 3, §14): dal revocato si esce con
+        # `annullamento_revoca`, che ora e' nella lista bianca del worker.
         evento = eventi.Evento(
             tipo="annullamento_revoca",
             citazione="la revoca e' stata annullata", url_prova=URL)
-        ok, motivo = eventi.g9_transizione(evento, _ctx(stato_bando="revocato"))
+        ok, motivo = eventi.g9_transizione(evento, _ctx(stato_bando="revocato", capacita_14=True))
+        self.assertTrue(ok, motivo)
+        # Senza la 14 la riga non vale: la RPC la respingerebbe.
+        self.assertFalse(eventi.g9_transizione(evento, _ctx(stato_bando="revocato"))[0])
+
+
+class TestG9EventiDiSoloStato(unittest.TestCase):
+    """Contratto `bandi-giro-3` §20.2: senza stato di arrivo, un evento di solo
+    stato passa solo se il bando e' gia' nello stato naturale del tipo."""
+
+    def _evento(self, tipo, **extra):
+        return eventi.Evento(tipo=tipo, citazione="x", url_prova=URL, **extra)
+
+    def test_chiusura_dal_monitor_su_in_apertura_respinta(self):
+        chiusura = self._evento("chiusura")
+        ctx = _ctx(stato_bando="in apertura prossimamente", capacita_14=True)
+        self.assertIsNone(eventi.stato_di_arrivo(chiusura, ctx))
+        ok, motivo = eventi.g9_transizione(chiusura, ctx)
         self.assertFalse(ok)
-        self.assertIn("non prevista", motivo)
+        self.assertIn("senza transizione", motivo)
+
+    def test_sospensione_su_chiuso_respinta(self):
+        for capacita_14 in (False, True):
+            with self.subTest(capacita_14=capacita_14):
+                ok, motivo = eventi.g9_transizione(
+                    self._evento("sospensione"), _ctx(stato_bando="chiuso", capacita_14=capacita_14))
+                self.assertFalse(ok)
+                self.assertIn("senza transizione", motivo)
+
+    def test_chiusura_su_chiuso_ammessa(self):
+        # Il bando e' gia' nello stato naturale: la notizia della chiusura resta.
+        self.assertEqual(eventi.g9_transizione(self._evento("chiusura"),
+                                               _ctx(stato_bando="chiuso")), (True, ""))
+
+    def test_proroga_su_sospeso_ancora_ammessa_come_sola_data(self):
+        proroga = self._evento("proroga", valore="2026-12-15")
+        ctx = _ctx(stato_bando="sospeso", capacita_14=True, data_scadenza=date(2026, 10, 6))
+        self.assertIsNone(eventi.stato_di_arrivo(proroga, ctx))
+        self.assertEqual(eventi.g9_transizione(proroga, ctx), (True, ""))
+
+    def test_gli_altri_tipi_senza_arrivo_restano_come_prima(self):
+        # Eventi con date o senza stato: la regola non li tocca.
+        for stato, tipo in (("in apertura prossimamente", "rettifica"), ("aperto", "apertura"),
+                            ("aperto", "riapertura"), ("chiuso", "graduatoria"),
+                            ("aperto", "faq"), ("aperto", "nuovo_allegato")):
+            with self.subTest(stato=stato, tipo=tipo):
+                self.assertTrue(eventi.g9_transizione(
+                    self._evento(tipo, valore="2026-12-01"), _ctx(stato_bando=stato))[0])
+
+    def test_annullamento_fuori_dal_revocato_respinto(self):
+        for stato in ("aperto", "chiuso", "in apertura prossimamente"):
+            with self.subTest(stato=stato):
+                self.assertFalse(eventi.g9_transizione(
+                    self._evento("annullamento_revoca"),
+                    _ctx(stato_bando=stato, capacita_14=True))[0])
+
+    def test_le_transizioni_vere_restano_ammesse(self):
+        for stato, tipo in (("aperto", "chiusura"), ("aperto", "sospensione"),
+                            ("in apertura prossimamente", "sospensione"), ("aperto", "revoca")):
+            with self.subTest(stato=stato, tipo=tipo):
+                self.assertTrue(eventi.g9_transizione(
+                    self._evento(tipo), _ctx(stato_bando=stato, capacita_14=True))[0])
+
+    def test_la_regola_pura(self):
+        self.assertEqual(eventi.ARRIVO_NATURALE, {
+            "chiusura": "chiuso", "sospensione": "sospeso", "revoca": "revocato",
+            "annullamento_revoca": None})
+        self.assertIsNone(eventi.solo_stato_senza_arrivo("chiusura", "chiuso"))
+        self.assertIsNone(eventi.solo_stato_senza_arrivo("proroga", "sospeso"))
+        self.assertIsNotNone(eventi.solo_stato_senza_arrivo("chiusura", "in apertura prossimamente"))
+        self.assertIsNotNone(eventi.solo_stato_senza_arrivo("chiusura", None))
+        self.assertIsNotNone(eventi.solo_stato_senza_arrivo("annullamento_revoca", "aperto"))
+        self.assertLessEqual(set(eventi.ARRIVO_NATURALE), set(eventi.TIPI_CON_TRANSIZIONE))
+
+    def test_gv9_stessa_regola_nel_percorso_verifica(self):
+        from types import SimpleNamespace
+
+        def proposta(tipo, **extra):
+            return eventi.Proposta(tipo, ramo="I", citazione="x", url_prova=URL,
+                                   metodo="estrattore:prova", **extra)
+
+        def contesto(stato):
+            return SimpleNamespace(stato=stato)
+
+        # Dal percorso verifica la chiusura da «in apertura» c'e' (riga 24).
+        self.assertTrue(eventi.gv9_transizione(proposta("chiusura"),
+                                               contesto("in apertura prossimamente"))[0])
+        self.assertTrue(eventi.gv9_transizione(proposta("chiusura"), contesto("chiuso"))[0])
+        ok, motivo = eventi.gv9_transizione(proposta("chiusura"), contesto("revocato"))
+        self.assertFalse(ok)
+        self.assertIn("senza transizione", motivo)
+        # Le date restano ammesse come prima.
+        self.assertTrue(eventi.gv9_transizione(
+            proposta("rettifica", campo="data_scadenza",
+                     valore_dopo={"data_scadenza": "2026-12-01"}),
+            contesto("sospeso"))[0])
+
+
+class TestSospensioneERevocaGiro3(unittest.TestCase):
+    """Contratto `bandi-giro-3` §14: G5, G8, G9 e lo stato dell'annullamento."""
+
+    def _evento(self, tipo, **extra):
+        return eventi.Evento(tipo=tipo, citazione="x", url_prova=URL, **extra)
+
+    def test_g9_vuole_l_evento_della_riga(self):
+        ctx = _ctx(stato_bando="sospeso", capacita_14=True)
+        self.assertTrue(eventi.g9_transizione(self._evento("riapertura"), ctx)[0])
+        self.assertTrue(eventi.g9_transizione(self._evento("revoca"), ctx)[0])
+        # La regola pura: dal sospeso verso aperto solo con la riapertura.
+        self.assertTrue(eventi.transizione_ammessa_evento("sospeso", "aperto", "riapertura",
+                                                          capacita_14=True))
+        self.assertFalse(eventi.transizione_ammessa_evento("sospeso", "aperto", "proroga",
+                                                           capacita_14=True))
+        self.assertFalse(eventi.transizione_ammessa_evento("revocato", "aperto", "riapertura",
+                                                           capacita_14=True))
+        self.assertTrue(eventi.transizione_ammessa_evento("aperto", "chiuso", "qualunque",
+                                                          capacita_14=False))
+
+    def test_g9_eventi_incompatibili(self):
+        for stato, tipo in (("revocato", "proroga"), ("revocato", "apertura"),
+                            ("revocato", "riapertura"), ("revocato", "chiusura"),
+                            ("sospeso", "apertura"),
+                            ("sospeso", "sospensione"), ("sospeso", "annullamento_revoca")):
+            with self.subTest(stato=stato, tipo=tipo):
+                ok, motivo = eventi.g9_transizione(
+                    self._evento(tipo, valore="2026-12-01"),
+                    _ctx(stato_bando=stato, capacita_14=True))
+                self.assertFalse(ok)
+                self.assertIn("incompatibile", motivo)
+        # Un evento senza stato ne' date resta ammesso.
+        self.assertTrue(eventi.g9_transizione(self._evento("faq"),
+                                              _ctx(stato_bando="revocato"))[0])
+
+    def test_annullamento_verso_lo_stato_delle_date(self):
+        casi = (
+            ({"data_apertura": None, "data_scadenza": date(2026, 12, 1)}, "aperto"),
+            ({"data_apertura": None, "data_scadenza": date(2026, 9, 1)}, "chiuso"),
+            ({"data_apertura": date(2026, 11, 1), "data_scadenza": date(2026, 12, 1)},
+             "in apertura prossimamente"),
+            ({"data_apertura": date(2026, 9, 1), "data_scadenza": date(2026, 12, 1)}, "aperto"),
+        )
+        evento = self._evento("annullamento_revoca")
+        for date_bando, atteso in casi:
+            with self.subTest(atteso=atteso, **{k: str(v) for k, v in date_bando.items()}):
+                ctx = _ctx(stato_bando="revocato", capacita_14=True, **date_bando)
+                self.assertEqual(eventi.stato_dopo_annullamento(ctx), atteso)
+                self.assertEqual(eventi.stato_di_arrivo(evento, ctx), atteso)
+                self.assertTrue(eventi.g9_transizione(evento, ctx)[0])
+
+    def test_valuta_porta_lo_stato_calcolato_in_valore_dopo(self):
+        ctx = _ctx(stato_bando="revocato", capacita_14=True, stati_estesi=True,
+                   data_scadenza=date(2026, 9, 1), modalita="attivo")
+        evento = self._evento("annullamento_revoca")
+        giudizio = eventi.Giudizio(ammesso=True, nuovo_stato=eventi.stato_di_arrivo(evento, ctx))
+        riga = eventi.riga_evento(evento, ctx, giudizio)
+        self.assertEqual(riga["valore_dopo"], {"stato_bando": "chiuso"})
+        self.assertEqual(riga["valore_prima"], {"stato_bando": "revocato"})
+
+    def test_proroga_su_un_sospeso_e_solo_una_data(self):
+        # P2 della revisione #153: la proroga letta durante la sospensione dei
+        # termini non si perde. Lo stato non cambia (resta sospeso): la RPC
+        # riceve solo la data nuova.
+        proroga = self._evento("proroga", valore="2026-12-15")
+        ctx = _ctx(stato_bando="sospeso", capacita_14=True, stati_estesi=True, modalita="attivo",
+                   data_scadenza=date(2026, 10, 6))
+        self.assertIsNone(eventi.stato_di_arrivo(proroga, ctx))
+        self.assertTrue(eventi.g9_transizione(proroga, ctx)[0])
+        self.assertTrue(eventi.g5_direzione(proroga, ctx)[0])
+        giudizio = eventi.Giudizio(ammesso=True, nuovo_stato=eventi.stato_di_arrivo(proroga, ctx))
+        riga = eventi.riga_evento(proroga, ctx, giudizio)
+        self.assertEqual(riga["valore_dopo"], {"data_scadenza": "2026-12-15"})
+        self.assertEqual(riga["valore_prima"], {"data_scadenza": "2026-10-06"})
+        parametri = eventi.parametri_registra_evento(riga)
+        self.assertEqual(parametri["p_valore_dopo"], {"data_scadenza": "2026-12-15"})
+        self.assertNotIn("stato_bando", parametri["p_valore_dopo"])
+        # Anche senza la 14: non e' una transizione, non dipende dalle righe nuove.
+        self.assertTrue(eventi.g9_transizione(proroga, _ctx(stato_bando="sospeso",
+                                                            data_scadenza=date(2026, 10, 6)))[0])
+
+    def test_g5_riapertura_al_passato_solo_per_un_sospeso(self):
+        passata = self._evento("riapertura", valore="2026-09-20")
+        self.assertTrue(eventi.g5_direzione(passata, _ctx(stato_bando="sospeso"))[0])
+        ok, motivo = eventi.g5_direzione(passata, _ctx(stato_bando="chiuso"))
+        self.assertFalse(ok)
+        self.assertIn("passata", motivo)
+
+    def test_g8_anche_sulla_forma_stato_proposto(self):
+        for dopo in ({"stato_proposto": "sospeso"}, {"stato_bando": "sospeso"}):
+            with self.subTest(valore_dopo=dopo):
+                recenti = ({"tipo": "sospensione", "campo": None, "valore_dopo": dopo,
+                            "rilevato_at": "2026-09-20T08:00:00+00:00"},)
+                ok, motivo = eventi.g8_dedup(self._evento("sospensione"),
+                                             _ctx(eventi_recenti=recenti))
+                self.assertFalse(ok)
+                self.assertIn("gia' registrato", motivo)
+        # Un valore vero diverso (non solo lo stato) resta un evento nuovo.
+        recenti = ({"tipo": "sospensione", "campo": None,
+                    "valore_dopo": {"stato_proposto": "sospeso", "data_scadenza": "2026-12-01"},
+                    "rilevato_at": "2026-09-20T08:00:00+00:00"},)
+        self.assertTrue(eventi.g8_dedup(self._evento("sospensione"), _ctx(eventi_recenti=recenti))[0])
 
     def test_g9_ammette_le_transizioni_della_tabella(self):
         self.assertTrue(eventi.g9_transizione(_proroga(), _ctx())[0])
@@ -1095,6 +1308,9 @@ class TestRegistraViaRpc(unittest.TestCase):
         self.assertEqual(nome, eventi.RPC_REGISTRA_EVENTO)
         # Anche da una riga «attiva», la registrazione non applica niente.
         self.assertFalse(parametri["p_applica"])
+        # Giro 3 (§14, nota di db e della revisione #141): un evento che la
+        # RPC poi marca (superato, transizione non ammessa) deve restare
+        # invisibile. Nasce `leggibile=false`, sempre.
         self.assertFalse(parametri["p_leggibile"])
         self.assertFalse(parametri["p_in_aggiornamenti"])
         self.assertEqual(parametri["p_valore_dopo"], {"data_scadenza": "2026-11-30"})

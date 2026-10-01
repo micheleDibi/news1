@@ -160,6 +160,29 @@ class ReportVerificaStato(unittest.TestCase):
         self.assertEqual(codice, 0)
         self.assertIn("difformi: 0", uscita)
 
+    def test_verita_confermati_dallo_stato(self):
+        # Giro 3, §13: gli id della verita' assenti dal report si leggono per
+        # stato effettivo; 661135 (chiuso dal job orario) non e' difforme.
+        moduli, finto = _verifica_finta(report=self.REPORT)
+        finto.VERITA_NOTA = {2387: "chiusura", 661135: "chiusura", 2892: "chiusura"}
+        finto.stati_effettivi = MagicMock(return_value={661135: "chiuso", 2892: "aperto"})
+        finto.confermati_da_stato = MagicMock(
+            return_value=[{"id": 661135, "atteso": "chiusura", "stato": "chiuso"}])
+        finto.confronta_verita = MagicMock(
+            return_value=[{"id": 2892, "atteso": "chiusura", "trovato": None}])
+        with patch.object(db, "select_da_verificare", return_value=list(self.RIGHE)), \
+                patch.object(db, "select_letture_stato", return_value={2387: {}}):
+            codice, uscita, _ = _esegui(["report-verifica-stato", "--verita"], **moduli)
+        self.assertEqual(codice, 1)
+        finto.stati_effettivi.assert_called_once_with([661135, 2892])
+        stati = {661135: "chiuso", 2892: "aperto"}
+        self.assertEqual(finto.confronta_verita.call_args.kwargs, {"stati": stati})
+        self.assertEqual(finto.confermati_da_stato.call_args.kwargs, {"stati": stati})
+        self.assertIn("CONFERMATO_DA_STATO 661135 atteso=chiusura stato=chiuso", uscita)
+        self.assertIn("DIFFORME 2892 atteso=chiusura trovato=None", uscita)
+        self.assertIn("confermati_da_stato: 1", uscita)
+        self.assertTrue(uscita.rstrip().endswith("difformi: 1"))
+
     def test_verita_con_difformi_exit_1_e_report_intero(self):
         difformi = [{"id": 18454, "atteso": "confermato", "trovato": "non_decisiva"},
                     {"id": 2339, "atteso": "rettifica:2027-01-19", "trovato": None}]
@@ -228,21 +251,26 @@ class Gemelli(unittest.TestCase):
         self.assertIn("--dry-run", errori)
         passo.assert_not_called()
 
-    def test_elenca_in_ombra_col_tetto(self):
+    def test_elenca_in_ombra_tutte_le_fusioni(self):
+        # Giro 3, §1 e §17: nessun tetto, l'elenco e' completo (52 fusioni attese).
         with patch.object(gemelli, "esegui_passo", return_value=dict(self.ESITO)) as passo:
-            codice, uscita, _ = _esegui(["gemelli", "--dry-run", "--limit", "3"])
-        self.assertEqual(codice, 0)
-        passo.assert_called_once_with(None, modalita="ombra", tetto=3)
-        self.assertIn("40744 -> 5596 (riga_calendario)", uscita)
-        self.assertIn("fusioni_previste: 49", uscita)
-
-    def test_tetto_del_giro_e_passo_spento(self):
-        with patch.object(gemelli, "esegui_passo", return_value=dict(self.ESITO)) as passo, \
-                patch.object(gemelli, "_impostazione", return_value=0):
             codice, uscita, _ = _esegui(["gemelli", "--dry-run"])
         self.assertEqual(codice, 0)
-        self.assertEqual(passo.call_args.kwargs["tetto"], gemelli.FUSIONI_PER_GIRO)
-        self.assertIn("spento", uscita)
+        passo.assert_called_once_with(None, modalita="ombra", elenco_max=None)
+        self.assertIn("40744 -> 5596 (riga_calendario)", uscita)
+        self.assertIn("942936 -> 905315 (url)", uscita)
+        self.assertIn("fusioni_previste: 49", uscita)
+        self.assertNotIn("tetto", uscita)
+
+    def test_limit_ignorato_e_detto(self):
+        log = MagicMock()
+        uscita = io.StringIO()
+        with patch.object(gemelli, "esegui_passo", return_value=dict(self.ESITO)) as passo, \
+                patch.object(cli, "logger", log), contextlib.redirect_stdout(uscita):
+            codice = cli.main(["gemelli", "--dry-run", "--limit", "3"])
+        self.assertEqual(codice, 0)
+        passo.assert_called_once_with(None, modalita="ombra", elenco_max=None)
+        self.assertTrue(any("--limit ignorato" in str(c.args) for c in log.warning.call_args_list))
 
     def test_errore_exit_1(self):
         with patch.object(gemelli, "esegui_passo",

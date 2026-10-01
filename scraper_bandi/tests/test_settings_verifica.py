@@ -14,9 +14,8 @@ from tests.supporto import RADICE, carica_modulo
 
 settings = carica_modulo("settings")
 
-NOMI = ("VERIFICA_STATO_MODALITA", "VERIFICA_STATO_TETTO_LETTURE", "VERIFICA_STATO_TETTO_S",
-        "VERIFICA_STATO_MAX_CHIUSURE", "VERIFICA_STATO_USA_MODELLO", "INGRESSO_SOSTA_GIRI",
-        "VERIFICA_STATO_TETTO_INGRESSO", "GEMELLI_FUSIONI_PER_GIRO", "INDICEPA_URL")
+NOMI = ("VERIFICA_STATO_MODALITA", "VERIFICA_STATO_TETTO_S", "VERIFICA_STATO_USA_MODELLO",
+        "INGRESSO_SOSTA_GIRI", "INDICEPA_URL")
 
 
 def _leggi(**ambiente):
@@ -33,10 +32,9 @@ def _leggi(**ambiente):
 class TestDefault(unittest.TestCase):
     def test_senza_variabili(self):
         s = _leggi()
-        self.assertEqual((s.verifica_stato_modalita, s.verifica_stato_tetto_letture, s.verifica_stato_tetto_s,
-                          s.verifica_stato_max_chiusure, s.verifica_stato_usa_modello, s.ingresso_sosta_giri,
-                          s.verifica_stato_tetto_ingresso, s.gemelli_fusioni_per_giro),
-                         ("ombra", 40, 900, 20, True, 4, 30, 10))
+        self.assertEqual((s.verifica_stato_modalita, s.verifica_stato_tetto_s,
+                          s.verifica_stato_usa_modello, s.ingresso_sosta_giri),
+                         ("ombra", 1800, True, 4))
         self.assertEqual(s.indicepa_url, settings.INDICEPA_URL_PREDEFINITO)
         self.assertTrue(s.verifica_stato_config_valida)
 
@@ -58,13 +56,11 @@ class TestDefault(unittest.TestCase):
 
 class TestValoriValidi(unittest.TestCase):
     def test_attivo_e_interi(self):
-        s = _leggi(VERIFICA_STATO_MODALITA="Attivo", VERIFICA_STATO_TETTO_LETTURE="200",
-                   VERIFICA_STATO_TETTO_S="60", VERIFICA_STATO_MAX_CHIUSURE="0", INGRESSO_SOSTA_GIRI="12",
-                   GEMELLI_FUSIONI_PER_GIRO="0", VERIFICA_STATO_USA_MODELLO="false",
+        s = _leggi(VERIFICA_STATO_MODALITA="Attivo", VERIFICA_STATO_TETTO_S="60",
+                   INGRESSO_SOSTA_GIRI="12", VERIFICA_STATO_USA_MODELLO="false",
                    INDICEPA_URL="https://esempio.invalid/enti.xlsx")
-        self.assertEqual((s.verifica_stato_modalita, s.verifica_stato_tetto_letture, s.verifica_stato_tetto_s,
-                          s.verifica_stato_max_chiusure, s.ingresso_sosta_giri, s.gemelli_fusioni_per_giro),
-                         ("attivo", 200, 60, 0, 12, 0))
+        self.assertEqual((s.verifica_stato_modalita, s.verifica_stato_tetto_s, s.ingresso_sosta_giri),
+                         ("attivo", 60, 12))
         self.assertFalse(s.verifica_stato_usa_modello)
         self.assertEqual(s.indicepa_url, "https://esempio.invalid/enti.xlsx")
         self.assertTrue(s.verifica_stato_config_valida)
@@ -74,12 +70,8 @@ class TestValoriScartati(unittest.TestCase):
     def test_fuori_enum_o_intervallo(self):
         casi = {
             "VERIFICA_STATO_MODALITA": ("attiva", "verifica_stato_modalita", "ombra"),
-            "VERIFICA_STATO_TETTO_LETTURE": ("0", "verifica_stato_tetto_letture", 40),
-            "VERIFICA_STATO_TETTO_S": ("5000", "verifica_stato_tetto_s", 900),
-            "VERIFICA_STATO_MAX_CHIUSURE": ("51", "verifica_stato_max_chiusure", 20),
+            "VERIFICA_STATO_TETTO_S": ("3601", "verifica_stato_tetto_s", 1800),
             "INGRESSO_SOSTA_GIRI": ("-1", "ingresso_sosta_giri", 4),
-            "VERIFICA_STATO_TETTO_INGRESSO": ("molti", "verifica_stato_tetto_ingresso", 30),
-            "GEMELLI_FUSIONI_PER_GIRO": ("101", "gemelli_fusioni_per_giro", 10),
             "INDICEPA_URL": ("http://esempio.invalid/enti.xlsx", "indicepa_url", settings.INDICEPA_URL_PREDEFINITO),
         }
         for nome, (valore, campo, atteso) in casi.items():

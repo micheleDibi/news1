@@ -13,9 +13,11 @@ import asyncio
 import json
 import random
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlsplit, unquote
 
 from .logger import logger
@@ -405,16 +407,110 @@ Chiama il tool `save_bando_analysis` con:
    Se markdown non disponibile o non contiene date chiare: imposta date=null, source='missing', quote=null."""
 
 
+# --- spesa del passo (giro 3, contratto `bandi-giro-3` §4) --------------------
+#
+# Il client Anthropic di questo modulo e' uno solo e lo usano preprocess, il
+# ripiego `bando_resolver.resolve_bando`, l'enrich e la SEO. Il passo che deve
+# contare la propria spesa apre `conta_spesa(contatori)`: ogni chiamata fatta
+# dentro quel contesto (anche nei task che il passo crea con `gather`) finisce
+# nei suoi `bilancio.Contatori` tramite l'involucro del client. Fuori dal
+# contesto non si conta niente: la SEO, che conta da se' con i suoi contatori
+# espliciti, non viene contata due volte.
+
+_SPESA_DEL_PASSO: ContextVar[Any] = ContextVar("spesa_del_passo", default=None)
+
+
+@contextmanager
+def conta_spesa(contatori: Any):
+    """Dentro il `with` le chiamate al modello si sommano a `contatori`."""
+    token = _SPESA_DEL_PASSO.set(contatori)
+    try:
+        yield contatori
+    finally:
+        _SPESA_DEL_PASSO.reset(token)
+
+
+#: Le voci dello scarico che entrano nella riga di spesa di un passo (§19.1).
+VOCI_SCARICO: tuple[str, ...] = ("fetch", "fetch_304", "crediti_firecrawl")
+
+
+def istantanea_scarico() -> dict[str, int]:
+    """I contatori dello scarico del processo adesso: l'inizio del delta di un
+    passo (giro 3, §19.1). Non crea lo scarico se non c'e' ancora (crearlo
+    legge il registro dal DB): in quel caso non ha ancora scaricato niente, e
+    il delta parte da zero."""
+    try:
+        from . import scarico
+        corrente = getattr(scarico, "_SCARICO", None)
+        contatori = getattr(corrente, "contatori", None)
+    except Exception:                                      # pragma: no cover - difesa
+        contatori = None
+    return {nome: int(getattr(contatori, nome, 0) or 0) for nome in VOCI_SCARICO}
+
+
+def aggiungi_delta_scarico(spesa: Any, prima: Mapping[str, int]) -> None:
+    """Somma a `spesa` cio' che lo scarico ha fatto da `prima` (§19.1): ogni
+    passo scrive nella sua riga i propri crediti, e nessun altro li riconta.
+    Contatori azzerati nel frattempo (`scarico.svuota`): si conta da zero."""
+    dopo = istantanea_scarico()
+    for nome in VOCI_SCARICO:
+        base, valore = int(prima.get(nome, 0) or 0), dopo[nome]
+        delta = valore - base if valore >= base else valore
+        if delta > 0:
+            setattr(spesa, nome, int(getattr(spesa, nome, 0) or 0) + delta)
+
+
+def registra_uso(modello: Any, risposta: Any) -> None:
+    """Somma una risposta del modello ai contatori del passo, se ce n'e' uno.
+    Non solleva: un conto non fatto e' un avviso, non un giro fallito."""
+    contatori = _SPESA_DEL_PASSO.get()
+    if contatori is None or risposta is None:
+        return
+    try:
+        from . import bilancio
+        bilancio.registra_chiamata(contatori, str(modello or ""), getattr(risposta, "usage", None),
+                                   get_settings().listino_modelli)
+    except Exception as e:                              # pragma: no cover - difesa
+        logger.warning("[spesa] chiamata non contata: {}", e)
+
+
+class _MessaggiContati:
+    """`client.messages` con il conto: `create` chiama quello vero e poi conta."""
+
+    def __init__(self, messaggi: Any) -> None:
+        self._messaggi = messaggi
+
+    async def create(self, *args: Any, **kwargs: Any) -> Any:
+        risposta = await self._messaggi.create(*args, **kwargs)
+        registra_uso(kwargs.get("model"), risposta)
+        return risposta
+
+    def __getattr__(self, nome: str) -> Any:
+        return getattr(self._messaggi, nome)
+
+
+class ClienteContato:
+    """Involucro sottile del client Anthropic: tutto passa a quello vero, e
+    `messages.create` conta la spesa nel contesto del passo (`conta_spesa`)."""
+
+    def __init__(self, cliente: Any) -> None:
+        self._cliente = cliente
+        self.messages = _MessaggiContati(cliente.messages)
+
+    def __getattr__(self, nome: str) -> Any:
+        return getattr(self._cliente, nome)
+
+
 @lru_cache(maxsize=1)
 def _get_anthropic_client():
-    """Singleton client async Anthropic."""
+    """Singleton client async Anthropic, con il conto della spesa (§4)."""
     import anthropic
     settings = get_settings()
     if not settings.anthropic_api_key:
         raise RuntimeError(
             "ANTHROPIC_API_KEY mancante in .env. Il pre-processor non può funzionare."
         )
-    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return ClienteContato(anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key))
 
 
 def _auto_reject(bando: dict[str, Any]) -> dict[str, Any] | None:
@@ -608,7 +704,23 @@ def _validate_analysis(
         "ora_scadenza": _ora(analysis.get("data_scadenza"), scad_date, "scadenza"),
         "_origine_scadenza": "modello" if scad_date else None,
         "_date_presunte_respinte": presunte,
+        # Giro 3 (§8, §9): la frase della pagina che giustifica ogni data
+        # passata dal gate. La rielaborazione dei pubblicati la porta negli
+        # eventi di rettifica; nessuna colonna di `bando` la riceve.
+        "_citazioni": {
+            "data_pubblicazione": _citazione(analysis.get("data_pubblicazione"), pub_date),
+            "data_apertura": _citazione(analysis.get("data_apertura"), apt_date),
+            "data_scadenza": _citazione(analysis.get("data_scadenza"), scad_date),
+        },
     }
+
+
+def _citazione(candidata: Any, valida: Any) -> str | None:
+    """La quote del modello per una data che ha passato il gate, o None."""
+    if valida is None or not isinstance(candidata, Mapping):
+        return None
+    testo = str(candidata.get("quote") or "").strip()
+    return testo or None
 
 
 def provenienza_di(link: str | None) -> str | None:
@@ -659,6 +771,7 @@ def completa_dopo_il_modello(
     lettura: Any = None,
     *,
     oggi: Any = None,
+    markdown_etichetta: str | None = None,
 ) -> dict[str, Any]:
     """Quello che il preprocess aggiunge dopo il modello, senza chiamarlo (§6.3, §19.5). Pura.
 
@@ -671,6 +784,8 @@ def completa_dopo_il_modello(
     3. OE: la `deadline_label` citata sulla scheda (status '1'), per ultima
        perche' e' la fonte meno affidabile. Status '2' → 'in apertura
        prossimamente', salvo un 'chiuso' per date. `on_arrival` non si usa.
+       Giro 3 (§8): quando il testo letto e' la pagina ufficiale, la
+       citazione si cerca nel testo della scheda OE (`markdown_etichetta`).
     Le date nuove non precedono mai pubblicazione e apertura.
     """
     from .date_validation import estrai_finestra, parse_iso, reconcile_stato_bando
@@ -705,7 +820,8 @@ def completa_dopo_il_modello(
     raw = bando.get("raw_data")
     status = str(raw.get("status") or "").strip() if isinstance(raw, Mapping) else ""
     if scad is None and status == "1":
-        dalla_scheda = _scadenza_oe_citata(raw, markdown, bando.get("id"), giorno)
+        testo_scheda = markdown if markdown_etichetta is None else markdown_etichetta
+        dalla_scheda = _scadenza_oe_citata(raw, testo_scheda, bando.get("id"), giorno)
         if dalla_scheda is not None and _coerente(pub, apt, dalla_scheda):
             scad, origine, ora_scad = dalla_scheda, "etichetta_oe", None
 
@@ -796,16 +912,23 @@ def lettura_per_ente(pagina: Any, link: str, titolo: str, oggi: Any) -> Any:
 async def analyze_bando(
     bando: dict[str, Any],
     fonte_ctx: dict[str, Any],
+    *,
+    url_lettura: str | None = None,
 ) -> dict[str, Any]:
     """Analizza un singolo bando via Claude Haiku 4.5 con Firecrawl markdown.
 
     1. Pre-filter auto-reject.
-    2. Markdown del link_bando via `scarico.py` (cache per giro, ripiego
+    2. Markdown della pagina via `scarico.py` (cache per giro, ripiego
        Firecrawl solo se la pagina httpx non basta).
     3. Se markdown vuoto/troppo corto -> sentinel _needs_fallback=True per
        triggerare bando_resolver lato runner.
     4. LLM Haiku 4.5 con tool use esteso (validità + stato + 3 date).
     5. Triple-gate validation date + reconciliation data-driven.
+
+    `url_lettura` (giro 3, §8): la pagina da leggere, di norma la fonte
+    ufficiale scelta con `dominio_ufficiale.scegli_fonte`. Scarico, rilettura
+    dalla cache, provenienza e lettore per ente lavorano su di lei; il prompt
+    continua a mostrare `link_bando`. Senza, si legge `link_bando` come prima.
 
     Args:
         bando: dict con id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link.
@@ -813,7 +936,7 @@ async def analyze_bando(
 
     Returns:
         dict {is_valid_bando, confidence_score, rejection_reason, stato_bando,
-              data_pubblicazione, data_apertura, data_scadenza,
+              data_pubblicazione, data_apertura, data_scadenza, _citazioni,
               _needs_fallback (bool, true se richiede bando_resolver)}.
     """
     bando_id = bando.get("id")
@@ -832,9 +955,10 @@ async def analyze_bando(
         }
         return auto
 
-    # 2. Markdown del link_bando (se disponibile). Il wrapper storico ora
+    # 2. Markdown della pagina da leggere (se disponibile). Il wrapper storico
     # chiama `scarico.py`: cache per giro, nessun fallimento memorizzato.
-    link = bando.get("link_bando") or ""
+    link_bando = str(bando.get("link_bando") or "")
+    link = str(url_lettura or link_bando)
     markdown = ""
     if link:
         from .enricher import _firecrawl_scrape_markdown
@@ -890,7 +1014,20 @@ async def analyze_bando(
         lettura = None
         if provenienza == "ente":
             lettura = lettura_per_ente(pagina, link, str(bando.get("titolo_raw") or ""), giorno)
-        analysis = completa_dopo_il_modello(analysis, bando, markdown, lettura, oggi=giorno)
+        completata = completa_dopo_il_modello(analysis, bando, markdown, lettura, oggi=giorno)
+        if (not completata.get("data_scadenza") and link != link_bando and link_bando
+                and _status_oe(bando) == "1"):
+            # Giro 3 (§8): letta la pagina ufficiale, la scadenza e' ancora
+            # vuota. La citazione dell'etichetta OE sta sulla scheda: si
+            # rilegge `link_bando` (cache del giro, al piu' una GET httpx) e
+            # si cerca solo quella, senza modello.
+            scheda = await _pagina_in_cache(link_bando)
+            testo_scheda = getattr(scheda, "testo", "") or ""
+            if testo_scheda:
+                completata = completa_dopo_il_modello(
+                    analysis, bando, markdown, lettura, oggi=giorno,
+                    markdown_etichetta=testo_scheda)
+        analysis = completata
     analysis["_needs_fallback"] = False
 
     logger.debug(
@@ -905,3 +1042,9 @@ async def analyze_bando(
         analysis.get("data_scadenza"),
     )
     return analysis
+
+
+def _status_oe(bando: Mapping[str, Any]) -> str:
+    """Lo `status` di una riga OE in `raw_data` ('1' aperto, '2' in apertura)."""
+    raw = bando.get("raw_data")
+    return str(raw.get("status") or "").strip() if isinstance(raw, Mapping) else ""

@@ -130,6 +130,8 @@ TESTI_NEUTRI: dict[str, str] = {
     "indicepa_non_aggiornato": "L'elenco ufficiale degli enti non è stato aggiornato di recente.",
     "indicepa_import_anomalo": "L'ultimo aggiornamento dell'elenco degli enti è anomalo.",
     "vista_lenta": "La lettura pubblica dei bandi è lenta.",
+    # giro 3 (§1)
+    "copertura_incompleta": "Un passo del giro lascia fuori {n} bandi da quattro giri di fila.",
 }
 #: Il testo generico: per un codice senza frase (un prefisso nuovo arrivato
 #: prima del suo testo) e per una frase con segnaposto arrivata senza misura.
@@ -170,6 +172,8 @@ UNITA_MISURA: dict[str, str] = {
     "aperti_senza_conferma": "quota", "ingresso_trattenuti": "conteggio",
     "indicepa_non_aggiornato": "nessuna", "indicepa_import_anomalo": "nessuna",
     "vista_lenta": "nessuna",
+    # giro 3
+    "copertura_incompleta": "conteggio",
 }
 
 #: I nomi veri degli step della pipeline, tradotti. Un nome sconosciuto e' «altro».
@@ -178,6 +182,10 @@ NOMI_PASSI_NEUTRI: dict[str, str] = {
     "enrich": "arricchimento", "resolver": "ricerca_fonti", "seo": "redazione",
     "monitor": "controllo_pagine", "ricontrolli": "ricontrolli",
     "verifica_stato": "verifica_stato",
+    # giro 3 (§2): gli stessi di `telemetria.PASSI_NEUTRI` (un test li confronta)
+    "domini": "elenco_enti", "resolver_precoce": "ricerca_fonti_precoce",
+    "verifica_stato_ingresso": "verifica_ingresso", "link_verifica": "verifica_link",
+    "rielaborazione": "rielaborazione", "gemelli": "doppioni",
 }
 PASSO_SCONOSCIUTO = "altro"
 

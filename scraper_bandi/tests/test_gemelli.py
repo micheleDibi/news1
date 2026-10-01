@@ -716,7 +716,6 @@ class PassoGemelli(unittest.TestCase):
     def _passo(self, righe=None, **opzioni):
         fondi = opzioni.pop("fondi", _Fondi())
         opzioni.setdefault("modalita", "attivo")
-        opzioni.setdefault("tetto", 10)
         esito = gemelli.esegui_passo(
             "06:00", leggi=lambda: righe if righe is not None else _pubblicati(),
             fondi=fondi, **opzioni)
@@ -748,17 +747,43 @@ class PassoGemelli(unittest.TestCase):
         self.assertIn((905315, 942936, "gemello esatto: url"), fondi.chiamate)
         self.assertIn((1260432, 1260443, "gemello esatto: riga_calendario"), fondi.chiamate)
 
-    def test_tetto(self):
-        esito, fondi = self._passo(tetto=2)
-        self.assertEqual(len(fondi.chiamate), 2)
-        self.assertEqual((esito["fusi"], esito["oltre_tetto"]), (2, 5))
-        self.assertEqual([c[1] for c in fondi.chiamate], [40744, 803629])
+    def test_nessun_tetto_di_fusioni(self):
+        # Giro 3, §1 e §11: «niente lotti». Si fondono tutte quelle che passano
+        # le guardie, nello stesso giro.
+        self.assertFalse(hasattr(gemelli, "FUSIONI_PER_GIRO"))
+        esito, fondi = self._passo()
+        self.assertEqual((len(fondi.chiamate), esito["fusi"]), (7, 7))
+        self.assertNotIn("oltre_tetto", esito)
+        self.assertNotIn("tetto", esito)
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 7, "fatti": 7, "rimasti": 0, "motivo_rimasti": None})
 
-    def test_tetto_zero_spegne_senza_leggere(self):
-        def leggi():
-            raise AssertionError("con il tetto a zero non si legge niente")
-        esito = gemelli.esegui_passo(None, modalita="attivo", tetto=0, leggi=leggi, fondi=_Fondi())
-        self.assertEqual(esito["saltato"], "spento")
+    def test_l_elenco_della_riga_e_corto_le_fusioni_no(self):
+        esito, fondi = self._passo(elenco_max=2)
+        self.assertEqual((len(esito["fusioni"]), esito["fusi"], len(fondi.chiamate)), (2, 7, 7))
+        esito, _ = self._passo(modalita="ombra", elenco_max=None)
+        self.assertEqual(len(esito["fusioni"]), 7)
+        self.assertEqual(esito["copertura"]["fatti"], 7)
+
+    def test_copertura_con_fusioni_non_riuscite(self):
+        esito, _ = self._passo([_riga(803614), _riga(803633)], fondi=_Fondi(risposta=None))
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 1, "fatti": 0, "rimasti": 1, "motivo_rimasti": "errore"})
+
+    def test_la_lettura_predefinita_legge_tutto(self):
+        from unittest.mock import patch
+        db = carica_modulo("db")
+        chiamate = []
+
+        def leggi(**opzioni):
+            chiamate.append(opzioni)
+            return _pubblicati()
+
+        with patch.object(db, "select_pubblicati_per_gemelli", leggi), \
+                patch.object(db, "fondi_bandi", _Fondi()):
+            esito = gemelli.esegui_passo(None, modalita="ombra")
+        self.assertEqual(chiamate, [{"limit": None, "con_calendario": True}])
+        self.assertEqual((esito["status"], esito["fusioni_previste"]), ("ok", 7))
 
     def test_le_righe_gia_fuse_restano_fuori(self):
         righe = [_riga(803614, bando_master_id=None), _riga(803633, bando_master_id=803614)]
@@ -784,10 +809,11 @@ class PassoGemelli(unittest.TestCase):
 
     def test_lettura_al_limite_nessuna_fusione(self):
         righe = _pubblicati()
-        esito = gemelli.esegui_passo(None, modalita="attivo", tetto=10, leggi=lambda: righe,
+        esito = gemelli.esegui_passo(None, modalita="attivo", leggi=lambda: righe,
                                      fondi=_Fondi(), limite_lettura=len(righe))
         self.assertEqual((esito["status"], esito["motivo"]), ("errore", "lettura_troncata"))
         self.assertNotIn("fusioni", esito)
+        self.assertNotIn("copertura", esito)
         esito, _ = self._passo(righe)
         self.assertEqual(esito["status"], "ok")
 
@@ -809,7 +835,7 @@ class PassoGemelli(unittest.TestCase):
     def test_errore_senza_messaggio(self):
         def leggi():
             raise RuntimeError("https://x.invalid/?apikey=segreta")
-        esito = gemelli.esegui_passo(None, modalita="attivo", tetto=5, leggi=leggi, fondi=_Fondi())
+        esito = gemelli.esegui_passo(None, modalita="attivo", leggi=leggi, fondi=_Fondi())
         self.assertEqual(esito["status"], "errore")
         self.assertEqual(esito["motivo"], "RuntimeError")
         self.assertNotIn("segreta", repr(esito))
@@ -820,10 +846,18 @@ class PassoGemelli(unittest.TestCase):
 
     def test_valori_da_settings(self):
         from unittest.mock import patch
-        valori = {"verifica_stato_modalita": "attivo", "gemelli_fusioni_per_giro": 1}
-        with patch.object(gemelli, "_impostazione", lambda nome, predefinito: valori[nome]):
+        # Giro 3 (§3, §11): l'interruttore e' GEMELLI_MODALITA, non piu'
+        # VERIFICA_STATO_MODALITA, e GEMELLI_FUSIONI_PER_GIRO non si legge.
+        letti = []
+
+        def impostazione(nome, predefinito):
+            letti.append(nome)
+            return {"gemelli_modalita": "attivo", "verifica_stato_modalita": "ombra"}[nome]
+
+        with patch.object(gemelli, "_impostazione", impostazione):
             esito = gemelli.esegui_passo(None, leggi=_pubblicati, fondi=_Fondi())
-        self.assertEqual((esito["modalita"], esito["tetto"], esito["fusi"]), ("attivo", 1, 1))
+        self.assertEqual((esito["modalita"], esito["fusi"]), ("attivo", 7))
+        self.assertEqual(letti, ["gemelli_modalita"])
 
     def test_gli_indici_trovano_le_stesse_coppie_del_confronto_completo(self):
         righe = _pubblicati() + [
@@ -860,8 +894,7 @@ class PrudenzaDelPassoSulleCoppiePerUrl(unittest.TestCase):
 
     def _passo(self, righe):
         fondi = _Fondi()
-        esito = gemelli.esegui_passo(None, modalita="attivo", tetto=10, leggi=lambda: righe,
-                                     fondi=fondi)
+        esito = gemelli.esegui_passo(None, modalita="attivo", leggi=lambda: righe, fondi=fondi)
         return esito, fondi
 
     def test_la_coppia_pulita_si_fonde(self):
@@ -882,11 +915,17 @@ class PrudenzaDelPassoSulleCoppiePerUrl(unittest.TestCase):
         # `criteri_esatti` resta com'e': per chi fonde a mano la coppia e' certa.
         self.assertTrue(gemelli.criteri_esatti(a, [b]))
 
-    def test_una_riga_gia_fusa_conta_per_l_hub(self):
+    def test_una_riga_gia_fusa_non_conta_per_l_hub(self):
+        # B4 (giro 3, §11): il conteggio dei link condivisi esclude le righe
+        # gia' fuse. Il doppione fuso nel master non e' una terza pagina: dopo
+        # la fusione la coppia rimasta puo' fondersi.
         a, b = self._coppia()
         fusa = {"id": 3, "fonte_id": 238, "link_bando": a["link_bando"], "bando_master_id": 99,
                 "titolo": self.TITOLO}
         esito, fondi = self._passo([a, b, fusa])
+        self.assertEqual((esito["hub_esclusi"], fondi.chiamate), (0, [(1, 2, "gemello esatto: url")]))
+        # Una terza riga NON fusa resta un hub.
+        esito, fondi = self._passo([a, b, dict(fusa, bando_master_id=None)])
         self.assertEqual((esito["hub_esclusi"], fondi.chiamate), (1, []))
 
     def test_b_titoli_diversi(self):

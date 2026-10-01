@@ -125,6 +125,65 @@ def stato_servizio(
             "n_restarts": riavvii}
 
 
+#: Lo step della riga della rielaborazione (`rielabora_fonte.STEP`; un test li
+#: confronta): non si importa il modulo, che si porta dietro lo scarico.
+STEP_RIELABORAZIONE = "backfill:rielaborazione"
+
+
+def leggi_transizioni_da_decidere(*, client: Any | None = None) -> int | None:
+    """`transizioni_da_decidere` dell'ultima riga `backfill:rielaborazione`
+    (contratto `bandi-giro-3` §18.2). Una sola GET su `pipeline_run`. None se
+    la riga non c'e', se non porta il contatore o se la lettura fallisce: la
+    misura manca, e `salute` non mostra niente. Non solleva."""
+    try:
+        from . import db
+        cliente = client if client is not None else db.get_supabase()
+        righe = (cliente.table(db.TABELLA_RUN)
+                 .select("id,transizioni:contatori->transizioni_da_decidere")
+                 .eq("step", STEP_RIELABORAZIONE)
+                 .order("avviato_at", desc=True).order("id", desc=True)
+                 .limit(1).execute().data or [])
+    except Exception as e:
+        logger.warning("[sorveglia] transizioni da decidere non lette: {}", type(e).__name__)
+        return None
+    valore = righe[0].get("transizioni") if righe else None
+    if isinstance(valore, bool):
+        return None
+    try:
+        return int(valore) if valore is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+#: I motivi con cui la 14 marca un evento che la RPC non applichera' mai
+#: (`bando_evento.scartato_per`, contratto `bandi-giro-3` §14 e §19.2).
+MOTIVI_MARCATI: tuple[str, ...] = ("superato", "transizione_non_ammessa")
+
+
+def leggi_eventi_marcati(*, client: Any | None = None) -> dict[str, int] | None:
+    """Quanti eventi sono marcati `superato` e `transizione_non_ammessa`
+    (§19.2): una GET con `count=exact` per motivo, senza scaricare righe.
+
+    None se una lettura fallisce o non porta il conteggio (senza la 14 la
+    colonna non c'e'): la misura manca, e `salute` non mostra niente. Non
+    solleva."""
+    try:
+        from . import db
+        cliente = client if client is not None else db.get_supabase()
+        conti: dict[str, int] = {}
+        for motivo in MOTIVI_MARCATI:
+            risposta = (cliente.table(db.TABELLA_EVENTO).select("id", count="exact")
+                        .eq("scartato_per", motivo).limit(1).execute())
+            conto = getattr(risposta, "count", None)
+            if not isinstance(conto, int) or isinstance(conto, bool):
+                return None
+            conti[motivo] = conto
+    except Exception as e:
+        logger.warning("[sorveglia] eventi marcati non letti: {}", type(e).__name__)
+        return None
+    return conti
+
+
 def fotografa(
     *,
     adesso: datetime | None = None,
@@ -150,6 +209,9 @@ def fotografa(
         servizio = stato_servizio()
     tetti = {"tetto_crediti_mese": impostazioni.tetto_crediti_mese,
              "tetto_usd_mese": impostazioni.tetto_usd_mese}
+    sospensioni_attive: bool | None = None
+    transizioni_da_decidere: int | None = None
+    eventi_marcati: dict[str, int] | None = None
     try:
         from . import db
         if memoria is _DA_LEGGERE:
@@ -159,6 +221,15 @@ def fotografa(
         misure["memoria"] = memoria
         misure["job_orario"] = db.job_orario()
         campi = dict(stato_da_misure(misure, adesso=adesso, **tetti))
+        # Giro 3 (§3, §14): la migrazione 14 c'e'? Senza, sospensione e revoca
+        # restano in ombra e `salute` lo dice come informazione.
+        capacita = getattr(db, "capacita_sospensioni", None)
+        sospensioni_attive = bool(capacita()) if callable(capacita) else None
+        # §18.2: le date della rielaborazione che chiedono un cambio di stato,
+        # lasciate alla redazione. Un'informazione, non un allarme.
+        transizioni_da_decidere = leggi_transizioni_da_decidere()
+        # §19.2: gli eventi che la 14 ha marcato e che non si applicheranno.
+        eventi_marcati = leggi_eventi_marcati()
     except Exception as e:
         misure = {"servizio": servizio, "memoria": None if memoria is _DA_LEGGERE else memoria}
         try:
@@ -178,6 +249,17 @@ def fotografa(
         # del percorso A non li hanno, e valgono i default dello Stato.
         verifica_stato_modalita=str(getattr(impostazioni, "verifica_stato_modalita", "ombra") or "ombra"),
         verifica_stato_config_valida=bool(getattr(impostazioni, "verifica_stato_config_valida", True)),
+        # Giro 3 (§3): i NOMI scartati e quelli dismessi, mai i valori. Con
+        # getattr: `variabili_dismesse` arriva con B6.
+        configurazione_scartate=tuple(getattr(impostazioni, "configurazione_scartate", ()) or ()),
+        variabili_dismesse=tuple(getattr(impostazioni, "variabili_dismesse", ()) or ()),
+        sospensioni_attive=sospensioni_attive,
+        # §18.8: la fusione prima della pubblicazione e l'import di IndicePA
+        # seguono i loro interruttori, non quello della verifica.
+        gemelli_modalita=str(getattr(impostazioni, "gemelli_modalita", "ombra") or "ombra"),
+        domini_modalita=str(getattr(impostazioni, "domini_modalita", "ombra") or "ombra"),
+        transizioni_da_decidere=transizioni_da_decidere,
+        eventi_marcati=eventi_marcati,
         **campi,
     )
     return Fotografia(stato=stato, misure=misure, adesso=adesso)

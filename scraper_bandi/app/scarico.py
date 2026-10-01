@@ -467,6 +467,10 @@ class Scarico:
             in_cache = self._da_cache(chiave)
             if in_cache is not None:
                 self.contatori.da_cache += 1
+                if (principale and redirect == REDIRECT_TUTTI and in_cache.via == "httpx"
+                        and not in_cache.ripiego_fallito
+                        and self._serve_ripiego(url, in_cache)):
+                    return await self._promuovi_al_ripiego(chiave, url, in_cache)
                 return in_cache
 
         if nome_host(url) in self._host_irraggiungibili:
@@ -519,6 +523,23 @@ class Scarico:
             del self._cache[url]
             return None
         return replace(risposta, da_cache=True)
+
+    async def _promuovi_al_ripiego(self, chiave: str, url: str, in_cache: Risposta) -> Risposta:
+        """Una voce httpx «semplice» presa senza ripiego (per esempio dal
+        resolver, che scarica come fonte e non come pagina principale) e ora
+        chiesta come pagina principale: si paga il ripiego qui, una volta, e
+        la voce in cache diventa la sua risposta (giro 3, §8). Nessuna seconda
+        GET verso l'ente: la pagina httpx l'abbiamo gia'. Se il ripiego fallisce
+        la voce resta quella httpx, marcata, e non si riprova.
+        """
+        scadenza = self._cache.get(chiave, (self._orologio() + self.ttl_s, None))[0]
+        ripiego = await self._via_firecrawl(url)
+        if ripiego is not None and not ripiego.vuota:
+            self._cache[chiave] = (scadenza, ripiego)
+            return ripiego
+        marcata = replace(in_cache, ripiego_fallito=True, da_cache=False)
+        self._cache[chiave] = (scadenza, marcata)
+        return replace(marcata, da_cache=True)
 
     def _serve_ripiego(self, url: str, risposta: Risposta) -> bool:
         """Tre sole ragioni per pagare un credito: WAF, app-shell, host noto.

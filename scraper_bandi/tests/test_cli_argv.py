@@ -55,6 +55,10 @@ _COMANDI_GIRO_2 = {"sorveglia"}
 # I loro test stanno in `tests/test_cli_verifica_stato.py`.
 _COMANDI_A = {"verifica-stato", "report-verifica-stato", "gemelli"}
 
+# Giro 3, §9: parser suo (come i comandi del percorso A); i suoi test stanno in
+# `tests/test_rielabora_fonte.py`.
+_COMANDI_GIRO_3 = {"rielabora-fonte"}
+
 # Sottocomandi che scriveranno sul DB: per ognuno `--dry-run` e `--limit N`
 # devono essere gia' accettati oggi (vincolo 3, M20). `report-ombra` non scrive
 # — stampa il CSV della misura — ma sta nell'elenco lo stesso: M20 non ammette
@@ -179,7 +183,7 @@ class TestComandi(_ConRunnerFinti):
     def test_tutti_i_comandi_sono_registrati_e_accettano_argv(self):
         self.assertEqual(set(cli._COMMANDS),
                          set(_RUNNER_DI) | _COMANDI_V11 | _COMANDI_SEO | _COMANDI_GIRO_2
-                         | _COMANDI_A)
+                         | _COMANDI_A | _COMANDI_GIRO_3)
         for cmd, fn in cli._COMMANDS.items():
             self.assertTrue(callable(fn), cmd)
 
@@ -1177,6 +1181,29 @@ class TestSalute(_ConRunnerFinti):
         self.assertEqual(dati["exit_code"], 1)
         self.assertEqual(len(dati["allarmi"]), 1)
 
+    def test_informazioni_del_giro_3_su_stdout_senza_cambiare_l_exit(self):
+        # Contratto `bandi-giro-3` §1, §3, §14: copertura per passo, variabili
+        # dismesse (solo i nomi), sospensioni in attesa della migrazione 14.
+        from datetime import datetime, timedelta, timezone
+        adesso = datetime.now(tz=timezone.utc)
+        riga = {"id": 1, "giro": "06:00", "esito": "ok",
+                "avviato_at": (adesso - timedelta(hours=1)).isoformat(),
+                "concluso_at": (adesso - timedelta(minutes=30)).isoformat(),
+                "contatori": {"monitor": {"copertura": {
+                    "candidati": 700, "fatti": 640, "rimasti": 60, "motivo_rimasti": "tempo"}}}}
+        stato = self._stato(ultime_pipeline=(riga,), variabili_dismesse=("TETTO_FETCH_GIRO",),
+                            sospensioni_attive=False)
+        stdout = io.StringIO()
+        with patch.object(cli, "_stato_salute", return_value=stato), \
+                contextlib.redirect_stdout(stdout):
+            codice, stderr, _, _ = self.esegui(["salute"])
+        uscita = stdout.getvalue()
+        self.assertEqual((codice, stderr), (0, ""))
+        self.assertIn("salute: copertura monitor: 640/700 (rimasti 60: tempo)", uscita)
+        self.assertIn("salute: variabili dismesse nel .env (non piu' lette): TETTO_FETCH_GIRO", uscita)
+        self.assertIn("salute: sospensioni in attesa della migrazione 14", uscita)
+        self.assertIn("nessun allarme", uscita)
+
     def test_offset_su_salute_e_avvisato_non_silenzioso(self):
         # `salute` non passa da `_esegui_v11`: sta sul percorso storico di
         # `discover` e degli altri quattro step, che avvisano e proseguono. Non
@@ -1200,9 +1227,16 @@ class TestSalute(_ConRunnerFinti):
         misure = {"monitor": [], "pipeline": [{"interrotto_per_tetto": True, "motivo": "x"},
                                               {"interrotto_per_tetto": True, "motivo": "x"}],
                   "mese": None, "nuovi": None, "vivi": None, "falliti": None, "lock": []}
-        with patch.object(db, "misure_salute", return_value=misure) as letture:
+        sorveglianza = carica_modulo("sorveglianza")
+        # La riga della rielaborazione si legge con una GET: nei test un finto.
+        with patch.object(db, "misure_salute", return_value=misure) as letture, \
+                patch.object(sorveglianza, "leggi_transizioni_da_decidere",
+                             return_value=None) as transizioni, \
+                patch.object(sorveglianza, "leggi_eventi_marcati", return_value=None) as marcati:
             stato = cli._stato_salute()
         letture.assert_called_once()
+        transizioni.assert_called_once()
+        marcati.assert_called_once()
         self.assertIn(stato.modalita_monitor, ("ombra", "attivo"))
         self.assertEqual(stato.giri_consecutivi_a_tetto, 2)
         self.assertIsNone(stato.misure_db_errore)

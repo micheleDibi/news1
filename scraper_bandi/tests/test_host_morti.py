@@ -146,10 +146,10 @@ class TestBasilicata(unittest.TestCase):
         self.assertEqual(riepilogo["errori"], 0)
         self.assertEqual(riepilogo["host_irraggiungibili"], 1)
         self.assertEqual(riepilogo["host_irraggiungibili_elenco"], [HOST_MORTO])
-        # Nei ricontrolli il rinviato slitta a domani, e nient'altro.
-        self.assertEqual(len(rinvii), 101)
-        self.assertEqual({tuple(p) for _id, p in rinvii}, {("prossimo_controllo_at",)})
-        self.assertEqual({p["prossimo_controllo_at"] for _id, p in rinvii}, {"2026-10-09"})
+        # Giro 3 (§7): i ricontrolli non hanno piu' cadenza (li prende tutti
+        # ogni giro, in ordine di ultimo controllo), quindi il rinvio non
+        # scrive niente, come nei nuovi.
+        self.assertEqual(rinvii, [])
 
     def test_nei_nuovi_il_rinvio_non_scrive_niente(self):
         amb, _richieste, _ = _ambiente()
@@ -209,9 +209,10 @@ class TestTettoDiTempo(unittest.TestCase):
         riepilogo, scritti, rinvii = _giro([_bando(1, lento), _bando(2, URL_BUONO)], amb)
         self.assertLess(time.monotonic() - avvio, 3)
         # Il bando lento non ha verdetto ne' tentativo; quello dopo si lavora.
+        # Giro 3 (§7): nessuna data scritta, il giro dopo lo riprende comunque.
         self.assertEqual([e.bando_id for e in scritti], [2])
         self.assertEqual(riepilogo["rinviati_tempo"], 1)
-        self.assertEqual(rinvii, [(1, {"prossimo_controllo_at": "2026-10-09"})])
+        self.assertEqual(rinvii, [])
 
     def test_il_tetto_predefinito(self):
         self.assertEqual(fu.TETTO_TEMPO_BANDO_S, 120.0)

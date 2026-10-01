@@ -14,12 +14,15 @@ Variabili v11 (piano §6.2, §16.2 M13/M15/M19; tutte con default sicuri: il
 codice non ne pretende nessuna in `.env`, cosi' un deploy che non le imposta
 continua a funzionare in modalita' ombra e con i tetti dello scenario
 bilanciato):
-  - MONITOR_GIRI             (ore dei giri, "06:00,18:00"; M13: era MONITOR_ORE)
+  - MONITOR_GIRI             (ore dei giri, default tutte e quattro; M13: era MONITOR_ORE)
   - MONITOR_MODALITA / RESOLVER_MODALITA  (ombra|attivo, default ombra)
-  - MONITOR_TIPI_ATTIVI      (tipi di evento applicati anche in ombra, "faq,proroga";
-                              default nessuno)
+  - MONITOR_TIPI_ATTIVI      (tipi di evento applicati anche in ombra, "faq,proroga"
+                              oppure "tutti"; default nessuno)
+  - GEMELLI_MODALITA / DOMINI_MODALITA     (giro 3, §3: ombra|attivo, default ombra)
+  - TEMPO_*_S                (giro 3, §3: secondi per passo, con intervallo)
   - MONITOR_SCENARIO         (economico|bilanciato|massimo, default bilanciato)
-  - TETTO_* / BACKFILL_TETTO_*  (tetti per giro, giornalieri, mensili, backfill)
+  - TETTO_* / BACKFILL_TETTO_*  (tetti giornalieri, mensili, backfill: spesa e
+                              crediti, mai un numero di bandi — giro 3, §1)
   - OE_SCHEDE_GIORNO         (tetto schede Obiettivo Europa al giorno)
   - INDEXNOW_API_KEY         (M15: vive qui, non nel backend)
   - LISTINO_MODELLI          (listino $/Mtoken "model_id=in/out,...", A36)
@@ -95,12 +98,12 @@ class Settings:
     monitor_modalita: str          # ombra | attivo
     resolver_modalita: str         # ombra | attivo
     monitor_scenario: str          # economico | bilanciato | massimo
-    # v11: tetti. Per giro solo sul fetch; giornalieri, mensili e backfill
-    # separati (A23: il backfill ha contatori propri e non entra nel mensile).
-    tetto_fetch_giro: int
+    # v11: tetti di spesa e crediti, giornalieri, mensili e backfill separati
+    # (A23: il backfill ha contatori propri e non entra nel mensile). Dal giro 3
+    # nessun tetto di numero (§1): `TETTO_FETCH_GIRO` e
+    # `TETTO_CLASSIFICAZIONI_GIORNO` sono dismessi (vedi `VARIABILI_DISMESSE`).
     tetto_ricerche_giorno: int
     tetto_crediti_giorno: int
-    tetto_classificazioni_giorno: int
     tetto_usd_giorno: float
     tetto_crediti_mese: int
     tetto_usd_mese: float
@@ -133,17 +136,32 @@ class Settings:
     # verifica-stato, la sosta all'ingresso, i gemelli e IndicePA. Tutti con un
     # default, cosi' chi costruisce `Settings` a mano non deve conoscerli.
     verifica_stato_modalita: str = "ombra"         # ombra | attivo
-    verifica_stato_tetto_letture: int = 40
-    verifica_stato_tetto_s: int = 900
-    verifica_stato_max_chiusure: int = 20
+    verifica_stato_tetto_s: int = 1800
     verifica_stato_usa_modello: bool = True
     ingresso_sosta_giri: int = 4
-    verifica_stato_tetto_ingresso: int = 30
-    gemelli_fusioni_per_giro: int = 10             # 0 = spento
     indicepa_url: str = INDICEPA_URL_PREDEFINITO
     #: Le variabili di questo gruppo scartate perche' fuori enum o fuori
     #: intervallo (tornano al default): alimentano configurazione:verifica_stato.
     verifica_stato_scartate: tuple[str, ...] = ()
+    # Giro 3 (contratto `bandi-giro-3` §3): interruttori propri di gemelli e
+    # import di IndicePA (non piu' VERIFICA_STATO_MODALITA) e il tetto di
+    # TEMPO di ogni passo della manutenzione, l'unico freno ammesso oltre a
+    # cortesia, spesa e guardie (§1: niente lotti).
+    gemelli_modalita: str = "ombra"                # ombra | attivo
+    domini_modalita: str = "ombra"                 # ombra | attivo
+    tempo_precoce_s: int = 600
+    tempo_ricontrolli_s: int = 3600
+    tempo_link_verifica_s: int = 1200
+    tempo_rielaborazione_s: int = 3600
+    tempo_monitor_s: int = 3600
+    #: I NOMI (mai i valori) delle variabili del giro 3 scartate perche' fuori
+    #: enum o fuori intervallo (tornano al default): `salute` li porta come
+    #: allarme `configurazione:<nome>`.
+    configurazione_scartate: tuple[str, ...] = ()
+    #: I NOMI (mai i valori) delle variabili dismesse ancora presenti
+    #: nell'ambiente (`VARIABILI_DISMESSE`): nessuno le legge piu', e `salute`
+    #: lo dice come informazione, non come allarme (giro 3, §3).
+    variabili_dismesse: tuple[str, ...] = ()
 
     @property
     def verifica_stato_config_valida(self) -> bool:
@@ -191,10 +209,14 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-def _intero_in_intervallo(name: str, scartate: list[str]) -> int:
-    """Un intero di `INTERVALLI_VERIFICA`: non numerico o fuori intervallo →
-    default, e il nome finisce in `scartate` (mai un'eccezione all'avvio)."""
-    default, minimo, massimo = INTERVALLI_VERIFICA[name]
+def _intero_in_intervallo(
+    name: str, scartate: list[str],
+    intervalli: Mapping[str, tuple[int, int, int]] | None = None,
+) -> int:
+    """Un intero di `INTERVALLI_VERIFICA` (o di `intervalli`): non numerico o
+    fuori intervallo → default, e il nome finisce in `scartate` (mai
+    un'eccezione all'avvio)."""
+    default, minimo, massimo = (intervalli or INTERVALLI_VERIFICA)[name]
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
@@ -209,14 +231,15 @@ def _intero_in_intervallo(name: str, scartate: list[str]) -> int:
     return valore
 
 
-def _modalita_verifica(scartate: list[str]) -> str:
-    """`VERIFICA_STATO_MODALITA`: ombra | attivo; un valore sconosciuto vale ombra."""
-    raw = os.getenv("VERIFICA_STATO_MODALITA", "").strip().lower()
+def _modalita_verifica(scartate: list[str], name: str = "VERIFICA_STATO_MODALITA") -> str:
+    """`VERIFICA_STATO_MODALITA` (o `name`): ombra | attivo; un valore
+    sconosciuto vale ombra e il nome finisce in `scartate`."""
+    raw = os.getenv(name, "").strip().lower()
     if not raw:
         return "ombra"
     if raw in MODALITA:
         return raw
-    scartate.append("VERIFICA_STATO_MODALITA")
+    scartate.append(name)
     return "ombra"
 
 
@@ -242,12 +265,15 @@ def _float_env(name: str, default: float) -> float:
 
 # --- v11: default per scenario, listino e parsing ---------------------------
 
-# Tetti per scenario (§6.2 e A23). Il tetto per giro e' solo sul fetch: gli
-# scenari piu' ricchi fanno piu' giri, quindi il tetto per giro SCENDE.
+# Tetti per scenario (§6.2 e A23): spesa e crediti. Fino al giro 2 c'era anche
+# un tetto per giro sul fetch, dismesso con la regola «niente lotti».
+#
+# I $ sono quelli del giro 3 (contratto `bandi-giro-3` §3 e §4): 5 $ al giorno
+# e 150 al mese nel bilanciato, su tutto cio' che chiama un modello in regime.
 _TETTI_SCENARIO: dict[str, dict[str, float]] = {
-    "economico":  {"fetch_giro": 460, "usd_giorno": 1.0, "crediti_mese": 3800, "usd_mese": 12.0},
-    "bilanciato": {"fetch_giro": 420, "usd_giorno": 1.5, "crediti_mese": 5000, "usd_mese": 16.0},
-    "massimo":    {"fetch_giro": 270, "usd_giorno": 3.0, "crediti_mese": 6500, "usd_mese": 30.0},
+    "economico":  {"usd_giorno": 3.0, "crediti_mese": 3800, "usd_mese": 90.0},
+    "bilanciato": {"usd_giorno": 5.0, "crediti_mese": 5000, "usd_mese": 150.0},
+    "massimo":    {"usd_giorno": 10.0, "crediti_mese": 6500, "usd_mese": 300.0},
 }
 SCENARI = tuple(_TETTI_SCENARIO)
 MODALITA = ("ombra", "attivo")
@@ -256,13 +282,36 @@ MODALITA = ("ombra", "attivo")
 #: intervallo si torna al default e si dice (configurazione:verifica_stato).
 INTERVALLI_VERIFICA: dict[str, tuple[int, int, int]] = {
     # nome: (default, minimo, massimo)
-    "VERIFICA_STATO_TETTO_LETTURE": (40, 1, 200),
-    "VERIFICA_STATO_TETTO_S": (900, 60, 1800),
-    "VERIFICA_STATO_MAX_CHIUSURE": (20, 0, 50),
+    # Giro 3 (§3, §13): l'unico freno della verifica e' il tempo.
+    "VERIFICA_STATO_TETTO_S": (1800, 60, 3600),
     "INGRESSO_SOSTA_GIRI": (4, 0, 12),
-    "VERIFICA_STATO_TETTO_INGRESSO": (30, 0, 200),
-    "GEMELLI_FUSIONI_PER_GIRO": (10, 0, 100),
 }
+
+#: Le variabili dismesse con il giro 3 (§1 «niente lotti», §3): nessun modulo
+#: le legge piu'. Se una e' ancora nell'ambiente, `Settings.variabili_dismesse`
+#: ne riporta il NOME (mai il valore) e `salute` lo dice come informazione.
+VARIABILI_DISMESSE: tuple[str, ...] = (
+    "TETTO_CLASSIFICAZIONI_GIORNO", "TETTO_FETCH_GIRO", "VERIFICA_STATO_TETTO_LETTURE",
+    "VERIFICA_STATO_MAX_CHIUSURE", "VERIFICA_STATO_TETTO_INGRESSO", "GEMELLI_FUSIONI_PER_GIRO",
+)
+
+#: Il tetto di tempo di ogni passo del giro 3 (§1 punto 2, §3), in secondi:
+#: chi resta fuori parte per primo al giro dopo. Fuori intervallo si torna al
+#: default e si dice (`configurazione_scartate` → configurazione:<nome>).
+INTERVALLI_TEMPI: dict[str, tuple[int, int, int]] = {
+    # nome: (default, minimo, massimo)
+    "TEMPO_PRECOCE_S": (600, 60, 7200),
+    "TEMPO_RICONTROLLI_S": (3600, 60, 7200),
+    "TEMPO_LINK_VERIFICA_S": (1200, 60, 7200),
+    "TEMPO_RIELABORAZIONE_S": (3600, 60, 7200),
+    "TEMPO_MONITOR_S": (3600, 60, 7200),
+}
+
+#: Gli interruttori del giro 3 (§3): ombra | attivo, default ombra.
+MODALITA_GIRO_3: tuple[str, ...] = ("GEMELLI_MODALITA", "DOMINI_MODALITA")
+
+#: Il valore di `MONITOR_TIPI_ATTIVI` che vale «tutti i tipi del monitor».
+TUTTI_I_TIPI = "tutti"
 
 # Tetti giornalieri di regime, uguali in tutti gli scenari: sono una cintura
 # contro il consumo anomalo, non la stima del consumo atteso.
@@ -275,7 +324,6 @@ INTERVALLI_VERIFICA: dict[str, tuple[int, int, int]] = {
 # La divergenza fra le due sezioni del piano e' da sanare a monte.
 _RICERCHE_GIORNO = 50
 _CREDITI_GIORNO = 120
-_CLASSIFICAZIONI_GIORNO = 30
 
 # Contatore separato del backfill (A23): non entra nel tetto mensile.
 _BACKFILL_CREDITI = 8000
@@ -287,7 +335,8 @@ _BACKFILL_USD = 60.0
 # monitoraggio spento in silenzio, cioe' il guasto peggiore del piano.
 GIRI_SCHEDULER: tuple[str, ...] = ("00:00", "06:00", "12:00", "18:00")
 
-_GIRI_DEFAULT = ("06:00", "18:00")
+# Giro 3 (§2): la manutenzione gira a ogni giro dello scheduler.
+_GIRI_DEFAULT = GIRI_SCHEDULER
 
 # Listino $/Mtoken (in, out) come MAPPA model_id -> prezzi (A36): un modello
 # non a listino non viene indovinato, `bilancio` alza l'allarme.
@@ -363,6 +412,11 @@ def _tipi_attivi_env(name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     Un valore sconosciuto si scarta con un allarme e non ferma niente: un
     `profroga` scritto male non deve impedire l'avvio del sender, ma nemmeno
     passare inosservato, perche' vorrebbe dire un tipo rimasto in ombra.
+
+    `tutti` (giro 3, §3), anche in mezzo ad altre voci, vale i 12 tipi del
+    monitor nell'ordine di `TIPI_PROPONIBILI`. Il filtro su sospensione,
+    revoca e annullamento della revoca (migrazione 14 e
+    `MONITOR_STATI_ESTESI`) non sta qui: lo fa il monitor, che legge il DB.
     """
     grezzo = os.getenv(name, "").strip()
     if not grezzo:
@@ -371,10 +425,15 @@ def _tipi_attivi_env(name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     from .eventi import TIPI_PROPONIBILI
     validi: list[str] = []
     ignorati: list[str] = []
-    for pezzo in grezzo.split(","):
-        tipo = pezzo.strip().lower()
-        if tipo:
+    voci = [pezzo.strip().lower() for pezzo in grezzo.split(",")]
+    for tipo in voci:
+        if tipo and tipo != TUTTI_I_TIPI:
             (validi if tipo in TIPI_PROPONIBILI else ignorati).append(tipo)
+    if TUTTI_I_TIPI in voci:
+        # L'ordine resta quello del monitor, non quello in cui li ha scritti
+        # chi ha compilato il `.env`; un refuso accanto a `tutti` resta un
+        # allarme, perche' qualcuno credeva di scrivere un tipo.
+        validi = list(TIPI_PROPONIBILI)
     if ignorati:
         logger.warning(
             "[ALLARME] [settings] {}: valori ignorati {} (ammessi solo i tipi del monitor {})",
@@ -423,6 +482,17 @@ def get_settings() -> Settings:
     interi_verifica = {nome: _intero_in_intervallo(nome, scartate_verifica)
                        for nome in INTERVALLI_VERIFICA}
     indicepa = _indicepa_url(scartate_verifica)
+    scartate_giro_3: list[str] = []
+    modalita_giro_3 = {nome: _modalita_verifica(scartate_giro_3, nome) for nome in MODALITA_GIRO_3}
+    tempi = {nome: _intero_in_intervallo(nome, scartate_giro_3, INTERVALLI_TEMPI)
+             for nome in INTERVALLI_TEMPI}
+    if scartate_giro_3:
+        # Solo i nomi: il valore di una variabile scritta male puo' essere
+        # qualunque cosa, anche un segreto incollato nella riga sbagliata.
+        logger.warning(
+            "[ALLARME] [settings] variabili non valide, tornate al default: {}",
+            scartate_giro_3,
+        )
 
     return Settings(
         supabase_url=supabase_url,
@@ -462,11 +532,8 @@ def get_settings() -> Settings:
         monitor_modalita=_scelta_env("MONITOR_MODALITA", MODALITA, "ombra"),
         resolver_modalita=_scelta_env("RESOLVER_MODALITA", MODALITA, "ombra"),
         monitor_scenario=scenario,
-        tetto_fetch_giro=max(0, _int_env("TETTO_FETCH_GIRO", int(tetti["fetch_giro"]))),
         tetto_ricerche_giorno=max(0, _int_env("TETTO_RICERCHE_GIORNO", _RICERCHE_GIORNO)),
         tetto_crediti_giorno=max(0, _int_env("TETTO_CREDITI_GIORNO", _CREDITI_GIORNO)),
-        tetto_classificazioni_giorno=max(
-            0, _int_env("TETTO_CLASSIFICAZIONI_GIORNO", _CLASSIFICAZIONI_GIORNO)),
         tetto_usd_giorno=max(0.0, _float_env("TETTO_USD_GIORNO", tetti["usd_giorno"])),
         tetto_crediti_mese=max(0, _int_env("TETTO_CREDITI_MESE", int(tetti["crediti_mese"]))),
         tetto_usd_mese=max(0.0, _float_env("TETTO_USD_MESE", tetti["usd_mese"])),
@@ -480,13 +547,20 @@ def get_settings() -> Settings:
         monitor_tipi_attivi=tipi_attivi,
         monitor_tipi_attivi_ignorati=tipi_ignorati,
         verifica_stato_modalita=modalita_verifica,
-        verifica_stato_tetto_letture=interi_verifica["VERIFICA_STATO_TETTO_LETTURE"],
         verifica_stato_tetto_s=interi_verifica["VERIFICA_STATO_TETTO_S"],
-        verifica_stato_max_chiusure=interi_verifica["VERIFICA_STATO_MAX_CHIUSURE"],
         verifica_stato_usa_modello=bool_env("VERIFICA_STATO_USA_MODELLO", True),
         ingresso_sosta_giri=interi_verifica["INGRESSO_SOSTA_GIRI"],
-        verifica_stato_tetto_ingresso=interi_verifica["VERIFICA_STATO_TETTO_INGRESSO"],
-        gemelli_fusioni_per_giro=interi_verifica["GEMELLI_FUSIONI_PER_GIRO"],
         indicepa_url=indicepa,
         verifica_stato_scartate=tuple(scartate_verifica),
+        gemelli_modalita=modalita_giro_3["GEMELLI_MODALITA"],
+        domini_modalita=modalita_giro_3["DOMINI_MODALITA"],
+        tempo_precoce_s=tempi["TEMPO_PRECOCE_S"],
+        tempo_ricontrolli_s=tempi["TEMPO_RICONTROLLI_S"],
+        tempo_link_verifica_s=tempi["TEMPO_LINK_VERIFICA_S"],
+        tempo_rielaborazione_s=tempi["TEMPO_RIELABORAZIONE_S"],
+        tempo_monitor_s=tempi["TEMPO_MONITOR_S"],
+        configurazione_scartate=tuple(scartate_giro_3),
+        # Solo i nomi, e solo di quelle presenti: il valore non serve a niente
+        # (nessuno lo legge) e potrebbe essere qualunque cosa.
+        variabili_dismesse=tuple(nome for nome in VARIABILI_DISMESSE if nome in os.environ),
     )

@@ -1397,6 +1397,185 @@ def _scrittore_json(
 
 
 
+# --- riscrittura della scheda con Opus (contratto `bandi-giro-3` §6) ----------
+#
+# Quando la pagina ufficiale dice qualcosa di nuovo che la sostituzione senza
+# modello non sa rendere (FAQ, graduatoria, esito, rettifica di contenuto o di
+# allegati, o una data la cui sostituzione non ha passato il controllo finale),
+# la scheda gia' pubblicata si riscrive con la skill SEO, passandole le novita'.
+# Si scrivono SOLO `contenuto` e `descrizione_breve` (`db.aggiorna_testo_seo`,
+# con `ultimo_cambiamento_at` letto prima): slug e titolo restano congelati. La
+# spesa e' quella dello step `rigenerazione_scheda`, dentro i 5 $ al giorno; a
+# tetto raggiunto la riscrittura si rinvia, non si perde (la coda la tiene il
+# monitor).
+
+#: Lo step della spesa e della riga `pipeline_run` delle riscritture (§4, §6).
+STEP_RISCRITTURA = "rigenerazione_scheda"
+#: I tipi che chiedono sempre la riscrittura, e i campi della `rettifica` che la
+#: chiedono. Le date (apertura, riapertura, proroga, rettifica di data) solo se
+#: la sostituzione senza modello non passa il controllo finale (decisione del
+#: lead sul §6).
+TIPI_RISCRITTURA: frozenset[str] = frozenset({"faq", "graduatoria", "esito"})
+CAMPI_RETTIFICA_RISCRITTURA: frozenset[str] = frozenset({"contenuto", "allegati"})
+#: Quante novita' entrano in una riscrittura: quante il prompt ne mostra
+#: (`seo_skill.MAX_NOVITA`, un test li confronta). Le altre restano a chi
+#: chiama (la coda del monitor), per la riscrittura del giro dopo.
+MAX_NOVITA_PER_RISCRITTURA = 10
+ESITO_SCRITTA = "scritta"
+ESITO_RINVIATA = "rinviata"
+ESITO_FALLITA = "fallita"
+ESITO_SALTATA = "saltata"
+
+
+def chiede_riscrittura(tipo: Any, campo: Any = None) -> bool:
+    """Un evento applicato di questo tipo chiede la riscrittura con Opus?"""
+    if tipo in TIPI_RISCRITTURA:
+        return True
+    return tipo == "rettifica" and campo in CAMPI_RETTIFICA_RISCRITTURA
+
+
+def novita_da_evento(evento: Mapping[str, Any]) -> dict[str, Any]:
+    """La novita' che entra nel prompt: tipo, campo, citazione, pagina di prova."""
+    return {
+        "evento_id": evento.get("id"),
+        "tipo": evento.get("tipo"),
+        "campo": evento.get("campo"),
+        "citazione": str(evento.get("citazione") or "")[:400],
+        "url_prova": evento.get("url_prova"),
+    }
+
+
+def unisci_novita(*elenchi: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Le novita' di piu' fonti (coda e giro), senza doppioni, nell'ordine.
+
+    Due voci sono la stessa se hanno lo stesso `evento_id`, oppure, senza id,
+    lo stesso tipo, campo e citazione.
+    """
+    viste: set[Any] = set()
+    uscita: list[dict[str, Any]] = []
+    for elenco in elenchi:
+        for voce in elenco or ():
+            if not isinstance(voce, Mapping):
+                continue
+            chiave = (("id", voce.get("evento_id")) if voce.get("evento_id") is not None
+                      else ("testo", voce.get("tipo"), voce.get("campo"), voce.get("citazione")))
+            if chiave in viste:
+                continue
+            viste.add(chiave)
+            uscita.append(dict(voce))
+    return uscita
+
+
+@dataclass
+class Riscrittura:
+    """Esito di una riscrittura: scritta | rinviata | fallita | saltata."""
+    bando_id: Any = None
+    esito: str = ESITO_FALLITA
+    motivo: str = ""
+    slug: str | None = None
+    campi: dict[str, Any] = field(default_factory=dict)
+    #: Quante delle novita' passate sono entrate nel prompt (le prime
+    #: `MAX_NOVITA_PER_RISCRITTURA`): le altre non sono ancora nella scheda.
+    novita_usate: int = 0
+
+    def come_dizionario(self) -> dict[str, Any]:
+        return {"bando_id": self.bando_id, "esito": self.esito, "motivo": self.motivo,
+                "slug": self.slug, "campi": sorted(self.campi), "novita_usate": self.novita_usate}
+
+
+async def riscrivi_scheda(
+    bando_id: Any,
+    novita: Sequence[Mapping[str, Any]],
+    *,
+    spesa: bilancio.Contatori,
+    tetti: bilancio.Tetti,
+    gia_oggi: Mapping[str, Any] | None = None,
+    leggi: Callable[[list[Any]], Sequence[Mapping[str, Any]]] | None = None,
+    contesto: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
+    catalogo: Any = None,
+    genera: Callable[..., Awaitable[Any]] | None = None,
+    scrivi: Callable[..., Any] | None = None,
+    dry_run: bool = False,
+) -> Riscrittura:
+    """Riscrive con la skill SEO la scheda pubblicata, con le novita'. Non solleva.
+
+    Prima il tetto di spesa (step `rigenerazione_scheda`): raggiunto, niente
+    chiamate e `rinviata`. Poi la riga (`db.select_bandi_per_rigenera_seo`):
+    un non pubblicato o un fuso e' `saltata`. La generazione e' quella della
+    SEO (`bando_seo_runner.genera_per_bando`, con `contatori=spesa`); si scrive
+    solo se il payload c'e', ha la forma del contratto e il testo nuovo non
+    afferma cose che la fonte non sostiene. `descrizione_breve` solo se sta in
+    180-320 caratteri; altrimenti resta la vecchia. In `dry_run` non si scrive.
+    """
+    esito = Riscrittura(bando_id=bando_id)
+    # Il prompt ne mostra al massimo `MAX_NOVITA_PER_RISCRITTURA`: si passano
+    # solo quelle, e `novita_usate` dice a chi chiama quante sono entrate (le
+    # altre vanno riscritte dopo, non perse).
+    usate = [dict(v) for v in list(novita)[:MAX_NOVITA_PER_RISCRITTURA]]
+    esito.novita_usate = len(usate)
+    try:
+        controllo = bilancio.verifica(spesa, tetti, step=STEP_RISCRITTURA, gia_oggi=gia_oggi)
+        if not controllo.consentito:
+            esito.esito, esito.motivo = ESITO_RINVIATA, controllo.motivo
+            return esito
+        from . import bando_seo_runner as seo
+        if leggi is None:
+            from .db import select_bandi_per_rigenera_seo as leggi
+        righe = [r for r in (leggi([bando_id]) or ()) if r.get("id") == bando_id]
+        if not righe:
+            esito.motivo = "riga non trovata"
+            return esito
+        riga = dict(righe[0])
+        esito.slug = riga.get("slug")
+        rifiuto = seo.motivo_rifiuto(riga)
+        if rifiuto:
+            esito.esito, esito.motivo = ESITO_SALTATA, rifiuto
+            return esito
+        if contesto is None:
+            from .db import build_bando_input_context as contesto
+        if catalogo is None:
+            from .db import load_catalogo
+            catalogo = load_catalogo()
+        input_ctx = dict(contesto(dict(riga), catalogo))
+        input_ctx["novita"] = usate
+        generazione = await (genera or seo.genera_per_bando)(
+            dict(riga), input_ctx, contatori=spesa, descrizione_facoltativa=True)
+        payload = getattr(generazione, "payload", None)
+        if not payload:
+            esito.motivo = f"SEO fallita: {getattr(generazione, 'motivo', '') or 'senza payload'}"
+            return esito
+        campi: dict[str, Any] = {"contenuto": payload.get("contenuto")}
+        descrizione = str(payload.get("descrizione_breve") or "").strip()
+        if DESCRIZIONE_MIN <= len(descrizione) <= DESCRIZIONE_MAX:
+            campi["descrizione_breve"] = descrizione
+        if not seo.forma_valida({**campi, "descrizione_breve": campi.get("descrizione_breve")}):
+            esito.motivo = "testo riscritto fuori forma"
+            return esito
+        fonte = seo.fonte_del_bando(input_ctx, getattr(generazione, "markdown", "") or "")
+        nuove = seo.affermazioni_non_sostenute(seo.testo_scheda(campi), fonte)
+        if nuove:
+            esito.motivo = f"affermazioni non sostenute dalla fonte: {seo._descrivi(nuove)}"
+            return esito
+        esito.campi = campi
+        if dry_run:
+            esito.esito, esito.motivo = ESITO_SCRITTA, "dry-run: niente scritto"
+            return esito
+        if scrivi is None:
+            from .db import aggiorna_testo_seo as scrivi
+        scritto = scrivi(bando_id, campi, ultimo_cambiamento_at=riga.get("ultimo_cambiamento_at"))
+        if hasattr(scritto, "__await__"):
+            scritto = await scritto
+        if not scritto:
+            esito.motivo = "scrittura non riuscita (riga cambiata o non piu' pubblicata)"
+            return esito
+        esito.esito = ESITO_SCRITTA
+        return esito
+    except Exception as e:
+        logger.warning("[rigenera] riscrittura del bando {} fallita: {}", bando_id, e)
+        esito.esito, esito.motivo = ESITO_FALLITA, f"errore: {type(e).__name__}"
+        return esito
+
+
 __all__ = [
     "DESCRIZIONE_MAX", "DESCRIZIONE_MIN", "EsitoGate", "MODELLI_VOCE",
     "PAROLE_RUOLO", "Rigenerazione", "TENTATIVI_MASSIMI", "VOCE_PREDEFINITA",
@@ -1405,4 +1584,9 @@ __all__ = [
     "sostituisci_data", "voce_aggiornamento",
     "COLONNE_DATA", "LOTTO_PREDEFINITO", "STEP_RIGENERA", "TIPI_CON_DATA",
     "contenuto_malformato", "date_da_evento", "run_rigenera",
+    # giro 3 (§6)
+    "CAMPI_RETTIFICA_RISCRITTURA", "ESITO_FALLITA", "ESITO_RINVIATA", "ESITO_SALTATA",
+    "ESITO_SCRITTA", "MAX_NOVITA_PER_RISCRITTURA", "Riscrittura", "STEP_RISCRITTURA",
+    "TIPI_RISCRITTURA",
+    "chiede_riscrittura", "novita_da_evento", "riscrivi_scheda", "unisci_novita",
 ]

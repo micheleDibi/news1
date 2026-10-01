@@ -42,6 +42,7 @@ import hashlib
 import os
 import re
 import time
+from urllib.parse import urljoin, urlsplit
 from dataclasses import dataclass, field, replace
 from datetime import date as date_cls, datetime, timedelta, timezone
 from typing import AbstractSet, Any, Awaitable, Callable, Iterable, Mapping, Sequence
@@ -55,12 +56,13 @@ from .dominio_ufficiale import (
     dominio_di,
     e_aggregatore,
     registrabile,
+    scegli_fonte,
     tipo_fonte_ufficiale,
 )
-from .date_validation import estrai_date_con_ruolo, norm_cit
+from .date_validation import estrai_date_con_ruolo, norm_cit, scadenza_provvisoria
 from .logger import logger
 from .normalize import normalize_for_canonical
-from .preprocessor import _is_likely_index_url
+from .preprocessor import _auto_reject, _is_likely_index_url
 from .stato_bando import oggi_roma
 
 
@@ -268,6 +270,10 @@ class Contesto:
     #: intitolato noi. E' quello che la pagina dell'ente porta davvero.
     titolo_fonte: str = ""
     tabella: Tabella = TABELLA_SEED
+    #: Giro 3 (§7): `data_scadenza` e' la scadenza PROVVISORIA di una riga
+    #: appena entrata (`date_validation.scadenza_provvisoria`), non quella del
+    #: preprocess. Vale solo come conferma (+15), mai come smentita.
+    scadenza_provvisoria: bool = False
 
     @property
     def token_titolo(self) -> frozenset[str]:
@@ -338,6 +344,17 @@ class Contatori:
     host_morti: set[str] = field(default_factory=set)
     interrotto_per_tetto: bool = False
     motivo: str = ""
+    #: Giro 3 (§4): nei ricontrolli, a tetto raggiunto si saltano solo i passi
+    #: a pagamento (ricerca, arbitro); gli scarichi continuano e il passo non
+    #: si ferma. Quanti passi a pagamento sono stati saltati, e il primo motivo.
+    passi_saltati_per_spesa: int = 0
+    motivo_spesa: str = ""
+    #: Giro 3 (§7), resolver precoce: gli esiti diversi da `trovata`, che non
+    #: lasciano traccia (li riprende la passata `nuovi`), e le righe tolte dalla
+    #: selezione (`processed` chiusi o revocati, scarti di `_auto_reject`).
+    senza_traccia: int = 0
+    esclusi_chiusi: int = 0
+    esclusi_auto_reject: int = 0
 
     def come_dizionario(self) -> dict[str, Any]:
         return {
@@ -363,7 +380,15 @@ class Contatori:
             "host_irraggiungibili": len(self.host_morti),
             "host_irraggiungibili_elenco": sorted(self.host_morti)[
                 :MAX_HOST_IRRAGGIUNGIBILI_ELENCO],
+            "passi_saltati_per_spesa": self.passi_saltati_per_spesa,
+            "senza_traccia": self.senza_traccia,
+            "esclusi_chiusi": self.esclusi_chiusi,
+            "esclusi_auto_reject": self.esclusi_auto_reject,
         }
+
+
+#: Le voci dello scarico che entrano nella spesa di un passo (§19.1).
+VOCI_SCARICO: tuple[str, ...] = ("fetch", "fetch_304", "crediti_firecrawl")
 
 
 @dataclass
@@ -378,6 +403,11 @@ class Ambiente:
     sedia_dettaglio: Callable[[str], tuple[int, Any] | None] | None = None
     scheda_oe: Callable[[Mapping[str, Any]], Awaitable[oe_scheda.Scheda | None]] | None = None
     verifica_allegato: Callable[[str], Any] | None = None
+    #: Giro 3 (P2 della revisione #144): la stessa verifica degli allegati, ma
+    #: cortese e asincrona — lucchetto per host, freno di 1 s e richiesta in
+    #: un thread. Con questa, `_passo_allegati` non blocca piu' l'event loop
+    #: dei bandi in parallelo. Senza (test), resta la chiamata sincrona.
+    verifica_cortese: Callable[[str], Awaitable[Any]] | None = None
     #: Chiusura del client HTTP della verifica, se ne esiste uno da chiudere.
     chiudi_verifica: Callable[[], None] | None = None
     pubblicati: Sequence[Mapping[str, Any]] = ()
@@ -404,33 +434,103 @@ class Ambiente:
     oggi: date_cls = field(default_factory=oggi_roma)
     attivo: bool = False
     da_segnale: bool = False        # su segnale C: solo passi 1, 2 e 3a
+    #: Giro 3 (§7): il resolver precoce lavora con la scadenza provvisoria.
+    scadenza_provvisoria: bool = False
+    #: Il consumo dei giri precedenti della giornata e del mese
+    #: (`db.consumo_oggi`): lo leggono i tetti della manutenzione (§4).
+    gia_oggi: Mapping[str, float] | None = None
+    #: §18.5: `db.consumo_oggi` non si e' letto. Per la manutenzione vale tetto
+    #: raggiunto (niente ricerche ne' arbitro, i controlli gratuiti continuano);
+    #: l'ingresso e il backfill non lo guardano.
+    consumo_illeggibile: bool = False
     max_sonda: int = 3
     max_candidati: int = 12
     tetto_tempo_bando_s: float = TETTO_TEMPO_BANDO_S
     #: Quanto di `spesa_scarico()` e' gia' stato sommato in `spesa`: i contatori
     #: dello scarico sono cumulativi sul giro, quindi si somma solo il delta.
+    #: In produzione parte dai contatori correnti (`parti_da_qui`, §19.1).
     assorbito: dict[str, int] = field(default_factory=dict)
+
+    def _contatori_scarico(self) -> Any:
+        if self.spesa_scarico is None:
+            return None
+        try:
+            return self.spesa_scarico()
+        except Exception as e:                           # pragma: no cover - difesa
+            logger.debug("[resolver] contatori dello scarico non leggibili: {}", e)
+            return None
+
+    def parti_da_qui(self) -> None:
+        """La passata conta solo cio' che lo scarico fa da adesso (§19.1).
+
+        I contatori dello scarico si azzerano solo a inizio giro: con
+        `assorbito` vuoto ognuna delle tre passate (precoce, nuovi,
+        ricontrolli) riassorbiva tutto il giro, e i crediti del precoce
+        finivano in tre righe. Preprocess, enrich e rielaborazione scrivono
+        nella loro riga il proprio delta.
+        """
+        contatori = self._contatori_scarico()
+        if contatori is None:
+            return
+        self.assorbito = {nome: int(getattr(contatori, nome, 0) or 0) for nome in VOCI_SCARICO}
 
     def assorbi_spesa(self) -> None:
         """Porta in `spesa` la parte non ancora contata dello scarico."""
-        if self.spesa_scarico is None:
+        contatori = self._contatori_scarico()
+        if contatori is None:
             return
-        try:
-            contatori = self.spesa_scarico()
-        except Exception as e:                           # pragma: no cover - difesa
-            logger.debug("[resolver] contatori dello scarico non leggibili: {}", e)
-            return
-        for nome in ("fetch", "fetch_304", "crediti_firecrawl"):
+        for nome in VOCI_SCARICO:
             attuale = int(getattr(contatori, nome, 0) or 0)
-            delta = attuale - self.assorbito.get(nome, 0)
+            gia = self.assorbito.get(nome, 0)
+            # Contatori azzerati nel frattempo (`scarico.svuota`): conta da zero.
+            delta = attuale - gia if attuale >= gia else attuale
             if delta > 0:
                 setattr(self.spesa, nome, getattr(self.spesa, nome) + delta)
-                self.assorbito[nome] = attuale
+            self.assorbito[nome] = attuale
 
     def consentito(self) -> bilancio.Esito:
-        """I tetti mordono qui, una volta per bando: §5 e M19."""
+        """I tetti mordono qui, una volta per bando: §5 e M19.
+
+        Giro 3 (§4): per la catena d'ingresso (`resolver_precoce`, `resolver`)
+        `bilancio.verifica` dice sempre si': si conta e basta.
+        """
         self.assorbi_spesa()
-        return bilancio.verifica(self.spesa, self.tetti, step=self.step)
+        if self.consumo_illeggibile:
+            return bilancio.verifica_con_consumo(self.spesa, self.tetti, step=self.step,
+                                                 consumo=None)
+        return bilancio.verifica(self.spesa, self.tetti, step=self.step, gia_oggi=self.gia_oggi)
+
+    def deve_fermarsi(self) -> bool:
+        """Il passo si ferma del tutto? Solo un lotto di backfill a tetto (M19).
+
+        La catena d'ingresso non si ferma mai e la manutenzione di regime (i
+        ricontrolli) a tetto continua i controlli gratuiti (giro 3, §4): per
+        loro i tetti mordono solo sui passi a pagamento (`puo_spendere`).
+        """
+        if not bilancio.e_backfill(self.step):
+            return False
+        esito = self.consentito()
+        if esito.consentito:
+            return False
+        self.ferma_per_tetto(esito)
+        return True
+
+    def puo_spendere(self) -> bool:
+        """Un passo a pagamento (ricerca, arbitro) puo' partire?
+
+        A tetto raggiunto: un lotto di backfill si ferma (`ferma_per_tetto`),
+        la manutenzione di regime salta solo questo passo e prosegue.
+        """
+        esito = self.consentito()
+        if esito.consentito:
+            return True
+        if bilancio.e_backfill(self.step):
+            self.ferma_per_tetto(esito)
+        else:
+            self.contatori.passi_saltati_per_spesa += 1
+            if not self.contatori.motivo_spesa:
+                self.contatori.motivo_spesa = esito.motivo
+        return False
 
     def ferma_per_tetto(self, esito: bilancio.Esito) -> None:
         """Registra il motivo una volta sola: chi legge il dizionario finale
@@ -758,6 +858,11 @@ def punteggia(candidato: Candidato, contesto: Contesto) -> Punteggio:
         if contesto.data_scadenza in scadenze:
             voci.append(("scadenza", PUNTI["scadenza"]))
             segnali.add(SEGNALE_CONTENUTO)
+        elif contesto.scadenza_provvisoria:
+            # Una scadenza provvisoria (giro 3, §7) conferma e non smentisce:
+            # una data diversa sulla pagina non toglie punti e non e' una
+            # proroga, perche' la data vera la decide il preprocess.
+            pass
         elif scadenze and not _RE_PROROGA.search(pagina.testo or ""):
             # Data diversa nello stesso ruolo e nessuna parola di proroga: il
             # candidato perde punti ed entra nella coda del monitor come
@@ -904,8 +1009,15 @@ def scaduto(
 
 # --- costruzione dei candidati (passo 1, puro) ------------------------------
 
-def contesto_da_bando(bando: Mapping[str, Any], *, tabella: Tabella = TABELLA_SEED) -> Contesto:
-    """`Contesto` da una riga di `bando`. Nessun I/O."""
+def contesto_da_bando(
+    bando: Mapping[str, Any], *, tabella: Tabella = TABELLA_SEED, provvisoria: bool = False,
+) -> Contesto:
+    """`Contesto` da una riga di `bando`. Nessun I/O.
+
+    `provvisoria=True` (il resolver precoce, giro 3 §7): la scadenza e' quella
+    che la riga dichiara prima del preprocess (`scadenza_provvisoria`), con
+    `data_scadenza` come ripiego, e vale solo come conferma.
+    """
     titolo = str(bando.get("titolo") or bando.get("titolo_raw") or "").strip()
     scadenza = bando.get("data_scadenza")
     if isinstance(scadenza, str):
@@ -913,6 +1025,8 @@ def contesto_da_bando(bando: Mapping[str, Any], *, tabella: Tabella = TABELLA_SE
             scadenza = date_cls.fromisoformat(scadenza[:10])
         except ValueError:
             scadenza = None
+    if provvisoria:
+        scadenza = scadenza_provvisoria(dict(bando)) or scadenza
     importo = bando.get("importo_totale_eur")
     try:
         importo = int(importo) if importo is not None else None
@@ -932,6 +1046,7 @@ def contesto_da_bando(bando: Mapping[str, Any], *, tabella: Tabella = TABELLA_SE
         identificatori=identificatori,
         numero_atto=gemelli.numero_atto(bando),
         tabella=tabella,
+        scadenza_provvisoria=provvisoria,
     )
 
 
@@ -1154,11 +1269,11 @@ async def _valuta(
     valutati: list[tuple[Candidato, Punteggio]] = []
     if ambiente.scarica is None:
         return valutati
-    # Fino a `max_candidati` scarichi per bando, piu' sonda e gemello: e' qui
-    # che si consuma il tetto per giro, non nella ricerca a pagamento.
-    esito_tetto = ambiente.consentito()
-    if not esito_tetto.consentito:
-        ambiente.ferma_per_tetto(esito_tetto)
+    # Fino a `max_candidati` scarichi per bando, piu' sonda e gemello. Gli
+    # scarichi del resolver sono gratuiti (niente ripiego Firecrawl): li ferma
+    # solo un lotto di backfill a tetto, mai l'ingresso ne' i ricontrolli
+    # (giro 3, §4).
+    if ambiente.deve_fermarsi():
         return valutati
     for candidato in candidati[: ambiente.max_candidati]:
         if e_aggregatore(candidato.url, ambiente.tabella):
@@ -1255,9 +1370,7 @@ async def _passo_ricerca(
         # atteso a zero: se cresce, qualcuno ha aggirato la regola.
         ambiente.contatori.ricerche_da_segnale += 1
         return ()
-    esito = ambiente.consentito()
-    if not esito.consentito:
-        ambiente.ferma_per_tetto(esito)
+    if not ambiente.puo_spendere():
         return ()
     domini = domini_ammessi(contesto, bando)
     try:
@@ -1294,6 +1407,9 @@ async def _passo_arbitro(
     grigi = zona_grigia(valutati)
     if ambiente.arbitro is None or len(grigi) < 2:
         return None
+    # L'arbitro chiama un modello: a tetto la manutenzione lo salta (§4).
+    if not ambiente.puo_spendere():
+        return None
     try:
         indice = await ambiente.arbitro(contesto, [c for c, _ in grigi])
     except Exception as e:
@@ -1329,11 +1445,23 @@ async def _passo_allegati(
     if pagina is None or not pagina.html or ambiente.verifica_allegato is None:
         return (), ()
     try:
-        estrazione = allegati_mod.estrai(
-            pagina.html, candidato.url, contesto.titolo,
-            verifica=ambiente.verifica_allegato,
-            blocklist=ambiente.tabella,
-        )
+        if ambiente.verifica_cortese is not None:
+            # Giro 3: `estrai` (sincrono) gira in un thread, e ogni sua verifica
+            # torna sull'event loop per prendere il lucchetto dell'host e il
+            # freno (`verifica_sincrona_cortese`). Il loop resta libero perche'
+            # qui si fa `await` sul thread, mai una chiamata sincrona.
+            verifica = verifica_sincrona_cortese(
+                ambiente.verifica_cortese, asyncio.get_running_loop())
+            estrazione = await asyncio.to_thread(
+                allegati_mod.estrai, pagina.html, candidato.url, contesto.titolo,
+                verifica=verifica, blocklist=ambiente.tabella,
+            )
+        else:
+            estrazione = allegati_mod.estrai(
+                pagina.html, candidato.url, contesto.titolo,
+                verifica=ambiente.verifica_allegato,
+                blocklist=ambiente.tabella,
+            )
     except Exception as e:
         ambiente.contatori.errori += 1
         logger.info("[resolver] allegati di {} non estratti: {}", candidato.url, e)
@@ -1346,6 +1474,35 @@ async def _passo_allegati(
     return tuple(estrazione.forma()), stati
 
 
+#: Quanto un thread di `allegati.estrai` aspetta una verifica cortese: il
+#: lucchetto dell'host puo' essere preso da un altro bando, ma un host appeso
+#: non deve tenere fermo il thread per sempre. Oltre, la verifica vale «nessuna
+#: risposta» (None), come quando la richiesta non arriva.
+TIMEOUT_VERIFICA_CORTESE_S = 90.0
+
+
+def verifica_sincrona_cortese(
+    cortese: Callable[[str], Awaitable[Any]],
+    ciclo: asyncio.AbstractEventLoop,
+    *,
+    timeout_s: float = TIMEOUT_VERIFICA_CORTESE_S,
+) -> Callable[[str], Any]:
+    """Il `verifica(url)` sincrono che `allegati.estrai` si aspetta, da
+    chiamare **da un thread**: rimanda la coroutine cortese sull'event loop
+    (`run_coroutine_threadsafe`) e ne aspetta il risultato con un timeout.
+    Un errore o il timeout valgono None («nessuna risposta»): un'eccezione
+    qui farebbe fallire l'estrazione di tutti gli allegati della pagina."""
+    def verifica(url: str) -> Any:
+        futuro = asyncio.run_coroutine_threadsafe(cortese(url), ciclo)
+        try:
+            return futuro.result(timeout=timeout_s)
+        except Exception as e:
+            futuro.cancel()
+            logger.info("[resolver] verifica di {} senza risposta: {}", url, type(e).__name__)
+            return None
+    return verifica
+
+
 async def risolvi(bando: Mapping[str, Any], ambiente: Ambiente) -> Esito:
     """La cascata a cinque passi di §5 su **un** bando. Non solleva mai.
 
@@ -1354,7 +1511,8 @@ async def risolvi(bando: Mapping[str, Any], ambiente: Ambiente) -> Esito:
     dai tetti; gli allegati si estraggono solo sulla pagina effettivamente
     scelta, mai sui candidati scartati.
     """
-    contesto = contesto_da_bando(bando, tabella=ambiente.tabella)
+    contesto = contesto_da_bando(
+        bando, tabella=ambiente.tabella, provvisoria=ambiente.scadenza_provvisoria)
     ambiente.contatori.esaminati += 1
     tentativi = int(bando.get("tentativi_resolver") or 0)
 
@@ -1639,9 +1797,177 @@ def righe_link(esito: Esito, *, tabella: Tabella = TABELLA_SEED) -> list[dict[st
     return righe
 
 
-def payload_controllo(esito: Esito) -> dict[str, Any]:
-    """Le colonne calde di `bando_controllo`. Mai su `bando` (§5, A8/A27)."""
-    return {
+# --- la prova di provenienza di un link (giro 3, §10) -------------------------
+
+def _forme_relative(url: str, url_pagina: str | None) -> tuple[str, ...]:
+    """Gli `href` relativi con cui la pagina puo' citare `url` quando stanno
+    sullo stesso host: `href="/path?query"` (fra virgolette, perche' un
+    percorso nudo come «/bandi» comparirebbe ovunque)."""
+    if not url_pagina or dominio_di(url) != dominio_di(url_pagina):
+        return ()
+    parti = urlsplit(url)
+    relativo = parti.path + (f"?{parti.query}" if parti.query else "")
+    if not relativo or relativo == "/":
+        return ()
+    forme: list[str] = []
+    for forma in oe_scheda._forme_href(relativo):
+        for virgolette in ('"', "'"):
+            candidata = f"href={virgolette}{forma}{virgolette}"
+            if candidata not in forme:
+                forme.append(candidata)
+    return tuple(forme)
+
+
+#: I caratteri che possono chiudere un URL nell'HTML: virgolette, i bordi di
+#: un tag, uno spazio, e il frammento (`#sezione` e' la stessa risorsa).
+#: Tutto il resto lo continua: `?id=1` non e' `?id=12`, `avviso` non e'
+#: `avviso-2024.pdf` (revisione #147, P1).
+_FINE_URL = frozenset('"\'<> \t\r\n#')
+
+
+def _occorrenza_intera(html: str, forma: str) -> int:
+    """La prima posizione di `forma` nell'HTML seguita da un confine
+    (`_FINE_URL` o la fine del testo), o -1. Senza confine un URL
+    risulterebbe «trovato» dentro un URL piu' lungo che lo contiene."""
+    inizio = html.find(forma)
+    while inizio >= 0:
+        fine = inizio + len(forma)
+        if fine >= len(html) or html[fine] in _FINE_URL:
+            return inizio
+        inizio = html.find(forma, inizio + 1)
+    return -1
+
+
+def prova_nella_pagina(url: str, html: str | None, url_pagina: str | None = None) -> str | None:
+    """`"<sha256 della pagina>#<offset>"` se `url` compare nell'HTML, o None.
+
+    La stessa forma della prova delle schede OE (`oe_scheda.analizza`): il
+    primo valore identifica la pagina, il secondo dice dove sta il link. Si
+    cerca l'URL assoluto nelle forme di `oe_scheda._forme_href` (anche con le
+    entita' HTML), poi l'`href` relativo quando link e pagina stanno sullo
+    stesso host, che e' il caso comune degli allegati sul sito dell'ente.
+    """
+    if not url or not html:
+        return None
+    for forma in oe_scheda._forme_href(url):
+        posizione = _occorrenza_intera(html, forma)
+        if posizione >= 0:
+            return f"{oe_scheda.impronta_scheda(html)}#{posizione}"
+    for forma in _forme_relative(url, url_pagina):
+        posizione = html.find(forma)
+        if posizione >= 0:
+            # L'offset e' quello del valore dell'attributo, come per le schede.
+            return f"{oe_scheda.impronta_scheda(html)}#{posizione + len('href=') + 1}"
+    return None
+
+
+def pagina_di_riferimento(bando: Mapping[str, Any]) -> str:
+    """La pagina in cui un link del bando deve comparire (giro 3, §10).
+
+    Con la fonte `trovata`, la pagina scelta da `scegli_fonte` (l'ufficiale,
+    o `link_bando` se l'ufficiale e' un PDF). Altrimenti `link_bando`, anche
+    se e' un aggregatore (decisione del lead dell'01/10, misura D1: la stessa
+    informazione che il sito mostra oggi dalle colonne).
+    """
+    if str(bando.get("fonte_ufficiale_stato") or "") == STATO_TROVATA:
+        url, _ufficiale = scegli_fonte(bando)
+        if url:
+            return url
+    return str(bando.get("link_bando") or "").strip()
+
+
+#: Le sole fonti del link di candidatura che diventano una riga (§10): un
+#: `fallback_source` e' l'URL della fonte rimesso li' dalla skill, non un link
+#: trovato nella pagina.
+SORGENTE_CANDIDATURA_ESTRATTA = "extracted"
+
+
+def righe_link_da_payload(
+    bando: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    html_riferimento: str | None,
+    *,
+    url_riferimento: str | None = None,
+    tabella: Tabella = TABELLA_SEED,
+    guardia: Callable[[str], str] | None = None,
+) -> list[dict[str, Any]]:
+    """Le righe di `bando_link` di un bando appena pubblicato (giro 3, §10).
+
+    Dal payload SEO validato: la candidatura, solo se
+    `link_candidatura_source='extracted'`, e gli allegati. Le chiama
+    `bando_seo_runner._do_one` (M3) dopo un `update_bando_completed` riuscito e
+    le scrive con `db.upsert_bando_link`; le colonne vecchie di `bando` restano
+    scritte fino alla migrazione 07.
+
+    Ogni riga nasce `pubblicabile=false` e senza `esito_http`: la
+    pubblicabilita' la decide solo `link-verifica`. La prova si calcola qui
+    sull'HTML della pagina da cui la SEO ha preso il testo
+    (`html_riferimento`, l'HTML grezzo); `url_riferimento` e' l'URL effettivo
+    di quella pagina (di norma `url_finale`), con `pagina_di_riferimento` come
+    ripiego. Niente URL non http(s) (il CHECK `bando_link_url_valido` farebbe
+    fallire l'upsert dell'intero lotto) ne' su un aggregatore (non sarebbero
+    mai pubblicabili). `tabella` decide `origine` (di norma la whitelist del
+    DB, `_tabella_corrente()`; il seed per difetto).
+
+    §18.6: un URL che risolve a un indirizzo interno non entra in `bando_link`
+    (`guardia`, di norma `http.classifica_indirizzo`). Un DNS che non risponde
+    non basta a scartare: la riga nasce non pubblicabile e la verifica dei link
+    la guarda di nuovo prima di ogni richiesta.
+    """
+    bando_id = bando.get("id")
+    if bando_id is None:
+        return []
+    if guardia is None:
+        from .http import classifica_indirizzo as guardia
+    pagina = str(url_riferimento or pagina_di_riferimento(bando) or "") or None
+    adesso = _adesso()
+    righe: list[dict[str, Any]] = []
+    visti: set[str] = set()
+
+    def aggiungi(url: Any, tipo: str, etichetta: Any = None, content_type: Any = None) -> None:
+        testo = str(url or "").strip()
+        if not testo.lower().startswith(("http://", "https://")) or e_aggregatore(testo, tabella):
+            return
+        if guardia(testo) == _RIFIUTATO:
+            logger.warning("[seo] link {} del bando {} scartato: indirizzo non pubblico",
+                           testo, bando_id)
+            return
+        chiave = impronte.normalizza_url(testo) or testo
+        if chiave in visti:
+            return
+        visti.add(chiave)
+        prova = prova_nella_pagina(testo, html_riferimento, pagina)
+        righe.append({
+            "bando_id": bando_id,
+            "url": testo,
+            "tipo": tipo,
+            "origine": _origine_link(testo, tabella),
+            "etichetta": (str(etichetta).strip() or None) if etichetta else None,
+            "content_type": content_type or None,
+            "esito_http": None,
+            "pubblicabile": False,
+            "impronta_pagina": prova,
+            "url_prova": pagina if prova else None,
+            "trovato_in_fonte_at": adesso if prova else None,
+        })
+
+    if payload.get("link_candidatura_source") == SORGENTE_CANDIDATURA_ESTRATTA:
+        aggiungi(payload.get("link_candidatura"), "candidatura")
+    for allegato in payload.get("allegati") or ():
+        if isinstance(allegato, Mapping):
+            aggiungi(allegato.get("url"), "allegato", allegato.get("label"), allegato.get("tipo"))
+    return righe
+
+
+def payload_controllo(esito: Esito, *, gia_trovata: bool = False) -> dict[str, Any]:
+    """Le colonne calde di `bando_controllo`. Mai su `bando` (§5, A8/A27).
+
+    Giro 3 (§7): `prossimo_controllo_at` e `priorita_controllo` di un bando
+    che era GIA' `trovata` (`--forza`, `--id`) sono del monitor e non si
+    toccano. Un bando che diventa `trovata` adesso riceve `oggi`, il seme della
+    coda del monitor.
+    """
+    payload = {
         "ultimo_controllo_at": _adesso(),
         "prossimo_controllo_at": (
             esito.prossimo_controllo.isoformat() if esito.prossimo_controllo else None
@@ -1650,6 +1976,10 @@ def payload_controllo(esito: Esito) -> dict[str, Any]:
         "tentativi_resolver": int(esito.tentativi),
         "candidato_prioritario": esito.candidato_prioritario,
     }
+    if gia_trovata and esito.stato == STATO_TROVATA:
+        del payload["prossimo_controllo_at"]
+        del payload["priorita_controllo"]
+    return payload
 
 
 def eventi(esito: Esito, *, attivo: bool) -> list[dict[str, Any]]:
@@ -1696,12 +2026,15 @@ def scrivi_esito(
     tabella: Tabella = TABELLA_SEED,
     strumento: Any | None = None,
     client: Any | None = None,
+    gia_trovata: bool = False,
 ) -> dict[str, Any]:
     """Riversa l'esito su `bando`, `bando_link`, `bando_controllo` ed eventi.
 
     In ombra (`attivo=False`) le colonne pubbliche **non** si toccano: si
     scrivono solo `bando_controllo` (che nessuno legge) e gli eventi muti, cosi'
     il committente puo' misurare la resa prima di cambiare una riga visibile.
+    `gia_trovata`: la fonte era gia' `trovata` prima del giro (vedi
+    `payload_controllo`).
     """
     scritture: dict[str, Any] = {
         "bando": False, "link": 0, "link_promosso": False,
@@ -1729,7 +2062,8 @@ def scrivi_esito(
         scritture["bando"] = bool(esito_scrittura.get("scritto"))
 
     controllo_scritto = db.aggiorna_controllo(
-        esito.bando_id, payload_controllo(esito), client=client, strumento=strumento,
+        esito.bando_id, payload_controllo(esito, gia_trovata=gia_trovata),
+        client=client, strumento=strumento,
     )
     scritture["controllo"] = bool(controllo_scritto.get("scritto"))
     scritture["eventi"] = sum(
@@ -1806,7 +2140,21 @@ def _promuovi_riga_fonte(
 # --- runner: `python -m app risolvi-fonte` ----------------------------------
 
 LOCK_RESOLVER = "bandi_resolver"
-LOCK_TTL_S = 2 * 3600
+#: Il margine del lucchetto oltre il tempo dei ricontrolli (giro 3, §7): un
+#: bando gia' partito finisce anche a tempo scaduto.
+MARGINE_LOCK_S = 1800
+#: Il TTL quando `.env` non si legge: il default di TEMPO_RICONTROLLI_S piu'
+#: il margine.
+LOCK_TTL_S = 3600 + MARGINE_LOCK_S
+
+
+def ttl_lock_resolver() -> int:
+    """Il TTL del lucchetto `bandi_resolver`: `TEMPO_RICONTROLLI_S + 1800`."""
+    try:
+        from .settings import get_settings
+        return int(get_settings().tempo_ricontrolli_s) + MARGINE_LOCK_S
+    except Exception:
+        return LOCK_TTL_S
 #: Le tre fonti Obiettivo Europa (449/450/451), escluse dalla whitelist.
 FONTI_OE: tuple[int, ...] = (449, 450, 451)
 
@@ -1864,8 +2212,9 @@ def _da_risolvere_ora(
     resolver non ha mai guardato, e senza questa clausola i `nuovi`
     aspetterebbero fino a due settimane).
 
-    Gia' vista: vale la cadenza di `scaduto()`, in tutti e tre i modi e non
-    solo nei `ricontrolli`. Prima una riga finita `non_trovata` restava in
+    Gia' vista: vale la cadenza di `scaduto()`, nei modi `nuovi` e `backlog`
+    (dal giro 3 i `ricontrolli` non hanno cadenza e il `precoce` non lascia
+    traccia: hanno selezioni proprie). Prima una riga finita `non_trovata` restava in
     testa alla coda e veniva rilavorata a ogni lancio, con il costo pieno
     della cascata (fino a 4 crediti Firecrawl a bando) per rifare una ricerca
     gia' fallita.
@@ -1946,6 +2295,199 @@ def _da_risolvere(
     return raccolte, controlli
 
 
+#: Fino a quanti bandi i ricontrolli lavorano insieme (giro 3, §7). La cortesia
+#: verso gli enti non dipende da questo numero: la garantiscono il freno per
+#: host condiviso (`http._wait_for_host`, 1 s fra due richieste) e il lucchetto
+#: per host del resolver (mai due richieste insieme allo stesso host).
+PARALLELO_RICONTROLLI = 5
+
+#: Lo step di `pipeline_run` per modo: la chiave del giro (contratto
+#: `bandi-giro-3` §2 e §4). `resolver_precoce` e `resolver` sono catena
+#: d'ingresso e non si fermano per nessun tetto; `ricontrolli` e' manutenzione.
+STEP_PER_MODO: dict[str, str] = {
+    "precoce": "resolver_precoce", "nuovi": "resolver", "backlog": "resolver",
+    "ricontrolli": "ricontrolli",
+}
+
+#: Il tetto di tempo per modo (§3): il campo di `Settings` e il suo default.
+#: I `nuovi` non ne hanno uno (§7: «come oggi»).
+_TEMPO_PER_MODO: dict[str, tuple[str, float]] = {
+    "precoce": ("tempo_precoce_s", 600.0),
+    "ricontrolli": ("tempo_ricontrolli_s", 3600.0),
+}
+
+
+def tetto_tempo_s(modo: str) -> float | None:
+    """I secondi che il modo puo' lavorare in un giro, o None (nessun tetto)."""
+    voce = _TEMPO_PER_MODO.get(modo)
+    if voce is None:
+        return None
+    campo, predefinito = voce
+    try:
+        from .settings import get_settings
+        return float(getattr(get_settings(), campo, predefinito))
+    except Exception:
+        return predefinito
+
+
+def _scorri_selezione(
+    *, modo: str, offset: int, solo_oe: bool, solo_in_verifica: bool, forza: bool,
+) -> list[Mapping[str, Any]]:
+    """Tutta la selezione di un modo, a pagine (giro 3: niente lotti)."""
+    righe: list[Mapping[str, Any]] = []
+    cursore = max(0, int(offset or 0))
+    while True:
+        blocco = db.select_bandi_da_risolvere(
+            limit=PAGINA_SELEZIONE_RESOLVER, offset=cursore, modo=modo,
+            solo_oe=solo_oe, solo_in_verifica=solo_in_verifica,
+            forza=forza, fonti_oe=FONTI_OE,
+        )
+        righe.extend(blocco)
+        cursore += len(blocco)
+        if len(blocco) < PAGINA_SELEZIONE_RESOLVER:
+            return righe
+
+
+def _da_risolvere_precoce(
+    *, limit: int | None, offset: int, solo_oe: bool, forza: bool, contatori: Contatori,
+) -> tuple[list[Mapping[str, Any]], dict[Any, Mapping[str, Any]]]:
+    """Le righe del resolver precoce (giro 3, §7): `scraped` e `processed`
+    senza fonte, tolti i `processed` chiusi o revocati (l'enrich non li prende
+    mai: 491 righe morte misurate il 01/10) e cio' che `_auto_reject`
+    scarterebbe al preprocess. Nessuna cadenza: chi non trova la fonte non
+    lascia traccia, e lo riprende la passata `nuovi`."""
+    if limit is not None and int(limit) <= 0:
+        return [], {}
+    scelte: list[Mapping[str, Any]] = []
+    for bando in _scorri_selezione(modo="precoce", offset=offset, solo_oe=solo_oe,
+                                   solo_in_verifica=False, forza=forza):
+        if (bando.get("stato_processing") == "processed"
+                and bando.get("stato_bando") in db.STATI_FUORI_RICONTROLLI):
+            contatori.esclusi_chiusi += 1
+            continue
+        if _auto_reject(dict(bando)) is not None:
+            contatori.esclusi_auto_reject += 1
+            continue
+        scelte.append(bando)
+        if limit is not None and len(scelte) >= int(limit):
+            break
+    controlli = db.select_controlli([b.get("id") for b in scelte]) if scelte else {}
+    return scelte, controlli
+
+
+def _chiave_rotazione(bando: Mapping[str, Any], controllo: Mapping[str, Any] | None) -> tuple:
+    """Mai controllato per primo, poi dal controllo piu' vecchio, poi per id.
+
+    Gli istanti di PostgREST sono tutti in UTC con lo stesso formato: l'ordine
+    del testo e' quello del tempo (anche con frazioni di lunghezza diversa,
+    perche' `+` viene prima di `.`).
+    """
+    ultimo = (controllo or {}).get("ultimo_controllo_at")
+    testo = str(ultimo).replace("Z", "+00:00") if ultimo else ""
+    identificativo = bando.get("id")
+    try:
+        numero = int(identificativo)
+    except (TypeError, ValueError):
+        numero = 0
+    return (bool(testo), testo, numero, str(identificativo))
+
+
+def _da_risolvere_ricontrolli(
+    *, limit: int | None, offset: int, solo_oe: bool, solo_in_verifica: bool,
+) -> tuple[list[Mapping[str, Any]], dict[Any, Mapping[str, Any]]]:
+    """I ricontrolli del giro 3 (§7): TUTTE le fonti `in_verifica` e
+    `non_trovata` dei pubblicati e degli `enriched` non chiusi ne' revocati,
+    senza guardare `prossimo_controllo_at`, in ordine di ultimo controllo
+    crescente (rotazione: chi resta fuori per tempo parte per primo al giro
+    dopo). `limit` resta solo per chi lancia a mano."""
+    if limit is not None and int(limit) <= 0:
+        return [], {}
+    righe = _scorri_selezione(modo="ricontrolli", offset=offset, solo_oe=solo_oe,
+                              solo_in_verifica=solo_in_verifica, forza=False)
+    controlli = db.select_controlli([b.get("id") for b in righe]) if righe else {}
+    ordinate = sorted(righe, key=lambda b: _chiave_rotazione(b, controlli.get(b.get("id"))))
+    if limit is not None:
+        ordinate = ordinate[: int(limit)]
+    return ordinate, controlli
+
+
+async def _lavora_tutti(
+    bandi: Sequence[Mapping[str, Any]],
+    lavora: Callable[[Mapping[str, Any]], Awaitable[None]],
+    *,
+    parallelo: int,
+    tempo_s: float | None,
+    avvio: float,
+    ferma: Callable[[], bool],
+) -> tuple[int, str | None]:
+    """Lavora i bandi, fino a `parallelo` insieme, finche' c'e' tempo.
+
+    Ritorna `(avviati, motivo)`: `motivo` e' `tempo` se il tetto di tempo ha
+    lasciato fuori qualcuno, `tetto` se si e' fermato un lotto di backfill,
+    None se tutti sono partiti. Un bando gia' partito finisce comunque (al
+    massimo `TETTO_TEMPO_BANDO_S`). Con `parallelo=1` e' il ciclo di sempre:
+    un bando per volta, e il controllo prima di ognuno.
+    """
+    semaforo = asyncio.Semaphore(max(1, int(parallelo)))
+    in_corso: set[asyncio.Future[Any]] = set()
+    avviati = 0
+    motivo: str | None = None
+
+    async def _uno(bando: Mapping[str, Any]) -> None:
+        try:
+            await lavora(bando)
+        finally:
+            semaforo.release()
+
+    for bando in bandi:
+        await semaforo.acquire()
+        if ferma():
+            semaforo.release()
+            motivo = "tetto"
+            break
+        if tempo_s is not None and time.monotonic() - avvio >= tempo_s:
+            semaforo.release()
+            motivo = "tempo"
+            break
+        avviati += 1
+        compito = asyncio.ensure_future(_uno(bando))
+        in_corso.add(compito)
+        compito.add_done_callback(in_corso.discard)
+    if in_corso:
+        await asyncio.gather(*in_corso)
+    return avviati, motivo
+
+
+def _copertura_del_giro(
+    candidati: int, avviati: int, motivo_stop: str | None, contatori: Contatori,
+    *, selezione_fallita: bool = False,
+) -> dict[str, Any]:
+    """La copertura del resolver (§1). Un bando rinviato per tempo (oltre
+    `TETTO_TEMPO_BANDO_S`) o per DNS e' partito ma non ha un verdetto: e' fra i
+    rimasti, non fra i fatti (P2 della revisione #144), cosi' `salute` vede un
+    host morto da giorni invece di «tutto fatto»."""
+    rinviati = contatori.rinviati_tempo + contatori.rinviati_dns
+    fatti = max(0, avviati - rinviati)
+    if selezione_fallita:
+        motivo: str | None = "errore"
+    elif motivo_stop == "tempo" or contatori.rinviati_tempo:
+        motivo = "tempo"
+    elif contatori.rinviati_dns:
+        motivo = "errore"
+    else:
+        motivo = _motivo_rimasti(motivo_stop, contatori)
+    return telemetria.copertura(candidati, fatti, motivo)
+
+
+def _motivo_rimasti(motivo: str | None, contatori: Contatori) -> str | None:
+    """Il motivo di §1 per chi e' rimasto fuori."""
+    if motivo == "tempo":
+        return "tempo"
+    if motivo == "tetto":
+        return "crediti" if "crediti" in (contatori.motivo or "") else "spesa"
+    return None
+
+
 async def run(
     dry_run: bool = False,
     limit: int | None = None,
@@ -1961,6 +2503,8 @@ async def run(
     offset: int = 0,
     lotto: str | None = None,
     ambiente: Ambiente | None = None,
+    tempo_s: float | None = None,
+    parallelo: int | None = None,
 ) -> dict[str, Any]:
     """Step 5 della pipeline. **Non solleva e non chiama mai `sys.exit`** (A15).
 
@@ -1968,26 +2512,47 @@ async def run(
     `interrotto_per_tetto` tornano nel dizionario e `app/__main__.py` li
     traduce in exit code 3 e 4.
 
-    `--limit` conta le righe da **lavorare**, non quelle guardate: la selezione
-    si scorre a pagine (`_da_risolvere`) e le righe il cui ricontrollo non e'
-    ancora dovuto finiscono in `saltate`. `--offset N` fa partire lo
-    scorrimento oltre le prime N righe della selezione: e' il modo di lanciare
-    a mano i blocchi di un lotto (0, 800, 1600) quando `--forza` toglie ogni
-    altro filtro.
+    Tre modi nel giro (contratto `bandi-giro-3` §2 e §7):
+      - `precoce` (passo 4): le righe appena entrate, con la scadenza
+        provvisoria, senza ricerca ne' arbitro; solo un `trovata` si scrive,
+        il resto non lascia traccia. Tempo `TEMPO_PRECOCE_S`;
+      - `nuovi` (passo 7): come prima del giro 3, con la sua cadenza;
+      - `ricontrolli` (passo 8): tutte le fonti da ritrovare, senza cadenza
+        ne' `limit`, in ordine di ultimo controllo, fino a
+        `PARALLELO_RICONTROLLI` insieme. Tempo `TEMPO_RICONTROLLI_S`.
+    `tempo_s` e `parallelo` sostituiscono quelli del modo (test, CLI).
+
+    `--limit` conta le righe da **lavorare**, non quelle guardate. `--offset N`
+    fa partire lo scorrimento oltre le prime N righe della selezione.
     """
     avvio = time.monotonic()
+    if modo not in db.MODI_RESOLVER:
+        logger.error("[resolver] modo sconosciuto: {!r}", modo)
+        return {"status": "errore", "error": f"modo sconosciuto: {modo}", "modo": modo}
     attivo = _modalita_attiva(attivo)
-    step = f"backfill:{lotto}" if lotto else "resolver"
+    step = f"backfill:{lotto}" if lotto else STEP_PER_MODO[modo]
     run_telemetria = telemetria.PipelineRun(step=step, giro=giro)
     proprietario = f"resolver@{os.getpid()}"
-    lock = blocco.acquisisci(LOCK_RESOLVER, proprietario, LOCK_TTL_S)
+    lock = blocco.acquisisci(LOCK_RESOLVER, proprietario, ttl_lock_resolver())
     if not lock.proseguire:
         return blocco.esito_saltato(lock)
 
     ambiente = ambiente or _ambiente_predefinito(step=step, attivo=attivo)
+    if modo == "precoce":
+        # §7: niente ricerca a pagamento ne' arbitro, e la scadenza e' quella
+        # provvisoria della riga, che conferma e non smentisce.
+        ambiente.da_segnale = True
+        ambiente.arbitro = None
+        ambiente.ricerca = None
+        ambiente.scadenza_provvisoria = True
+    if tempo_s is None:
+        tempo_s = tetto_tempo_s(modo)
+    if parallelo is None:
+        parallelo = PARALLELO_RICONTROLLI if modo == "ricontrolli" else 1
     contatori = ambiente.contatori
     bandi: list[Mapping[str, Any]] = []
     controlli: Mapping[Any, Mapping[str, Any]] = {}
+    selezione_fallita = False
     try:
         if bando_id is not None:
             # `--id X` e' una riga sola, chiesta a mano: nessuno scorrimento e
@@ -1999,13 +2564,18 @@ async def run(
                 forza=forza, fonti_oe=FONTI_OE,
             )
             controlli = db.select_controlli([b.get("id") for b in bandi]) if bandi else {}
+        elif modo == "precoce":
+            bandi, controlli = _da_risolvere_precoce(
+                limit=limit, offset=offset, solo_oe=solo_oe, forza=forza, contatori=contatori)
+        elif modo == "ricontrolli":
+            bandi, controlli = _da_risolvere_ricontrolli(
+                limit=limit, offset=offset, solo_oe=solo_oe,
+                solo_in_verifica=solo_in_verifica)
         else:
             # La selezione ordina per `id` e prende i primi N: senza scorrere,
-            # ogni lancio ripeterebbe le stesse righe. Il filtro di data —
-            # che prima valeva solo per i `ricontrolli`, e per giunta DOPO il
-            # `--limit` — sta ora dentro lo scorrimento, e vale per tutti e
-            # tre i modi: e' cio' che fa avanzare la selezione anche in ombra,
-            # dove `fonte_ufficiale_stato` non viene scritto mai.
+            # ogni lancio ripeterebbe le stesse righe. Il filtro di data sta
+            # dentro lo scorrimento: e' cio' che fa avanzare la selezione
+            # anche in ombra, dove `fonte_ufficiale_stato` non viene scritto.
             bandi, controlli = _da_risolvere(
                 limit=limit, offset=offset, modo=modo, solo_oe=solo_oe,
                 solo_in_verifica=solo_in_verifica, forza=forza,
@@ -2037,6 +2607,7 @@ async def run(
                 ambiente.link_registrati = per_bando
     except Exception as e:                               # pragma: no cover - difesa
         contatori.errori += 1
+        selezione_fallita = True
         logger.exception("[resolver] selezione dei candidati fallita: {}", e)
         bandi = []
 
@@ -2047,63 +2618,72 @@ async def run(
             modo, contatori.saltate,
         )
 
-    try:
-        for bando in bandi:
-            # Un bando per volta: una pagina malformata alla riga 500 di un
-            # backfill da 1 702 righe non puo' buttare via le altre 1 200.
-            # `risolvi()` protegge i suoi passi, ma le funzioni pure a valle
-            # (estrazione delle date, numero di atto) girano su testo arbitrario
-            # e `scrivi_esito` puo' sollevare `PayloadBandoVietato`.
-            esito_tetto = ambiente.consentito()
-            if not esito_tetto.consentito:
-                ambiente.ferma_per_tetto(esito_tetto)
-                logger.warning("[resolver] {}", contatori.motivo)
-                break
+    async def _lavora(bando: Mapping[str, Any]) -> None:
+        # Un bando per volta, e ogni bando protetto: una pagina malformata
+        # alla riga 500 di un backfill da 1 702 righe non puo' buttare via le
+        # altre 1 200. `risolvi()` protegge i suoi passi, ma le funzioni pure a
+        # valle (estrazione delle date, numero di atto) girano su testo
+        # arbitrario e `scrivi_esito` puo' sollevare `PayloadBandoVietato`.
+        try:
+            riga_controllo = controlli.get(bando.get("id")) or {}
+            arricchito = dict(bando)
+            arricchito.setdefault(
+                "tentativi_resolver", riga_controllo.get("tentativi_resolver") or 0)
             try:
-                riga_controllo = controlli.get(bando.get("id")) or {}
-                arricchito = dict(bando)
-                arricchito.setdefault(
-                    "tentativi_resolver", riga_controllo.get("tentativi_resolver") or 0)
-                try:
-                    esito = await asyncio.wait_for(
-                        risolvi(arricchito, ambiente), timeout=ambiente.tetto_tempo_bando_s)
-                except asyncio.TimeoutError:
-                    # Il tetto morde al primo `await`: la verifica degli
-                    # allegati e' sincrona, e una in corso finisce prima.
-                    contatori.rinviati_tempo += 1
-                    _rinvia(bando, modo=modo, ambiente=ambiente, dry_run=dry_run,
-                            motivo=f"oltre {ambiente.tetto_tempo_bando_s:g} s", avviso=True)
-                    continue
-                morti = _host_irraggiungibili(esito)
-                contatori.host_morti.update(morti)
-                if morti and esito.stato != STATO_TROVATA:
-                    # Un candidato non letto per un DNS rotto non dice niente
-                    # del bando: nessun verdetto, nessun tentativo, stato della
-                    # fonte invariato. Se un altro candidato e' `trovata`, il
-                    # verdetto c'e' e si scrive come sempre.
-                    contatori.rinviati_dns += 1
-                    _togli_verdetto(contatori, esito.stato)
-                    _rinvia(bando, modo=modo, ambiente=ambiente, dry_run=dry_run,
-                            motivo=f"host irraggiungibile (DNS): {', '.join(sorted(morti))}")
-                    continue
-                if contatori.interrotto_per_tetto:
-                    # Cascata monca: scrivere un `non_trovata` ricavato da mezzo
-                    # giro significherebbe condannare il bando a sessanta giorni
-                    # di attesa per colpa di un tetto, non di una verifica.
-                    logger.warning(
-                        "[resolver] bando {} lasciato intatto: {}",
-                        bando.get("id"), contatori.motivo,
-                    )
-                    break
-                scrivi_esito(
-                    esito, attivo=attivo, dry_run=dry_run, tabella=ambiente.tabella,
+                esito = await asyncio.wait_for(
+                    risolvi(arricchito, ambiente), timeout=ambiente.tetto_tempo_bando_s)
+            except asyncio.TimeoutError:
+                # Il tetto morde al primo `await`: la verifica degli allegati
+                # e' sincrona, e una in corso finisce prima.
+                contatori.rinviati_tempo += 1
+                _rinvia(bando, motivo=f"oltre {ambiente.tetto_tempo_bando_s:g} s", avviso=True)
+                return
+            morti = _host_irraggiungibili(esito)
+            contatori.host_morti.update(morti)
+            if morti and esito.stato != STATO_TROVATA:
+                # Un candidato non letto per un DNS rotto non dice niente del
+                # bando: nessun verdetto, nessun tentativo, stato della fonte
+                # invariato. Se un altro candidato e' `trovata`, il verdetto
+                # c'e' e si scrive come sempre.
+                contatori.rinviati_dns += 1
+                _togli_verdetto(contatori, esito.stato)
+                _rinvia(bando, motivo=f"host irraggiungibile (DNS): {', '.join(sorted(morti))}")
+                return
+            if contatori.interrotto_per_tetto:
+                # Cascata monca (solo un lotto di backfill si ferma): scrivere
+                # un `non_trovata` ricavato da mezzo giro condannerebbe il
+                # bando per colpa di un tetto, non di una verifica.
+                logger.warning(
+                    "[resolver] bando {} lasciato intatto: {}", bando.get("id"), contatori.motivo,
                 )
-            except Exception as e:
-                contatori.errori += 1
-                logger.exception(
-                    "[resolver] bando {} saltato per un errore: {}", bando.get("id"), e,
-                )
-                continue
+                return
+            if modo == "precoce" and esito.stato != STATO_TROVATA:
+                # §7: nessuna traccia (niente verdetto, niente evento, niente
+                # tentativo): la passata `nuovi` lo riprende con la scadenza
+                # vera del preprocess.
+                _togli_verdetto(contatori, esito.stato)
+                contatori.senza_traccia += 1
+                return
+            scrivi_esito(
+                esito, attivo=attivo, dry_run=dry_run, tabella=ambiente.tabella,
+                gia_trovata=str(bando.get("fonte_ufficiale_stato") or "") == STATO_TROVATA,
+            )
+        except Exception as e:
+            contatori.errori += 1
+            logger.exception("[resolver] bando {} saltato per un errore: {}", bando.get("id"), e)
+
+    avviati = 0
+    motivo_stop: str | None = None
+    try:
+        avviati, motivo_stop = await _lavora_tutti(
+            bandi, _lavora, parallelo=parallelo, tempo_s=tempo_s, avvio=avvio,
+            ferma=lambda: contatori.interrotto_per_tetto or ambiente.deve_fermarsi(),
+        )
+        if motivo_stop == "tetto":
+            logger.warning("[resolver] {}", contatori.motivo)
+        elif motivo_stop == "tempo":
+            logger.info("[resolver] tempo finito ({:g} s): {} bandi al giro dopo",
+                        tempo_s, len(bandi) - avviati)
     finally:
         if ambiente.chiudi_verifica is not None:
             ambiente.chiudi_verifica()
@@ -2113,6 +2693,8 @@ async def run(
         logger.warning(
             "[resolver] host irraggiungibili (DNS) in questo giro: {} (bandi rinviati: {})",
             ", ".join(sorted(contatori.host_morti)), contatori.rinviati_dns)
+    copertura = _copertura_del_giro(len(bandi), avviati, motivo_stop, contatori,
+                                    selezione_fallita=selezione_fallita)
     durata = time.monotonic() - avvio
     risultato: dict[str, Any] = {
         "status": "ok",
@@ -2122,14 +2704,17 @@ async def run(
         "modo": modo,
         "offset": offset,
         "elapsed_s": round(durata, 1),
+        "copertura": copertura,
     }
     if contatori.interrotto_per_tetto:
         risultato["interrotto_per_tetto"] = True
         risultato["motivo"] = contatori.motivo
+    if contatori.motivo_spesa:
+        risultato["motivo_spesa"] = contatori.motivo_spesa
     ambiente.assorbi_spesa()
     risultato["crediti"] = ambiente.spesa.crediti_firecrawl
     risultato["fetch"] = ambiente.spesa.fetch
-    _registra(run_telemetria, durata, contatori, ambiente.spesa)
+    _registra(run_telemetria, durata, contatori, ambiente.spesa, copertura=copertura)
     logger.info("[resolver] === DONE | {} ===", risultato)
     return risultato
 
@@ -2152,32 +2737,22 @@ def _togli_verdetto(contatori: Contatori, stato: str) -> None:
     setattr(contatori, nome, max(0, getattr(contatori, nome) - 1))
 
 
-def _rinvia(
-    bando: Mapping[str, Any], *, modo: str, ambiente: Ambiente, dry_run: bool, motivo: str,
-    avviso: bool = False,
-) -> None:
+def _rinvia(bando: Mapping[str, Any], *, motivo: str, avviso: bool = False) -> None:
     """Il bando passa al giro dopo: niente verdetto, niente tentativo, stato
     della fonte invariato (contratto di ottobre 2026, §5).
 
-    Solo nei `ricontrolli` il prossimo controllo slitta a domani, e nient'altro:
-    la selezione ne prende 60 per giro in ordine di id, e senza lo slittamento
-    riprenderebbe gli stessi bandi a ogni giro finche' l'host resta morto, e gli
-    altri non passerebbero piu'. Nei `nuovi` non si scrive niente: una riga mai
-    vista si lavora comunque al giro dopo.
+    Dal giro 3 (§7) non si scrive piu' niente, nemmeno nei ricontrolli: la
+    loro selezione non guarda `prossimo_controllo_at` e li prende tutti a ogni
+    giro, in ordine di ultimo controllo, quindi un host morto non blocca gli
+    altri.
 
     `avviso=True` (il rinvio per tempo) scrive un WARNING con l'id: un bando
-    lento ma sano verrebbe rinviato a ogni giro, e nei `nuovi` non lascia
-    traccia a DB (revisione #23). Il rinvio per DNS resta a INFO: il giro ha
-    gia' la sua riga WARNING con l'elenco degli host.
+    lento ma sano verrebbe rinviato a ogni giro, e non lascia traccia a DB
+    (revisione #23). Il rinvio per DNS resta a INFO: il giro ha gia' la sua
+    riga WARNING con l'elenco degli host.
     """
     scrivi = logger.warning if avviso else logger.info
     scrivi("[resolver] bando {} rinviato al giro dopo: {}", bando.get("id"), motivo)
-    if modo != "ricontrolli" or dry_run:
-        return
-    db.aggiorna_controllo(
-        bando.get("id"),
-        {"prossimo_controllo_at": (ambiente.oggi + timedelta(days=1)).isoformat()},
-    )
 
 
 def _registra(
@@ -2185,6 +2760,8 @@ def _registra(
     durata: float,
     contatori: Contatori,
     spesa: bilancio.Contatori | None = None,
+    *,
+    copertura: Mapping[str, Any] | None = None,
 ) -> None:
     """Riga in `pipeline_run`. Non solleva: la telemetria non fa fallire un giro.
 
@@ -2199,7 +2776,8 @@ def _registra(
             esito=telemetria.esito_da_contatori(
                 errori=contatori.errori, interrotto_per_tetto=contatori.interrotto_per_tetto,
             ),
-            contatori=contatori.come_dizionario(),
+            contatori={**contatori.come_dizionario(),
+                       **({"copertura": dict(copertura)} if copertura is not None else {})},
             crediti=spesa.crediti_firecrawl,
             costo_usd=spesa.usd,
             interrotto_per_tetto=contatori.interrotto_per_tetto,
@@ -2216,6 +2794,17 @@ def _registra(
 TIMEOUT_VERIFICA_S = 20.0
 #: sha256 dei primi 64 KB (§5): identifica il documento senza scaricarlo tutto.
 BYTE_IMPRONTA = 64 * 1024
+#: Quanti redirect segue una verifica (§18.6): li segue a mano, per poter
+#: guardare ogni salto prima di farlo.
+MAX_REDIRECT_VERIFICA = 5
+
+
+#: L'esito «rifiutato» di `http.classifica_indirizzo` (§18.6).
+_RIFIUTATO = "rifiutato"
+
+
+class IndirizzoNonPubblico(Exception):
+    """Un URL (o un suo redirect) risolve a un indirizzo interno (§18.6)."""
 
 
 class VerificaHttp:
@@ -2232,7 +2821,14 @@ class VerificaHttp:
     se la richiesta non e' mai arrivata a destinazione.
     """
 
-    def __init__(self, user_agent: str = "", timeout_s: float = TIMEOUT_VERIFICA_S) -> None:
+    def __init__(
+        self,
+        user_agent: str = "",
+        timeout_s: float = TIMEOUT_VERIFICA_S,
+        *,
+        guardia: Callable[[str], bool] | None = None,
+        transport: Any = None,
+    ) -> None:
         intestazioni = {"User-Agent": user_agent} if user_agent else {}
         # Chokepoint di §5: qui si compongono le intestazioni per httpx, e qui
         # l'assert dice che nessun cookie di sessione OE puo' uscire.
@@ -2240,14 +2836,48 @@ class VerificaHttp:
         self._intestazioni = intestazioni
         self._timeout = timeout_s
         self._client: Any = None
+        # §18.6: gli URL da verificare vengono da pagine e da un modello, non
+        # da fonti note. Prima di ogni richiesta e di ogni redirect si guarda
+        # l'host risolto (`http.indirizzo_pubblico`); `guardia` e `transport`
+        # sono i punti di iniezione dei test (nessuna rete, nessun DNS).
+        if guardia is None:
+            from .http import indirizzo_pubblico as guardia
+        self._guardia = guardia
+        self._transport = transport
+        #: Quante verifiche la guardia ha rifiutato (indirizzi interni).
+        self.rifiutati = 0
 
     def _cliente(self) -> Any:
         if self._client is None:
             import httpx
+            # Niente `follow_redirects`: i redirect li segue `_richiesta`, uno
+            # per uno, dopo la guardia.
             self._client = httpx.Client(
-                timeout=self._timeout, headers=self._intestazioni, follow_redirects=True,
+                timeout=self._timeout, headers=self._intestazioni, follow_redirects=False,
+                transport=self._transport,
             )
         return self._client
+
+    def _richiesta(self, metodo: str, url: str, *, stream: bool = False) -> Any:
+        """La risposta finale di `metodo url`, seguendo i redirect a mano.
+
+        Solleva `IndirizzoNonPubblico` se l'URL o un salto risolve a un
+        indirizzo interno: la richiesta non parte. Oltre `MAX_REDIRECT_VERIFICA`
+        salti solleva un errore qualunque (verifica non arrivata).
+        """
+        cliente = self._cliente()
+        attuale = str(url)
+        for _ in range(MAX_REDIRECT_VERIFICA + 1):
+            if not self._guardia(attuale):
+                self.rifiutati += 1
+                raise IndirizzoNonPubblico(attuale)
+            risposta = cliente.send(cliente.build_request(metodo, attuale), stream=stream)
+            posizione = risposta.headers.get("location") if risposta.is_redirect else None
+            if not posizione:
+                return risposta
+            risposta.close()
+            attuale = urljoin(attuale, posizione)
+        raise RuntimeError(f"oltre {MAX_REDIRECT_VERIFICA} redirect")
 
     def __call__(self, url: str) -> dict[str, Any] | None:
         risposta = self._testa(url)
@@ -2263,20 +2893,27 @@ class VerificaHttp:
         }
 
     def _testa(self, url: str) -> tuple[int, Mapping[str, str], bytes] | None:
-        """(stato, intestazioni, primi 64 KB). HEAD, poi GET su 405/501."""
-        cliente = self._cliente()
+        """(stato, intestazioni, primi 64 KB). HEAD, poi GET su 405/501.
+
+        None se la richiesta non e' arrivata, o se la guardia l'ha rifiutata
+        (§18.6): un indirizzo interno non si chiede ne' in HEAD ne' in GET.
+        """
         try:
-            risposta = cliente.request("HEAD", url)
+            risposta = self._richiesta("HEAD", url)
             stato = int(getattr(risposta, "status_code", 0) or 0)
             if stato not in (405, 501):
                 return stato, dict(risposta.headers), b""
+        except IndirizzoNonPubblico as e:
+            logger.warning("[resolver] verifica rifiutata, indirizzo non pubblico: {}", e)
+            return None
         except Exception as e:
             logger.debug("[resolver] HEAD {} fallita: {}", url, e)
         try:
             # In streaming: l'impronta di §5 sono i primi 64 KB, e un allegato
             # puo' pesare decine di MB. Scaricarlo tutto per hasharne una
             # frazione sarebbe banda spesa per niente.
-            with cliente.stream("GET", url) as risposta:
+            risposta = self._richiesta("GET", url, stream=True)
+            try:
                 primi = b""
                 for pezzo in risposta.iter_bytes(BYTE_IMPRONTA):
                     primi = pezzo
@@ -2286,6 +2923,11 @@ class VerificaHttp:
                     dict(risposta.headers),
                     primi,
                 )
+            finally:
+                risposta.close()
+        except IndirizzoNonPubblico as e:
+            logger.warning("[resolver] verifica rifiutata, indirizzo non pubblico: {}", e)
+            return None
         except Exception as e:
             logger.debug("[resolver] GET {} fallita: {}", url, e)
             return None
@@ -2299,6 +2941,48 @@ class VerificaHttp:
             self._client = None
 
 
+#: Le schede OE lette oggi, per bando (giro 3, §7): `{bando_id: (giorno di
+#: Roma, Scheda | None)}`. Una scheda si legge al massimo una volta al giorno
+#: anche con quattro giri e tre passate del resolver per giro (precoce, nuovi,
+#: ricontrolli): le passate successive riusano la stessa Scheda, e quindi gli
+#: stessi candidati. Vive nel processo: un riavvio la svuota.
+_SCHEDE_OE_DEL_GIORNO: dict[Any, tuple[date_cls, Any]] = {}
+
+
+def scheda_oe_del_giorno(bando_id: Any, oggi: date_cls) -> tuple[bool, Any]:
+    """(trovata, scheda) dalla cache del giorno; dimentica i giorni passati."""
+    for chiave in [k for k, (giorno, _s) in _SCHEDE_OE_DEL_GIORNO.items() if giorno != oggi]:
+        del _SCHEDE_OE_DEL_GIORNO[chiave]
+    voce = _SCHEDE_OE_DEL_GIORNO.get(bando_id)
+    if voce is None:
+        return False, None
+    return True, voce[1]
+
+
+def ricorda_scheda_oe(bando_id: Any, oggi: date_cls, scheda: Any) -> bool:
+    """Mette in cache la scheda **letta** oggi. Vero se l'ha ricordata.
+
+    §18.7: un `None` non si ricorda mai. Oggi `oe_scheda` restituisce None per
+    403/429 (lotto fermo), tetto, rete, 5xx e anche 404, senza dire quale:
+    ricordarlo voleva dire lasciare senza scheda, fino all'indomani, tutti i
+    bandi OE rimasti dopo un 429. Il passaggio successivo riprova; il freno
+    del portale lo fanno `fermato` e il tetto dello scarico autenticato.
+    """
+    if scheda is None:
+        return False
+    _SCHEDE_OE_DEL_GIORNO[bando_id] = (oggi, scheda)
+    return True
+
+
+def lucchetto_host(lucchetti: dict[str, asyncio.Lock], url: str) -> asyncio.Lock:
+    """Il lucchetto dell'host di `url` (giro 3, §7): con i ricontrolli in
+    parallelo, mai due richieste insieme allo stesso host. I lucchetti vivono
+    in un dizionario per `Ambiente`, cioe' per giro: un `asyncio.Lock` resta
+    legato all'event loop in cui e' nato, e il sender ne apre uno per giro."""
+    from .scarico import host_di
+    return lucchetti.setdefault(host_di(url) or url, asyncio.Lock())
+
+
 def _ambiente_predefinito(*, step: str, attivo: bool) -> Ambiente:
     """L'ambiente di produzione: scarico reale, whitelist dal DB, tetti da `.env`.
 
@@ -2308,6 +2992,11 @@ def _ambiente_predefinito(*, step: str, attivo: bool) -> Ambiente:
     passo 5 non produce mai una riga). Sonda, ricerca e arbitro restano invece
     assenti finche' il committente non li attiva: senza di loro la cascata si
     ferma ai passi gratuiti, che e' il comportamento giusto in ombra.
+
+    Giro 3 (§7): scarichi e schede passano dal lucchetto del loro host, la
+    scheda OE di un bando si legge al massimo una volta al giorno, e la
+    manutenzione (non l'ingresso ne' i lotti) conosce il consumo del giorno e
+    del mese (§4).
     """
     from . import scarico as scarico_mod
     from .settings import get_settings
@@ -2316,26 +3005,58 @@ def _ambiente_predefinito(*, step: str, attivo: bool) -> Ambiente:
     tabella = _tabella_corrente()
     schede = oe_scheda.scarico_predefinito(impostazioni, tabella=tabella)
     verifica = VerificaHttp(user_agent=getattr(impostazioni, "http_user_agent", ""))
+    lucchetti: dict[str, asyncio.Lock] = {}
 
     async def scarica(url: str) -> Pagina:
-        risposta = await scarico_mod.scarico_corrente().scarica(url, come_fonte=True)
+        async with lucchetto_host(lucchetti, url):
+            risposta = await scarico_mod.scarico_corrente().scarica(url, come_fonte=True)
         return pagina_da_risposta(risposta)
+
+    async def verifica_cortese(url: str) -> Any:
+        # Stesso lucchetto per host degli scarichi e stesso freno di 1 s: con
+        # cinque bandi in parallelo una HEAD non parte mai mentre un altro
+        # bando ha una GET in volo sullo stesso host (P2 della revisione #144).
+        from . import http as http_mod
+        async with lucchetto_host(lucchetti, url):
+            await http_mod._wait_for_host(urlsplit(url).netloc)
+            return await asyncio.to_thread(verifica, url)
 
     ambiente = Ambiente(
         tabella=tabella,
         scarica=scarica,
         verifica_allegato=verifica,
+        verifica_cortese=verifica_cortese,
         spesa_scarico=lambda: scarico_mod.scarico_corrente().contatori,
         tetti=bilancio.tetti_da_impostazioni(impostazioni),
         step=step,
         attivo=attivo,
     )
+    # §19.1: la passata conta solo il proprio delta, non il giro fin qui.
+    ambiente.parti_da_qui()
+    if not bilancio.e_ingresso(step) and not bilancio.e_backfill(step):
+        try:
+            consumo = db.consumo_oggi()
+        except Exception as e:                           # pragma: no cover - difesa
+            logger.warning("[resolver] consumo di oggi non leggibile: {}", e)
+            consumo = None
+        if consumo is None:
+            # §18.5: un consumo ignoto non e' «niente speso».
+            ambiente.consumo_illeggibile = True
+            logger.warning("[resolver] consumo di oggi illeggibile: {} senza passi a pagamento",
+                           step)
+        else:
+            ambiente.gia_oggi = consumo
 
     async def scheda_oe(bando: Mapping[str, Any]) -> oe_scheda.Scheda | None:
-        """La scheda OE del bando, quando la regola A29 la autorizza."""
+        """La scheda OE del bando, quando la regola A29 la autorizza, e al
+        massimo una volta al giorno."""
         url = str(bando.get("link_bando") or "")
         if schede is None or not oe_scheda.e_host_oe(url):
             return None
+        oggi = oggi_roma()
+        in_cache, gia_letta = scheda_oe_del_giorno(bando.get("id"), oggi)
+        if in_cache:
+            return gia_letta
         grezzo = bando.get("raw_data") if isinstance(bando.get("raw_data"), Mapping) else {}
         letta = bando.get("id") in ambiente.schede_lette
         riscarica, _motivo = oe_scheda.deve_riscaricare(
@@ -2343,7 +3064,12 @@ def _ambiente_predefinito(*, step: str, attivo: bool) -> Ambiente:
         )
         if not riscarica:
             return None
-        return await schede.scheda(url)
+        async with lucchetto_host(lucchetti, url):
+            scheda = await schede.scheda(url)
+        # Solo le schede lette (§18.7): un None (429, tetto, rete, 5xx) si
+        # riprova alla passata dopo.
+        ricorda_scheda_oe(bando.get("id"), oggi, scheda)
+        return scheda
 
     ambiente.scheda_oe = scheda_oe
     ambiente.chiudi_verifica = verifica.chiudi
@@ -2694,11 +3420,39 @@ def _da_verificare(
                 contatori["saltate"] += 1
                 continue
             raccolte.append(riga)
-            if limit is not None and len(raccolte) >= limit:
-                return raccolte
         if len(blocco) < PAGINA_SELEZIONE_LINK:
             break
-    return raccolte
+    # Giro 3 (§1, revisione #147): la rotazione e' «ultimo controllo
+    # crescente, mai controllato per primo». Con l'ordine per id, se il tempo
+    # del passo non bastava per tutta la tabella, le righe con id alto — cioe'
+    # le candidature e gli allegati dei bandi nuovi, `esito_http` NULL — non
+    # arrivavano mai. Il `--limit` si applica dopo l'ordine.
+    raccolte.sort(key=_chiave_rotazione_link)
+    return raccolte[: int(limit)] if limit is not None else raccolte
+
+
+def _chiave_rotazione_link(riga: Mapping[str, Any]) -> tuple:
+    """Mai verificata (`esito_http` NULL) per prima, poi dalla verifica piu'
+    vecchia (`updated_at`, che il trigger aggiorna a ogni scrittura), poi per
+    id. Gli istanti di PostgREST hanno tutti lo stesso formato UTC: l'ordine
+    del testo e' quello del tempo."""
+    verificata = riga.get("esito_http") is not None
+    quando = str(riga.get("updated_at") or "").replace("Z", "+00:00")
+    identificativo = riga.get("id")
+    try:
+        numero = int(identificativo)
+    except (TypeError, ValueError):
+        numero = 0
+    return (verificata, quando, numero)
+
+
+def tetto_tempo_link_s() -> float:
+    """`TEMPO_LINK_VERIFICA_S` (giro 3, §3 e §10), 1 200 s se `.env` non si legge."""
+    try:
+        from .settings import get_settings
+        return float(get_settings().tempo_link_verifica_s)
+    except Exception:
+        return 1200.0
 
 
 async def run_link_verifica(
@@ -2711,8 +3465,20 @@ async def run_link_verifica(
     verifica: Callable[[str], Any] | None = None,
     righe: Sequence[Mapping[str, Any]] | None = None,
     solo_fonti: bool = False,
+    giro: str | None = None,
+    tempo_s: float | None = None,
+    riferimenti: Mapping[Any, Mapping[str, Any]] | None = None,
+    scarica_pagina: Callable[[str], Awaitable[Any]] | None = None,
+    guardia: Callable[[str], Awaitable[str]] | None = None,
 ) -> dict[str, Any]:
     """Ricontrolla le righe di `bando_link` e decide la pubblicabilita'.
+
+    §18.6: prima di ogni riga, la guardia degli indirizzi
+    (`http.classifica_indirizzo`). Un URL che risolve a un indirizzo interno
+    non si chiede e la riga si ritira (`indirizzi_rifiutati`); un DNS che non
+    risponde non e' un giudizio sul link e segue la strada di «nessuna
+    risposta». In produzione la guardia c'e' sempre; con un `verifica`
+    iniettato (i test) solo se la si passa.
 
     Una riga diventa `pubblicabile` solo con un 2xx e con un dominio non
     aggregatore: sono le due condizioni che §13.4 promette ai consumatori. E'
@@ -2733,8 +3499,24 @@ async def run_link_verifica(
     selezione si scorre (`_da_verificare`); `--offset N` fa partire lo
     scorrimento oltre le prime N, ed e' il modo di lanciare i blocchi a mano
     quando `--dry-run` o l'ombra non scrivono il marcatore.
+
+    Giro 3 (contratto `bandi-giro-3` §10), passo 11 del giro:
+      - nessun tetto di numero: solo il tempo `TEMPO_LINK_VERIFICA_S`
+        (`tempo_s` lo sostituisce). La rotazione e' `_da_verificare_ora`: le
+        righe gia' verificate oggi si saltano, quindi il giro dopo riprende da
+        dove questo si e' fermato. `copertura` nel risultato;
+      - la quarta prova di provenienza (vedi `_verifica_link`), con i bandi
+        letti da `db.select_riferimenti_bandi` e le pagine dallo scarico del
+        giro. Con `righe` iniettate (test) servono `riferimenti` e
+        `scarica_pagina` espliciti, altrimenti la quarta prova non si fa;
+      - in produzione (nessun `verifica` iniettato) ogni verifica passa dal
+        freno per host (`http._wait_for_host`) e da `asyncio.to_thread`: 1 s
+        fra due richieste allo stesso host e nessun event loop bloccato.
     """
+    avvio = time.monotonic()
     attivo = _modalita_attiva(attivo)
+    if tempo_s is None:
+        tempo_s = tetto_tempo_link_s()
     # `rimandati` sono le righe gia' pubblicabili su cui il verificatore non ha
     # avuto risposta: si lasciano come sono (vedi `_verifica_link`) e tornano al
     # giro dopo. Se e' un numero alto, il problema e' la nostra rete.
@@ -2742,7 +3524,13 @@ async def run_link_verifica(
     # questo comando poteva dichiarare un lavoro che non aveva fatto.
     contatori = {"esaminati": 0, "pubblicabili": 0, "ritirati": 0,
                  "rimandati": 0, "senza_prova": 0, "non_scritte": 0,
-                 "saltate": 0, "errori": 0}
+                 "saltate": 0, "errori": 0,
+                 # Giro 3 (§10): la quarta prova e il suo rifacimento sulla
+                 # pagina ufficiale; `solo_aggregatore` sono le righe che dopo
+                 # il rifacimento restano provate solo dalla scheda
+                 # dell'aggregatore (la misura del dopo-deploy).
+                 "prove_trovate": 0, "prove_mancate": 0, "prove_rifatte": 0,
+                 "solo_aggregatore": 0, "indirizzi_rifiutati": 0}
     # Il filtro `--solo-fonti` va dato alla selezione, non applicato dopo:
     # `--limit` conta le righe da verificare davvero, e filtrare a valle
     # significherebbe prendere le prime N righe della tabella e buttarle quasi
@@ -2753,6 +3541,10 @@ async def run_link_verifica(
             limit=limit, offset=offset, bando_id=bando_id,
             oggi=oggi_roma(), contatori=contatori, solo=solo,
         )
+        if riferimenti is None:
+            riferimenti = db.select_riferimenti_bandi([r.get("bando_id") for r in elenco])
+        if scarica_pagina is None:
+            scarica_pagina = _pagina_dallo_scarico
     else:
         elenco = list(righe)
         if solo is not None:
@@ -2763,19 +3555,88 @@ async def run_link_verifica(
     # di provenienza anche quando la riga di link non se la porta dietro.
     fonti = solo if solo is not None else db.select_link_delle_fonti()
     chiudi: Callable[[], None] | None = None
+    verifica_async: Callable[[str], Awaitable[Any]] | None = None
     if verifica is None:
+        from . import http as http_mod
         from .settings import get_settings
         verificatore = VerificaHttp(
             user_agent=getattr(get_settings(), "http_user_agent", ""),
         )
         verifica, chiudi = verificatore, verificatore.chiudi
+
+        async def verifica_async(url: str) -> Any:
+            await http_mod._wait_for_host(urlsplit(url).netloc)
+            return await asyncio.to_thread(verificatore, url)
+
+        if guardia is None:
+            guardia = http_mod.classifica_indirizzo_async
     try:
-        return await _verifica_link(
+        esito = await _verifica_link(
             elenco, verifica, contatori, dry_run, attivo, fonti_ufficiali=fonti,
+            riferimenti=riferimenti or {}, scarica_pagina=scarica_pagina,
+            verifica_async=verifica_async, tempo_s=tempo_s, avvio=avvio, guardia=guardia,
         )
     finally:
         if chiudi is not None:
             chiudi()
+    esito["copertura"] = telemetria.copertura(
+        len(elenco), contatori["esaminati"],
+        "tempo" if esito.pop("_tempo_finito", False) else None)
+    esito["giro"] = giro
+    return esito
+
+
+async def _pagina_dallo_scarico(url: str) -> Any:
+    """La pagina di riferimento dallo scarico del giro (cache per giro), come
+    lettura semplice: niente ripiego a pagamento, e un aggregatore e' lecito."""
+    from . import scarico as scarico_mod
+    return await scarico_mod.scarico_corrente().scarica(url)
+
+
+async def _prova_dal_riferimento(
+    url: str,
+    riferimento: Mapping[str, Any],
+    scarica_pagina: Callable[[str], Awaitable[Any]],
+    pagine: dict[str, Any],
+    *,
+    url_pagina: str | None = None,
+) -> tuple[str, str] | None:
+    """(impronta, url della pagina) se `url` compare nella pagina di riferimento
+    del bando, o None. La pagina si scarica una volta per giro (`pagine`) e
+    vale solo se ha risposto 2xx."""
+    pagina_url = url_pagina or pagina_di_riferimento(riferimento)
+    if not pagina_url:
+        return None
+    if pagina_url not in pagine:
+        try:
+            pagine[pagina_url] = await scarica_pagina(pagina_url)
+        except Exception as e:
+            logger.info("[link-verifica] pagina di riferimento {} non letta: {}", pagina_url, e)
+            pagine[pagina_url] = None
+    pagina = pagine[pagina_url]
+    if pagina is None or not getattr(pagina, "ok", False):
+        return None
+    effettiva = str(getattr(pagina, "url_finale", "") or pagina_url)
+    prova = prova_nella_pagina(url, getattr(pagina, "html", ""), effettiva)
+    return (prova, effettiva) if prova else None
+
+
+def _da_rifare_sull_ufficiale(riga: Mapping[str, Any], riferimento: Mapping[str, Any] | None) -> str:
+    """La pagina ufficiale su cui rifare la prova di una riga provata solo
+    dall'aggregatore, o "" (giro 3, §10): la fonte e' `trovata`, la pagina
+    ufficiale e' un'altra, e la prova di oggi viene da `link_bando` su un
+    aggregatore."""
+    if not riferimento or not riga.get("impronta_pagina"):
+        return ""
+    ufficiale = pagina_di_riferimento(riferimento)
+    link_bando = str(riferimento.get("link_bando") or "")
+    prova_da = str(riga.get("url_prova") or "")
+    if (str(riferimento.get("fonte_ufficiale_stato") or "") == STATO_TROVATA
+            and ufficiale and ufficiale != link_bando and link_bando
+            and e_aggregatore(link_bando)
+            and impronte.normalizza_url(prova_da) == impronte.normalizza_url(link_bando)):
+        return ufficiale
+    return ""
 
 
 async def _verifica_link(
@@ -2786,6 +3647,12 @@ async def _verifica_link(
     attivo: bool,
     *,
     fonti_ufficiali: AbstractSet[Any] = frozenset(),
+    riferimenti: Mapping[Any, Mapping[str, Any]] | None = None,
+    scarica_pagina: Callable[[str], Awaitable[Any]] | None = None,
+    verifica_async: Callable[[str], Awaitable[Any]] | None = None,
+    tempo_s: float | None = None,
+    avvio: float | None = None,
+    guardia: Callable[[str], Awaitable[str]] | None = None,
 ) -> dict[str, Any]:
     """Il ciclo di `run_link_verifica`, separato per tenere la chiusura del
     client fuori dal corpo e il corpo leggibile.
@@ -2808,15 +3675,46 @@ async def _verifica_link(
     successivo (lo scheduler ne fa quattro al giorno). Il marcatore resta dove
     serviva davvero, cioe' sulle righe nate da `oe-dettaglio`, che sono gia'
     `pubblicabile=false` e che senza di esso si ripresentavano per sempre.
+
+    Giro 3 (§10), la **quarta prova**: una riga senza prova che risponde 2xx e
+    non sta su un aggregatore si cerca nell'HTML della pagina di riferimento
+    del bando (`pagina_di_riferimento`: l'ufficiale con la fonte `trovata`,
+    altrimenti `link_bando` anche se aggregatore, purche' risponda 2xx). Se
+    c'e', la riga riceve `impronta_pagina`, `url_prova` (la pagina effettiva)
+    e `trovato_in_fonte_at`, e puo' diventare pubblicabile. Una riga provata
+    solo da `link_bando` su un aggregatore, il cui bando ha ora la fonte
+    `trovata`, si riprova sulla pagina ufficiale: trovata, la prova si
+    aggiorna; mancata, **non si ritira niente** (la prova vecchia resta vera)
+    e la riga si conta in `solo_aggregatore`. A tempo scaduto non parte
+    nessuna riga nuova.
     """
+    riferimenti = riferimenti or {}
+    pagine: dict[str, Any] = {}
+    tempo_finito = False
     for riga in elenco:
+        if tempo_s is not None and avvio is not None and time.monotonic() - avvio >= tempo_s:
+            tempo_finito = True
+            break
         contatori["esaminati"] += 1
         url = str(riga.get("url") or "")
         if not url:
             continue
+        if guardia is not None and await guardia(url) == _RIFIUTATO:
+            # §18.6: un indirizzo interno non si chiede, e non e' la nostra
+            # rete: e' l'URL. La riga esce dai pubblicabili (mai cancellata).
+            contatori["indirizzi_rifiutati"] = contatori.get("indirizzi_rifiutati", 0) + 1
+            logger.warning("[link-verifica] {} rifiutato: indirizzo non pubblico", url)
+            if dry_run or not attivo:
+                continue
+            scritto = db.aggiorna_link(riga.get("id"), {
+                "esito_http": ESITO_IRRAGGIUNGIBILE, "content_type": None, "pubblicabile": False})
+            if isinstance(scritto, Mapping) and not scritto.get("scritto"):
+                contatori["non_scritte"] = contatori.get("non_scritte", 0) + 1
+            continue
         errore = False
         try:
-            esito = allegati_mod.Verifica.da(verifica(url))
+            grezzo = await verifica_async(url) if verifica_async is not None else verifica(url)
+            esito = allegati_mod.Verifica.da(grezzo)
         except Exception as e:
             # Si continua fino alla scrittura invece di saltare: e' l'unico
             # modo di far avanzare la coda. I contatori pero' restano quelli di
@@ -2841,8 +3739,25 @@ async def _verifica_link(
         # restavano non pubblicabili per sempre: `risolvi-fonte` non ripassa
         # su un bando gia' `trovata`, e qui finivano in `senza_prova`.
         ha_prova = bool(prova or trovato or riga.get("id") in fonti_ufficiali)
-        pubblicabile = bool(esito and esito.ok) and not e_aggregatore(url) and ha_prova
-        if bool(esito and esito.ok) and not e_aggregatore(url) and not ha_prova:
+        risponde = bool(esito and esito.ok) and not e_aggregatore(url)
+        nuova_prova: tuple[str, str] | None = None
+        riferimento = riferimenti.get(riga.get("bando_id"))
+        if risponde and riferimento is not None and scarica_pagina is not None:
+            if not ha_prova:
+                # Quarta prova (§10).
+                nuova_prova = await _prova_dal_riferimento(url, riferimento, scarica_pagina, pagine)
+                chiave = "prove_trovate" if nuova_prova else "prove_mancate"
+                contatori[chiave] = contatori.get(chiave, 0) + 1
+                ha_prova = nuova_prova is not None
+            else:
+                ufficiale = _da_rifare_sull_ufficiale(riga, riferimento)
+                if ufficiale:
+                    nuova_prova = await _prova_dal_riferimento(
+                        url, riferimento, scarica_pagina, pagine, url_pagina=ufficiale)
+                    chiave = "prove_rifatte" if nuova_prova else "solo_aggregatore"
+                    contatori[chiave] = contatori.get(chiave, 0) + 1
+        pubblicabile = risponde and ha_prova
+        if risponde and not ha_prova:
             contatori["senza_prova"] = contatori.get("senza_prova", 0) + 1
         stato = esito.esito_http if esito is not None else None
         # «Non ho ricevuto risposta»: l'eccezione, oppure un verificatore che
@@ -2868,12 +3783,15 @@ async def _verifica_link(
             "content_type": esito.content_type if esito else None,
             "pubblicabile": pubblicabile,
         }
+        if nuova_prova is not None:
+            payload["impronta_pagina"], payload["url_prova"] = nuova_prova
+            payload["trovato_in_fonte_at"] = _adesso()
         # `ultimo_visto_at` e' «l'ultimo 2xx», non «l'ultimo controllo»:
         # azzerarlo su un 500 transitorio cancellerebbe l'unica prova che quel
         # link ha funzionato.
         if pubblicabile:
             payload["ultimo_visto_at"] = _adesso()
-            if not trovato:
+            if not trovato and "trovato_in_fonte_at" not in payload:
                 # La riga porta la prova ma non l'istante: e' il caso delle
                 # 3 887 righe scritte da `oe-dettaglio` prima della correzione.
                 # Si colma qui invece che con una migrazione.
@@ -2891,20 +3809,11 @@ async def _verifica_link(
                 contatori["pubblicabili"] -= 1
             else:
                 contatori["ritirati"] -= 1
-    return {"status": "ok", "dry_run": dry_run, "attivo": attivo, **contatori}
+    return {"status": "ok", "dry_run": dry_run, "attivo": attivo, **contatori,
+            "_tempo_finito": tempo_finito}
 
 
 # --- runner: `fondi-doppioni` -----------------------------------------------
-
-#: Quanti pubblicati si leggono per il confronto fra gemelli. Non e' un
-#: `--limit`: e' il tetto della lettura, e se morde il confronto sta guardando
-#: una fetta del corpus (allarme nel riepilogo).
-TETTO_GEMELLI = 5000
-
-ALLARME_GEMELLI_TRONCATO = (
-    f"confronto dei gemelli troncato a {TETTO_GEMELLI} pubblicati: le coppie "
-    "che hanno un id oltre il taglio non possono essere trovate"
-)
 
 ALLARME_GEMELLI_BUDGET = (
     "confronto fermato dal budget delle fusioni: il report copre solo le righe "
@@ -2927,7 +3836,7 @@ async def run_fondi_doppioni(
     Qui — unico fra i comandi a lotti — il `--limit` **non** impagina la
     lettura: il confronto e' fra righe dello stesso elenco, e una coppia con
     un id in pagina 1 e l'altro in pagina 3 non verrebbe trovata da nessuna
-    delle due. Si legge sempre il corpus (fino a `TETTO_GEMELLI`) e il
+    delle due. Si legge sempre il corpus intero e il
     `--limit` diventa il budget di fusioni **applicate**: `--limit 0` vuol dire
     «solo report», che e' cio' che un operatore intende scrivendolo. Prima
     valeva `limit or 5000`, cioe' l'esatto contrario: `--limit 0 --attivo`
@@ -2950,9 +3859,8 @@ async def run_fondi_doppioni(
     ombra il report **e'** il prodotto e il corpus si guarda tutto.
     """
     attivo = _modalita_attiva(attivo)
-    elenco = list(righe) if righe is not None else db.select_pubblicati_per_gemelli(
-        limit=TETTO_GEMELLI,
-    )
+    # Giro 3 (§1): tutti i pubblicati, senza tetto di lettura (prima 5 000).
+    elenco = list(righe) if righe is not None else db.select_pubblicati_per_gemelli(limit=None)
     # `rimandati` sono le righe con gemelli trovate a budget esaurito. In modo
     # report (`--dry-run`, ombra, `--limit 0`) il corpus si guarda tutto e il
     # numero e' quello vero; quando il lancio fonde davvero il confronto si
@@ -2961,9 +3869,6 @@ async def run_fondi_doppioni(
     contatori = {"esaminati": 0, "esatti": 0, "proposte": 0, "fusi": 0,
                  "rimandati": 0, "non_esaminati": 0}
     allarmi: list[str] = []
-    if righe is None and len(elenco) >= TETTO_GEMELLI:
-        allarmi.append(ALLARME_GEMELLI_TRONCATO)
-        logger.warning("[ALLARME] [resolver] {}", ALLARME_GEMELLI_TRONCATO)
     # Il lancio fonde davvero? Solo allora il report smette di essere il
     # prodotto e il budget puo' fermare il confronto. `--limit 0` e' «solo
     # report» per definizione e non entra qui.
@@ -3199,12 +4104,13 @@ def scarica_indicepa(
 
 
 def _modalita_indicepa(attivo: bool | None) -> bool:
-    """L'import segue `VERIFICA_STATO_MODALITA` (§19.8); un `attivo` esplicito vince."""
+    """La scrittura dell'import segue `DOMINI_MODALITA` (giro 3, §3 e §12; fino
+    al giro 2 `VERIFICA_STATO_MODALITA`); un `attivo` esplicito vince."""
     if attivo is not None:
         return bool(attivo)
     try:
         from .settings import get_settings
-        valore = getattr(get_settings(), "verifica_stato_modalita", "ombra")
+        valore = getattr(get_settings(), "domini_modalita", "ombra")
     except Exception:
         return False
     return str(valore).strip().lower() == "attivo"

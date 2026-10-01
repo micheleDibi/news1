@@ -195,6 +195,21 @@ class ContatoriMirati(unittest.TestCase):
                               ("classificazioni",), ("classificazioni_fallite",)},
                              set(db.CONTATORI_MONITOR))
 
+    def test_la_copertura_dei_quindici_passi(self):
+        """Giro 3 (§1 e §16): la riga del giro porta la copertura di ogni passo."""
+        self.assertEqual(len(db.PASSI_DEL_GIRO), 15)
+        self.assertLessEqual({(passo, "copertura") for passo in db.PASSI_DEL_GIRO},
+                             set(db.CONTATORI_PIPELINE))
+        copertura = {"candidati": 390, "fatti": 380, "rimasti": 10, "motivo_rimasti": "tempo"}
+        riga = {"id": 9,
+                db._alias_contatore(("monitor", "copertura")): copertura,
+                db._alias_contatore(("gemelli", "copertura")): None}
+        uscita = db._contatori_mirati(riga, db.CONTATORI_PIPELINE)
+        self.assertEqual(uscita["contatori"], {"monitor": {"copertura": copertura}})
+        self.assertIn("c_verifica_stato_ingresso__copertura:contatori->"
+                      "verifica_stato_ingresso->copertura",
+                      db._select_con_contatori(db.CONTATORI_PIPELINE).split(","))
+
     def test_i_contatori_di_sosta_e_fusione_della_seo(self):
         """Revisione del 01/10: chi la SEO tiene fuori dalla pubblicazione, e perche'."""
         import asyncio

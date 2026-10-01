@@ -48,7 +48,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date as date_cls, datetime, timedelta
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from .date_validation import (
@@ -61,7 +61,7 @@ from .date_validation import (
 from . import impronte
 from .dominio_ufficiale import TABELLA_SEED, dominio_di, e_aggregatore, verificabile
 from .logger import logger
-from .stato_bando import TRANSIZIONI, oggi_roma, transizione_ammessa
+from .stato_bando import TRANSIZIONI, adesso_roma, oggi_roma, stato_effettivo, transizione_ammessa
 
 # --- vocabolario degli eventi (§13.5) ---------------------------------------
 
@@ -101,10 +101,33 @@ TIPI_CON_TRANSIZIONE: frozenset[str] = frozenset({
     "annullamento_revoca",
 })
 
+# I tipi che cambiano lo stato verso (o da) sospeso e revocato. Con
+# `MONITOR_TIPI_ATTIVI=tutti` restano comunque in ombra finche' il DB non ha la
+# migrazione 14 (`db.capacita_sospensioni()`) E `MONITOR_STATI_ESTESI` e' vero
+# (contratto `bandi-giro-3` §3 e §14): senza, la RPC li respingerebbe o li
+# applicherebbe a meta'.
+TIPI_STATI_ESTESI: tuple[str, ...] = ("sospensione", "revoca", "annullamento_revoca")
+
 MODALITA_OMBRA = "ombra"
 MODALITA_ATTIVO = "attivo"
 
 RPC_REGISTRA_EVENTO = "bando_registra_evento"
+
+
+def tipi_attivi_effettivi(
+    tipi: Iterable[str], *, capacita: bool, stati_estesi: bool,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(attivi davvero, in attesa della migrazione 14). Pura.
+
+    I tipi di `TIPI_STATI_ESTESI` passano solo con la migrazione 14 applicata
+    (`capacita`) e `MONITOR_STATI_ESTESI` vero; altrimenti restano in ombra,
+    senza allarme: e' un calendario, non un errore di configurazione.
+    """
+    elenco = tuple(dict.fromkeys(str(t) for t in tipi if t))
+    if capacita and stati_estesi:
+        return elenco, ()
+    in_attesa = tuple(t for t in elenco if t in TIPI_STATI_ESTESI)
+    return tuple(t for t in elenco if t not in TIPI_STATI_ESTESI), in_attesa
 
 # `link_candidatura_source`: i soli valori ammessi dal CHECK gia' in tabella
 # (§6.2, doppioni nell'interim). Scriverne uno fuori lista fa fallire l'intero
@@ -302,6 +325,12 @@ class Contesto:
     ultimo_controllo: date_cls | None = None          # giorno del controllo precedente
     stati_estesi: bool = False                        # migrazione 06 applicata
     modalita: str = MODALITA_OMBRA
+    #: La migrazione 14 e' applicata (`db.capacita_sospensioni`, giro 3 §14):
+    #: solo allora valgono le righe della lista bianca con `migrazione: 14`
+    #: (sospeso → chiuso, uscita dal revocato). Prima la RPC le respingerebbe,
+    #: e `applica-eventi` annoterebbe quel rifiuto per sempre.
+    capacita_14: bool = False
+    ora_apertura: str | None = None
 
     @property
     def giorno(self) -> date_cls:
@@ -692,7 +721,9 @@ def g5_direzione(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
             return False, f"apertura dichiarata nel futuro ({data} > {oggi}): e' una rettifica"
 
     elif evento.tipo == "riapertura":
-        if data is not None and data < oggi:
+        # Giro 3 (§14): la fine di una sospensione si legge spesso dopo, con
+        # la data in cui l'ente ha ripreso: per un sospeso il passato vale.
+        if data is not None and data < oggi and ctx.stato_bando != "sospeso":
             return False, f"riapertura a una data gia' passata ({data} < {oggi})"
 
     elif evento.tipo == "rettifica" and evento.campo == "data_apertura":
@@ -855,7 +886,8 @@ def g8_dedup(
             continue
         if (passato.get("campo") or None) != (evento.campo or None):
             continue
-        if _valore_evento(passato) != (evento.valore or None):
+        if _valore_evento(passato) != (evento.valore or None) and not _stesso_cambio_di_stato(
+                passato, evento):
             continue
         quando = giorno_di(passato)
         if quando is None:
@@ -863,6 +895,27 @@ def g8_dedup(
         if 0 <= (oggi - quando).days <= giorni:
             return False, f"evento identico gia' registrato il {quando.isoformat()}"
     return True, ""
+
+
+#: Gli eventi che portano solo uno stato: il loro valore e' lo stato, scritto
+#: come `stato_proposto` (prima degli stati estesi) o `stato_bando`.
+TIPI_SOLO_STATO: frozenset[str] = frozenset({"sospensione", "revoca", "annullamento_revoca"})
+
+
+def _stesso_cambio_di_stato(passato: Mapping[str, Any], evento: Evento) -> bool:
+    """G8 anche sulla forma `stato_proposto` (giro 3, §14).
+
+    Una sospensione registrata come `{"stato_proposto": "sospeso"}` ha come
+    valore lo stato, mentre la stessa sospensione rivista non porta valore: il
+    confronto per valore le dava diverse, e la stessa notizia passava di nuovo.
+    """
+    if evento.tipo not in TIPI_SOLO_STATO or evento.valore:
+        return False
+    dopo = passato.get("valore_dopo")
+    if not isinstance(dopo, Mapping):
+        return passato.get("valore") is None
+    resto = {k for k in dopo if k not in ("stato_proposto", "stato_bando")}
+    return not resto
 
 
 def _valore_evento(riga: Mapping[str, Any]) -> str | None:
@@ -928,6 +981,10 @@ def transizione_evento(
     if tipo == "chiusura":
         if stato == "aperto":
             return "chiuso"
+        # Migrazione 14: un sospeso si chiude con una chiusura letta dal
+        # worker (mai d'ufficio). G9 la ammette solo con la 14 applicata.
+        if stato == "sospeso":
+            return "chiuso"
         # Riga 24 della lista bianca (contratto `bandi-giro-2` §4): da «in
         # apertura» chiude solo il percorso verifica_stato, con i suoi gate.
         # Il monitor resta com'era.
@@ -935,18 +992,117 @@ def transizione_evento(
             return "chiuso"
         return None
     if tipo == "annullamento_revoca":
-        # §4: la revoca e' terminale; l'annullamento esiste solo con nuova prova
-        # e non e' nella lista bianca delle transizioni: G9 lo fermera'.
+        # Migrazione 14: dal revocato si esce con l'annullamento, verso lo stato
+        # che dicono le date (`stato_dopo_annullamento`, calcolato da `valuta`
+        # e da G9 sul contesto); «aperto» e' il default senza date.
         return "aperto" if stato == "revocato" else None
     return None
 
 
+def stato_dopo_annullamento(ctx: Contesto) -> str:
+    """Lo stato di arrivo di un `annullamento_revoca`, dalle date (§14).
+
+    Lo stesso calcolo della RPC della 14: si parte da «in apertura» se c'e'
+    una data di apertura, altrimenti da «aperto», e `stato_effettivo` fa il
+    resto (apertura raggiunta → aperto, scadenza passata → chiuso).
+    """
+    base = "in apertura prossimamente" if ctx.data_apertura else "aperto"
+    # Il giorno del controllo a mezzogiorno UTC (pomeriggio a Roma): la data
+    # decide, l'ora di scadenza conta solo a parita' di giorno.
+    momento = datetime(ctx.giorno.year, ctx.giorno.month, ctx.giorno.day, 12)
+    return stato_effettivo(
+        base, ctx.data_apertura, True, ctx.ora_apertura, ctx.data_scadenza, ctx.ora_scadenza,
+        adesso=adesso_roma(momento)) or base
+
+
+def stato_di_arrivo(evento: Evento, ctx: Contesto, *, percorso: str = "monitor") -> str | None:
+    """`transizione_evento` con lo stato dell'annullamento calcolato dalle date."""
+    nuovo = transizione_evento(ctx.stato_bando, evento, percorso=percorso)
+    if nuovo is not None and evento.tipo == "annullamento_revoca":
+        return stato_dopo_annullamento(ctx)
+    return nuovo
+
+
+#: Eventi che un bando in questi stati non accetta (giro 3, §14): sul revocato
+#: niente cambia stato o date se non l'annullamento; sul sospeso niente
+#: apertura, seconda sospensione o annullamento di una revoca. La `proroga` su
+#: un sospeso si', come SOLA DATA (P2 della revisione #153, §14): «sospensione
+#: dei termini» e poi «proroga» sono frequenti; `transizione_evento` non cambia
+#: lo stato, quindi la RPC scrive solo `data_scadenza` e il bando resta sospeso.
+EVENTI_INCOMPATIBILI: dict[str, frozenset[str]] = {
+    "revocato": frozenset({"apertura", "chiusura", "proroga", "riapertura", "sospensione", "revoca"}),
+    "sospeso": frozenset({"apertura", "sospensione", "annullamento_revoca"}),
+}
+
+
+def transizione_ammessa_evento(
+    da: str | None, a: str, evento: str, *, capacita_14: bool, attore: str = "worker",
+) -> bool:
+    """Come `stato_bando.transizione_ammessa`, ma con la riga dell'evento (§14).
+
+    Dal sospeso e dal revocato la RPC della 14 esige anche l'evento della riga:
+    sospeso → chiuso solo con `chiusura`, → aperto/in apertura solo con
+    `riapertura`, → revocato solo con `revoca`; revocato → X solo con
+    `annullamento_revoca`. Le righe con `migrazione: 14` valgono solo con la 14.
+    """
+    for riga in TRANSIZIONI:
+        if riga["da"] != da or riga["a"] != a or riga["attore"] != attore:
+            continue
+        if riga.get("migrazione") == 14 and not capacita_14:
+            continue
+        if da in ("sospeso", "revocato") and riga.get("evento") != evento:
+            continue
+        return True
+    return False
+
+
+#: Lo stato naturale di arrivo degli eventi di SOLO STATO (contratto
+#: `bandi-giro-3` §20.2). Se `transizione_evento` non da' uno stato di arrivo,
+#: l'evento passa solo se il bando e' gia' li': altrimenti la RPC lo marcherebbe
+#: applicato senza cambiare niente e il box direbbe «Bando chiuso» (o
+#: «sospeso») sotto un badge con un altro stato. L'annullamento non ha uno
+#: stato naturale (lo dicono le date): fuori dal revocato si respinge sempre.
+#: Gli eventi che portano date (proroga su un sospeso come sola data,
+#: apertura/riapertura con data) non sono qui e restano come prima.
+ARRIVO_NATURALE: dict[str, str | None] = {
+    "chiusura": "chiuso",
+    "sospensione": "sospeso",
+    "revoca": "revocato",
+    "annullamento_revoca": None,
+}
+
+
+def solo_stato_senza_arrivo(tipo: str, stato: str | None) -> str | None:
+    """Il motivo per respingere un evento di solo stato senza transizione, o
+    None se l'evento puo' passare (§20.2). Da chiamare quando
+    `transizione_evento` ha dato None."""
+    if tipo not in ARRIVO_NATURALE:
+        return None
+    naturale = ARRIVO_NATURALE[tipo]
+    if naturale is not None and stato == naturale:
+        return None
+    return f"evento {tipo!r} senza transizione da un bando {stato!r}"
+
+
 def g9_transizione(evento: Evento, ctx: Contesto) -> tuple[bool, str]:
-    """La transizione e' nella lista bianca di `stato_bando.TRANSIZIONI`."""
-    nuovo = transizione_evento(ctx.stato_bando, evento)
-    if nuovo is None or nuovo == ctx.stato_bando:
+    """La transizione e' nella lista bianca di `stato_bando.TRANSIZIONI`.
+
+    Giro 3 (§14): un evento incompatibile con un sospeso o un revocato si
+    respinge (`EVENTI_INCOMPATIBILI`); dal sospeso e dal revocato serve anche
+    l'evento della riga; le righe della 14 solo con `ctx.capacita_14`.
+    """
+    if evento.tipo in EVENTI_INCOMPATIBILI.get(str(ctx.stato_bando or ""), frozenset()):
+        return False, f"evento {evento.tipo!r} incompatibile con un bando {ctx.stato_bando!r}"
+    nuovo = stato_di_arrivo(evento, ctx)
+    if nuovo is None:
+        # §20.2: una chiusura dal monitor su un «in apertura», una sospensione
+        # su un chiuso... non hanno uno stato di arrivo: si respingono, salvo
+        # che il bando sia gia' nello stato naturale del tipo.
+        motivo = solo_stato_senza_arrivo(evento.tipo, ctx.stato_bando)
+        return (False, motivo) if motivo else (True, "")
+    if nuovo == ctx.stato_bando:
         return True, ""
-    if transizione_ammessa(ctx.stato_bando, nuovo, "worker"):
+    if transizione_ammessa_evento(ctx.stato_bando, nuovo, evento.tipo, capacita_14=ctx.capacita_14):
         return True, ""
     return False, f"transizione {ctx.stato_bando!r} -> {nuovo!r} non prevista dalla macchina a stati"
 
@@ -999,7 +1155,7 @@ def valuta(evento: Evento, ctx: Contesto) -> Giudizio:
             falliti.append((nome, motivo))
 
     ammesso = not falliti
-    nuovo_stato = transizione_evento(ctx.stato_bando, evento) if ammesso else None
+    nuovo_stato = stato_di_arrivo(evento, ctx) if ammesso else None
     note: list[str] = []
     if ammesso and not richiede_g7:
         note.append("G7 non richiesto: l'evento non cambia stato ne' date")
@@ -1806,7 +1962,11 @@ def gv8_dedup(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
 def gv9_transizione(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
     """G9: la transizione e' nella lista bianca, dallo stato riletto dal DB."""
     nuovo = transizione_evento(ctx.stato, _evento_equivalente(proposta), percorso=PERCORSO_VERIFICA)
-    if nuovo is None or nuovo == ctx.stato:
+    if nuovo is None:
+        # §20.2, come `g9_transizione`.
+        motivo = solo_stato_senza_arrivo(proposta.tipo, ctx.stato)
+        return (False, motivo) if motivo else (True, "")
+    if nuovo == ctx.stato:
         return True, ""
     if transizione_ammessa(ctx.stato, nuovo, "worker"):
         return True, ""
@@ -2058,13 +2218,15 @@ __all__ = [
     "PROVE_G7_AMMESSE", "PROVE_G7_VIETATE", "Prova", "QUOTA_TOKEN_G2",
     "RPC_REGISTRA_EVENTO", "SORGENTE_CANDIDATURA_ASSENTE",
     "SORGENTE_CANDIDATURA_FONTE", "SORGENTE_CANDIDATURA_LINK",
-    "STRUMENTO_SALVA_EVENTI", "TIPI_CON_TRANSIZIONE", "TIPI_DA_LINK",
+    "STRUMENTO_SALVA_EVENTI", "TIPI_CON_TRANSIZIONE", "TIPI_DA_LINK", "TIPI_STATI_ESTESI",
     "TIPI_INTERNI", "TIPI_LEGGIBILI", "TIPI_PROPONIBILI", "allinea_doppioni",
     "applica", "colonne_da_evento", "evento_da", "g1_citazione", "g2_diff",
     "g2_primo", "g3_ruolo", "g4_prova", "g5_direzione", "g6_parola",
     "g7_seconda_prova", "g8_dedup", "g9_transizione", "leggi_eventi",
     "prompt_utente", "riga_evento", "sorgente_candidatura",
-    "stato_solo_proposto", "tabella_transizioni", "transizione_evento",
+    "stato_solo_proposto", "tabella_transizioni", "tipi_attivi_effettivi", "transizione_evento",
+    "EVENTI_INCOMPATIBILI", "TIPI_SOLO_STATO", "stato_di_arrivo", "stato_dopo_annullamento",
+    "transizione_ammessa_evento", "ARRIVO_NATURALE", "solo_stato_senza_arrivo",
     "usa_g2_primo", "valuta",
     # percorso verifica_stato
     "CAMPI_DATA_VERIFICATA", "ContestoVerifica", "LetturaStato", "ORE_DOPPIA_LETTURA",

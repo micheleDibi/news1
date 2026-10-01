@@ -7,11 +7,12 @@ eventi che la lettura giustifica (chiusura, rettifica di data_scadenza,
 data_verificata, apertura), dopo i gate del percorso verifica_stato
 (`eventi.valuta_verifica`).
 
-Due fasi:
-- **controlli** (dopo il monitor, nei giri delle 06 e delle 18): i pubblicati,
-  fino a 40 letture e 900 s;
+Due fasi, senza tetti di numero (giro 3, §1 e §13: solo tempo con rotazione,
+freno per host e spesa del modello):
+- **controlli** (dopo il monitor, nei giri di `MONITOR_GIRI`): i pubblicati,
+  entro `VERIFICA_STATO_TETTO_S` (30 minuti per difetto);
 - **ingresso** (prima della SEO, a ogni giro): le righe `enriched` non ancora
-  pubblicate, senza modello, fino a 30 letture e 300 s. In attivo scrive date e
+  pubblicate, senza modello, entro 300 s. In attivo scrive date e
   «chiuso» da un lettore per ente su `bando` (via `db.aggiorna_ingresso`, che
   rifiuta i pubblicati); in ombra solo `bando_controllo`. Semina la storia delle
   letture, cosi' la doppia lettura (G7e) puo' accoppiare dopo la pubblicazione.
@@ -105,7 +106,9 @@ CADENZA_DA_RIPROVARE: tuple[int, ...] = (1, 1, 3)
 #: data confermata.
 FORZA_PROPOSTA: dict[str, int] = {"chiusura": 3, "apertura": 3, "rettifica": 2, "data_verificata": 1}
 
-#: Priorita' dei candidati (§5.2 piu' §19.4); a parita' decide l'id.
+#: Priorita' dei candidati (§5.2 piu' §19.4). A parita' passa prima chi e'
+#: stato letto meno di recente (mai letto per primo), poi l'id: e' la rotazione
+#: del giro 3 (§1), chi resta fuori per il tempo parte per primo al giro dopo.
 PRIORITA: dict[str, int] = {
     "data_apertura_passata": 90,
     "segnale": 88,
@@ -165,9 +168,13 @@ ESITI_VERITA: tuple[str, ...] = (
     "uscito", "non_decisiva", "forse_non_un_bando", "dalla_sorella", "termine_indicato",
     "segnalato", "illeggibile",
 )
-#: Gli esiti attesi con `--senza-modello`, dopo almeno due letture a 60 ore
-#: (la doppia lettura G7e). `report-verifica-stato --verita` stampa DIFFORME
-#: per ogni id diverso; con una sola difformita' non si attiva.
+#: Gli esiti attesi con `--senza-modello`. Basta una lettura: anche una
+#: proposta trattenuta dalla doppia lettura (G7e, due letture concordi a
+#: distanza di almeno 60 ore) da' gia' l'esito del suo tipo (`esito_report`).
+#: `report-verifica-stato --verita` stampa DIFFORME per ogni id diverso; con
+#: una sola difformita' non si attiva. Un id uscito dai candidati perche' il suo
+#: stato e' gia' quello atteso (`ESITO_STATO_ATTESO`) non e' difforme: e'
+#: `confermato_da_stato` (giro 3, §13).
 VERITA_NOTA: dict[int, str] = {
     # ramo A
     2387: "chiusura", 18344: "chiusura", 18444: "chiusura", 2919: "chiusura", 18400: "chiusura",
@@ -183,6 +190,9 @@ VERITA_NOTA: dict[int, str] = {
     # I «concluso» del Piemonte, rimisurati il 01/10 sulle pagine pubbliche:
     # tre chiusi confermati (2892 e 2893 dalla pagina collegata «Scaduto»,
     # 661135 dalla sua), 150489 solo segnale («Esito» sulla pagina collegata).
+    # 661135 l'ha chiuso il job orario il 30/09 alle 22:05 UTC (scadenza del
+    # 30/09, evento 12005): non e' piu' un candidato, e vale come chiusura
+    # confermata dallo stato (`ESITO_STATO_ATTESO`), non come difforme.
     2892: "chiusura", 2893: "chiusura", 661135: "chiusura", 150489: "smentito",
     106753: "data_verificata", 2375: "data_verificata", 270806: "data_verificata",
     1072674: "apertura", 1072686: "apertura",
@@ -203,6 +213,10 @@ VERITA_NOTA: dict[int, str] = {
     18276: "smentito", 18262: "smentito",
     18407: "non_decisiva",
 }
+#: L'esito atteso -> lo stato effettivo che lo conferma quando il bando e'
+#: uscito dai candidati (giro 3, §13; decisione del lead: solo questi due, gli
+#: altri esiti usciti dai candidati restano difformi).
+ESITO_STATO_ATTESO: dict[str, str] = {"chiusura": "chiuso", "apertura": STATO_APERTO}
 
 
 # --- tipi -------------------------------------------------------------------
@@ -465,8 +479,17 @@ def scegli_candidati(
         motivo = motivo_di(riga, controllo, adesso)
         scelti.append(Candidato(riga, controllo, ramo, effettivo or "", motivo, pagina,
                                 priorita_di(controllo, motivo, pagina, ramo)))
-    scelti.sort(key=lambda c: (-c.priorita, c.riga.get("id") or 0))
+    scelti.sort(key=lambda c: (-c.priorita, *_chiave_rotazione(c.controllo), c.riga.get("id") or 0))
     return scelti
+
+
+_MAI = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _chiave_rotazione(controllo: Mapping[str, Any]) -> tuple[int, datetime]:
+    """La rotazione del giro 3 (§1): mai letto per primo, poi la lettura piu' vecchia."""
+    letta = _istante(controllo.get("lettura_stato_at"))
+    return (0, _MAI) if letta is None else (1, letta)
 
 
 # --- lettura --------------------------------------------------------------------
@@ -894,7 +917,7 @@ class FonteDati:
     def rendi_leggibile(self, evento_id: Any, in_aggiornamenti: bool) -> bool: raise NotImplementedError
     def testi_del_bando(self, bando_id: Any) -> dict[str, Any] | None: raise NotImplementedError
     def scrivi_run(self, riga: telemetria.PipelineRun) -> None: raise NotImplementedError
-    def consumo_oggi(self) -> dict[str, float]: raise NotImplementedError
+    def consumo_oggi(self) -> dict[str, float] | None: raise NotImplementedError
 
 
 class FonteDatiSupabase(FonteDati):
@@ -980,13 +1003,14 @@ class FonteDatiSupabase(FonteDati):
     def scrivi_run(self, riga: telemetria.PipelineRun) -> None:
         telemetria.scrivi_pipeline_run(riga)
 
-    def consumo_oggi(self) -> dict[str, float]:
+    def consumo_oggi(self) -> dict[str, float] | None:
+        # None se la lettura fallisce (§18.5): tetto raggiunto per il modello.
         from . import db
         try:
             return db.consumo_oggi()
         except Exception as e:                            # pragma: no cover - ripiego
             logger.warning("[verifica_stato] consumo di oggi non leggibile: {}", e)
-            return {}
+            return None
 
 
 def _scarica_predefinito() -> Callable[..., Awaitable[Any]]:
@@ -1066,13 +1090,15 @@ def con_bilancio(
     di questo giro si scrive alla fine, quindi non cambierebbe.
     """
     from . import bilancio
-    gia_oggi: dict[str, float] | None = None
+    letto: list[dict[str, float] | None] = []
 
     async def leggi(testo: str, riga: Mapping[str, Any]) -> Any:
-        nonlocal gia_oggi
-        if gia_oggi is None:
-            gia_oggi = dict(fonte_dati.consumo_oggi() or {})
-        esito = bilancio.verifica(bilancio_giro, tetti, step=STEP, gia_oggi=gia_oggi)
+        if not letto:
+            consumo = fonte_dati.consumo_oggi()
+            letto.append(None if consumo is None else dict(consumo))
+        # §18.5: un consumo illeggibile (None) vale tetto raggiunto: niente
+        # modello, la lettura resta ai lettori per ente (gratuiti).
+        esito = bilancio.verifica_con_consumo(bilancio_giro, tetti, step=STEP, consumo=letto[0])
         if not esito.consentito:
             contatori["modello_saltato_per_bilancio"] += 1
             logger.warning("[verifica_stato] modello saltato: {}", esito.motivo)
@@ -1084,7 +1110,7 @@ def con_bilancio(
 
 def _contatori_vuoti(fase: str, modalita: str) -> dict[str, Any]:
     comuni: dict[str, Any] = {
-        "modalita": modalita, "fase": fase, "candidati": 0, "letti": 0, "illeggibili": 0,
+        "modalita": modalita, "fase": fase, "candidati": 0, "lavorati": 0, "letti": 0, "illeggibili": 0,
         "errori_rete": 0, "da_riprovare": 0, "pagine_rimosse": 0, "host_irraggiungibili": 0,
         "esiti_per_estrattore": {}, "letture_non_verificanti": 0, "forse_non_bandi": 0,
         "interrotto_per_tetto_tempo": False, "costo_usd": 0.0, "crediti": 0, "motivo_saltato": None,
@@ -1097,7 +1123,7 @@ def _contatori_vuoti(fase: str, modalita: str) -> dict[str, Any]:
     comuni.update({"confermati": 0, "smentiti": 0, "smentiti_generico": 0, "non_decisivi": 0,
                    "senza_conferma": 0, "segnalati": 0, "termini_calcolati": 0, "termini_per_fonte": {},
                    "pagine_ii_c": 0, "link_normalizzati": 0, "proposte_per_tipo": {},
-                   "applicati_per_tipo": {}, "trattenute_per_freno": {}, "chiusure_oltre_tetto": 0,
+                   "applicati_per_tipo": {}, "trattenute_per_freno": {},
                    "letture_scadute": 0, "eventi_non_scritti": 0, "eventi_non_leggibili": 0,
                    "prosa_non_riscritta": 0, "modello_saltato_per_bilancio": 0})
     return comuni
@@ -1122,8 +1148,6 @@ class _Giro:
     leggi_modello: Callable[..., Awaitable[Any]] | None = None
     rigenerazione: Callable[..., Awaitable[Any]] | None = None
     freno: Freno | None = None
-    max_chiusure: int = 20
-    chiusure: int = 0
 
     @property
     def oggi(self) -> date:
@@ -1151,7 +1175,12 @@ async def esegui_passo(
     orologio: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     """Un giro del passo: `{status, counters, slug_modificati, ids_da_rigenerare,
-    proposte}`. Non solleva mai (un'eccezione e' `status='errore'`).
+    proposte, copertura}`. Non solleva mai (un'eccezione e' `status='errore'`).
+
+    Nessun tetto di numero (giro 3, §13): il tempo con la rotazione, il freno
+    per host e la spesa del modello. `limit` resta solo per la riga di comando
+    (il giro non lo passa mai). `copertura` (§1) sta in cima al risultato e nei
+    contatori: candidati, lavorati, motivo `tempo` o `errore`.
 
     `dry_run` (la CLI): legge e decide, non scrive niente, neanche la riga di
     `pipeline_run`. `rigenerazione` e' l'adattatore della prosa del monitor
@@ -1195,12 +1224,16 @@ async def esegui_passo(
                                                      _tetti(impostazioni))
                 giro_stato.leggi_modello = leggi_modello if usa_modello else None
                 giro_stato.rigenerazione = rigenerazione
-                giro_stato.max_chiusure = int(getattr(impostazioni, "verifica_stato_max_chiusure", 20))
                 await _fase_controlli(giro_stato, impostazioni, ids=ids, limit=limit)
     except Exception as e:
         logger.exception("[verifica_stato] passo fallito: {}", e)
         esito["status"] = "errore"
         contatori["errore"] = type(e).__name__
+    if esito["status"] != "saltato":
+        motivo = ("errore" if esito["status"] == "errore"
+                  else "tempo" if contatori.get("interrotto_per_tetto_tempo") else None)
+        esito["copertura"] = contatori["copertura"] = telemetria.copertura(
+            contatori["candidati"], contatori["lavorati"], motivo)
     if bilancio_giro is not None:
         contatori["costo_usd"] = round(float(bilancio_giro.usd), 6)
     # `_slug_da_notificare` della pipeline legge gli slug dentro `counters`.
@@ -1285,11 +1318,15 @@ async def _leggi_candidato(giro: _Giro, candidato: Candidato) -> EsitoLettura:
 
 
 async def _fase_controlli(giro: _Giro, impostazioni: Any, *, ids: Sequence[int], limit: int | None) -> None:
+    """I candidati in ordine di priorita' e di rotazione, finche' dura il tempo.
+
+    Nessun tetto di letture ne' di chiusure (giro 3, §13): solo
+    `VERIFICA_STATO_TETTO_S`. `limit` (solo riga di comando) conta le letture
+    leggibili, come prima.
+    """
     contatori = giro.contatori
-    tetto_letture = int(getattr(impostazioni, "verifica_stato_tetto_letture", 40))
-    if limit is not None:
-        tetto_letture = min(tetto_letture, max(0, int(limit)))
-    tetto_s = float(getattr(impostazioni, "verifica_stato_tetto_s", 900))
+    limite = None if limit is None else max(0, int(limit))
+    tetto_s = float(getattr(impostazioni, "verifica_stato_tetto_s", 1800))
     inizio = giro.orologio()
 
     righe = giro.fonte_dati.candidati()
@@ -1315,8 +1352,9 @@ async def _fase_controlli(giro: _Giro, impostazioni: Any, *, ids: Sequence[int],
             contatori["interrotto_per_tetto_tempo"] = True
             break
         leggibile = candidato.pagina.tipo != "illeggibile"
-        if leggibile and letti >= tetto_letture:
+        if leggibile and limite is not None and letti >= limite:
             continue
+        contatori["lavorati"] += 1
         link = candidato.riga.get("link_bando")
         if isinstance(link, str) and normalizza_link_bando(link) and normalizza_link_bando(link) != [link.strip()]:
             contatori["link_normalizzati"] += 1
@@ -1435,15 +1473,12 @@ async def _decidi(
             trattenuta, g7e_in_attesa = "g7e", True
         if giudizio.ammesso:
             _conta(contatori["proposte_per_tipo"], proposta.tipo)
-            if proposta.tipo == "chiusura":
-                if giro.freno is not None and giro.freno.frenato(host, lettura.estrattore):
-                    trattenuta = "freno"
-                    _conta(contatori["trattenute_per_freno"], lettura.estrattore)
-                elif giro.chiusure >= giro.max_chiusure:
-                    trattenuta = "tetto"
-                    contatori["chiusure_oltre_tetto"] += 1
-                else:
-                    giro.chiusure += 1
+            # Nessun tetto di chiusure per giro (giro 3, §13): resta il freno
+            # per host ed estrattore.
+            if proposta.tipo == "chiusura" and giro.freno is not None \
+                    and giro.freno.frenato(host, lettura.estrattore):
+                trattenuta = "freno"
+                _conta(contatori["trattenute_per_freno"], lettura.estrattore)
             if trattenuta is None and not giro.attivo:
                 trattenuta = "ombra"
         if trattenuta in ("tetto", "freno"):
@@ -1548,9 +1583,6 @@ async def _fase_ingresso(
     pubblicate.
     """
     contatori = giro.contatori
-    tetto = int(getattr(impostazioni, "verifica_stato_tetto_ingresso", 30))
-    if limit is not None:
-        tetto = min(tetto, max(0, int(limit)))
     sosta_giri = int(getattr(impostazioni, "ingresso_sosta_giri", 4))
     from .ingresso import senza_appiglio
     if pubblicabile is None:
@@ -1574,7 +1606,12 @@ async def _fase_ingresso(
             contatori["trattenuti_senza_appiglio"] += 1
         else:
             righe.append(riga)
-    righe = righe[:tetto]
+    # Nessun tetto di numero (giro 3, §13): il tempo, con la rotazione. Prima
+    # chi non e' mai stato letto, poi la lettura piu' vecchia, poi l'id.
+    righe.sort(key=lambda r: (*_chiave_rotazione(letture.get(r.get("id")) or {}), r.get("id") or 0))
+    if limit is not None:
+        # Solo da riga di comando.
+        righe = righe[:max(0, int(limit))]
     contatori["candidati"] = len(righe)
     if not righe:
         return
@@ -1585,6 +1622,7 @@ async def _fase_ingresso(
             contatori["interrotto_per_tetto_tempo"] = True
             break
         bando_id = riga.get("id")
+        contatori["lavorati"] += 1
         controllo = dict(letture.get(bando_id) or {})
         pagina = pagina_da_leggere(riga, controllo, list(pagine.get(bando_id) or ()), giro.tabella)
         candidato = Candidato(riga, controllo, RAMO_A, STATO_APERTO, None, pagina, 0)
@@ -1720,20 +1758,89 @@ def righe_report(
     return uscita
 
 
+def _confermato_da_stato(atteso: str, stato: Any) -> bool:
+    """Lo stato effettivo e' gia' quello che l'esito atteso annunciava?"""
+    tipo = str(atteso or "").split(":", 1)[0]
+    return tipo in ESITO_STATO_ATTESO and stato == ESITO_STATO_ATTESO[tipo]
+
+
 def confronta_verita(
     report: Sequence[Mapping[str, Any]], verita: Mapping[int, str] = VERITA_NOTA,
+    *, stati: Mapping[Any, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """I difformi `{id, atteso, trovato}`: un id assente dal report e' difforme."""
+    """I difformi `{id, atteso, trovato}`.
+
+    Un id assente dal report e' difforme, salvo che sia uscito dai candidati
+    perche' il suo stato effettivo (`stati`, da `stati_effettivi`) e' gia'
+    quello atteso: per esempio atteso «chiusura» e stato `chiuso` (661135,
+    chiuso dal job orario). Quelli li conta `confermati_da_stato`.
+    """
     per_id = {r.get("id"): r.get("esito") for r in report}
+    stati = stati or {}
     return [{"id": bando_id, "atteso": atteso, "trovato": per_id.get(bando_id)}
-            for bando_id, atteso in sorted(verita.items()) if per_id.get(bando_id) != atteso]
+            for bando_id, atteso in sorted(verita.items())
+            if per_id.get(bando_id) != atteso
+            and not (bando_id not in per_id and _confermato_da_stato(atteso, stati.get(bando_id)))]
+
+
+def confermati_da_stato(
+    report: Sequence[Mapping[str, Any]], verita: Mapping[int, str] = VERITA_NOTA,
+    *, stati: Mapping[Any, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """`{id, atteso, stato}` degli id usciti dai candidati con lo stato atteso (§13)."""
+    presenti = {r.get("id") for r in report}
+    stati = stati or {}
+    return [{"id": bando_id, "atteso": atteso, "stato": stati.get(bando_id)}
+            for bando_id, atteso in sorted(verita.items())
+            if bando_id not in presenti and _confermato_da_stato(atteso, stati.get(bando_id))]
+
+
+#: Le colonne che servono a `stato_effettivo`.
+COLONNE_STATO_EFFETTIVO: tuple[str, ...] = (
+    "id", "stato_bando", "data_apertura", "data_apertura_verificata", "ora_apertura",
+    "data_scadenza", "ora_scadenza",
+)
+
+
+def stati_effettivi(
+    ids: Sequence[Any],
+    *,
+    leggi: Callable[[list[Any]], Sequence[Mapping[str, Any]]] | None = None,
+    adesso: datetime | None = None,
+) -> dict[Any, str | None]:
+    """`{id: stato effettivo}` dei bandi dati, calcolato con `stato_effettivo`.
+
+    Solo lettura (una GET su `bando` per blocchi di id, come `stato_attuale`);
+    `leggi(ids)` la sostituisce nei test. Un id che non si legge resta fuori:
+    per `confronta_verita` vale ancora difforme.
+    """
+    elenco = [i for i in dict.fromkeys(ids) if i is not None]
+    if not elenco:
+        return {}
+    if leggi is None:
+        def leggi(blocco: list[Any]) -> Sequence[Mapping[str, Any]]:
+            from . import db
+            return (db.get_supabase().table("bando").select(",".join(COLONNE_STATO_EFFETTIVO))
+                    .in_("id", blocco).execute().data) or []
+    momento = adesso or datetime.now(tz=timezone.utc)
+    stati: dict[Any, str | None] = {}
+    for inizio in range(0, len(elenco), 100):
+        for riga in leggi(elenco[inizio:inizio + 100]):
+            stati[riga.get("id")] = stato_effettivo(
+                riga.get("stato_bando"), riga.get("data_apertura"), riga.get("data_apertura_verificata"),
+                riga.get("ora_apertura"), riga.get("data_scadenza"), riga.get("ora_scadenza"),
+                adesso=momento)
+    return stati
 
 
 __all__ = [
-    "CADENZA_GIORNI", "Candidato", "ESITI_VERITA", "EsitoLettura", "FASE_CONTROLLI", "FASE_INGRESSO",
+    "CADENZA_GIORNI", "Candidato", "ESITI_VERITA", "ESITO_STATO_ATTESO", "EsitoLettura",
+    "FASE_CONTROLLI", "FASE_INGRESSO",
     "FonteDati", "FonteDatiSupabase", "Freno", "LetturaModello", "PRIORITA", "PaginaDaLeggere", "STEP",
-    "STEP_INGRESSO", "VERITA_NOTA", "cadenza", "colonne_ingresso", "colonne_lettura", "confronta_verita",
+    "STEP_INGRESSO", "VERITA_NOTA", "cadenza", "colonne_ingresso", "colonne_lettura",
+    "confermati_da_stato", "confronta_verita",
     "esegui_passo", "esito_report", "leggi_con_collegate", "leggi_pagina", "lettura_modello_valida",
     "normalizza_link_bando", "pagina_da_leggere", "righe_report", "run", "scegli_candidati",
+    "stati_effettivi",
     "termine_indicato_di",
 ]

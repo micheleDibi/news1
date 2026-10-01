@@ -417,9 +417,13 @@ class TestPipeline(unittest.TestCase):
              mock.patch.object(runner, "update_bando_completed",
                                new=mock.AsyncMock(return_value=True)) as aggiorna, \
              mock.patch.object(runner, "logger", registro), \
+             mock.patch.object(runner.telemetria, "scrivi_pipeline_run") as riga, \
+             mock.patch.object(runner, "_tabella_dei_domini", lambda: None), \
+             mock.patch.object(runner, "scrivi_righe_link", lambda *a, **k: 0), \
              mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DEDUP_CANONICAL", None)
             contatori = asyncio.run(runner.run())
+        self.riga_di_spesa = riga
         return contatori, aggiorna, arricchisci, registro
 
     def test_affermazione_non_sostenuta_contata_e_nel_journal_senza_blocco(self):
@@ -436,10 +440,43 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(contatori["affermazioni_non_sostenute"], 0)
         self.assertEqual(aggiorna.await_count, 1)
 
-    def test_la_pipeline_non_passa_contatori(self):
-        # RIPRESA §5.10: la riga del giro resta quella di prima.
+    def test_la_pipeline_conta_la_spesa_in_una_riga_propria(self):
+        # Giro 3, §4 (prima RIPRESA §5.10 la teneva fuori): la SEO conta la
+        # spesa con i suoi contatori e scrive la riga `pipeline_run` step
+        # `seo`; la riga del giro resta un riassunto e non si somma.
+        bilancio = carica_modulo("bilancio")
         _c, _a, arricchisci, _r = self._esegui("testo")
-        self.assertIsNone(arricchisci.await_args.kwargs.get("contatori"))
+        self.assertIsInstance(arricchisci.await_args.kwargs.get("contatori"), bilancio.Contatori)
+        self.assertEqual(self.riga_di_spesa.call_args.args[0].step, "seo")
+
+
+class TestNovitaNelPrompt(unittest.TestCase):
+    """Giro 3, §6: le novita' dell'ente entrano nel prompt solo se ci sono."""
+
+    CTX = {"id": 7, "titolo_raw": "Avviso", "beneficiari": ["Imprese"]}
+
+    def test_senza_novita_il_prompt_resta_quello_di_sempre(self):
+        senza = seo_skill._build_seo_prompt(dict(self.CTX), "testo")
+        self.assertNotIn("NOVITÀ", senza)
+        self.assertEqual(senza, seo_skill._build_seo_prompt({**self.CTX, "novita": []}, "testo"))
+        self.assertEqual(seo_skill.blocco_novita(None), "")
+
+    def test_con_novita_il_blocco_le_elenca(self):
+        novita = [{"tipo": "faq", "citazione": "Pubblicate le FAQ", "url_prova": "https://ente.it/b"},
+                  {"tipo": "rettifica", "campo": "allegati", "citazione": "Nuovo modulo"}]
+        prompt = seo_skill._build_seo_prompt({**self.CTX, "novita": novita}, "testo")
+        self.assertIn("== NOVITÀ PUBBLICATE DALL'ENTE", prompt)
+        self.assertIn("- faq: «Pubblicate le FAQ» (pagina: https://ente.it/b)", prompt)
+        self.assertIn("- rettifica (allegati): «Nuovo modulo»", prompt)
+        self.assertIn("regola 16", prompt)
+        # Il blocco sta prima del markdown della pagina.
+        self.assertLess(prompt.index("NOVITÀ PUBBLICATE"), prompt.index("== MARKDOWN PAGINA"))
+
+    def test_novita_tagliate(self):
+        lunghe = [{"tipo": "faq", "citazione": "x" * 1000}] * 20
+        blocco = seo_skill.blocco_novita(lunghe)
+        self.assertEqual(blocco.count("- faq"), seo_skill.MAX_NOVITA)
+        self.assertNotIn("x" * (seo_skill.MAX_CITAZIONE_NOVITA + 1), blocco)
 
 
 if __name__ == "__main__":

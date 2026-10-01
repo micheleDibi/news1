@@ -268,22 +268,65 @@ class TestSelezione(unittest.TestCase):
         righe = [_bando(id=1, pubblicato=False), _bando(id=2)]
         self.assertEqual([r["id"] for r in monitoraggio.seleziona(righe, adesso=ADESSO)], [2])
 
-    def test_prossimo_controllo_futuro_non_entra(self):
-        futuro = (ADESSO + timedelta(days=1)).isoformat()
-        righe = [_bando(id=1, prossimo_controllo_at=futuro), _bando(id=2)]
-        self.assertEqual([r["id"] for r in monitoraggio.seleziona(righe, adesso=ADESSO)], [2])
+    def test_gli_aperti_entrano_a_ogni_giro(self):
+        # Giro 3, §5: aperti, in apertura (anche «da verificare») e sospesi a
+        # ogni giro, senza guardare `prossimo_controllo_at`.
+        futuro = (ADESSO + timedelta(days=5)).isoformat()
+        righe = [
+            _bando(id=1, prossimo_controllo_at=futuro),
+            _bando(id=2, prossimo_controllo_at=futuro, stato_bando="in apertura prossimamente",
+                   data_apertura="2026-12-01"),
+            _bando(id=3, prossimo_controllo_at=futuro, stato_bando="sospeso"),
+            _bando(id=4, prossimo_controllo_at=futuro, data_scadenza="2026-10-10"),
+        ]
+        self.assertEqual(sorted(r["id"] for r in monitoraggio.seleziona(righe, adesso=ADESSO)),
+                         [1, 2, 3, 4])
 
-    def test_ordine_priorita_poi_data_poi_id(self):
+    def test_i_chiusi_seguono_la_cadenza(self):
+        futuro = (ADESSO + timedelta(days=1)).isoformat()
+        passato = (ADESSO - timedelta(hours=1)).isoformat()
+        righe = [_bando(id=1, stato_bando="chiuso", data_scadenza="2026-09-01",
+                        prossimo_controllo_at=futuro),
+                 _bando(id=2, stato_bando="chiuso", data_scadenza="2026-09-01",
+                        prossimo_controllo_at=passato),
+                 _bando(id=3, stato_bando="chiuso", data_scadenza="2026-09-01",
+                        prossimo_controllo_at=None)]
+        self.assertEqual([r["id"] for r in monitoraggio.seleziona(righe, adesso=ADESSO)], [2, 3])
+
+    def test_revocati_e_chiusi_oltre_dodici_mesi_fuori(self):
+        # Prima rientravano a ogni giro: la loro frequenza None non scriveva un
+        # prossimo controllo, e una riga senza prossimo controllo entrava.
+        righe = [_bando(id=1, stato_bando="revocato", prossimo_controllo_at=None),
+                 _bando(id=2, stato_bando="chiuso", data_scadenza="2025-08-01",
+                        prossimo_controllo_at=None),
+                 _bando(id=3, stato_bando="chiuso", data_scadenza="2025-10-15",
+                        prossimo_controllo_at=None)]
+        self.assertEqual([r["id"] for r in monitoraggio.seleziona(righe, adesso=ADESSO)], [3])
+        self.assertEqual([r["id"] for r in monitoraggio.seleziona(righe, adesso=ADESSO, forza=True)],
+                         [3])
+
+    def test_ordine_priorita_poi_ultimo_controllo_poi_id(self):
+        # Rotazione (giro 3, §1 e §5): a parita' di priorita' prima chi non e'
+        # mai stato controllato, poi il controllo piu' vecchio, poi l'id.
         vecchio = (ADESSO - timedelta(days=2)).isoformat()
         recente = (ADESSO - timedelta(minutes=5)).isoformat()
         righe = [
-            _bando(id=10, prossimo_controllo_at=recente),
-            _bando(id=11, prossimo_controllo_at=vecchio),
-            _bando(id=12, prossimo_controllo_at=vecchio, priorita_controllo=90),
-            _bando(id=9, prossimo_controllo_at=vecchio),
+            _bando(id=10, ultimo_controllo_at=recente),
+            _bando(id=11, ultimo_controllo_at=vecchio),
+            _bando(id=12, ultimo_controllo_at=recente, priorita_controllo=90),
+            _bando(id=9, ultimo_controllo_at=vecchio),
+            _bando(id=13),
+            # Lo stesso istante con un altro fuso: si confronta l'istante.
+            _bando(id=8, ultimo_controllo_at=(ADESSO - timedelta(days=3)).astimezone(
+                timezone(timedelta(hours=5))).isoformat()),
         ]
         scelti = monitoraggio.seleziona(righe, adesso=ADESSO)
-        self.assertEqual([r["id"] for r in scelti], [12, 9, 11, 10])
+        self.assertEqual([r["id"] for r in scelti], [12, 13, 8, 9, 11, 10])
+
+    def test_istanti_con_frazioni_corte(self):
+        # PostgREST manda frazioni a cinque cifre: con Python 3.10 non si
+        # leggevano, e il bando sarebbe sembrato «mai controllato».
+        self.assertIsNotNone(monitoraggio._istante("2026-09-30T10:00:12.87927+00:00"))
 
     def test_tetto_tronca(self):
         righe = [_bando(id=i) for i in range(10)]
@@ -508,6 +551,30 @@ class TestControlla(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sospesi, [])
         self.assertIn("prossimo_controllo_at", esito.colonne)
         self.assertEqual(dati.registrati[0]["tipo"], "elaborazione_bloccata")
+
+    async def test_il_blocco_si_annota_solo_al_passaggio_da_quattro_a_cinque(self):
+        # §18.8: aperti e sospesi tornano a ogni giro anche con la pagina
+        # morta; un `elaborazione_bloccata` per giro sarebbe solo rumore.
+        async def scarica(url, **kw):
+            raise RuntimeError("timeout")
+
+        for prima, attesi in ((3, 0), (4, 1), (5, 0), (9, 0)):
+            for modalita in ("ombra", "attivo"):
+                with self.subTest(controlli_falliti=prima, modalita=modalita):
+                    dati = monitoraggio.FonteDati()
+                    with patch.object(monitoraggio, "_sospendi_fonte", lambda _id: None):
+                        esito = await monitoraggio.controlla(
+                            _bando(controlli_falliti=prima), scarica=scarica,
+                            classifica=_nessun_evento, fonte_dati=dati, adesso=ADESSO,
+                            modalita=modalita)
+                    self.assertEqual(esito.colonne["controlli_falliti"], prima + 1)
+                    self.assertEqual(
+                        [e["tipo"] for e in dati.registrati], ["elaborazione_bloccata"] * attesi)
+                    if prima + 1 >= monitoraggio.FALLIMENTI_PER_BLOCCO:
+                        # Il ricontrollo resta lontano anche dopo il quinto.
+                        self.assertGreaterEqual(
+                            (esito.prossimo - ADESSO).total_seconds(),
+                            monitoraggio.BACKOFF_MASSIMO_ORE * 3600 - 1)
 
     async def test_senza_fonte_ufficiale_si_salta(self):
         async def scarica(url, **kw):       # pragma: no cover - non deve girare
@@ -737,16 +804,34 @@ class TestRun(unittest.IsolatedAsyncioTestCase):
         async def classifica(ctx):
             return []
 
-        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(5)])
+        class _SpesaFinita(_FonteSenzaLimite):
+            """Oggi si sono gia' spesi 5 $ (giro 3, §4): morde la spesa."""
+            letture = 0
+
+            def consumo_oggi(self):
+                self.letture += 1
+                return {"usd": 5.0}
+
+        chiamate = []
+
+        async def classifica_contata(ctx):
+            chiamate.append(ctx.bando_id)
+            return []
+
+        dati = _SpesaFinita(righe=[_bando(id=i) for i in range(5)])
         esito = await monitoraggio.run(
-            impostazioni=_impostazioni(tetto_fetch_giro=2),
-            fonte_dati=dati, scarica=scarica, classifica=classifica,
+            impostazioni=_impostazioni(tetto_usd_giorno=5.0),
+            fonte_dati=dati, scarica=scarica, classifica=classifica_contata,
             lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
         )
         self.assertEqual(esito["status"], "ok")
-        self.assertTrue(esito["interrotto_per_tetto"])
-        self.assertEqual(esito["controllati"], 2)
-        self.assertIn("tetto fetch", esito["motivo"])
+        # Non si ferma: tutte e cinque le pagine si controllano, nessuna va al
+        # modello, nessuna salva colonne. Il consumo si legge una volta.
+        self.assertFalse(esito["interrotto_per_tetto"])
+        self.assertEqual((esito["controllati"], esito["classificazioni_rinviate"]), (5, 5))
+        self.assertEqual((chiamate, dati.scritture, dati.letture), ([], [], 1))
+        self.assertIn("tetto giornaliero usd", esito["motivo"])
+        self.assertEqual(esito["copertura"]["motivo_rimasti"], "spesa")
 
     async def test_ombra_non_produce_slug_da_notificare(self):
         # In ombra nessun URL va a IndexNow: il contenuto pubblico non cambia.
@@ -889,6 +974,7 @@ def _zittisci_io(caso):
     """
     for bersaglio in (
         patch.object(monitoraggio, "_scrivi_telemetria", MagicMock()),
+        patch.object(monitoraggio, "_scrivi_telemetria_riscritture", MagicMock()),
         patch.object(monitoraggio, "_tabella_domini_del_giro", lambda: None),
         patch.object(eventi, "_rpc_disponibile", lambda controllo: False),
     ):
@@ -1644,8 +1730,11 @@ class TestMonitorAttivoSenzaRpc(unittest.IsolatedAsyncioTestCase):
                                   citazione="prorogato al 1 dicembre 2026", url_prova="x")]
 
         dati = _FonteSenzaLimite(righe=[_bando(testo_norm="Avviso", impronta_contenuto="vecchia")])
+        # La tabella dei domini si legge dal DB: nei test no (None = il seed,
+        # come quando la SELECT fallisce).
         with patch.object(monitoraggio.eventi_mod, "applica", lambda proposta, ctx: applicazione), \
                 patch.object(monitoraggio, "_scarico_predefinito", lambda: scarica), \
+                patch.object(monitoraggio, "_tabella_domini_del_giro", lambda: None), \
                 patch.object(monitoraggio, "_azzera_scarico", lambda: None):
             esito = await monitoraggio.run(
                 impostazioni=_impostazioni(monitor_modalita="attivo"), fonte_dati=dati,
@@ -1835,6 +1924,161 @@ class TestTabellaDomini(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(senza_tabella["respinti"], 1)
 
 
+# --- G9: eventi di solo stato senza transizione (§20.2) ---------------------
+
+class TestG9SoloStatoDalMonitor(unittest.IsolatedAsyncioTestCase):
+    """Contratto `bandi-giro-3` §20.2, attraverso `controlla` e i gate veri."""
+
+    #: La frase della pagina e la citazione, per tipo (il G6 vuole la parola).
+    FRASI = {"chiusura": "Il bando e' chiuso dal 30 settembre 2026",
+             "sospensione": "Il bando e' sospeso dal 30 settembre 2026"}
+
+    async def _controlla(self, stato, tipo="chiusura"):
+        frase = self.FRASI[tipo]
+        pagina = f"<main><h1>Avviso</h1><p>{frase}: le domande non si presentano.</p></main>"
+        giudizi = []
+        vera = monitoraggio.eventi_mod.valuta
+
+        def valuta(evento, ctx):
+            giudizio = vera(evento, ctx)
+            giudizi.append((evento.tipo, giudizio))
+            return giudizio
+
+        async def scarica(url, **kw):
+            return _Risposta(html=pagina)
+
+        async def classifica(ctx):
+            return [eventi.Evento(tipo=tipo, citazione=frase, url_prova=ctx.pagine[0].url)]
+
+        dati = monitoraggio.FonteDati()
+        # G4 (dominio) e G7 (seconda prova) qui non c'entrano: passano, cosi'
+        # l'unico gate che decide e' G9.
+        passa = lambda *_a, **_k: (True, "")      # noqa: E731
+        with patch.object(monitoraggio.eventi_mod, "valuta", valuta), \
+                patch.object(monitoraggio.eventi_mod, "g4_prova", passa), \
+                patch.object(monitoraggio.eventi_mod, "g7_seconda_prova", passa):
+            esito = await monitoraggio.controlla(
+                _bando(stato_bando=stato, testo_norm="Avviso", impronta_contenuto="vecchia"),
+                scarica=scarica, classifica=classifica, fonte_dati=dati,
+                tipi_attivi=("chiusura", "sospensione"), capacita_14=True,
+                adesso=ADESSO, casuale=lambda: 0.5)
+        return esito, giudizi, dati
+
+    def _g9(self, giudizi):
+        return [motivo for _tipo, g in giudizi for gate, motivo in g.falliti if gate == "G9"]
+
+    async def test_chiusura_su_in_apertura_respinta_da_g9(self):
+        esito, giudizi, dati = await self._controlla("in apertura prossimamente")
+        self.assertEqual([t for t, _g in giudizi], ["chiusura"])
+        # G9 e' l'unico gate che la respinge.
+        self.assertEqual([gate for gate, _m in giudizi[0][1].falliti], ["G9"])
+        self.assertIn("senza transizione", self._g9(giudizi)[0])
+        self.assertEqual((esito.eventi, esito.eventi_applicati), ((), 0))
+        self.assertEqual(len(esito.respinti), 1)
+        self.assertEqual(dati.applicati, [])
+
+    async def test_sospensione_su_chiuso_respinta_da_g9(self):
+        esito, giudizi, _dati = await self._controlla("chiuso", tipo="sospensione")
+        self.assertEqual([gate for gate, _m in giudizi[0][1].falliti], ["G9"])
+        self.assertIn("senza transizione", self._g9(giudizi)[0])
+        self.assertEqual(esito.eventi, ())
+
+    async def test_chiusura_su_chiuso_ammessa(self):
+        esito, giudizi, _dati = await self._controlla("chiuso")
+        self.assertEqual([t for t, _g in giudizi], ["chiusura"])
+        self.assertEqual(self._g9(giudizi), [])
+        self.assertIn("G9", giudizi[0][1].superati)
+        self.assertTrue(giudizi[0][1].ammesso)
+        self.assertEqual(len(esito.eventi), 1)
+        self.assertEqual(esito.respinti, ())
+
+
+# --- rielaborazione: il marcatore azzerato solo se scritto (§18.8) ---------
+
+class TestAzzeraRielaborazioneScritto(unittest.TestCase):
+    """`db.azzera_rielaborazione` risponde sempre con un dict: conta `scritto`."""
+
+    def test_vero_solo_con_scritto(self):
+        db = carica_modulo("db")
+        fonte = monitoraggio.FonteDatiSupabase(controllo=object(), client=object())
+        casi = (
+            ({"scritto": True}, True),
+            ({"scritto": False, "motivo": "nessuna riga della fonte"}, False),
+            ({"scritto": False, "motivo": "colonne_assenti"}, False),
+            ({}, False),
+            (None, False),
+        )
+        for risposta, atteso in casi:
+            with self.subTest(risposta=risposta):
+                chiamate = []
+
+                def azzera(bando_id, _r=risposta):
+                    chiamate.append(bando_id)
+                    return _r
+
+                with patch.object(db, "azzera_rielaborazione", azzera):
+                    self.assertIs(fonte.azzera_rielaborazione(7), atteso)
+                self.assertEqual(chiamate, [7])
+
+    def test_un_errore_non_azzera(self):
+        db = carica_modulo("db")
+        fonte = monitoraggio.FonteDatiSupabase(controllo=object(), client=object())
+
+        def rotta(bando_id):
+            raise RuntimeError("503")
+
+        with patch.object(db, "azzera_rielaborazione", rotta):
+            self.assertFalse(fonte.azzera_rielaborazione(7))
+
+
+class TestAllegatoIndirizzoPubblico(unittest.TestCase):
+    """§18.6: un allegato su un host interno non entra in `bando_link`.
+
+    Gli URL sono IP scritti nell'URL: `http.indirizzo_pubblico` li giudica
+    senza DNS, quindi niente rete.
+    """
+
+    def _registra(self, url):
+        db = carica_modulo("db")
+        scritte = []
+
+        def upsert(righe, **_kw):
+            scritte.extend(righe)
+            return len(righe)
+
+        fonte = monitoraggio.FonteDatiSupabase(controllo=object(), client=object())
+        with patch.object(db, "upsert_bando_link", upsert):
+            esito = fonte.registra_link_allegato(7, url, "https://www.regione.it/bando")
+        return esito, scritte
+
+    def test_host_interni_rifiutati(self):
+        for url in ("http://127.0.0.1/a.pdf", "http://169.254.169.254/latest/meta-data",
+                    "http://10.0.0.5/b.pdf", "http://[::1]/c.pdf", "http://[::ffff:127.0.0.1]/d.pdf",
+                    "file:///etc/passwd"):
+            with self.subTest(url=url):
+                esito, scritte = self._registra(url)
+                self.assertFalse(esito)
+                self.assertEqual(scritte, [])
+
+    def test_host_pubblico_scritto(self):
+        esito, scritte = self._registra("https://8.8.8.8/allegato.pdf")
+        self.assertTrue(esito)
+        self.assertEqual([r["url"] for r in scritte], ["https://8.8.8.8/allegato.pdf"])
+
+    def test_il_dns_si_chiede_a_http(self):
+        # Un nome si giudica dagli indirizzi a cui risolve: qui un DNS finto.
+        http = carica_modulo("http")
+        for indirizzi, atteso in ((["10.1.2.3"], False), (["8.8.4.4"], True),
+                                  (["8.8.4.4", "192.168.1.1"], False)):
+            with self.subTest(indirizzi=indirizzi):
+                vera = http.indirizzo_pubblico
+                with patch.object(http, "indirizzo_pubblico",
+                                  lambda u, _i=indirizzi: vera(u, risolvi=lambda _h: _i)):
+                    esito, scritte = self._registra("https://documenti.ente.it/a.pdf")
+                self.assertIs(bool(esito), atteso)
+                self.assertEqual(len(scritte), 1 if atteso else 0)
+
+
 # --- tetti: i crediti Firecrawl devono poter mordere ------------------------
 
 class TestTettoCrediti(unittest.IsolatedAsyncioTestCase):
@@ -1847,10 +2091,17 @@ class TestTettoCrediti(unittest.IsolatedAsyncioTestCase):
         # crediti non potrebbe mai mordere, malgrado ogni ripiego Firecrawl
         # della pagina principale ne costi uno.
         spesi = SimpleNamespace(fetch=0, fetch_304=0, crediti_firecrawl=0, errori=0)
+        totale = {"crediti": 0}
+        principali = []
 
         async def scarica(url, **kw):
+            # Il ripiego a pagamento solo sulla pagina principale, come lo
+            # scarico vero: con `principale=False` niente credito.
+            principali.append(bool(kw.get("principale")))
             spesi.fetch += 1
-            spesi.crediti_firecrawl += 1
+            if kw.get("principale"):
+                spesi.crediti_firecrawl += 1
+                totale["crediti"] += 1
             return _Risposta(html="<h1>x</h1><p>testo</p>")
 
         def azzera():
@@ -1867,9 +2118,103 @@ class TestTettoCrediti(unittest.IsolatedAsyncioTestCase):
                 fonte_dati=dati, classifica=_nessun_evento,
                 lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
             )
-        self.assertTrue(esito["interrotto_per_tetto"])
+        # Giro 3 (§4, §5): a tetto il giro continua SOLO con i controlli
+        # gratuiti: niente ripiego a pagamento, crediti spesi <= tetto, e le
+        # pagine nuove aspettano il giro dopo senza colonne salvate.
+        self.assertFalse(esito["interrotto_per_tetto"])
         self.assertIn("crediti", esito["motivo"])
-        self.assertEqual(esito["controllati"], 2)
+        self.assertLessEqual(totale["crediti"], 2)
+        self.assertEqual(principali, [True, True, False, False, False])
+        self.assertEqual(esito["controllati"], 5)
+        self.assertEqual((esito["classificazioni"], esito["classificazioni_rinviate"]), (2, 3))
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 5, "fatti": 2, "rimasti": 3, "motivo_rimasti": "crediti"})
+        self.assertEqual(sorted(i for i, _ in dati.scritture), [0, 1])
+
+    async def test_consumo_illeggibile_vale_tetto_raggiunto(self):
+        # §18.5: se `db.consumo_oggi()` fallisce (None) il giro non sa quanto
+        # e' gia' stato speso oggi: niente modello e niente crediti, ma le
+        # pagine si controllano lo stesso (controlli gratuiti).
+        principali = []
+        classificate = []
+
+        async def scarica(url, **kw):
+            principali.append(bool(kw.get("principale")))
+            return _Risposta(html="<h1>x</h1><p>testo</p>")
+
+        async def classifica(ctx):
+            classificate.append(ctx.bando_id)
+            return []
+
+        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(3)], consumo=None)
+        with patch.object(monitoraggio, "_scarico_predefinito", lambda: scarica), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(tetto_usd_giorno=5.0, tetto_crediti_giorno=100),
+                fonte_dati=dati, classifica=classifica,
+                lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            )
+        self.assertEqual(classificate, [])
+        self.assertEqual(principali, [False, False, False])
+        self.assertEqual(esito["controllati"], 3)
+        self.assertEqual((esito["classificazioni"], esito["classificazioni_rinviate"]), (0, 3))
+        self.assertIn("non leggibile", esito["motivo"])
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 3, "fatti": 0, "rimasti": 3, "motivo_rimasti": "spesa"})
+
+    async def test_consumo_letto_niente_tetto(self):
+        # Il confronto: stesso giro con il consumo letto (vuoto) classifica tutto.
+        classificate = []
+
+        async def scarica(url, **kw):
+            return _Risposta(html="<h1>x</h1><p>testo</p>")
+
+        async def classifica(ctx):
+            classificate.append(ctx.bando_id)
+            return []
+
+        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(3)])
+        with patch.object(monitoraggio, "_scarico_predefinito", lambda: scarica), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(tetto_usd_giorno=5.0, tetto_crediti_giorno=100),
+                fonte_dati=dati, classifica=classifica,
+                lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            )
+        self.assertEqual(sorted(classificate), [0, 1, 2])
+        self.assertEqual(esito["classificazioni_rinviate"], 0)
+
+    async def test_consumo_illeggibile_opus_non_riscrive_e_la_coda_resta(self):
+        # Il riscrittore di produzione (giro attivo, scarico proprio): con il
+        # consumo illeggibile non chiama `riscrivi_scheda`, e la novita' in
+        # coda aspetta il giro dopo.
+        chiamate = []
+
+        async def riscrivi(*a, **k):                     # pragma: no cover - non deve servire
+            chiamate.append(a)
+            raise AssertionError("Opus non si chiama con il consumo illeggibile")
+
+        async def scarica_304(url, **kw):
+            return _Risposta(stato=304)
+
+        coda = {"novita": [{"evento_id": 7, "tipo": "faq", "citazione": "x"}], "tentativi": 0,
+                "dal": "2026-09-20T00:00:00+00:00"}
+        riga = _bando(id=1, etag="x", impronta_contenuto="h",
+                      impronte_sezioni={"__link__": [], "__riscrittura__": coda, **VERSIONE})
+        dati = _FonteSenzaLimite(righe=[riga], consumo=None)
+        with patch.object(monitoraggio, "_scarico_predefinito", lambda: scarica_304), \
+                patch.object(monitoraggio, "_azzera_scarico", lambda: None), \
+                patch.object(monitoraggio.rigenera_mod, "riscrivi_scheda", riscrivi):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(monitor_modalita="attivo", tetto_usd_giorno=5.0),
+                fonte_dati=dati, classifica=_nessun_evento,
+                lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            )
+        self.assertEqual(chiamate, [])
+        self.assertEqual((esito["riscritture"], esito["riscritture_rinviate"]), (0, 1))
+        # La coda non cambia: nessuna scrittura delle impronte la toglie.
+        sezioni_scritte = [c["impronte_sezioni"] for _i, c in dati.scritture if "impronte_sezioni" in c]
+        self.assertTrue(all(s.get("__riscrittura__") == coda for s in sezioni_scritte))
 
 
 # --- classificatore di produzione -------------------------------------------
@@ -2257,19 +2602,19 @@ class TestApplicaEventi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(applicati, [])
         self.assertEqual(esito["modalita"], "ombra")
 
-    async def test_blocco_massimo_cinquanta(self):
-        # Il blocco e' il freno: senza, un solo giro riverserebbe mesi di
-        # ombra e non ci sarebbe un giro intermedio per accorgersi di un
-        # errore.
+    async def test_nessun_blocco_tutti_gli_eventi(self):
+        # Giro 3, §1 («niente lotti»): il vecchio blocco di 50 non c'e' piu',
+        # si applicano tutti gli eventi in coda.
+        self.assertFalse(hasattr(monitoraggio, "BLOCCO_APPLICAZIONE"))
         righe = [_evento_db(id=i) for i in range(80)]
         esito, applicati = await self._esegui(righe, attivo=True)
-        self.assertEqual(esito["blocco"], monitoraggio.BLOCCO_APPLICAZIONE)
-        self.assertEqual(len(applicati), 50)
+        self.assertIsNone(esito["blocco"])
+        self.assertEqual(len(applicati), 80)
 
-    async def test_limit_puo_solo_abbassare_il_blocco(self):
+    async def test_limit_esplicito_resta(self):
         righe = [_evento_db(id=i) for i in range(80)]
-        esito, _ = await self._esegui(righe, attivo=True, limit=200)
-        self.assertEqual(esito["blocco"], monitoraggio.BLOCCO_APPLICAZIONE)
+        esito, applicati = await self._esegui(righe, attivo=True, limit=200)
+        self.assertEqual((esito["blocco"], len(applicati)), (200, 80))
         esito, applicati = await self._esegui(righe, attivo=True, limit=5)
         self.assertEqual(esito["blocco"], 5)
         self.assertEqual(len(applicati), 5)
@@ -3253,9 +3598,9 @@ class TestRifiutiNoti(unittest.TestCase):
         self.assertNotIn("gate", client.colonne)
 
     def test_oltre_le_mille_righe_la_lista_resta_completa(self):
-        # `TETTO_RIFIUTI_NOTI` e' 2 000 e il tetto del server e' 1 000: con una
-        # `.limit(2000)` gli eventi bloccati dal 1 001esimo in poi sparivano
-        # dalla lista e tornavano a riconsumare il blocco a ogni lancio.
+        # Il tetto del server e' 1 000: con una `.limit(2000)` gli eventi
+        # bloccati dal 1 001esimo in poi sparivano dalla lista e tornavano a
+        # riconsumare il blocco a ogni lancio.
         righe = [{"id": i, "riferisce_a": 100_000 + i} for i in range(1, 1501)]
         noti, client = self._leggi(righe)
         self.assertEqual(len(noti), 1500)
@@ -3264,19 +3609,14 @@ class TestRifiutiNoti(unittest.TestCase):
         # accumulano i parametri, quindi ogni pagina e' una query nuova.
         self.assertEqual([p[0] for p in client.pagine], [0, 1000])
 
-    def test_il_troncamento_al_tetto_si_dichiara(self):
-        # Il tetto e' l'unico limite dichiarato: se morde, la lista e' una
-        # FETTA e gli eventi che ne restano fuori tornano in coda per sempre.
-        # Non poterlo sapere e' peggio del troncamento.
-        righe = [{"id": i, "riferisce_a": 100_000 + i}
-                 for i in range(1, monitoraggio.TETTO_RIFIUTI_NOTI + 200)]
-        registro = MagicMock()
-        with patch.object(monitoraggio, "logger", registro):
-            noti, _ = self._leggi(righe)
-        self.assertEqual(len(noti), monitoraggio.TETTO_RIFIUTI_NOTI)
-        detti = [a for chiamata in registro.warning.call_args_list
-                 for a in chiamata.args]
-        self.assertIn(monitoraggio.ALLARME_RIFIUTI_TRONCATI, detti)
+    def test_nessun_tetto_si_leggono_tutti(self):
+        # Giro 3, §1: il vecchio tetto di 2 000 righe lasciava fuori proprio
+        # gli ultimi rifiuti, che tornavano in coda per sempre.
+        self.assertFalse(hasattr(monitoraggio, "TETTO_RIFIUTI_NOTI"))
+        righe = [{"id": i, "riferisce_a": 100_000 + i} for i in range(1, 2201)]
+        noti, client = self._leggi(righe)
+        self.assertEqual(len(noti), 2200)
+        self.assertEqual([p[0] for p in client.pagine], [0, 1000, 2000])
 
 
 # --- contatori del giro e allarmi nel riepilogo ------------------------------
@@ -3320,9 +3660,11 @@ class TestContatoriEAllarmi(unittest.IsolatedAsyncioTestCase):
             {monitoraggio.MODELLO_SECONDA_OPINIONE: (3.0, 15.0)})
         self.assertGreater(miei.usd, 1.5)
         esito = await self._giro(contatori=miei, tetto_usd_giorno=1.5)
-        self.assertTrue(esito["interrotto_per_tetto"])
+        # Giro 3 (§5): il giro non si ferma, il modello non si chiama.
+        self.assertFalse(esito["interrotto_per_tetto"])
         self.assertIn("usd", esito["motivo"])
-        self.assertIn(esito["motivo"], esito["allarmi"])
+        self.assertTrue(any(esito["motivo"] in a for a in esito["allarmi"]))
+        self.assertEqual((esito["classificazioni"], esito["classificazioni_rinviate"]), (0, 1))
 
     async def test_senza_contatori_il_giro_se_li_crea(self):
         esito = await self._giro()
@@ -3536,7 +3878,8 @@ class TestG7NelRiepilogo(unittest.IsolatedAsyncioTestCase):
             seconda_opinione=monitoraggio.seconda_opinione_da_impostazioni(
                 impostazioni, contatori),
             pagine_collegate=monitoraggio.pagine_collegate_da_impostazioni(
-                impostazioni, scarica=_nessuno_scarico, news_per_host={}),
+                impostazioni, scarica=_nessuno_scarico, news_per_host={},
+                pubblico=_tutti_pubblici),
             lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
         )
 
@@ -3552,6 +3895,11 @@ class TestG7NelRiepilogo(unittest.IsolatedAsyncioTestCase):
 
 async def _nessuno_scarico(url, **kw):
     return _Risposta(html="<h1>x</h1><p>testo</p>")
+
+
+async def _tutti_pubblici(url):
+    """La guardia sugli indirizzi (§18.6) senza DNS: nei test gli host sono finti."""
+    return True
 
 
 # --- pagine collegate di produzione (§6.2) ----------------------------------
@@ -3607,9 +3955,9 @@ def _bando_collegate(**extra):
 class TestPagineCollegate(unittest.IsolatedAsyncioTestCase):
     """WordPress, `news_url` del registro e SEDIA: tre strade, tutte GET."""
 
-    def _adattatore(self, scaricatore, news=None):
+    def _adattatore(self, scaricatore, news=None, pubblico=_tutti_pubblici):
         return monitoraggio.pagine_collegate_da_impostazioni(
-            _impostazioni(), scarica=scaricatore, news_per_host=news or {})
+            _impostazioni(), scarica=scaricatore, news_per_host=news or {}, pubblico=pubblico)
 
     async def test_wordpress_cerca_tre_token_e_dopo_l_ultimo_controllo(self):
         corpo = json.dumps([
@@ -3646,7 +3994,7 @@ class TestPagineCollegate(unittest.IsolatedAsyncioTestCase):
 
         collegate = monitoraggio.pagine_collegate_da_impostazioni(
             _impostazioni(), scarica=prendi, news_per_host={"ente.it": WP},
-            adesso=ADESSO)
+            adesso=ADESSO, pubblico=_tutti_pubblici)
         await collegate(_bando_collegate(ultimo_controllo_at=None))
         atteso = (monitoraggio.adesso_roma(ADESSO)
                   - timedelta(days=monitoraggio.GIORNI_RICERCA_WP))
@@ -3895,6 +4243,316 @@ class TestPagineCollegate(unittest.IsolatedAsyncioTestCase):
         pagine = visti[0].pagine
         self.assertEqual([p.collegata for p in pagine], [False, True])
 
+
+class TestHrefMalformati(unittest.IsolatedAsyncioTestCase):
+    """§19.3: un href malformato non ferma il monitor."""
+
+    MALFORMATI = ("http://[object Object]", "https://www.ente.it]/x")
+
+    def test_href_originale_salta_i_malformati(self):
+        buono = "https://www.ente.it/allegati/graduatoria.pdf"
+        html = "".join(f'<a href="{h}">x</a>' for h in self.MALFORMATI) + f'<a href="{buono}">g</a>'
+        for base in ("", "https://www.ente.it/bandi/avviso/"):
+            with self.subTest(base=base):
+                self.assertEqual(
+                    monitoraggio.href_originale(html, monitoraggio.impronte.normalizza_url(buono), base),
+                    buono)
+                # Non ritrovato: il normalizzato, senza eccezioni.
+                self.assertEqual(monitoraggio.href_originale(html, "https://altro.it/x", base),
+                                 "https://altro.it/x")
+
+    def test_url_allegato_con_la_pagina_piena_di_malformati(self):
+        buono = "https://www.ente.it/allegati/graduatoria-finale.pdf"
+        html = "".join(f'<a href="{h}">x</a>' for h in self.MALFORMATI) + f'<a href="{buono}">g</a>'
+        diff = SimpleNamespace(link_aggiunti=(monitoraggio.impronte.normalizza_url(buono),))
+        evento = {"tipo": "nuovo_allegato", "citazione": "Pubblicata la graduatoria finale"}
+        self.assertEqual(monitoraggio.url_allegato(evento, diff, html=html,
+                                                   base="https://www.ente.it/bandi/avviso/"),
+                         buono)
+
+    def test_ancore_salta_solo_il_malformato(self):
+        html = "".join(f'<a href="{h}">rotto</a>' for h in self.MALFORMATI) + \
+            '<a href="/notizie/psicologia">Psicologia</a>'
+        self.assertEqual(monitoraggio._ancore(html, NEWS),
+                         [("https://ente.it/notizie/psicologia", "Psicologia")])
+
+    def test_stessa_pagina_con_un_url_malformato(self):
+        for rotto in self.MALFORMATI:
+            with self.subTest(url=rotto):
+                self.assertEqual(monitoraggio._chiave_pagina(rotto), "")
+                self.assertFalse(monitoraggio._stessa_pagina(rotto, "https://www.ente.it/bandi/x/"))
+
+    async def test_pagina_di_notizie_con_href_malformati_non_spegne_l_host(self):
+        # Prima della correzione `_ancore` sollevava per OGNI bando dell'host:
+        # `controlla` metteva `collegate=[]` e l'host perdeva il G7 in silenzio.
+        titolo = "Avviso psicologia scolastica nelle scuole del Lazio"
+        html = "".join(f'<a href="{h}">{titolo}</a>' for h in self.MALFORMATI) + \
+            f'<a href="/notizie/psicologia">{titolo}</a>'
+        scarica = _Scaricatore({NEWS: _RispostaWeb(html=html)})
+        collegate = monitoraggio.pagine_collegate_da_impostazioni(
+            _impostazioni(), scarica=scarica, news_per_host={"ente.it": NEWS},
+            pubblico=_tutti_pubblici)
+        for identificativo in range(3):
+            self.assertEqual(await collegate(_bando_collegate(id=identificativo)),
+                             ("https://ente.it/notizie/psicologia",))
+        self.assertEqual(len(scarica.chiamate), 1)
+
+    async def test_post_wordpress_con_link_malformati(self):
+        titolo = "Psicologia scolastica: differimento dei termini"
+        corpo = json.dumps([{"link": h, "title": {"rendered": titolo}} for h in self.MALFORMATI]
+                           + [{"link": "https://ente.it/n/2", "title": {"rendered": titolo}}])
+
+        async def prendi(url, **kw):
+            return _RispostaWeb(html=corpo)
+
+        # La guardia vera (`http.indirizzo_pubblico_async`) rifiuta i malformati
+        # senza DNS; per `ente.it` un DNS finto.
+        http = carica_modulo("http")
+
+        async def pubblico(url):
+            return http.indirizzo_pubblico(url, risolvi=lambda host: ["93.184.216.34"])
+
+        collegate = monitoraggio.pagine_collegate_da_impostazioni(
+            _impostazioni(), scarica=prendi, news_per_host={"ente.it": WP}, pubblico=pubblico)
+        self.assertEqual(await collegate(_bando_collegate()), ("https://ente.it/n/2",))
+
+    async def test_un_eccezione_su_un_bando_non_ferma_il_giro(self):
+        # Il bando 1 solleva dentro `controlla`: gli altri si controllano, il
+        # giro conta l'errore e la riga con la spesa si scrive.
+        vero = monitoraggio.controlla
+
+        async def controlla(riga, **kw):
+            if riga.get("id") == 1:
+                raise ValueError("Invalid IPv6 URL")
+            return await vero(riga, **kw)
+
+        async def scarica(url, **kw):
+            return _Risposta(stato=304)
+
+        scritta = MagicMock()
+        dati = _FonteSenzaLimite(righe=[_bando(id=i, etag="x") for i in range(3)])
+        with patch.object(monitoraggio, "controlla", controlla), \
+                patch.object(monitoraggio, "_tabella_domini_del_giro", lambda: None), \
+                patch.object(monitoraggio, "_scrivi_telemetria", scritta):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(), fonte_dati=dati, scarica=scarica,
+                classifica=_nessun_evento, lock=_lock_libero(), adesso=ADESSO,
+                casuale=lambda: 0.5)
+        self.assertEqual(esito["status"], "ok")
+        self.assertEqual(esito["controllati"], 3)
+        self.assertEqual(esito["errori"], 1)
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 3, "fatti": 2, "rimasti": 1, "motivo_rimasti": "errore"})
+        scritta.assert_called_once()
+        # Il bando interrotto non salva colonne: torna al giro dopo com'era.
+        self.assertNotIn(1, [i for i, _ in dati.scritture])
+        self.assertEqual(sorted(i for i, _ in dati.scritture), [0, 2])
+
+
+class TestRedirectDellePagineCollegate(unittest.IsolatedAsyncioTestCase):
+    """§19.6: pagine collegate e notizie seguono i redirect solo sullo stesso host.
+
+    Scarico vero su una rete finta (`httpx.MockTransport`): un 302 verso
+    127.0.0.1 non si segue, e la richiesta interna non parte mai.
+    """
+
+    PAGINA = ("<html><body><h1>Avviso</h1><p>Avviso psicologia scolastica nelle scuole "
+              "del Lazio: nuova scadenza 1 dicembre 2026.</p></body></html>")
+
+    def _scarico(self, mappa):
+        import httpx
+        scarico = carica_modulo("scarico")
+        chieste = []
+
+        def gestore(request):
+            chieste.append(str(request.url))
+            return mappa.get(str(request.url), httpx.Response(404))
+
+        async def niente(*_a, **_k):
+            return None
+
+        s = scarico.Scarico(transport=httpx.MockTransport(gestore), throttle=niente,
+                            dormi=niente, tentativi=0)
+        return s, chieste
+
+    @staticmethod
+    def _html(testo):
+        import httpx
+        return httpx.Response(200, text=testo, headers={"content-type": "text/html; charset=utf-8"})
+
+    @staticmethod
+    def _redirect(verso, stato=302):
+        import httpx
+        return httpx.Response(stato, headers={"Location": verso})
+
+    def test_la_costante_e_quella_dello_scarico(self):
+        self.assertEqual(monitoraggio.REDIRECT_STESSO_HOST,
+                         carica_modulo("scarico").REDIRECT_STESSO_HOST)
+
+    async def test_notizie_con_302_verso_127_0_0_1(self):
+        s, chieste = self._scarico({
+            NEWS: self._redirect("http://127.0.0.1:8000/summarize_news"),
+            "http://127.0.0.1:8000/summarize_news": self._html("<a href='/x'>segreto</a>"),
+        })
+        collegate = monitoraggio.pagine_collegate_da_impostazioni(
+            _impostazioni(), scarica=s.scarica, news_per_host={"ente.it": NEWS},
+            pubblico=_tutti_pubblici)
+        for identificativo in range(2):
+            self.assertEqual(await collegate(_bando_collegate(id=identificativo)), ())
+        self.assertEqual(chieste, [NEWS])       # una volta: poi l'host e' muto
+
+    async def test_notizie_con_redirect_sullo_stesso_host_si_seguono(self):
+        nuove = "https://ente.it/notizie/nuove/"
+        html = ('<a href="/notizie/psicologia">Avviso psicologia scolastica nelle '
+                'scuole del Lazio</a>')
+        s, chieste = self._scarico({NEWS: self._redirect(nuove, 301), nuove: self._html(html)})
+        collegate = monitoraggio.pagine_collegate_da_impostazioni(
+            _impostazioni(), scarica=s.scarica, news_per_host={"ente.it": NEWS},
+            pubblico=_tutti_pubblici)
+        self.assertEqual(await collegate(_bando_collegate()),
+                         ("https://ente.it/notizie/psicologia",))
+        self.assertEqual(chieste, [NEWS, nuove])
+
+    async def test_pagina_collegata_con_302_verso_127_0_0_1(self):
+        ufficiale = "https://www.ente.it/bandi/psicologia-scolastica/"
+        collegata = "https://ente.it/notizie/psicologia"
+        interno = "http://127.0.0.1:8000/reconstruct_article"
+        s, chieste = self._scarico({
+            ufficiale: self._html(self.PAGINA),
+            collegata: self._redirect(interno),
+            interno: self._html("<p>nuova scadenza 1 dicembre 2026</p>"),
+        })
+
+        async def collegate(riga):
+            return [collegata]
+
+        visti = []
+
+        async def classifica(ctx):
+            visti.append(ctx)
+            return []
+
+        await monitoraggio.controlla(
+            _bando(fonte_ufficiale_url=ufficiale), scarica=s.scarica, classifica=classifica,
+            pagine_collegate=collegate, fonte_dati=monitoraggio.FonteDati(),
+            adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertNotIn(interno, chieste)
+        self.assertIn(collegata, chieste)
+        # La pagina interna non entra nel contesto (G4/G7, prompt del modello).
+        self.assertEqual([p.collegata for p in visti[0].pagine], [False])
+
+
+class TestPagineCollegateIndirizziInterni(unittest.IsolatedAsyncioTestCase):
+    """§18.6: niente GET verso host interni dalle pagine collegate.
+
+    Gli URL con l'IP scritto dentro si giudicano senza DNS; per i nomi c'e' un
+    DNS finto (`risolvi=` di `http.indirizzo_pubblico`). Niente rete.
+    """
+
+    TITOLO = "Psicologia scolastica: differimento dei termini"
+
+    def setUp(self):
+        self.http = carica_modulo("http")
+
+    def _dns(self, tabella):
+        """`pubblico` con un DNS finto: host -> lista di IP."""
+        giudicati = []
+
+        async def pubblico(url):
+            giudicati.append(url)
+            return self.http.indirizzo_pubblico(url, risolvi=lambda host: tabella.get(host, []))
+
+        pubblico.giudicati = giudicati
+        return pubblico
+
+    def _adattatore(self, scarica, news, pubblico=None):
+        return monitoraggio.pagine_collegate_da_impostazioni(
+            _impostazioni(), scarica=scarica, news_per_host=news, pubblico=pubblico)
+
+    async def test_pagina_di_notizie_su_host_interno_non_si_chiede(self):
+        for news in ("http://127.0.0.1/notizie/", "http://10.0.0.7/notizie/",
+                     "http://169.254.169.254/latest/meta-data/", "http://[::1]/notizie/"):
+            with self.subTest(news=news):
+                scarica = _Scaricatore({news: _RispostaWeb(html="<a href='/x'>x</a>")})
+                # Il default vero (`http.indirizzo_pubblico_async`): con un IP
+                # nell'URL non c'e' DNS.
+                collegate = self._adattatore(scarica, {"ente.it": news})
+                for identificativo in range(3):
+                    self.assertEqual(await collegate(_bando_collegate(id=identificativo)), ())
+                self.assertEqual(scarica.chiamate, [])
+
+    async def test_pagina_di_notizie_su_ip_pubblico_si_chiede(self):
+        news = "https://8.8.8.8/notizie/"
+        html = ('<a href="/notizie/psicologia">Avviso psicologia scolastica nelle '
+                'scuole del Lazio</a>')
+        scarica = _Scaricatore({news: _RispostaWeb(html=html)})
+        collegate = self._adattatore(scarica, {"ente.it": news})
+        self.assertEqual(await collegate(_bando_collegate()),
+                         ("https://8.8.8.8/notizie/psicologia",))
+        self.assertEqual([u for u, _ in scarica.chiamate], [news])
+
+    async def test_ricerca_wordpress_su_nome_che_risolve_dentro(self):
+        pubblico = self._dns({"ente.it": ["192.168.1.10"]})
+        scarica = _Scaricatore()
+        collegate = self._adattatore(scarica, {"ente.it": WP}, pubblico)
+        self.assertEqual(await collegate(_bando_collegate()), ())
+        self.assertEqual(scarica.chiamate, [])
+
+    async def test_post_wordpress_che_puntano_dentro_non_si_propongono(self):
+        corpo = json.dumps([
+            {"link": "http://169.254.169.254/latest/meta-data", "title": {"rendered": self.TITOLO}},
+            {"link": "https://intranet.ente.it/n/1", "title": {"rendered": self.TITOLO}},
+            {"link": "https://ente.it/n/2", "title": {"rendered": self.TITOLO}},
+        ])
+
+        async def prendi(url, **kw):
+            prendi.chiamate.append(url)
+            return _RispostaWeb(html=corpo)
+
+        prendi.chiamate = []
+        pubblico = self._dns({"ente.it": ["93.184.216.34"], "intranet.ente.it": ["10.1.1.1"]})
+        collegate = self._adattatore(prendi, {"ente.it": WP}, pubblico)
+        self.assertEqual(await collegate(_bando_collegate()), ("https://ente.it/n/2",))
+        # La sola GET e' la ricerca: le pagine collegate le scarica `controlla`.
+        self.assertEqual(len(prendi.chiamate), 1)
+
+    async def test_ancore_della_pagina_di_notizie_che_puntano_dentro(self):
+        html = (
+            '<a href="http://127.0.0.1:8000/summarize_news">Avviso psicologia scolastica '
+            'nelle scuole del Lazio</a>'
+            '<a href="/notizie/psicologia">Avviso psicologia scolastica nelle scuole del Lazio</a>'
+        )
+        scarica = _Scaricatore({NEWS: _RispostaWeb(html=html)})
+        pubblico = self._dns({"ente.it": ["93.184.216.34"]})
+        collegate = self._adattatore(scarica, {"ente.it": NEWS}, pubblico)
+        self.assertEqual(await collegate(_bando_collegate()),
+                         ("https://ente.it/notizie/psicologia",))
+
+    async def test_un_nome_con_un_indirizzo_pubblico_e_uno_interno_si_rifiuta(self):
+        pubblico = self._dns({"ente.it": ["93.184.216.34", "127.0.0.1"]})
+        scarica = _Scaricatore({NEWS: _RispostaWeb(html="<a href='/x'>x</a>")})
+        collegate = self._adattatore(scarica, {"ente.it": NEWS}, pubblico)
+        self.assertEqual(await collegate(_bando_collegate()), ())
+        self.assertEqual(scarica.chiamate, [])
+
+    async def test_un_giudizio_per_host_per_giro(self):
+        pubblico = self._dns({"ente.it": ["192.168.1.10"]})
+        scarica = _Scaricatore()
+        collegate = self._adattatore(scarica, {"ente.it": NEWS}, pubblico)
+        for identificativo in range(4):
+            await collegate(_bando_collegate(id=identificativo))
+        self.assertEqual(len(pubblico.giudicati), 1)
+        self.assertEqual(scarica.chiamate, [])
+
+    async def test_una_guardia_che_solleva_vale_no(self):
+        async def rotta(url):
+            raise RuntimeError("resolver giu'")
+
+        scarica = _Scaricatore({NEWS: _RispostaWeb(html="<a href='/x'>x</a>")})
+        collegate = self._adattatore(scarica, {"ente.it": NEWS}, rotta)
+        self.assertEqual(await collegate(_bando_collegate()), ())
+        self.assertEqual(scarica.chiamate, [])
+
 if __name__ == "__main__":       # pragma: no cover
     unittest.main()
 
@@ -3925,13 +4583,12 @@ class TestLottoDelMonitor(unittest.TestCase):
         self.assertTrue(self.bilancio.e_backfill("backfill:L6"))
 
     def test_i_due_insiemi_di_tetti_sono_diversi(self):
-        # Se coincidessero, il flag non servirebbe a niente.
-        tetti = self.bilancio.Tetti(classificazioni_giorno=30,
-                                    backfill_crediti=8000, backfill_usd=60.0)
-        # `usd` e' una proprieta' calcolata dai modelli: il tetto che morde qui
-        # e' quello delle classificazioni, che e' esattamente il numero che ha
-        # fermato il giro vero al trentesimo bando.
+        # Se coincidessero, il flag non servirebbe a niente. Dal giro 3 il
+        # tetto delle classificazioni non c'e' piu' (§1): morde la spesa del
+        # giorno di regime (5 $), che il lotto non vede (ha i suoi 60 $).
+        tetti = self.bilancio.Tetti(usd_giorno=5.0, backfill_crediti=8000, backfill_usd=60.0)
         molte = self.bilancio.Contatori(classificazioni=30)
+        self.bilancio.registra_chiamata(molte, "m", {"input_tokens": 6_000_000}, {"m": (1.0, 0.0)})
         regime = self.bilancio.verifica(molte, tetti, step="monitor", gia_oggi={})
         lotto = self.bilancio.verifica(molte, tetti, step="backfill:L6", gia_oggi={})
         self.assertFalse(regime.consentito, "a regime il tetto deve mordere")
@@ -4067,11 +4724,15 @@ class TestForzaLaCoda(unittest.TestCase):
         return base
 
     def test_la_cadenza_futura_non_ferma_il_forza(self):
-        riga = self._riga()
-        self.assertFalse(monitoraggio.selezionabile(riga))
-        self.assertTrue(monitoraggio.selezionabile(riga, forza=True))
-        self.assertEqual(len(monitoraggio.seleziona([riga], forza=True)), 1)
-        self.assertEqual(len(monitoraggio.seleziona([riga])), 0)
+        # Dal giro 3 la cadenza vale solo per i chiusi (entro 12 mesi).
+        adesso = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
+        riga = self._riga(stato_bando="chiuso", data_scadenza="2026-09-01")
+        self.assertFalse(monitoraggio.selezionabile(riga, adesso=adesso))
+        self.assertTrue(monitoraggio.selezionabile(riga, adesso=adesso, forza=True))
+        self.assertEqual(len(monitoraggio.seleziona([riga], adesso=adesso, forza=True)), 1)
+        self.assertEqual(len(monitoraggio.seleziona([riga], adesso=adesso)), 0)
+        # Un aperto entra comunque.
+        self.assertTrue(monitoraggio.selezionabile(self._riga(), adesso=adesso))
 
     def test_le_altre_tre_condizioni_restano(self):
         # Non pubblicato, doppione fuso, fonte non trovata: su queste righe non
@@ -4511,3 +5172,606 @@ class TestClassificazioneFallita(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(esito.classificato)
         self.assertEqual(esito.colonne, {})
         self.assertEqual(esito.eventi, ())
+
+
+class TestGiro3TempoEspesa(unittest.IsolatedAsyncioTestCase):
+    """Contratto `bandi-giro-3` §1 e §5: niente tetti di numero, tempo con
+    rotazione, spesa che rinvia la classificazione senza fermare il giro."""
+
+    def setUp(self):
+        _zittisci_io(self)
+
+    async def _giro(self, righe, *, orologio=None, consumo=None, classifica=_nessun_evento, **extra):
+        async def scarica(url, **kw):
+            return _Risposta(html="<h1>x</h1><p>testo nuovo</p>")
+
+        dati = _FonteSenzaLimite(righe=righe, consumo=dict(consumo or {}))
+        esito = await monitoraggio.run(
+            impostazioni=_impostazioni(**extra), fonte_dati=dati, scarica=scarica,
+            classifica=classifica, lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5,
+            orologio=orologio)
+        return esito, dati
+
+    async def test_nessun_tetto_di_numero(self):
+        # 450 bandi: oltre il vecchio TETTO_FETCH_GIRO (420), tutti controllati.
+        esito, dati = await self._giro([_bando(id=i) for i in range(450)])
+        self.assertEqual((esito["candidati"], esito["controllati"]), (450, 450))
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 450, "fatti": 450, "rimasti": 0, "motivo_rimasti": None})
+        self.assertFalse(esito["interrotto_per_tempo"])
+
+    async def test_il_tempo_taglia_e_lo_dice(self):
+        tempi = iter([0, 0, 10, 20, 99_999])
+        esito, dati = await self._giro([_bando(id=i) for i in range(5)],
+                                       orologio=lambda: next(tempi, 99_999), tempo_monitor_s=60)
+        self.assertTrue(esito["interrotto_per_tempo"])
+        self.assertFalse(esito["interrotto_per_tetto"])
+        self.assertEqual(esito["controllati"], 3)
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 5, "fatti": 3, "rimasti": 2, "motivo_rimasti": "tempo"})
+        # I tre controllati hanno l'ultimo controllo di adesso: al giro dopo
+        # i due rimasti passano per primi (rotazione).
+        controllati = {i: c for i, c in dati.scritture}
+        self.assertEqual(sorted(controllati), [0, 1, 2])
+        dopo = [dict(_bando(id=i), **controllati.get(i, {})) for i in range(5)]
+        self.assertEqual([r["id"] for r in monitoraggio.seleziona(dopo, adesso=ADESSO)][:2], [3, 4])
+
+    async def test_tempo_predefinito_un_ora(self):
+        self.assertEqual(monitoraggio.TEMPO_MONITOR_S, 3600)
+        tempi = iter([0, 0, 3500, 3700])
+        esito, _ = await self._giro([_bando(id=i) for i in range(3)],
+                                    orologio=lambda: next(tempi, 3700))
+        self.assertEqual(esito["controllati"], 2)
+
+    async def test_spesa_finita_pagina_invariata_salvata_cambiata_rinviata(self):
+        impronte = carica_modulo("impronte")
+        uguale = impronte.impronta_contenuto("<h1>x</h1><p>testo nuovo</p>")
+        testo = monitoraggio.comprimi_testo(impronte.testo_normalizzato("<h1>x</h1><p>testo nuovo</p>"))
+        chiamate = []
+
+        async def classifica(ctx):
+            chiamate.append(ctx.bando_id)
+            return []
+
+        righe = [_bando(id=1, impronta_contenuto=uguale, testo_norm=testo), _bando(id=2)]
+        esito, dati = await self._giro(righe, consumo={"usd": 9.0}, classifica=classifica,
+                                       tetto_usd_giorno=5.0)
+        self.assertEqual(chiamate, [])
+        self.assertEqual([i for i, _ in dati.scritture], [1])      # l'invariata si salva
+        self.assertEqual((esito["non_modificati"], esito["classificazioni_rinviate"]), (1, 1))
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 2, "fatti": 1, "rimasti": 1, "motivo_rimasti": "spesa"})
+        self.assertFalse(esito["interrotto_per_tetto"])
+
+    async def test_il_consumo_mensile_dal_consumo_di_oggi(self):
+        esito, dati = await self._giro([_bando(id=1)], consumo={"usd": 0.0, "usd_mese": 150.0},
+                                       tetto_usd_giorno=5.0, tetto_usd_mese=150.0)
+        self.assertEqual(esito["classificazioni_rinviate"], 1)
+        self.assertIn("mensile", esito["motivo"])
+
+    async def test_senza_rete_niente_e_fatto(self):
+        dati = _FonteSenzaLimite(righe=[_bando(id=i) for i in range(3)])
+        esito = await monitoraggio.run(
+            impostazioni=_impostazioni(), fonte_dati=dati, classifica=_nessun_evento,
+            senza_rete=True, lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(esito["copertura"],
+                         {"candidati": 3, "fatti": 0, "rimasti": 3, "motivo_rimasti": "errore"})
+
+    async def test_a_tetto_le_pagine_a_pagamento_si_rinviano(self):
+        # WAF (403/406), host noto per il JS, app-shell: si leggerebbero solo
+        # col ripiego Firecrawl. A tetto raggiunto niente colonne, nemmeno
+        # `controlli_falliti`.
+        casi = (
+            ("waf", _Risposta(stato=403, html="vietato"), ()),
+            ("js", _Risposta(html="<h1>x</h1><p>testo</p>"), ("lazioeuropa.it",)),
+            ("app-shell", _Risposta(html="<div id='app'></div>" + "<script>x()</script>" * 30,
+                                    testo=" "), ()),
+        )
+        for nome, risposta, host_js in casi:
+            with self.subTest(caso=nome):
+                chiamate = []
+
+                async def scarica(url, _risposta=risposta, **kw):
+                    chiamate.append(kw.get("principale"))
+                    return _risposta
+
+                dati = monitoraggio.FonteDati()
+                esito = await monitoraggio.controlla(
+                    _bando(id=1), scarica=scarica, classifica=_nessun_evento, fonte_dati=dati,
+                    adesso=ADESSO, casuale=lambda: 0.5, rinvia_classificazione=True,
+                    host_richiede_js=host_js)
+                self.assertEqual(chiamate, [False])
+                self.assertEqual((esito.esito, esito.colonne, dati.scritture), ("rinviato", {}, []))
+                self.assertTrue(esito.scarico_rinviato)
+                self.assertFalse(esito.classificazione_fallita)
+
+    def test_stati_del_ripiego_come_lo_scarico(self):
+        scarico = carica_modulo("scarico")
+        self.assertEqual(monitoraggio.STATI_RIPIEGO, scarico._STATI_RIPIEGO)
+        self.assertFalse(monitoraggio.richiederebbe_ripiego(
+            "https://ente.it/x", _Risposta(stato=404, html="")))
+        self.assertFalse(monitoraggio.richiederebbe_ripiego(
+            "https://ente.it/x", _Risposta(stato=304, html="")))
+
+    async def test_rinvio_senza_pagine_collegate_ne_colonne(self):
+        collegate = []
+
+        async def pagine_collegate(riga):
+            collegate.append(riga.get("id"))
+            return ["https://www.lazioeuropa.it/altra/"]
+
+        async def scarica(url, **kw):
+            return _Risposta(html="<h1>x</h1><p>tutto nuovo</p>")
+
+        esito = await monitoraggio.controlla(
+            _bando(id=1), scarica=scarica, classifica=_nessun_evento,
+            pagine_collegate=pagine_collegate, fonte_dati=monitoraggio.FonteDati(),
+            adesso=ADESSO, casuale=lambda: 0.5, rinvia_classificazione=True)
+        self.assertEqual((esito.esito, esito.colonne, collegate), ("rinviato", {}, []))
+        self.assertTrue(esito.classificazione_rinviata)
+        self.assertFalse(esito.classificazione_fallita)
+        self.assertFalse(esito.classificato)
+
+
+# --- giro 3, §6: eventi -> scheda (riscrittura con Opus, nuovo_allegato) --------
+
+PAGINA_M3 = "https://www.lazioeuropa.it/bandi/avviso-1/"
+HTML_PRIMA_M3 = "<main><h1>Avviso</h1><p>Domande entro il 30 ottobre 2026.</p></main>"
+HTML_DOPO_M3 = (
+    "<main><h1>Avviso</h1><p>Domande entro il 30 ottobre 2026.</p>"
+    "<p>Pubblicate le FAQ e la graduatoria finale.</p>"
+    '<p><a href="https://www.lazioeuropa.it/allegati/graduatoria-finale.pdf">Graduatoria finale</a> '
+    '<a href="https://www.lazioeuropa.it/notizie/altro-avviso">Altro avviso</a></p></main>'
+)
+AMMESSO_M3 = eventi.Giudizio(ammesso=True, gate="G2", superati=("G1", "G2", "G4", "G7"),
+                             confidenza=0.95, leggibile=True)
+
+
+def _riga_m3(**extra):
+    impronte_mod = carica_modulo("impronte")
+    base = dict(
+        fonte_ufficiale_url=PAGINA_M3, slug="avviso-1",
+        testo_norm=monitoraggio.comprimi_testo(impronte_mod.testo_normalizzato(HTML_PRIMA_M3)),
+        impronta_contenuto="vecchia",
+        impronte_sezioni={"__link__": [], **VERSIONE}, data_scadenza="2026-10-30")
+    base.update(extra)
+    return _bando(**base)
+
+
+def _faq_m3():
+    return eventi.Evento(tipo="faq", url_prova=PAGINA_M3, citazione="Pubblicate le FAQ")
+
+
+class _Riscrittore:
+    def __init__(self, *esiti):
+        self.esiti = list(esiti) or ["scritta"]
+        self.chiamate = []
+
+    async def __call__(self, bando_id, novita):
+        self.chiamate.append((bando_id, [dict(v) for v in novita]))
+        esito = self.esiti.pop(0) if len(self.esiti) > 1 else self.esiti[0]
+        return SimpleNamespace(esito=esito, slug="avviso-1", motivo="prova")
+
+
+class TestRiscritturaConOpus(unittest.IsolatedAsyncioTestCase):
+    """Giro 3, §6: una novita' applicata chiede la riscrittura della scheda."""
+
+    async def _controlla(self, *proposte, riga=None, html=HTML_DOPO_M3, tipi=("faq", "nuovo_allegato"),
+                         riscrittore=None, dati=None, **kw):
+        dati = dati if dati is not None else monitoraggio.FonteDati()
+
+        async def scarica(url, **k):
+            return _Risposta(html=html)
+
+        async def classifica(ctx):
+            return list(proposte)
+
+        with patch.object(monitoraggio.eventi_mod, "valuta", lambda evento, ctx: AMMESSO_M3):
+            esito = await monitoraggio.controlla(
+                riga if riga is not None else _riga_m3(), scarica=scarica, classifica=classifica,
+                fonte_dati=dati, tipi_attivi=tipi, adesso=ADESSO, casuale=lambda: 0.5,
+                riscrittore=riscrittore, **kw)
+        return esito, dati
+
+    async def test_faq_applicata_riscrive_una_volta(self):
+        riscrittore = _Riscrittore("scritta")
+        graduatoria = eventi.Evento(tipo="graduatoria", url_prova=PAGINA_M3,
+                                    citazione="Pubblicate le FAQ e la graduatoria finale")
+        esito, dati = await self._controlla(_faq_m3(), graduatoria, riscrittore=riscrittore,
+                                            tipi=("faq", "graduatoria"))
+        self.assertEqual(esito.eventi_applicati, 2)
+        # Due eventi, una riscrittura (si uniscono).
+        self.assertEqual(len(riscrittore.chiamate), 1)
+        bando_id, novita = riscrittore.chiamate[0]
+        self.assertEqual(sorted(v["tipo"] for v in novita), ["faq", "graduatoria"])
+        self.assertEqual((esito.riscrittura, esito.slug_riscritto), ("scritta", "avviso-1"))
+        # Nessuna coda da salvare.
+        self.assertFalse(any("__riscrittura__" in (c.get("impronte_sezioni") or {})
+                             for _i, c in dati.scritture))
+
+    async def test_senza_novita_niente_riscrittura(self):
+        riscrittore = _Riscrittore()
+        esito, _ = await self._controlla(riscrittore=riscrittore, tipi=())
+        self.assertEqual((riscrittore.chiamate, esito.riscrittura), ([], ""))
+
+    async def test_in_ombra_la_novita_non_applicata_non_riscrive(self):
+        riscrittore = _Riscrittore()
+        esito, _ = await self._controlla(_faq_m3(), riscrittore=riscrittore, tipi=())
+        self.assertEqual(esito.eventi_applicati, 0)
+        self.assertEqual(riscrittore.chiamate, [])
+
+    async def test_rinviata_va_in_coda_e_si_consuma_al_controllo_dopo(self):
+        esito, dati = await self._controlla(_faq_m3(), riscrittore=_Riscrittore("rinviata"))
+        self.assertEqual(esito.riscrittura, "rinviata")
+        _id, colonne = dati.scritture[-1]
+        coda = colonne["impronte_sezioni"]["__riscrittura__"]
+        self.assertEqual([v["tipo"] for v in coda["novita"]], ["faq"])
+        self.assertEqual(colonne["impronte_sezioni"]["__versione__"], VERSIONE["__versione__"])
+        # Il giro dopo la pagina risponde 304: la coda si consuma lo stesso.
+        riga = _riga_m3(impronte_sezioni=dict(colonne["impronte_sezioni"]), etag="x")
+        riscrittore = _Riscrittore("scritta")
+        dati_dopo = monitoraggio.FonteDati()
+
+        async def scarica_304(url, **k):
+            return _Risposta(stato=304)
+
+        esito = await monitoraggio.controlla(
+            riga, scarica=scarica_304, classifica=_nessun_evento, fonte_dati=dati_dopo,
+            adesso=ADESSO, casuale=lambda: 0.5, riscrittore=riscrittore)
+        self.assertEqual(esito.esito, "304")
+        self.assertEqual([v["tipo"] for v in riscrittore.chiamate[0][1]], ["faq"])
+        self.assertEqual(esito.riscrittura, "scritta")
+        _id, colonne = dati_dopo.scritture[-1]
+        self.assertNotIn("__riscrittura__", colonne["impronte_sezioni"])
+        self.assertIn("__versione__", colonne["impronte_sezioni"])
+
+    async def test_le_impronte_riscritte_non_perdono_la_coda(self):
+        coda = {"novita": [{"evento_id": 7, "tipo": "faq"}], "tentativi": 0, "dal": "x"}
+        riga = _riga_m3(impronte_sezioni={"__link__": [], "__riscrittura__": coda, **VERSIONE})
+        colonne = monitoraggio._colonne_invariato(riga, None, ADESSO, sezioni={"a": "b"})
+        self.assertEqual(colonne["impronte_sezioni"]["__riscrittura__"], coda)
+
+    async def test_fallita_tre_volte_si_abbandona(self):
+        coda = {"novita": [{"evento_id": 7, "tipo": "faq", "citazione": "x"}], "tentativi": 2,
+                "dal": "2026-09-20T00:00:00+00:00"}
+        riga = _riga_m3(impronte_sezioni={"__link__": [], "__riscrittura__": coda, **VERSIONE},
+                        etag="x")
+        dati = monitoraggio.FonteDati()
+
+        async def scarica_304(url, **k):
+            return _Risposta(stato=304)
+
+        esito = await monitoraggio.controlla(
+            riga, scarica=scarica_304, classifica=_nessun_evento, fonte_dati=dati,
+            adesso=ADESSO, casuale=lambda: 0.5, riscrittore=_Riscrittore("fallita"))
+        self.assertEqual(esito.riscrittura, "abbandonata")
+        _id, colonne = dati.scritture[-1]
+        self.assertNotIn("__riscrittura__", colonne["impronte_sezioni"])
+
+    async def test_fallita_prima_volta_resta_in_coda_coi_tentativi(self):
+        esito, dati = await self._controlla(_faq_m3(), riscrittore=_Riscrittore("fallita"))
+        self.assertEqual(esito.riscrittura, "fallita")
+        coda = dati.scritture[-1][1]["impronte_sezioni"]["__riscrittura__"]
+        self.assertEqual(coda["tentativi"], 1)
+
+    async def test_un_chiuso_in_coda_torna_al_giro_dopo(self):
+        riga = _riga_m3(stato_bando="chiuso", data_scadenza="2026-09-01")
+        _esito, dati = await self._controlla(_faq_m3(), riga=riga, riscrittore=_Riscrittore("rinviata"))
+        _id, colonne = dati.scritture[-1]
+        self.assertEqual(colonne["prossimo_controllo_at"], monitoraggio.adesso_roma(ADESSO).isoformat())
+
+    async def test_dry_run_non_riscrive_e_non_scrive(self):
+        riscrittore = _Riscrittore()
+        esito, dati = await self._controlla(_faq_m3(), riscrittore=riscrittore, dry_run=True)
+        self.assertEqual((riscrittore.chiamate, dati.scritture), ([], []))
+
+    async def test_senza_riscrittore_le_novita_aspettano_in_coda(self):
+        esito, dati = await self._controlla(_faq_m3(), riscrittore=None)
+        coda = dati.scritture[-1][1]["impronte_sezioni"]["__riscrittura__"]
+        self.assertEqual([v["tipo"] for v in coda["novita"]], ["faq"])
+        self.assertEqual(esito.riscrittura, "")
+
+    async def test_rettifica_di_contenuto_si_di_importo_no(self):
+        for campo, attesa in (("contenuto", 1), ("allegati", 1), ("importo_totale_eur", 0)):
+            with self.subTest(campo=campo):
+                riscrittore = _Riscrittore()
+                rettifica = eventi.Evento(tipo="rettifica", campo=campo, valore="x",
+                                          url_prova=PAGINA_M3, citazione="Pubblicate le FAQ")
+                await self._controlla(rettifica, riscrittore=riscrittore, tipi=("rettifica",))
+                self.assertEqual(len(riscrittore.chiamate), attesa)
+
+    async def test_data_non_riallineata_va_a_opus(self):
+        proroga = eventi.Evento(tipo="proroga", valore="2026-11-30", url_prova=PAGINA_M3,
+                                citazione="Pubblicate le FAQ e la graduatoria finale")
+        riga = _riga_m3(contenuto="Testo senza la data.", descrizione_breve=None)
+
+        async def rigenerazione_box(*a, **k):
+            return SimpleNamespace(via="box", scritto=False, motivi=("gate",), payload={},
+                                   come_dizionario=lambda: {"via": "box", "scritto": False})
+
+        riscrittore = _Riscrittore()
+        dati = monitoraggio.FonteDati(righe=[riga])
+        esito, _ = await self._controlla(proroga, riga=riga, riscrittore=riscrittore,
+                                         tipi=("proroga",), dati=dati,
+                                         rigenerazione=rigenerazione_box)
+        self.assertTrue(esito.rigenerazione_dovuta)
+        self.assertEqual([v["tipo"] for v in riscrittore.chiamate[0][1]], ["proroga"])
+
+    async def test_nuovo_allegato_riga_con_url_del_documento(self):
+        # La correzione del lead: `url` della riga e' il DOCUMENTO (dal diff dei
+        # link), `url_prova` la pagina dove e' comparso.
+        allegato = eventi.Evento(tipo="nuovo_allegato", url_prova=PAGINA_M3,
+                                 citazione="Graduatoria finale")
+        esito, dati = await self._controlla(allegato, riscrittore=_Riscrittore(),
+                                            tipi=("nuovo_allegato",))
+        self.assertEqual(dati.link_allegati, [{
+            "bando_id": 1, "url": "https://www.lazioeuropa.it/allegati/graduatoria-finale.pdf",
+            "tipo": "allegato", "origine": "ente", "url_prova": PAGINA_M3, "pubblicabile": False}])
+        self.assertNotEqual(dati.link_allegati[0]["url"], dati.link_allegati[0]["url_prova"])
+        self.assertEqual(esito.allegati_registrati, 1)
+
+    def test_url_allegato(self):
+        diff = SimpleNamespace(link_aggiunti=("https://ente.it/a/graduatoria-finale.pdf",
+                                              "https://ente.it/b/altro"))
+        evento = {"citazione": "Graduatoria finale", "url_prova": "https://ente.it/bando"}
+        self.assertEqual(monitoraggio.url_allegato(evento, diff), "https://ente.it/a/graduatoria-finale.pdf")
+        # Un solo link comparso: quello.
+        unico = SimpleNamespace(link_aggiunti=("https://ente.it/x.pdf",))
+        self.assertEqual(monitoraggio.url_allegato({"citazione": "Nuovo documento"}, unico),
+                         "https://ente.it/x.pdf")
+        # Ripiego: un URL in valore_dopo.
+        vuoto = SimpleNamespace(link_aggiunti=())
+        self.assertEqual(monitoraggio.url_allegato(
+            {"citazione": "x", "valore_dopo": {"valore": "https://ente.it/d.pdf"}}, vuoto),
+            "https://ente.it/d.pdf")
+        self.assertIsNone(monitoraggio.url_allegato({"citazione": "x"}, vuoto))
+        self.assertIsNone(monitoraggio.url_allegato({"citazione": "documento"}, diff))
+        # L'href vero della pagina, non la forma normalizzata (senza www).
+        html = '<a href="https://www.ente.it/a/graduatoria-finale.pdf">G</a>'
+        self.assertEqual(monitoraggio.url_allegato(evento, diff, html=html),
+                         "https://www.ente.it/a/graduatoria-finale.pdf")
+        relativo = '<a href="/a/graduatoria-finale.pdf">G</a>'
+        self.assertEqual(monitoraggio.url_allegato(evento, diff, html=relativo,
+                                                   base="https://ente.it/bando"),
+                         "https://ente.it/a/graduatoria-finale.pdf")
+
+    async def test_giro_porta_i_contatori_e_lo_slug(self):
+        dati = _FonteSenzaLimite(righe=[_riga_m3()])
+
+        async def scarica(url, **k):
+            return _Risposta(html=HTML_DOPO_M3)
+
+        async def classifica(ctx):
+            return [_faq_m3()]
+
+        with patch.object(monitoraggio, "_scrivi_telemetria", MagicMock()), \
+                patch.object(monitoraggio, "_tabella_domini_del_giro", lambda: None), \
+                patch.object(monitoraggio, "_scrivi_telemetria_riscritture", MagicMock()) as riga_spesa, \
+                patch.object(monitoraggio.eventi_mod, "valuta", lambda evento, ctx: AMMESSO_M3):
+            esito = await monitoraggio.run(
+                impostazioni=_impostazioni(monitor_tipi_attivi=("faq",)), fonte_dati=dati,
+                scarica=scarica, classifica=classifica, lock=_lock_libero(), adesso=ADESSO,
+                casuale=lambda: 0.5, riscrittore=_Riscrittore("scritta"))
+        self.assertEqual(esito["riscritture"], 1)
+        self.assertIn("avviso-1", esito["slug_modificati"])
+        riga_spesa.assert_called_once()
+
+    def test_riga_di_spesa_delle_riscritture(self):
+        esiti = [monitoraggio.EsitoControllo(bando_id=1, riscrittura="scritta", slug_riscritto="a"),
+                 monitoraggio.EsitoControllo(bando_id=2, riscrittura="rinviata"),
+                 monitoraggio.EsitoControllo(bando_id=3)]
+        bilancio = carica_modulo("bilancio")
+        spesa = bilancio.Contatori()
+        bilancio.registra_chiamata(spesa, "m", {"input_tokens": 1_000_000}, {"m": (2.0, 0.0)})
+        with patch.object(monitoraggio.telemetria, "scrivi_pipeline_run") as scrivi:
+            monitoraggio._scrivi_telemetria_riscritture(esiti, spesa, "06:00", tempo=1.0)
+        riga = scrivi.call_args.args[0]
+        self.assertEqual(riga.step, "rigenerazione_scheda")
+        self.assertEqual(riga.come_riga()["contatori"]["usd"], 2.0)
+        self.assertEqual(riga.contatori["copertura"],
+                         {"candidati": 2, "fatti": 1, "rimasti": 1, "motivo_rimasti": "spesa"})
+        with patch.object(monitoraggio.telemetria, "scrivi_pipeline_run") as scrivi:
+            monitoraggio._scrivi_telemetria_riscritture(esiti[2:], spesa, "06:00", tempo=1.0)
+        scrivi.assert_not_called()
+
+    def test_gia_con_somma_giorno_e_mese(self):
+        bilancio = carica_modulo("bilancio")
+        altri = bilancio.Contatori(crediti_firecrawl=3)
+        bilancio.registra_chiamata(altri, "m", {"input_tokens": 1_000_000}, {"m": (1.0, 0.0)})
+        somma = monitoraggio._gia_con({"usd": 1.0, "usd_mese": 10.0}, altri)
+        self.assertEqual((somma["usd"], somma["usd_mese"], somma["crediti"]), (2.0, 11.0, 3.0))
+        self.assertNotIn("crediti_mese", somma)
+
+
+# --- giro 3, §14: eventi marcati dalla RPC della 14 ---------------------------
+
+class TestEventiMarcatiDalla14(unittest.IsolatedAsyncioTestCase):
+    """Un evento superato o con una transizione non ammessa la RPC lo marca
+    (`scartato_per`): non torna in coda, non si annota, resta invisibile."""
+
+    def setUp(self):
+        _zittisci_io(self)
+
+    def test_applica_eventi_marcato_non_si_annota(self):
+        righe = [_evento_db(id=1), _evento_db(id=2), _evento_db(id=3)]
+        annotati = []
+        esito = monitoraggio.applica_eventi(
+            righe, dry_run=False, applica=lambda r: r["id"] == 3,
+            segnala=lambda r: annotati.append(r["id"]) or True,
+            motivo_scarto=lambda i: {1: "superato"}.get(i))
+        self.assertEqual((esito["applicati"], esito["rifiutati"]), (1, 1))
+        self.assertEqual(esito["scartati_per_motivo"], {"superato": 1})
+        # Solo il rifiuto NON marcato si annota.
+        self.assertEqual(annotati, [2])
+
+    def test_rilettura_che_fallisce_vale_non_applicato(self):
+        def rotto(_id):
+            raise RuntimeError("giu'")
+
+        annotati = []
+        with patch.object(monitoraggio, "logger", MagicMock()):
+            esito = monitoraggio.applica_eventi(
+                [_evento_db(id=1)], dry_run=False, applica=lambda r: False,
+                segnala=lambda r: annotati.append(r["id"]) or True, motivo_scarto=rotto)
+        self.assertEqual((esito["rifiutati"], esito["scartati_per_motivo"], annotati), (1, {}, [1]))
+
+    def test_motivo_scarto_da_db(self):
+        db = carica_modulo("db")
+        casi = (
+            ([{"id": 5, "scartato_per": "transizione_non_ammessa"}], "transizione_non_ammessa"),
+            ([{"id": 5, "scartato_per": None}], None),
+            ([{"id": 5}], None),                       # prima della 14: niente colonna
+            ([], None),                                 # lettura vuota
+        )
+        for righe, atteso in casi:
+            chiesti = []
+
+            def select_eventi(**kwargs):
+                chiesti.append(kwargs)
+                return list(righe)
+
+            with self.subTest(righe=righe), patch.object(db, "select_eventi", select_eventi):
+                self.assertEqual(monitoraggio.motivo_scarto_da_db(5), atteso)
+                self.assertEqual(chiesti[0]["ids"], (5,))
+                self.assertEqual(chiesti[0]["colonne"], ("id", "scartato_per"))
+
+        def rotto(**kwargs):
+            raise RuntimeError("giu'")
+
+        with patch.object(db, "select_eventi", rotto), patch.object(monitoraggio, "logger", MagicMock()):
+            self.assertIsNone(monitoraggio.motivo_scarto_da_db(5))
+        self.assertIsNone(monitoraggio.motivo_scarto_da_db(None))
+
+    async def test_la_coda_salta_gli_eventi_marcati(self):
+        db = carica_modulo("db")
+        visti = []
+
+        def select_eventi(**kwargs):
+            visti.append(kwargs)
+            if kwargs.get("offset"):
+                return []
+            return [_evento_db(id=1, scartato_per="superato"), _evento_db(id=2)]
+
+        applicati = []
+        with patch.object(db, "select_eventi", select_eventi), \
+                patch.object(monitoraggio, "eventi_gia_rifiutati", lambda: frozenset()), \
+                patch.object(monitoraggio, "_capacita_eventi", lambda: (False, False)):
+            esito = await monitoraggio.run_applica_eventi(
+                attivo=True, lock=_lock_libero(), impostazioni=_impostazioni(),
+                applica=lambda r: applicati.append(r["id"]) or True)
+        self.assertEqual(applicati, [2])
+        self.assertEqual(esito["scartati"], 1)
+        self.assertIn("scartato_per", visti[0]["colonne"])
+
+    async def test_attivazione_marcata_non_e_un_non_applicato(self):
+        db = carica_modulo("db")
+
+        class _Respinge(monitoraggio.FonteDati):
+            def applica_evento(self, evento_id):
+                self.applicati.append(evento_id)
+                return db.ESITO_RIFIUTATO
+
+        dati = _Respinge()
+        dati.scartati = {1: "superato"}
+        faq = eventi.Evento(tipo="faq", url_prova=PAGINA_M3, citazione="Pubblicate le FAQ")
+
+        async def scarica(url, **k):
+            return _Risposta(html=HTML_DOPO_M3)
+
+        async def classifica(ctx):
+            return [faq]
+
+        with patch.object(monitoraggio.eventi_mod, "valuta", lambda evento, ctx: AMMESSO_M3):
+            esito = await monitoraggio.controlla(
+                _riga_m3(), scarica=scarica, classifica=classifica, fonte_dati=dati,
+                tipi_attivi=("faq",), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual((esito.eventi_scartati, esito.eventi_non_applicati), (1, 0))
+        self.assertEqual(dati.resi_leggibili, [])           # resta invisibile
+        self.assertEqual(esito.ids_non_applicati, [])
+        # Senza marcatura e' il «non applicato» di sempre.
+        dati = _Respinge()
+        with patch.object(monitoraggio.eventi_mod, "valuta", lambda evento, ctx: AMMESSO_M3):
+            esito = await monitoraggio.controlla(
+                _riga_m3(), scarica=scarica, classifica=classifica, fonte_dati=dati,
+                tipi_attivi=("faq",), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual((esito.eventi_scartati, esito.eventi_non_applicati), (0, 1))
+
+    async def test_il_giro_passa_la_capacita_14_ai_gate(self):
+        visti = []
+
+        async def scarica(url, **k):
+            return _Risposta(html=HTML_DOPO_M3)
+
+        async def classifica(ctx):
+            visti.append(ctx.capacita_14)
+            return []
+
+        for capacita in (False, True):
+            dati = _FonteSenzaLimite(righe=[_riga_m3()])
+            dati.sospensioni = capacita
+            await monitoraggio.run(
+                impostazioni=_impostazioni(), fonte_dati=dati, scarica=scarica,
+                classifica=classifica, lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5)
+        self.assertEqual(visti, [False, True])
+
+    def test_i_revocati_restano_fuori_dal_monitor(self):
+        # Fatto in M2 (§5): qui si verifica che valga ancora.
+        righe = [_bando(id=1, stato_bando="revocato", prossimo_controllo_at=None)]
+        self.assertEqual(monitoraggio.seleziona(righe, adesso=ADESSO, forza=True), ())
+
+
+class TestNovitaOltreIlLimiteDelPrompt(unittest.IsolatedAsyncioTestCase):
+    """P2 della revisione #152: oltre il limite del prompt le novita' restano in
+    coda per il giro dopo, mai perse con la coda svuotata."""
+
+    async def test_le_novita_in_piu_restano_in_coda(self):
+        novita = [{"evento_id": i, "tipo": "faq", "citazione": f"faq {i}"} for i in range(13)]
+        coda = {"novita": novita, "tentativi": 0, "dal": "2026-09-20T00:00:00+00:00"}
+        riga = _riga_m3(impronte_sezioni={"__link__": [], "__riscrittura__": coda, **VERSIONE},
+                        etag="x")
+        riscrittore = _Riscrittore("scritta")
+        dati = monitoraggio.FonteDati()
+
+        async def scarica_304(url, **k):
+            return _Risposta(stato=304)
+
+        esito = await monitoraggio.controlla(
+            riga, scarica=scarica_304, classifica=_nessun_evento, fonte_dati=dati,
+            adesso=ADESSO, casuale=lambda: 0.5, riscrittore=riscrittore)
+        self.assertEqual(len(riscrittore.chiamate[0][1]), monitoraggio.rigenera_mod.MAX_NOVITA_PER_RISCRITTURA)
+        self.assertEqual((esito.riscrittura, esito.novita_rinviate), ("scritta", 3))
+        resto = dati.scritture[-1][1]["impronte_sezioni"]["__riscrittura__"]
+        self.assertEqual([v["evento_id"] for v in resto["novita"]], [10, 11, 12])
+        self.assertEqual(resto["tentativi"], 0)
+
+        # Il giro dopo si consumano le ultime tre, e la coda si svuota.
+        riga = _riga_m3(impronte_sezioni=dict(dati.scritture[-1][1]["impronte_sezioni"]), etag="x")
+        dati_dopo = monitoraggio.FonteDati()
+        riscrittore = _Riscrittore("scritta")
+        esito = await monitoraggio.controlla(
+            riga, scarica=scarica_304, classifica=_nessun_evento, fonte_dati=dati_dopo,
+            adesso=ADESSO, casuale=lambda: 0.5, riscrittore=riscrittore)
+        self.assertEqual([v["evento_id"] for v in riscrittore.chiamate[0][1]], [10, 11, 12])
+        self.assertEqual(esito.novita_rinviate, 0)
+        self.assertNotIn("__riscrittura__", dati_dopo.scritture[-1][1]["impronte_sezioni"])
+
+    async def test_rinviata_tiene_tutte_le_novita(self):
+        novita = [{"evento_id": i, "tipo": "faq", "citazione": f"faq {i}"} for i in range(12)]
+        coda = {"novita": novita, "tentativi": 0, "dal": "x"}
+        riga = _riga_m3(impronte_sezioni={"__link__": [], "__riscrittura__": coda, **VERSIONE},
+                        etag="x")
+        dati = monitoraggio.FonteDati()
+
+        async def scarica_304(url, **k):
+            return _Risposta(stato=304)
+
+        await monitoraggio.controlla(
+            riga, scarica=scarica_304, classifica=_nessun_evento, fonte_dati=dati,
+            adesso=ADESSO, casuale=lambda: 0.5, riscrittore=_Riscrittore("rinviata"))
+        # Coda invariata: il 304 salva solo le colonne del controllo, e le
+        # impronte (con la coda di 12) restano quelle a DB.
+        self.assertFalse(any("impronte_sezioni" in c for _i, c in dati.scritture))
+
+    def test_il_limite_e_quello_del_prompt(self):
+        seo_skill = carica_modulo("seo_skill")
+        self.assertEqual(monitoraggio.rigenera_mod.MAX_NOVITA_PER_RISCRITTURA, seo_skill.MAX_NOVITA)

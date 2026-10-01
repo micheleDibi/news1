@@ -95,7 +95,8 @@ class TestSettingsCompleto(unittest.TestCase):
                 impostazioni = settings.get_settings()
             finally:
                 settings.get_settings.cache_clear()
-        self.assertEqual(impostazioni.monitor_giri, ("06:00", "18:00"))
+        # Giro 3 (§2): per difetto la manutenzione gira a tutte e quattro le ore.
+        self.assertEqual(impostazioni.monitor_giri, ("00:00", "06:00", "12:00", "18:00"))
         self.assertTrue(impostazioni.monitor_giri_validi)
 
 

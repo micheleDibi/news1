@@ -19,6 +19,7 @@ import time
 from collections import Counter
 from typing import Any
 
+from . import bilancio, telemetria
 from .bando_resolver import resolve_bando
 from .db import (
     enrich_fonti_with_names,
@@ -26,9 +27,38 @@ from .db import (
     select_fonti_by_ids,
     update_bandi_postanalysis,
 )
+from .dominio_ufficiale import scegli_fonte
 from .logger import logger
-from .preprocessor import analyze_bando
+from .preprocessor import aggiungi_delta_scarico, analyze_bando, conta_spesa, istantanea_scarico
 from .settings import get_settings
+
+#: Lo step della riga di spesa del passo (contratto `bandi-giro-3` §4).
+STEP = "preprocess"
+
+
+def url_da_leggere(bando: dict[str, Any]) -> str | None:
+    """La pagina ufficiale da leggere al posto di `link_bando`, o None.
+
+    Giro 3 (§8): `dominio_ufficiale.scegli_fonte`; None quando la scelta e'
+    `link_bando` stesso (nessuna fonte trovata, oppure la fonte e' un PDF).
+    """
+    url, _ufficiale = scegli_fonte(bando)
+    link = str(bando.get("link_bando") or "").strip()
+    return url if url and url != link else None
+
+
+def _registra_spesa(spesa: bilancio.Contatori, copertura: dict[str, Any],
+                    durata_s: float, errori: int) -> None:
+    """La riga `pipeline_run` del passo (§4): spesa e copertura. Non solleva."""
+    try:
+        riga = telemetria.PipelineRun(step=STEP).concludi(
+            durata_s=durata_s,
+            esito=telemetria.esito_da_contatori(errori=errori),
+            contatori={**spesa.come_dizionario(), "copertura": copertura},
+        )
+        telemetria.scrivi_pipeline_run(riga)
+    except Exception as e:                                # pragma: no cover - difesa
+        logger.warning("[preprocess] riga di spesa non registrata: {}", e)
 
 
 def _build_update(bando_id: int, analysis: dict[str, Any]) -> dict[str, Any]:
@@ -99,7 +129,7 @@ async def run(
         logger.info("[preprocess] nessun bando in stato 'scraped': nulla da fare")
         return {
             "processed_total": 0, "valid": 0, "rejected": 0,
-            "errors": 0, "elapsed_s": 0,
+            "errors": 0, "elapsed_s": 0, "copertura": telemetria.copertura(0, 0),
         }
 
     # Pre-load fonti + arricchimento nomi categoria/tipologia
@@ -125,13 +155,37 @@ async def run(
     progress = {"done": 0}
     total = len(rows)
 
+    letture = Counter()
+
     async def _analyze_one(bando: dict[str, Any]) -> tuple[int, dict[str, Any] | Exception]:
         async with sem:
             bando_id = bando["id"]
             fonte_ctx = fonti_by_id.get(bando.get("fonte_id"), {})
             try:
-                # Primary: preprocess con markdown link_bando
-                analysis = await analyze_bando(bando, fonte_ctx)
+                # Giro 3 (§8): prima la pagina ufficiale, poi `link_bando`,
+                # poi il ripiego del resolver.
+                ufficiale = url_da_leggere(bando)
+                if ufficiale:
+                    letture["letti_da_ufficiale"] += 1
+                    analysis = await analyze_bando(bando, fonte_ctx, url_lettura=ufficiale)
+                    if analysis.get("_needs_fallback"):
+                        letture["ripiego_su_link_bando"] += 1
+                        analysis = await analyze_bando(bando, fonte_ctx)
+                    elif not analysis.get("is_valid_bando"):
+                        # Revisione #145: la pagina scelta dal resolver precoce
+                        # (con la sola scadenza provvisoria) puo' essere una
+                        # pagina generica dell'ente, e un bando vero non deve
+                        # finire `rejected` per questo. Si rilegge `link_bando`
+                        # e si scarta solo se anche li' il bando non e' valido;
+                        # se `link_bando` non si legge, decide il ripiego.
+                        letture["riletti_prima_dello_scarto"] += 1
+                        seconda = await analyze_bando(bando, fonte_ctx)
+                        if seconda.get("is_valid_bando") or seconda.get("_needs_fallback"):
+                            if seconda.get("is_valid_bando"):
+                                letture["scarti_evitati_con_link_bando"] += 1
+                            analysis = seconda
+                else:
+                    analysis = await analyze_bando(bando, fonte_ctx)
                 # Trigger fallback se markdown bando vuoto
                 if analysis.get("_needs_fallback"):
                     logger.info(
@@ -148,7 +202,16 @@ async def run(
                 logger.exception("[preprocess] bando_id={} fallito: {}", bando_id, e)
                 return bando_id, e
 
-    results = await asyncio.gather(*[_analyze_one(b) for b in rows])
+    # La spesa del passo (§4): ogni chiamata al modello fatta qui dentro, ripiego
+    # del resolver compreso, finisce in `spesa`. L'ingresso conta e non si
+    # ferma mai.
+    spesa = bilancio.Contatori()
+    # §19.1: i crediti Firecrawl (e i fetch) scaricati da questo passo vanno
+    # nella sua riga, e solo nella sua: il resolver dopo conta dal suo inizio.
+    scarico_prima = istantanea_scarico()
+    with conta_spesa(spesa):
+        results = await asyncio.gather(*[_analyze_one(b) for b in rows])
+    aggiungi_delta_scarico(spesa, scarico_prima)
 
     # Compose updates
     valid_updates: list[dict[str, Any]] = []
@@ -223,6 +286,7 @@ async def run(
 
     avg_conf = confidence_sum / confidence_n if confidence_n else 0.0
     elapsed = time.monotonic() - started
+    copertura = telemetria.copertura(total, total - errors, "errore" if errors else None)
 
     counters: dict[str, Any] = {
         "processed_total": total,
@@ -253,6 +317,21 @@ async def run(
         "db_failed": n_failed,
         "dry_run": dry_run,
         "elapsed_s": round(elapsed, 1),
+        # Giro 3 (§8): quante righe hanno letto la pagina ufficiale, e quante
+        # sono ripiegate su `link_bando` perche' la pagina ufficiale non bastava.
+        "letti_da_ufficiale": letture["letti_da_ufficiale"],
+        "ripiego_su_link_bando": letture["ripiego_su_link_bando"],
+        # Revisione #145: le righe che la pagina ufficiale scartava, rilette su
+        # `link_bando`, e quante di quelle erano bandi veri.
+        "riletti_prima_dello_scarto": letture["riletti_prima_dello_scarto"],
+        "scarti_evitati_con_link_bando": letture["scarti_evitati_con_link_bando"],
+        # §4: la spesa del passo e la copertura (§1). La riga di spesa si
+        # scrive solo fuori dal dry-run: dal Mac nessuna scrittura (§0).
+        "costo_usd": spesa.usd,
+        "spesa": spesa.come_dizionario(),
+        "copertura": copertura,
     }
+    if not dry_run:
+        _registra_spesa(spesa, copertura, elapsed, errors)
     logger.info("[preprocess] === DONE | {} ===", counters)
     return counters

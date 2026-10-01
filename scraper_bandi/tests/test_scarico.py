@@ -361,6 +361,73 @@ class TestRipiegoFirecrawl(unittest.TestCase):
         self.assertEqual(fatte, [])
 
 
+class TestCachePromossaAlRipiego(unittest.TestCase):
+    """Giro 3 (§8): una pagina gia' in cache da una lettura «semplice» (il
+    resolver scarica come fonte, senza ripiego) e poi chiesta come pagina
+    principale riceve il ripiego Firecrawl, senza una seconda GET all'ente."""
+
+    TESTO = "<html><body><p>" + ("parola " * 200) + "</p></body></html>"
+
+    def _firecrawl(self, fatte, *, esplode=False):
+        async def finto(url):
+            fatte.append(url)
+            if esplode:
+                raise RuntimeError("credito finito")
+            return {"html": "<html><body>Testo reso dal browser</body></html>",
+                    "markdown": "# Bando\n\nTesto reso dal browser"}
+        return finto
+
+    def test_la_voce_semplice_si_promuove_senza_seconda_get(self):
+        fatte: list[str] = []
+        s, chiamate = _costruisci([httpx.Response(200, text=self.TESTO)],
+                                  firecrawl=self._firecrawl(fatte), host_richiede_js={"ente.it"})
+        url = "https://ente.it/bando"
+        prima = _esegui(s.scarica(url, come_fonte=True))
+        self.assertEqual((prima.via, fatte), ("httpx", []))
+        seconda = _esegui(s.scarica(url, principale=True))
+        self.assertEqual(seconda.via, "firecrawl")
+        self.assertEqual(len(chiamate), 1, "nessuna seconda GET verso l'ente")
+        self.assertEqual(fatte, [url])
+        # La voce in cache ora e' il ripiego: il giro dopo non paga di nuovo.
+        terza = _esegui(s.scarica(url, principale=True))
+        self.assertEqual(terza.via, "firecrawl")
+        self.assertEqual(fatte, [url])
+        self.assertEqual(s.contatori.crediti_firecrawl, scarico.CREDITI_PER_SCRAPE)
+
+    def test_un_ripiego_fallito_non_si_riprova(self):
+        fatte: list[str] = []
+        s, chiamate = _costruisci([httpx.Response(200, text=self.TESTO)],
+                                  firecrawl=self._firecrawl(fatte, esplode=True),
+                                  host_richiede_js={"ente.it"})
+        url = "https://ente.it/bando"
+        _esegui(s.scarica(url))
+        seconda = _esegui(s.scarica(url, principale=True))
+        self.assertEqual(seconda.via, "httpx")
+        self.assertTrue(seconda.ripiego_fallito)
+        _esegui(s.scarica(url, principale=True))
+        self.assertEqual(fatte, [url], "una sola prova del ripiego")
+        self.assertEqual(len(chiamate), 1)
+
+    def test_senza_bisogno_di_ripiego_la_voce_resta(self):
+        fatte: list[str] = []
+        s, chiamate = _costruisci([httpx.Response(200, text=self.TESTO)],
+                                  firecrawl=self._firecrawl(fatte))
+        url = "https://ente.it/bando"
+        _esegui(s.scarica(url))
+        seconda = _esegui(s.scarica(url, principale=True))
+        self.assertEqual((seconda.via, seconda.da_cache), ("httpx", True))
+        self.assertEqual((fatte, len(chiamate)), ([], 1))
+
+    def test_una_sottopagina_non_si_promuove(self):
+        fatte: list[str] = []
+        s, _ = _costruisci([httpx.Response(200, text=self.TESTO)],
+                           firecrawl=self._firecrawl(fatte), host_richiede_js={"ente.it"})
+        url = "https://ente.it/bando"
+        _esegui(s.scarica(url))
+        _esegui(s.scarica(url))
+        self.assertEqual(fatte, [])
+
+
 class TestAppShell(unittest.TestCase):
     def test_soglie(self):
         self.assertFalse(scarico.e_app_shell("", ""))

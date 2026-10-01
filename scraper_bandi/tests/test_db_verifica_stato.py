@@ -521,13 +521,14 @@ class MisureDelPercorsoA(unittest.TestCase):
         self.assertIn("stato_effettivo", lettura.argomenti("select")[1][0])
 
     def test_vista_misura_la_select_della_verifica_7(self):
-        """Revisione del 01/10: le colonne che passano da `dominio_ufficiale`."""
+        """Revisione del 01/10; giro 3 (B30, §10): niente `link_bando`,
+        `link_candidatura` e `allegati`, che la migrazione 07 toglie dalla vista."""
         anon = _Client({"bando_pubblico": []})
         self._misure(client_anon=anon)
         lettura = anon.su("bando_pubblico")[0]
         self.assertEqual(lettura.argomenti("select")[1][0].split(","), [
-            "id", "slug", "titolo", "stato_effettivo", "data_scadenza", "link_bando",
-            "link_candidatura", "allegati", "stato_da_verificare"])
+            "id", "slug", "titolo", "stato_effettivo", "data_scadenza",
+            "stato_da_verificare"])
         self.assertEqual(lettura.argomenti("in_")[1],
                          ("stato_effettivo", ["aperto", "in apertura prossimamente"]))
         ordini = [(c[1], c[2]) for c in lettura.chiamate if c[0] == "order"]
@@ -546,7 +547,7 @@ class MisureDelPercorsoA(unittest.TestCase):
                                   client_anon=anon)
         lettura = anon.su("bando_pubblico")[0]
         self.assertNotIn("stato_da_verificare", lettura.argomenti("select")[1][0])
-        self.assertIn("allegati", lettura.argomenti("select")[1][0])
+        self.assertNotIn("allegati", lettura.argomenti("select")[1][0])
         self.assertIsInstance(misure["vista_ms"], float)
 
     def test_vista_con_la_service_key_senza_anon(self):

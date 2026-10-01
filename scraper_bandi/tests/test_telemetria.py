@@ -81,6 +81,74 @@ class TestPipelineRun(unittest.TestCase):
         json.dumps(riga)
 
 
+class TestSpesaDaiContatori(unittest.TestCase):
+    """Contratto `bandi-giro-3` §4: basta `contatori=spesa.come_dizionario()`."""
+
+    def test_usd_e_crediti_dai_contatori_se_non_passati(self):
+        # Prima `come_riga` scriveva `usd = costo_usd = 0`: il passo risultava
+        # gratis e il tetto giornaliero non lo vedeva.
+        bilancio = carica_modulo("bilancio")
+        spesa = bilancio.Contatori(crediti_firecrawl=4)
+        bilancio.registra_chiamata(spesa, "m", {"input_tokens": 1_000_000}, {"m": (2.0, 0.0)})
+        riga = telemetria.PipelineRun(step="enrich").concludi(
+            durata_s=1.0, contatori={**spesa.come_dizionario(), "copertura": {}}).come_riga()
+        self.assertEqual(riga["contatori"]["usd"], 2.0)
+        self.assertEqual(riga["contatori"]["costo_usd"], 2.0)
+        self.assertEqual(riga["costo_usd"], 2.0)
+        self.assertEqual(riga["contatori"]["crediti"], 4)
+        self.assertEqual(riga["crediti"], 4)
+        dati = json.loads(telemetria.riepilogo(telemetria.PipelineRun(
+            step="enrich", contatori=spesa.come_dizionario())))
+        self.assertEqual((dati["usd"], dati["crediti"]), (2.0, 4))
+
+    def test_i_valori_passati_vincono(self):
+        riga = telemetria.PipelineRun(step="monitor").concludi(
+            durata_s=1.0, contatori={"usd": 9.0, "crediti": 9}, crediti=2, costo_usd=0.5,
+        ).come_riga()
+        self.assertEqual((riga["contatori"]["usd"], riga["contatori"]["crediti"]), (0.5, 2))
+
+    def test_contatori_senza_spesa_valgono_zero(self):
+        riga = telemetria.PipelineRun(step="pipeline", contatori={
+            "monitor": {"usd": 3.0}, "usd": "non un numero"}).come_riga()
+        self.assertEqual((riga["contatori"]["usd"], riga["contatori"]["crediti"]), (0.0, 0))
+
+
+class TestCopertura(unittest.TestCase):
+    """La forma unica di §1: `{candidati, fatti, rimasti, motivo_rimasti}`."""
+
+    def test_forma_e_rimasti(self):
+        self.assertEqual(telemetria.copertura(700, 640, "tempo"),
+                         {"candidati": 700, "fatti": 640, "rimasti": 60, "motivo_rimasti": "tempo"})
+
+    def test_tutto_fatto_motivo_nullo(self):
+        self.assertEqual(telemetria.copertura(12, 12, "tempo"),
+                         {"candidati": 12, "fatti": 12, "rimasti": 0, "motivo_rimasti": None})
+        self.assertEqual(telemetria.copertura(0, 0)["rimasti"], 0)
+
+    def test_rimasti_senza_motivo(self):
+        # Solo da riga di comando (`--limit`): rimasti senza un motivo di §1.
+        self.assertIsNone(telemetria.copertura(10, 3)["motivo_rimasti"])
+
+    def test_i_motivi_ammessi(self):
+        self.assertEqual(telemetria.MOTIVI_RIMASTI, ("tempo", "spesa", "crediti", "lock", "errore"))
+        for motivo in telemetria.MOTIVI_RIMASTI:
+            self.assertEqual(telemetria.copertura(2, 1, motivo)["motivo_rimasti"], motivo)
+
+    def test_motivo_fuori_elenco_diventa_errore(self):
+        with patch.object(telemetria, "logger", MagicMock()) as log:
+            esito = telemetria.copertura(5, 1, "lotto")
+        self.assertEqual(esito["motivo_rimasti"], "errore")
+        self.assertTrue(log.warning.called)
+
+    def test_fatti_oltre_i_candidati_e_valori_sporchi(self):
+        self.assertEqual(telemetria.copertura(3, 5),
+                         {"candidati": 5, "fatti": 5, "rimasti": 0, "motivo_rimasti": None})
+        self.assertEqual(telemetria.copertura(None, -2),
+                         {"candidati": 0, "fatti": 0, "rimasti": 0, "motivo_rimasti": None})
+        self.assertEqual(telemetria.copertura("7", "2")["rimasti"], 5)
+        json.dumps(telemetria.copertura(7, 2, "spesa"))
+
+
 class TestRiepilogo(unittest.TestCase):
     def test_una_riga_json_ordinata(self):
         run = telemetria.PipelineRun(step="monitor", giro="18:00").concludi(

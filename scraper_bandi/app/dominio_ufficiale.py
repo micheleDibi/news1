@@ -600,12 +600,26 @@ PIATTAFORME_CONDIVISE: frozenset[str] = frozenset({
 #: uffici (59 host al 30/09/2026, fra cui halleyweb.com e asl.bari.it).
 CODICI_HOST_CONDIVISO = 3
 
+#: Fornitori di posta e di hosting per privati (B29, contratto `bandi-giro-3`
+#: §8): IndicePA registra anche siti di piccoli enti ospitati qui, ma l'host e'
+#: di chiunque abbia una casella o una pagina personale. L'01/10/2026 il
+#: committente ne ha spenti quattro con SQL dopo l'import (RIPRESA §8.1);
+#: questo elenco fa si' che l'import successivo non li riaccenda.
+FORNITORI_PRIVATI: frozenset[str] = frozenset({
+    "libero.it", "yahoo.it", "yahoo.com", "gmail.com", "googlemail.com", "register.it",
+    "virgilio.it", "tiscali.it", "alice.it", "tin.it", "hotmail.it", "hotmail.com",
+    "outlook.it", "outlook.com", "live.it", "icloud.com", "email.it", "aruba.it",
+})
+
 #: I motivi per cui una riga di IndicePA non entra nella lista bianca.
 ESCLUSO_SENZA_SITO = "senza_sito"
 ESCLUSO_HOST_NON_VALIDO = "host_non_valido"
 ESCLUSO_PIATTAFORMA = "piattaforma_condivisa"
 ESCLUSO_HOST_CONDIVISO = "host_condiviso"
 ESCLUSO_BLOCKLIST = "blocklist"
+#: B29: un host di una sola etichetta («www», «http», «apofil») non e' un sito.
+ESCLUSO_UNA_ETICHETTA = "una_etichetta"
+ESCLUSO_FORNITORE_PRIVATO = "fornitore_privato"
 
 
 def piattaforma_condivisa(host: str | None) -> bool:
@@ -614,6 +628,15 @@ def piattaforma_condivisa(host: str | None) -> bool:
     if not normalizzato:
         return False
     return any(normalizzato == p or normalizzato.endswith("." + p) for p in PIATTAFORME_CONDIVISE)
+
+
+def fornitore_privato(host: str | None) -> bool:
+    """Vero per un host di `FORNITORI_PRIVATI` e per ogni suo sottodominio
+    (le pagine personali, come `digilander.libero.it`)."""
+    normalizzato = dominio_di(host)
+    if not normalizzato:
+        return False
+    return any(normalizzato == f or normalizzato.endswith("." + f) for f in FORNITORI_PRIVATI)
 
 
 def da_righe_db(righe: Iterable[Mapping[str, object]]) -> tuple[Dominio, ...]:
@@ -686,6 +709,8 @@ def analizza_indicepa(
     Non entrano (§19.8, regole prudenti perche' l'import e' completo e
     automatico):
       - le righe senza sito e quelle il cui host non e' un host valido;
+      - gli host di una sola etichetta e quelli dei fornitori di posta e
+        hosting per privati (`FORNITORI_PRIVATI`): B29, giro 3 §8;
       - gli host su una piattaforma condivisa (`PIATTAFORME_CONDIVISE`);
       - gli host che IndicePA associa a `CODICI_HOST_CONDIVISO` o piu'
         `codice_ipa` diversi;
@@ -721,6 +746,12 @@ def analizza_indicepa(
     prodotte: list[Dominio] = []
     for riga, host in zip(elenco, host_per_riga):
         if host is None:
+            continue
+        if "." not in host:
+            escludi(ESCLUSO_UNA_ETICHETTA)
+            continue
+        if fornitore_privato(host):
+            escludi(ESCLUSO_FORNITORE_PRIVATO)
             continue
         if piattaforma_condivisa(host):
             escludi(ESCLUSO_PIATTAFORMA)
@@ -796,3 +827,34 @@ def costruisci(
 def host_dei_domini(righe: Sequence[Dominio]) -> tuple[str, ...]:
     """Comodita' per i report e per i test: i soli host, in ordine."""
     return tuple(r.host for r in righe)
+
+
+# --- la pagina da cui leggere il bando (giro 3, §8) ----------------------------
+
+#: Un URL che e' un PDF: se ne legge il testo male, e il resto della pipeline
+#: si aspetta una pagina (gemello di `fonte_ufficiale._RE_PDF`).
+_RE_PDF = re.compile(r"\.pdf(?:$|[?#])", re.IGNORECASE)
+
+
+def scegli_fonte(bando: Mapping[str, object]) -> tuple[str, bool]:
+    """(URL da cui prendere il testo, e' una pagina ufficiale?).
+
+    La regola di `bando_seo_runner.scegli_fonte` (contratto `bandi-giro-3`
+    §8), qui perche' la usano anche preprocess ed enrich: `fonte_ufficiale_url`
+    quando la fonte e' `trovata`, poi `link_bando` se non e' un aggregatore. Se
+    resta solo l'aggregatore il testo si prende lo stesso — e' l'unico che
+    esiste — ma il secondo valore e' falso. Una riga senza la colonna dello
+    stato (DB non ancora migrato) vale `trovata`, come prima.
+
+    In piu', una guardia: un URL ufficiale che e' un PDF non si legge come
+    pagina, e si torna a `link_bando`.
+    """
+    ufficiale = str(bando.get("fonte_ufficiale_url") or "").strip()
+    stato = str(bando.get("fonte_ufficiale_stato") or "trovata")
+    if (ufficiale and stato == "trovata" and not e_aggregatore(ufficiale)
+            and not _RE_PDF.search(ufficiale)):
+        return ufficiale, True
+    link = str(bando.get("link_bando") or "").strip()
+    if not link:
+        return "", False
+    return link, not e_aggregatore(link)

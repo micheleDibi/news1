@@ -1083,22 +1083,23 @@ def motivo_doppione(master_id: Any, criterio: str) -> str:
     return f"doppione probabile di {master_id}: {criterio}"
 
 
-# --- passo `gemelli` del giro delle 06 (contratto `bandi-giro-2` §19.9) -------
+# --- passo `gemelli` (contratti `bandi-giro-2` §19.9 e `bandi-giro-3` §11) ----
 #
 # Le fusioni automatiche dei gemelli certi, decise da Michele il 30/09 (D2):
-# solo con `criteri_esatti`, mai con il fuzzy; al massimo `tetto` per giro; in
-# ombra si elencano e si contano, in attivo si fondono con `bando_fondi`. La
-# modalita' segue `VERIFICA_STATO_MODALITA`: la prima fusione automatica arriva
-# cosi' dopo almeno 7 giorni dal messaggio a BandoFit.
+# solo con `criteri_esatti`, mai con il fuzzy; in ombra si elencano e si
+# contano, in attivo si fondono con `bando_fondi`. Dal giro 3: a ogni giro dei
+# `MONITOR_GIRI`, su tutti i pubblicati e **senza tetto di fusioni** (regola
+# «niente lotti», §1); l'interruttore e' `GEMELLI_MODALITA`, non piu'
+# `VERIFICA_STATO_MODALITA`. Le guardie di prudenza restano tutte.
 #
 # L'I/O e' iniettato (`leggi`, `fondi`): il modulo resta puro e il passo si
 # prova senza rete.
 
-#: `GEMELLI_FUSIONI_PER_GIRO` predefinito (§19.11); 0 spegne il passo.
-FUSIONI_PER_GIRO = 10
 MODALITA_OMBRA = "ombra"
 MODALITA_ATTIVO = "attivo"
-#: Quante fusioni si elencano nei contatori: la riga di `pipeline_run` resta piccola.
+#: Quante fusioni si elencano nei contatori della riga del giro: la riga di
+#: `pipeline_run` resta piccola. E' solo un elenco: si fondono tutte, e la CLI
+#: le mostra tutte (`elenco_max=None`).
 TETTO_ELENCO_FUSIONI = 50
 #: Il motivo scritto in `bando_fusione`, che BandoFit legge: niente nomi interni.
 MOTIVO_FUSIONE = "gemello esatto"
@@ -1240,11 +1241,9 @@ PRUDENZA_ANNI_O_LOTTI = "anni_o_lotti_diversi"
 #: (revisione avversaria del 01/10, P1).
 CRITERI_AUTOMATICI: tuple[str, ...] = ("url", CRITERIO_RIGA_CALENDARIO)
 PRUDENZA_CRITERIO_NON_AUTOMATICO = "criterio_non_automatico"
-#: Quante righe legge al massimo la lettura predefinita del passo
-#: (`db.select_pubblicati_per_gemelli`, `TETTO_GEMELLI` del resolver): se se ne
-#: leggono tante quante, il corpus e' tagliato e i conteggi (le righe per URL
-#: dell'hub) sarebbero sottostimati. Il passo allora non fonde niente.
-LIMITE_LETTURA_PUBBLICATI = 5000
+# Il vecchio `LIMITE_LETTURA_PUBBLICATI` (5 000, il `TETTO_GEMELLI` del
+# resolver) non c'e' piu': il passo e la fusione prima della pubblicazione
+# leggono tutti i pubblicati (`limit=None`, giro 3 §1 e §11).
 
 
 def somiglianza_fra_righe(a: Mapping[str, Any], b: Mapping[str, Any]) -> float:
@@ -1313,22 +1312,28 @@ def esegui_passo(
     giro: str | None = None,
     *,
     modalita: str | None = None,
-    tetto: int | None = None,
     leggi: Any = None,
     fondi: Any = None,
-    limite_lettura: int = LIMITE_LETTURA_PUBBLICATI,
+    limite_lettura: int | None = None,
+    elenco_max: int | None = TETTO_ELENCO_FUSIONI,
 ) -> dict[str, Any]:
     """Il passo `gemelli`: trova i gemelli certi fra i pubblicati e li fonde.
 
+    Nessun tetto di fusioni (giro 3, §1 e §11): si fondono tutte quelle che
+    passano le guardie, a ogni giro.
+
     - `modalita`: 'attivo' fonde, qualunque altro valore vale 'ombra' (elenca e
-      conta). Senza, `settings.verifica_stato_modalita`;
-    - `tetto`: fusioni al massimo per giro, 0 spegne il passo senza leggere
-      niente. Senza, `settings.gemelli_fusioni_per_giro`;
-    - `leggi()`: i pubblicati con `raw_data` delle righe senza link e
+      conta). Senza, `settings.gemelli_modalita` (`GEMELLI_MODALITA`);
+    - `leggi()`: TUTTI i pubblicati (`db.select_pubblicati_per_gemelli` con
+      `limit=None`), con `raw_data` delle righe senza link e
       `bando_master_id` (le righe gia' fuse restano fuori: altrimenti ogni giro
-      ritroverebbe le stesse coppie e consumerebbe il tetto per niente);
+      ritroverebbe le stesse coppie);
     - `fondi(master_id, doppione_id, motivo)`: l'id del master effettivo, o
-      None se la fusione non e' riuscita (`db.fondi_bandi`).
+      None se la fusione non e' riuscita (`db.fondi_bandi`);
+    - `limite_lettura`: se la lettura restituisce tante righe o piu', il corpus
+      e' tagliato (vedi sotto). None, il default, perche' la lettura e' intera;
+    - `elenco_max`: quante fusioni elencare in `fusioni` (None = tutte, per la
+      CLI). Non limita le fusioni, solo l'elenco.
 
     Ogni coppia passa da `motivo_di_prudenza`: quelle scartate non si fondono
     e si contano in `coppie_scartate_per_prudenza` (per motivo) e, se l'URL e'
@@ -1336,15 +1341,21 @@ def esegui_passo(
     gruppi di **due** righe, cioe' un doppione con una coppia prudente diretta
     col master: una catena A=B=C non si fonde in automatico e si conta in
     `gruppi_oltre_due`. `coppie_per_criterio` conta le coppie dei gruppi che il
-    passo fonderebbe. Se la lettura restituisce `limite_lettura` righe o piu',
-    il corpus e' tagliato: `status='errore'` e nessuna fusione.
+    passo fonderebbe. Lettura troncata = errore: se la lettura fallisce (o
+    restituisce `limite_lettura` righe o piu'), `status='errore'` e nessuna
+    fusione, perche' le righe per URL sarebbero sottostimate.
+
+    `copertura` (§1): candidati le fusioni previste, fatti quelle fuse (in
+    attivo) o elencate (in ombra); le fusioni non riuscite restano fuori, con
+    motivo `errore`. Su un errore del passo non c'e' copertura: lo dice
+    `passi_non_ok`.
 
     Non solleva: un errore diventa `status='errore'` con il solo tipo
     dell'eccezione (il messaggio puo' portarsi dietro URL o chiavi).
     """
     try:
-        return _esegui_passo(giro, modalita=modalita, tetto=tetto, leggi=leggi, fondi=fondi,
-                             limite_lettura=limite_lettura)
+        return _esegui_passo(giro, modalita=modalita, leggi=leggi, fondi=fondi,
+                             limite_lettura=limite_lettura, elenco_max=elenco_max)
     except Exception as e:
         return {"status": "errore", "giro": giro, "motivo": type(e).__name__}
 
@@ -1353,36 +1364,33 @@ def _esegui_passo(
     giro: str | None,
     *,
     modalita: str | None,
-    tetto: int | None,
     leggi: Any,
     fondi: Any,
-    limite_lettura: int = LIMITE_LETTURA_PUBBLICATI,
+    limite_lettura: int | None = None,
+    elenco_max: int | None = TETTO_ELENCO_FUSIONI,
 ) -> dict[str, Any]:
     if modalita is None:
-        modalita = _impostazione("verifica_stato_modalita", MODALITA_OMBRA)
+        modalita = _impostazione("gemelli_modalita", MODALITA_OMBRA)
     modalita = MODALITA_ATTIVO if str(modalita).strip().lower() == MODALITA_ATTIVO else MODALITA_OMBRA
-    if tetto is None:
-        tetto = _impostazione("gemelli_fusioni_per_giro", FUSIONI_PER_GIRO)
-    tetto = max(0, int(tetto))
-    if tetto == 0:
-        return {"status": "ok", "giro": giro, "saltato": "spento", "modalita": modalita}
 
     if leggi is None or fondi is None:
         from . import db
-        leggi = leggi or (lambda: db.select_pubblicati_per_gemelli(
-            limit=limite_lettura, con_calendario=True))
+        leggi = leggi or (lambda: db.select_pubblicati_per_gemelli(limit=None, con_calendario=True))
         fondi = fondi or db.fondi_bandi
 
     lette = list(leggi())
-    if len(lette) >= limite_lettura:
+    if limite_lettura is not None and len(lette) >= limite_lettura:
         # Corpus tagliato: le righe per URL sarebbero sottostimate e un hub
         # potrebbe sembrare una coppia. Meglio nessuna fusione.
         return {"status": "errore", "giro": giro, "modalita": modalita,
                 "motivo": "lettura_troncata", "lette": len(lette)}
     righe = [r for r in lette if r.get("bando_master_id") is None]
-    # Le righe per URL si contano su tutti i pubblicati letti, fusi compresi:
-    # un URL che porta tre righe resta una pagina condivisa anche dopo una fusione.
-    righe_per_url = Counter(url for riga in lette for url in url_del_bando(riga))
+    # Le righe per URL si contano solo sui pubblicati NON fusi (B4, giro 3
+    # §11): un doppione gia' fuso nel master non e' un'altra pagina che porta
+    # l'URL, e contarlo farebbe sembrare un hub la coppia rimasta. Oggi la
+    # lettura prende solo `pubblicato=true` e `bando_fondi` spegne il doppione,
+    # quindi il risultato non cambia: la regola sta qui, non nel filtro di db.
+    righe_per_url = Counter(url for riga in righe for url in url_del_bando(riga))
     coppie = []
     scartate: dict[str, int] = {}
     hub: set[str] = set()
@@ -1402,7 +1410,7 @@ def _esegui_passo(
     coppie = [c for c in coppie if c[0].get("id") in in_gruppi]
 
     contatori: dict[str, Any] = {
-        "status": "ok", "giro": giro, "modalita": modalita, "tetto": tetto,
+        "status": "ok", "giro": giro, "modalita": modalita,
         "esaminati": len(righe),
         "coppie_per_criterio": {nome: 0 for nome in CRITERI_ESATTI},
         "coppie_scartate_per_prudenza": scartate,
@@ -1410,22 +1418,17 @@ def _esegui_passo(
         "gruppi": len(gruppi),
         "gruppi_oltre_due": len(tutti) - len(gruppi),
         "fusioni_previste": sum(len(doppioni) for _master, doppioni in gruppi),
-        "fusi": 0, "fusioni_non_riuscite": 0, "oltre_tetto": 0, "master_corretti": 0,
+        "fusi": 0, "fusioni_non_riuscite": 0, "master_corretti": 0,
         "fusioni": [],
     }
     for _a, _b, corrispondenza in coppie:
         per_criterio = contatori["coppie_per_criterio"]
         per_criterio[corrispondenza.criterio] = per_criterio.get(corrispondenza.criterio, 0) + 1
 
-    fatte = 0
     for master, doppioni in gruppi:
         for doppione, criterio in doppioni:
-            if fatte >= tetto:
-                contatori["oltre_tetto"] += 1
-                continue
-            fatte += 1
             voce = [doppione.get("id"), master.get("id"), criterio]
-            if len(contatori["fusioni"]) < TETTO_ELENCO_FUSIONI:
+            if elenco_max is None or len(contatori["fusioni"]) < elenco_max:
                 contatori["fusioni"].append(voce)
             if modalita != MODALITA_ATTIVO:
                 continue
@@ -1436,4 +1439,8 @@ def _esegui_passo(
             contatori["fusi"] += 1
             if effettivo != master.get("id"):
                 contatori["master_corretti"] += 1
+    from .telemetria import copertura
+    previste = contatori["fusioni_previste"]
+    fatti = contatori["fusi"] if modalita == MODALITA_ATTIVO else previste
+    contatori["copertura"] = copertura(previste, fatti, "errore")
     return contatori

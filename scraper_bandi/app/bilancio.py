@@ -19,6 +19,18 @@ Tre regole che vengono da altrettanti incidenti evitati:
   `pipeline_run.step='backfill:Lx'` e rispondono solo ai tetti di backfill: non
   devono consumare il mensile di regime ne' esserne fermati.
 
+Dal giro 3 (contratto `bandi-giro-3` §1 e §4, regola «niente lotti»):
+
+* **nessun tetto di numero**: niente tetto delle classificazioni (decide la
+  spesa) e niente fetch per giro. I tetti sono solo spesa in $ (5 al giorno,
+  150 al mese nello scenario bilanciato), crediti e ricerche;
+* **il mensile si applica davvero**: `verifica` lo controlla quando conosce il
+  consumo del mese (`crediti_mese`/`usd_mese`, anche dentro `gia_oggi`, che
+  `db.consumo_oggi` porta con se');
+* **la catena d'ingresso non si ferma mai** (`PASSI_INGRESSO`): conta e basta.
+  La manutenzione risponde a tutti i tetti, smette di chiamare il modello e
+  continua i controlli gratuiti.
+
 Le funzioni sono pure: leggono contatori e tetti e ritornano un esito. La
 scrittura su `pipeline_run` e' di `telemetria.py`.
 """
@@ -34,11 +46,13 @@ PREFISSO_BACKFILL = "backfill:"
 @dataclass(frozen=True)
 class Tetti:
     """Tetti di un giro. `0` significa «nessun tetto» (cosi' un comando di
-    diagnosi puo' disattivarli senza codice condizionale sparso)."""
-    fetch_giro: int = 0
+    diagnosi puo' disattivarli senza codice condizionale sparso).
+
+    Nessun tetto di numero (giro 3, §1): il fetch per giro e le
+    classificazioni al giorno non ci sono piu'.
+    """
     ricerche_giorno: int = 0
     crediti_giorno: int = 0
-    classificazioni_giorno: int = 0
     usd_giorno: float = 0.0
     crediti_mese: int = 0
     usd_mese: float = 0.0
@@ -65,8 +79,8 @@ class Contatori:
     classificazioni: int = 0
     #: Controlli rimasti a meta' perche' il modello non ha risposto (credito
     #: esaurito, API giu'): li legge `salute`. NON sono in `classificazioni`,
-    #: che conta le chiamate riuscite e alimenta i tetti: col credito a zero per
-    #: giorni i tentativi falliti fermavano anche i controlli gratuiti.
+    #: che conta le chiamate riuscite (un'informazione: dal giro 3 non c'e'
+    #: piu' un tetto delle classificazioni, decide la spesa).
     classificazioni_fallite: int = 0
     eventi: int = 0
     rigenerazioni: int = 0
@@ -97,6 +111,17 @@ class Esito:
     consentito: bool = True
     interrotto_per_tetto: bool = False
     motivo: str = ""
+    #: La voce del tetto raggiunto (`usd`, `crediti`, `ricerche`), ''
+    #: se consentito.
+    voce: str = ""
+
+    @property
+    def motivo_rimasti(self) -> str | None:
+        """Il `motivo_rimasti` della copertura (§1): `crediti` per i crediti,
+        `spesa` per ogni altro tetto, None se non c'e' tetto raggiunto."""
+        if self.consentito:
+            return None
+        return "crediti" if self.voce == "crediti" else "spesa"
 
     def come_dizionario(self) -> dict[str, Any]:
         return {
@@ -190,6 +215,20 @@ def e_backfill(step: str) -> bool:
 STEP_GIRO = "pipeline"
 
 
+#: La catena d'ingresso (contratto `bandi-giro-3` §4): i passi che portano un
+#: bando nuovo fino alla pubblicazione. Contano la spesa e non si fermano mai
+#: per nessun tetto (ne' $, ne' crediti, ne' ricerche): un bando nuovo non
+#: resta fuori perche' la giornata e' stata cara.
+PASSI_INGRESSO: frozenset[str] = frozenset({
+    "preprocess", "enrich", "seo", "resolver_precoce", "resolver",
+})
+
+
+def e_ingresso(step: str) -> bool:
+    """Il passo e' della catena d'ingresso (`PASSI_INGRESSO`)?"""
+    return (step or "") in PASSI_INGRESSO
+
+
 def conta_nel_regime(step: str) -> bool:
     """Una riga di `pipeline_run` entra nei consumi di regime?
 
@@ -206,36 +245,39 @@ def _supera(valore: float, tetto: float) -> bool:
     return tetto > 0 and valore >= tetto
 
 
-def verifica_fetch(contatori: Contatori, tetti: Tetti) -> Esito:
-    """Unico tetto *per giro*: il fetch (§6.2)."""
-    if _supera(contatori.fetch, tetti.fetch_giro):
-        return Esito(False, True, f"tetto fetch per giro raggiunto ({contatori.fetch}/{tetti.fetch_giro})")
-    return OK
-
-
 def verifica_giornalieri(
     contatori: Contatori,
     tetti: Tetti,
     *,
     gia_oggi: Mapping[str, float] | None = None,
 ) -> Esito:
-    """Tetti giornalieri: ricerche, crediti, classificazioni, $.
+    """Tetti giornalieri: ricerche, crediti, $ (le classificazioni non piu': §1).
 
     `gia_oggi` e' il consumo dei giri precedenti della giornata (da
     `pipeline_run`): senza, con due giri al giorno il tetto varrebbe il doppio.
     """
     prima = gia_oggi or {}
     voci: tuple[tuple[str, float, float], ...] = (
-        ("ricerche", contatori.ricerche + prima.get("ricerche", 0), tetti.ricerche_giorno),
-        ("crediti", contatori.crediti_firecrawl + prima.get("crediti", 0), tetti.crediti_giorno),
-        ("classificazioni",
-         contatori.classificazioni + prima.get("classificazioni", 0), tetti.classificazioni_giorno),
-        ("usd", contatori.usd + prima.get("usd", 0.0), tetti.usd_giorno),
+        ("ricerche", contatori.ricerche + _valore(prima, "ricerche"), tetti.ricerche_giorno),
+        ("crediti", contatori.crediti_firecrawl + _valore(prima, "crediti"), tetti.crediti_giorno),
+        ("usd", contatori.usd + _valore(prima, "usd"), tetti.usd_giorno),
     )
     for nome, valore, tetto in voci:
         if _supera(valore, tetto):
-            return Esito(False, True, f"tetto giornaliero {nome} raggiunto ({valore:g}/{tetto:g})")
+            return Esito(False, True, f"tetto giornaliero {nome} raggiunto ({valore:g}/{tetto:g})",
+                         voce=nome)
     return OK
+
+
+def _valore(mappa: Mapping[str, Any], chiave: str) -> float:
+    """Una voce di consumo letta da `pipeline_run`: un valore illeggibile vale 0."""
+    valore = mappa.get(chiave)
+    if isinstance(valore, bool):
+        return 0.0
+    try:
+        return float(valore or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def consumo_mensile(somma_contatori: float, consumo_reale: float, baseline_altri: float) -> float:
@@ -253,20 +295,22 @@ def verifica_mensili(
     crediti_mese: float,
     usd_mese: float,
     tetti: Tetti,
-    riserva: float = 0.10,
+    riserva: float = 0.0,
 ) -> Esito:
-    """Tetto mensile: si fermano monitor e ricontrolli.
+    """Tetto mensile del mese di calendario di Roma: si ferma la manutenzione.
 
-    La `riserva` e' la quota che resta al resolver sui nuovi `enriched` anche a
-    tetto raggiunto (A23): un bando nuovo non deve uscire senza fonte solo
-    perche' il mese e' stato caro. Chi la usa passa `riserva=0.0`.
+    La `riserva` (quota del tetto tenuta da parte, A23) valeva 10 % per il
+    resolver sui nuovi: dal giro 3 la catena d'ingresso non si ferma mai
+    (`PASSI_INGRESSO`), quindi il default e' 0 e il tetto morde al 100 %.
     """
     quota = max(0.0, 1.0 - riserva)
     if tetti.crediti_mese > 0 and crediti_mese >= tetti.crediti_mese * quota:
         return Esito(False, True,
-                     f"tetto mensile crediti raggiunto ({crediti_mese:g}/{tetti.crediti_mese:g})")
+                     f"tetto mensile crediti raggiunto ({crediti_mese:g}/{tetti.crediti_mese:g})",
+                     voce="crediti")
     if tetti.usd_mese > 0 and usd_mese >= tetti.usd_mese * quota:
-        return Esito(False, True, f"tetto mensile $ raggiunto ({usd_mese:g}/{tetti.usd_mese:g})")
+        return Esito(False, True, f"tetto mensile $ raggiunto ({usd_mese:g}/{tetti.usd_mese:g})",
+                     voce="usd")
     return OK
 
 
@@ -275,10 +319,11 @@ def verifica_backfill(contatori: Contatori, tetti: Tetti) -> Esito:
     if _supera(contatori.crediti_firecrawl, tetti.backfill_crediti):
         return Esito(False, True,
                      f"tetto backfill crediti raggiunto "
-                     f"({contatori.crediti_firecrawl}/{tetti.backfill_crediti})")
+                     f"({contatori.crediti_firecrawl}/{tetti.backfill_crediti})", voce="crediti")
     if _supera(contatori.usd, tetti.backfill_usd):
         return Esito(False, True,
-                     f"tetto backfill $ raggiunto ({contatori.usd:g}/{tetti.backfill_usd:g})")
+                     f"tetto backfill $ raggiunto ({contatori.usd:g}/{tetti.backfill_usd:g})",
+                     voce="usd")
     return OK
 
 
@@ -293,31 +338,77 @@ def verifica(
 ) -> Esito:
     """Verifica completa nell'ordine in cui i tetti mordono.
 
-    Un lotto di backfill risponde SOLO ai propri tetti (M19): passargli quelli
-    di regime lo bloccherebbe al primo giro.
+    - un lotto di backfill risponde SOLO ai propri tetti (M19): passargli
+      quelli di regime lo bloccherebbe al primo giro;
+    - un passo della catena d'ingresso (`PASSI_INGRESSO`) non si ferma mai:
+      sempre `OK`, la spesa la conta chi chiama (contratto §4);
+    - la manutenzione risponde ai giornalieri e, se il consumo del mese e'
+      noto, al mensile. Il consumo del mese dei giri precedenti arriva da
+      `crediti_mese`/`usd_mese` oppure dalle stesse chiavi di `gia_oggi`
+      (`db.consumo_oggi`); si somma quello del giro, che non e' ancora scritto.
     """
     if e_backfill(step):
         return verifica_backfill(contatori, tetti)
-    esito = verifica_fetch(contatori, tetti)
-    if not esito.consentito:
-        return esito
+    if e_ingresso(step):
+        return OK
     esito = verifica_giornalieri(contatori, tetti, gia_oggi=gia_oggi)
     if not esito.consentito:
         return esito
+    prima = gia_oggi or {}
+    if crediti_mese is None and "crediti_mese" in prima:
+        crediti_mese = _valore(prima, "crediti_mese")
+    if usd_mese is None and "usd_mese" in prima:
+        usd_mese = _valore(prima, "usd_mese")
     if crediti_mese is not None or usd_mese is not None:
         return verifica_mensili(
-            crediti_mese=crediti_mese or 0.0, usd_mese=usd_mese or 0.0, tetti=tetti,
+            crediti_mese=float(crediti_mese or 0.0) + contatori.crediti_firecrawl,
+            usd_mese=float(usd_mese or 0.0) + contatori.usd,
+            tetti=tetti,
         )
     return OK
 
 
+#: Il motivo con cui la manutenzione si ferma quando il consumo gia' speso non
+#: si legge (contratto `bandi-giro-3` §18.5).
+MOTIVO_CONSUMO_ILLEGGIBILE = "consumo di oggi non leggibile: tetto considerato raggiunto"
+
+
+def _ha_tetti_di_regime(tetti: Tetti) -> bool:
+    return any(valore > 0 for valore in (
+        tetti.ricerche_giorno, tetti.crediti_giorno, tetti.usd_giorno,
+        tetti.crediti_mese, tetti.usd_mese))
+
+
+def verifica_con_consumo(
+    contatori: Contatori,
+    tetti: Tetti,
+    *,
+    step: str = "",
+    consumo: Mapping[str, Any] | None,
+) -> Esito:
+    """`verifica` con il consumo letto da `db.consumo_oggi()` (§18.5).
+
+    `consumo` None vuol dire «lettura fallita»: per la manutenzione vale tetto
+    raggiunto (niente modello, niente crediti; i controlli gratuiti
+    continuano), perche' un consumo ignoto non deve diventare un tetto che vale
+    solo per il giro. L'ingresso e il backfill lo ignorano (non hanno i tetti di
+    regime), e senza tetti di regime configurati non c'e' niente da superare.
+    """
+    if (consumo is None and not e_backfill(step) and not e_ingresso(step)
+            and _ha_tetti_di_regime(tetti)):
+        return Esito(False, True, MOTIVO_CONSUMO_ILLEGGIBILE, voce="usd")
+    return verifica(contatori, tetti, step=step, gia_oggi=consumo)
+
+
 def tetti_da_impostazioni(impostazioni: Any) -> Tetti:
-    """`Settings` -> `Tetti`. Un solo punto che sa i nomi delle variabili."""
+    """`Settings` -> `Tetti`. Un solo punto che sa i nomi delle variabili.
+
+    `TETTO_FETCH_GIRO` e `TETTO_CLASSIFICAZIONI_GIORNO` sono dismessi (giro 3,
+    §3): non si leggono piu', e B6 li toglie da `Settings`.
+    """
     return Tetti(
-        fetch_giro=impostazioni.tetto_fetch_giro,
         ricerche_giorno=impostazioni.tetto_ricerche_giorno,
         crediti_giorno=impostazioni.tetto_crediti_giorno,
-        classificazioni_giorno=impostazioni.tetto_classificazioni_giorno,
         usd_giorno=impostazioni.tetto_usd_giorno,
         crediti_mese=impostazioni.tetto_crediti_mese,
         usd_mese=impostazioni.tetto_usd_mese,
@@ -336,9 +427,10 @@ def unisci_scarico(contatori: Contatori, contatori_scarico: Any) -> Contatori:
 
 
 __all__ = [
-    "Contatori", "Esito", "MODELLO_FUORI_LISTINO", "OK", "PREFISSO_BACKFILL",
+    "Contatori", "Esito", "MODELLO_FUORI_LISTINO", "OK", "PASSI_INGRESSO", "PREFISSO_BACKFILL",
     "Tetti", "UsoModello", "allarmi_listino", "consumo_mensile", "costo_usd",
-    "e_backfill", "registra_chiamata", "tetti_da_impostazioni", "token_da_uso",
-    "unisci_scarico", "verifica", "verifica_backfill", "verifica_fetch",
+    "e_backfill", "e_ingresso", "registra_chiamata", "tetti_da_impostazioni", "token_da_uso",
+    "MOTIVO_CONSUMO_ILLEGGIBILE", "verifica_con_consumo",
+    "unisci_scarico", "verifica", "verifica_backfill",
     "verifica_giornalieri", "verifica_mensili",
 ]

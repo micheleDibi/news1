@@ -168,6 +168,14 @@ for _chiave in telemetria.ESTRATTORI_SALUTE:
         verifica_7g={_chiave: {"letture": 5, "esiti": 0}})
     STATI_PER_CODICE[f"freno_chiusure:{_chiave}"] = Stato(ultime_verifiche=(
         _riga(1, "06:00", 1, contatori={"trattenute_per_freno": {_chiave: 2}}),))
+for _passo, _neutro in telemetria.PASSI_NEUTRI.items():
+    STATI_PER_CODICE[f"copertura_incompleta:{_neutro}"] = Stato(ultime_pipeline=tuple(
+        _riga(10 - _i, "06:00", 6 * _i + 1, contatori={_passo: {"copertura": {
+            "candidati": 10, "fatti": 7, "rimasti": 3, "motivo_rimasti": "tempo"}}})
+        for _i in range(4)))
+for _variabile in telemetria.VARIABILI_GIRO_3:
+    STATI_PER_CODICE[f"configurazione:{_variabile}"] = Stato(
+        configurazione_scartate=(_variabile.upper(),))
 for _suffisso in telemetria.SUFFISSI_LAVORAZIONE:
     _nome = {"giro": "bandi_pipeline", "controllo_pagine": "monitor",
              "ricerca_fonti": "bandi_resolver", "altro": "x"}[_suffisso]
@@ -238,7 +246,9 @@ class TestTestiDiSempre(unittest.TestCase):
 
     def test_come_dizionario_aggiunge_solo_voci(self):
         diz = telemetria.salute(Stato(ore_dall_ultimo_monitor_ok=25), adesso=ADESSO).come_dizionario()
-        self.assertEqual(set(diz), {"allarmi", "avvisi", "exit_code", "tipi_attivi", "voci"})
+        self.assertEqual(set(diz), {"allarmi", "avvisi", "exit_code", "tipi_attivi", "voci",
+                                    "copertura", "informazioni"})
+        self.assertEqual((diz["copertura"], diz["informazioni"]), ({}, []))
         self.assertEqual(diz["voci"], [{"codice": "monitor_fermo", "livello": "allarme",
                                         "testo_cli": "nessun monitor OK da 25 h", "misura": 25}])
 
@@ -296,8 +306,10 @@ class TestProduttoreFermo(unittest.TestCase):
     def test_lock_scaduto_non_salva(self):
         self.assertIn("produttore_fermo", _codici(self._stato(8, lock=self._lock(0.4, -0.1))))
 
-    def test_da_undici_ore_comunque(self):
-        self.assertIn("produttore_fermo", _codici(self._stato(11.2, lock=self._lock(0.5, 3.5))))
+    def test_da_tredici_ore_comunque(self):
+        # 7 + ORE_TTL_LOCK_GIRO (6 dal giro 3): un giro vero non tiene il lock oltre.
+        self.assertIn("produttore_fermo", _codici(self._stato(13.2, lock=self._lock(0.5, 3.5))))
+        self.assertNotIn("produttore_fermo", _codici(self._stato(12.5, lock=self._lock(0.5, 3.5))))
 
     def test_giri_saltati_e_di_avvio_non_contano(self):
         righe = (_riga(3, "12:00", 0.4, esito="saltato"), _riga(2, "boot", 2),
@@ -373,11 +385,12 @@ class TestServizio(unittest.TestCase):
 
 
 class TestPassoDegradato(unittest.TestCase):
-    def _codici(self, contatori, *, prima=None, modalita="ombra"):
+    def _codici(self, contatori, *, prima=None, modalita="ombra", gemelli="ombra"):
         righe = [_riga(2, "12:00", 0.4, contatori=contatori)]
         if prima is not None:
             righe.insert(0, _riga(3, "18:00", 0.1, esito="saltato"))
-        return _codici(Stato(ultime_pipeline=tuple(righe), verifica_stato_modalita=modalita))
+        return _codici(Stato(ultime_pipeline=tuple(righe), verifica_stato_modalita=modalita,
+                             gemelli_modalita=gemelli))
 
     def test_estrazione_col_credito_esaurito_del_28_09(self):
         # Righe 107..119: errors = processed_total ed esito ok.
@@ -413,15 +426,41 @@ class TestPassoDegradato(unittest.TestCase):
         self.assertNotIn("passo_degradato:redazione",
                          self._codici({"seo": {"selected": 5, "payload_ok": 1}}))
 
-    def test_redazione_senza_trattenuti_e_fusi_solo_in_attivo(self):
-        # Con la verifica attiva sosta e fusioni non sono un passo guasto; in
-        # ombra quelle righe si redigono lo stesso, quindi contano.
-        for chiave in ("trattenuti", "trattenuti_senza_appiglio",
-                       "fusi_prima_della_pubblicazione", "fusioni_non_riuscite"):
-            with self.subTest(chiave=chiave):
-                seo = {"seo": {"selected": 4, chiave: 2, "payload_ok": 0}}
-                self.assertNotIn("passo_degradato:redazione", self._codici(seo, modalita="attivo"))
-                self.assertIn("passo_degradato:redazione", self._codici(seo, modalita="ombra"))
+    def test_redazione_senza_trattenuti_solo_con_la_verifica_attiva(self):
+        # Con la verifica attiva la sosta non e' un passo guasto; in ombra
+        # quelle righe si redigono lo stesso, quindi contano. I gemelli non
+        # c'entrano.
+        for chiave in ("trattenuti", "trattenuti_senza_appiglio"):
+            for gemelli in ("ombra", "attivo"):
+                with self.subTest(chiave=chiave, gemelli=gemelli):
+                    seo = {"seo": {"selected": 4, chiave: 2, "payload_ok": 0}}
+                    self.assertNotIn("passo_degradato:redazione",
+                                     self._codici(seo, modalita="attivo", gemelli=gemelli))
+                    self.assertIn("passo_degradato:redazione",
+                                  self._codici(seo, modalita="ombra", gemelli=gemelli))
+
+    def test_redazione_senza_fusi_solo_con_i_gemelli_attivi(self):
+        # §18.8: dal giro 3 la fusione prima della pubblicazione segue
+        # GEMELLI_MODALITA, non la verifica. Con i gemelli attivi e la verifica
+        # in ombra le fuse non sono un guasto (era il falso allarme).
+        for chiave in ("fusi_prima_della_pubblicazione", "fusioni_non_riuscite"):
+            for verifica in ("ombra", "attivo"):
+                with self.subTest(chiave=chiave, verifica=verifica):
+                    seo = {"seo": {"selected": 4, chiave: 2, "payload_ok": 0}}
+                    self.assertNotIn("passo_degradato:redazione",
+                                     self._codici(seo, modalita=verifica, gemelli="attivo"))
+                    self.assertIn("passo_degradato:redazione",
+                                  self._codici(seo, modalita=verifica, gemelli="ombra"))
+
+    def test_le_chiavi_tolte_seguono_ciascuna_il_proprio_interruttore(self):
+        chiavi = telemetria.contatori_seo_non_da_redigere
+        self.assertEqual(chiavi(Stato()), ("doppioni_oe",))
+        self.assertEqual(chiavi(Stato(verifica_stato_modalita="attivo")),
+                         ("doppioni_oe", "trattenuti", "trattenuti_senza_appiglio"))
+        self.assertEqual(chiavi(Stato(gemelli_modalita="attivo")),
+                         ("doppioni_oe", "fusi_prima_della_pubblicazione", "fusioni_non_riuscite"))
+        self.assertEqual(set(chiavi(Stato(verifica_stato_modalita="attivo", gemelli_modalita="attivo"))),
+                         set(telemetria.CONTATORI_SEO_NON_DA_REDIGERE))
         self.assertIn("passo_degradato:redazione",
                       self._codici({"seo": {"selected": 6, "trattenuti": 2, "doppioni_oe": 1,
                                             "payload_ok": 0}}, modalita="attivo"))
@@ -612,7 +651,7 @@ class TestCostantiAllineate(unittest.TestCase):
         testo = (REPO / "backend" / "app" / "bandi_pipeline.py").read_text(encoding="utf-8")
         self.assertIn(f'LOCK_PIPELINE = "{telemetria.LOCK_GIRO}"', testo)
         self.assertRegex(testo, rf"\nLOCK_TTL_S = {telemetria.ORE_TTL_LOCK_GIRO} \* 3600\n")
-        self.assertEqual(telemetria.ORE_PRODUTTORE_FERMO_COMUNQUE, 11)
+        self.assertEqual(telemetria.ORE_PRODUTTORE_FERMO_COMUNQUE, 13)
 
     def test_giro_di_avvio(self):
         testo = (REPO / "backend" / "app" / "bandi_sender.py").read_text(encoding="utf-8")
@@ -703,9 +742,13 @@ class TestCodiciPercorsoA(unittest.TestCase):
     def test_indicepa_non_aggiornato_ombra_e_attivo(self):
         ombra = (_riga(1, "06:00", 24, contatori={"indicepa_esito": "ombra", "indicepa_at": _iso(24)}),)
         self.assertNotIn("indicepa_non_aggiornato", _codici(Stato(ultimi_import_indicepa=ombra)))
-        # In attivo un import in ombra non conta.
+        # Con i domini attivi un import in ombra non conta (§18.8: la scrittura
+        # segue DOMINI_MODALITA, non la verifica).
         self.assertIn("indicepa_non_aggiornato", _codici(Stato(ultimi_import_indicepa=ombra,
-                                                               verifica_stato_modalita="attivo")))
+                                                               domini_modalita="attivo")))
+        # La verifica attiva da sola non lo rende un allarme (era il falso allarme).
+        self.assertNotIn("indicepa_non_aggiornato", _codici(Stato(ultimi_import_indicepa=ombra,
+                                                                  verifica_stato_modalita="attivo")))
         vecchio = (_riga(1, "06:00", 41 * 24, contatori={"indicepa_esito": "ok", "indicepa_at": _iso(41 * 24)}),)
         self.assertIn("indicepa_non_aggiornato", _codici(Stato(ultimi_import_indicepa=vecchio)))
         self.assertEqual(_codici(Stato(ultimi_import_indicepa=None)), [])
@@ -766,3 +809,121 @@ class TestStatoDaMisureA(unittest.TestCase):
 
 if __name__ == "__main__":                                  # pragma: no cover
     unittest.main()
+
+
+def _giro(id_, ore_fa, coperture, *, giro="06:00", esito="ok"):
+    """Una riga del giro con la copertura di alcuni passi (`{passo: (candidati, fatti, motivo)}`)."""
+    return _riga(id_, giro, ore_fa, esito=esito, contatori={
+        passo: {"copertura": telemetria.copertura(*valori)} for passo, valori in coperture.items()})
+
+
+class TestCoperturaDelGiro3(unittest.TestCase):
+    """Contratto `bandi-giro-3` §1: copertura per passo e `copertura_incompleta`."""
+
+    def test_i_passi_sono_quelli_del_giro_e_del_riepilogo(self):
+        db = carica_modulo("db")
+        rs = carica_modulo("riepilogo_salute")
+        self.assertEqual(tuple(telemetria.PASSI_NEUTRI), db.PASSI_DEL_GIRO)
+        for passo, neutro in telemetria.PASSI_NEUTRI.items():
+            self.assertEqual(rs.NOMI_PASSI_NEUTRI[passo], neutro)
+        # Ogni copertura che `salute` cerca, `misure_salute` la legge.
+        for passo in db.PASSI_DEL_GIRO:
+            self.assertIn((passo, "copertura"), db.CONTATORI_PIPELINE)
+
+    def test_quattro_giri_di_fila_si_tre_no(self):
+        righe = [_giro(10 - i, 6 * i + 1, {"ricontrolli": (900, 400, "tempo")}) for i in range(4)]
+        voce = _voce(Stato(ultime_pipeline=tuple(righe)), "copertura_incompleta:ricontrolli")
+        self.assertIsNotNone(voce)
+        self.assertEqual((voce.livello, voce.misura), ("allarme", 500))
+        self.assertIn("ricontrolli", voce.testo_cli)
+        self.assertNotIn("copertura_incompleta:ricontrolli", _codici(Stato(ultime_pipeline=tuple(righe[:3]))))
+
+    def test_un_giro_completo_interrompe_la_serie(self):
+        righe = [_giro(10 - i, 6 * i + 1, {"monitor": (700, 650 if i != 1 else 700, "tempo")})
+                 for i in range(5)]
+        self.assertNotIn("copertura_incompleta:controllo_pagine",
+                         _codici(Stato(ultime_pipeline=tuple(righe))))
+
+    def test_righe_senza_la_copertura_del_passo_si_saltano(self):
+        # Il boot non fa la manutenzione: non azzera il conto e non lo allunga.
+        righe = [_giro(9, 1, {"monitor": (10, 5, "tempo")}),
+                 _giro(8, 3, {"seo": (4, 4)}, giro="boot"),
+                 _giro(7, 7, {"monitor": (10, 5, "spesa")}),
+                 _riga(6, "12:00", 13, contatori={"monitor": {"copertura": "rotta"}}),
+                 _giro(5, 19, {"monitor": (10, 9, "tempo")}),
+                 _giro(4, 25, {"monitor": (10, 9, "tempo")})]
+        voce = _voce(Stato(ultime_pipeline=tuple(righe)), "copertura_incompleta:controllo_pagine")
+        self.assertIsNotNone(voce)
+        self.assertEqual(voce.misura, 5)
+
+    def test_le_righe_saltate_non_contano(self):
+        righe = [_giro(10 - i, 6 * i + 1, {"gemelli": (3, 1, "errore")},
+                       esito="saltato" if i == 0 else "ok") for i in range(4)]
+        self.assertNotIn("copertura_incompleta:doppioni", _codici(Stato(ultime_pipeline=tuple(righe))))
+
+    def test_copertura_dell_ultimo_giro_per_passo(self):
+        righe = (_giro(3, 1, {"seo": (5, 5)}, giro="boot"),
+                 _giro(2, 7, {"monitor": (700, 640, "tempo"), "seo": (2, 2)}),
+                 _giro(1, 13, {"monitor": (700, 700), "gemelli": (1, 1)}))
+        esito = telemetria.salute(Stato(ultime_pipeline=righe), adesso=ADESSO)
+        self.assertEqual(list(esito.copertura), ["seo", "monitor", "gemelli"])
+        self.assertEqual(esito.copertura["seo"]["candidati"], 5)
+        self.assertEqual(esito.copertura["monitor"],
+                         {"candidati": 700, "fatti": 640, "rimasti": 60, "motivo_rimasti": "tempo"})
+        self.assertIn("copertura monitor: 640/700 (rimasti 60: tempo)", esito.informazioni)
+        self.assertIn("copertura seo: 5/5", esito.informazioni)
+        self.assertEqual(esito.exit_code, 0)
+        self.assertEqual(esito.voci, ())
+
+
+class TestInformazioniDelGiro3(unittest.TestCase):
+    def test_variabili_dismesse_informazione_non_allarme(self):
+        esito = telemetria.salute(Stato(variabili_dismesse=("TETTO_FETCH_GIRO", "GEMELLI_FUSIONI_PER_GIRO")),
+                                  adesso=ADESSO)
+        self.assertEqual((esito.allarmi, esito.avvisi, esito.voci), ((), (), ()))
+        self.assertEqual(esito.informazioni, (
+            "variabili dismesse nel .env (non piu' lette): GEMELLI_FUSIONI_PER_GIRO, TETTO_FETCH_GIRO",))
+
+    def test_sospensioni_in_attesa_della_migrazione_14(self):
+        self.assertEqual(telemetria.salute(Stato(sospensioni_attive=False), adesso=ADESSO).informazioni,
+                         ("sospensioni in attesa della migrazione 14",))
+        for valore in (True, None):
+            self.assertEqual(telemetria.salute(Stato(sospensioni_attive=valore), adesso=ADESSO).informazioni, ())
+
+    def test_eventi_marcati_informazione_non_allarme(self):
+        # §19.2: quanti eventi la 14 ha marcato (superato, transizione non
+        # ammessa). Un'informazione col numero; zero o non misurato: niente.
+        esito = telemetria.salute(
+            Stato(eventi_marcati={"superato": 4, "transizione_non_ammessa": 2}), adesso=ADESSO)
+        self.assertEqual((esito.allarmi, esito.avvisi, esito.voci, esito.exit_code), ((), (), (), 0))
+        self.assertEqual(esito.informazioni, (
+            "eventi marcati e non applicati: 4 superati, 2 con transizione non ammessa",))
+        for valore in (None, {}, {"superato": 0, "transizione_non_ammessa": 0}):
+            with self.subTest(marcati=valore):
+                self.assertEqual(
+                    telemetria.salute(Stato(eventi_marcati=valore), adesso=ADESSO).informazioni, ())
+
+    def test_transizioni_da_decidere_informazione_non_allarme(self):
+        # §18.2: la rielaborazione lascia alla redazione le date che chiedono
+        # un cambio di stato; `salute` lo dice col numero, senza allarmi.
+        esito = telemetria.salute(Stato(transizioni_da_decidere=3), adesso=ADESSO)
+        self.assertEqual((esito.allarmi, esito.avvisi, esito.voci, esito.exit_code), ((), (), (), 0))
+        self.assertEqual(esito.informazioni, (
+            "rielaborazione: 3 transizioni di stato da decidere nell'ultimo giro "
+            "(rettifiche registrate e non applicate)",))
+        for valore in (0, None):
+            with self.subTest(transizioni=valore):
+                self.assertEqual(
+                    telemetria.salute(Stato(transizioni_da_decidere=valore), adesso=ADESSO).informazioni,
+                    ())
+
+    def test_configurazione_scartata_nome_senza_valore(self):
+        esito = telemetria.salute(Stato(configurazione_scartate=("TEMPO_MONITOR_S", "SCONOSCIUTA")),
+                                  adesso=ADESSO)
+        self.assertEqual([v.codice for v in esito.voci], ["configurazione:tempo_monitor_s"])
+        self.assertEqual(esito.allarmi, ("TEMPO_MONITOR_S non valida: vale il default",))
+
+    def test_variabili_del_giro_3_come_settings(self):
+        settings = carica_modulo("settings")
+        attese = {n.lower() for n in (*settings.INTERVALLI_TEMPI, *settings.MODALITA_GIRO_3)}
+        self.assertEqual(set(telemetria.VARIABILI_GIRO_3), attese)

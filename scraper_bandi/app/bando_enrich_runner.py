@@ -33,11 +33,31 @@ from .db import (
     update_bando_enriched,
     update_bando_refinement,
 )
+from . import bilancio, telemetria
 from .date_validation import parse_iso, reconcile_stato_bando
+from .dominio_ufficiale import scegli_fonte
 from .enricher import enrich_bando, refine_stato_bando
 from .logger import logger
+from .preprocessor import aggiungi_delta_scarico, conta_spesa, istantanea_scarico
 from .settings import get_settings
 from .stato_bando import oggi_roma
+
+#: Lo step della riga di spesa del passo (contratto `bandi-giro-3` §4).
+STEP = "enrich"
+
+
+def _registra_spesa(spesa: bilancio.Contatori, copertura: dict[str, Any],
+                    durata_s: float, errori: int) -> None:
+    """La riga `pipeline_run` del passo (§4): spesa e copertura. Non solleva."""
+    try:
+        riga = telemetria.PipelineRun(step=STEP).concludi(
+            durata_s=durata_s,
+            esito=telemetria.esito_da_contatori(errori=errori),
+            contatori={**spesa.come_dizionario(), "copertura": copertura},
+        )
+        telemetria.scrivi_pipeline_run(riga)
+    except Exception as e:                                # pragma: no cover - difesa
+        logger.warning("[enrich] riga di spesa non registrata: {}", e)
 
 # Confidenza minima perche' lo stato deciso dal refinement venga scritto e il
 # bando promosso alla fase B (fix 8.a.11).
@@ -72,7 +92,17 @@ async def run(
     bandi = select_bandi_to_enrich(limit=limit, include_enriched=include_enriched)
     if not bandi:
         logger.info("[enrich] nessun bando candidato all'enrichment")
-        return {"refined_total": 0, "enriched_total": 0, "elapsed_s": 0}
+        return {"refined_total": 0, "enriched_total": 0, "elapsed_s": 0,
+                "copertura": telemetria.copertura(0, 0)}
+
+    # La spesa del passo (§4): refine e classificazioni, contate dall'involucro
+    # del client (`preprocessor.conta_spesa`). L'ingresso conta e non si ferma.
+    spesa = bilancio.Contatori()
+    # §19.1: i crediti dello scarico di refine ed enrich vanno nella riga del
+    # passo (il delta da qui), e solo nella sua.
+    scarico_prima = istantanea_scarico()
+    errori = 0
+    letti_da_ufficiale = 0
 
     # 2. Pre-load fonti + nomi catalogo
     fonte_ids = list({b["fonte_id"] for b in bandi if b.get("fonte_id") is not None})
@@ -121,9 +151,13 @@ async def run(
             risponde fuori enum o se la confidenza e' sotto la soglia."""
             bando_id = b["id"]
             fonte_ctx = fonti_by_id.get(b.get("fonte_id"), {})
+            # Giro 3 (§8): lo stato si decide sulla pagina ufficiale quando
+            # c'e' (`scegli_fonte`), non sulla scheda dell'aggregatore.
+            url, _ufficiale = scegli_fonte(b)
             async with sem_refine:
                 try:
-                    stato, conf, reason = await refine_stato_bando(b, fonte_ctx)
+                    stato, conf, reason = await refine_stato_bando(
+                        {**b, "link_bando": url or b.get("link_bando")}, fonte_ctx)
                 except Exception as e:
                     logger.exception("[enrich/refine] bando_id={} fallito: {}", bando_id, e)
                     return (bando_id, None, 0.0, f"error: {e}")
@@ -142,7 +176,10 @@ async def run(
                     await update_bando_refinement(bando_id, stato, confidence=conf)
                 return (bando_id, stato, conf, reason)
 
-        refine_results = await asyncio.gather(*[_do_refine(b) for b in refine_targets])
+        with conta_spesa(spesa):
+            refine_results = await asyncio.gather(*[_do_refine(b) for b in refine_targets])
+        errori += sum(1 for _bid, _s, _c, motivo in refine_results
+                      if str(motivo).startswith("error:"))
 
         # Promuovi a Phase B i nuovi aperti/in_apertura
         refine_by_id = {bid: (stato, conf, reason) for bid, stato, conf, reason in refine_results}
@@ -181,6 +218,10 @@ async def run(
         "safety_net_forced_chiuso": 0,
         "safety_net_forced_in_apertura": 0,
         "skipped_senza_stato": 0,
+        # Giro 3 (§8): bandi con almeno una classificazione fallita (non
+        # «nessuna voce»), e quante dimensioni in tutto.
+        "con_chiamate_fallite": 0,
+        "dimensioni_fallite": 0,
     }
 
     if enrich_targets:
@@ -190,9 +231,14 @@ async def run(
         total = len(enrich_targets)
 
         async def _do_enrich(b: dict[str, Any]) -> tuple[int, dict | Exception]:
+            nonlocal letti_da_ufficiale
             bando_id = b["id"]
             fonte_ctx = fonti_by_id.get(b.get("fonte_id"), {})
-            link = b.get("link_bando") or ""
+            # Giro 3 (§8): il testo da classificare e' quello della pagina
+            # ufficiale quando c'e' (`scegli_fonte`), altrimenti `link_bando`.
+            link, _ufficiale = scegli_fonte(b)
+            if link and link != (b.get("link_bando") or ""):
+                letti_da_ufficiale += 1
 
             async with sem_enrich:
                 # Carica HTML pagina (Firecrawl cached dalla PHASE A oppure
@@ -217,12 +263,17 @@ async def run(
                     logger.info("[enrich] progress {}/{}", progress["done"], total)
                 return (bando_id, res)
 
-        enrich_results = await asyncio.gather(*[_do_enrich(b) for b in enrich_targets])
+        with conta_spesa(spesa):
+            enrich_results = await asyncio.gather(*[_do_enrich(b) for b in enrich_targets])
 
         # Compose updates + write DB
         for bid, res in enrich_results:
             if isinstance(res, Exception):
+                errori += 1
                 continue
+            if res.get("_fallite"):
+                enrich_counter["con_chiamate_fallite"] += 1
+                enrich_counter["dimensioni_fallite"] += len(res["_fallite"])
             # Aggiorna counter
             if res["tipologia_bando_id"] is not None:
                 enrich_counter["with_tipologia"] += 1
@@ -290,7 +341,10 @@ async def run(
                 else:
                     enrich_counter["db_failed"] += 1
 
+    aggiungi_delta_scarico(spesa, scarico_prima)
     elapsed = time.monotonic() - started
+    copertura = telemetria.copertura(len(bandi), len(bandi) - errori,
+                                     "errore" if errori else None)
     n_e = enrich_counter["total"] or 1
     counters: dict[str, Any] = {
         "refined_total": len(refine_targets),
@@ -311,8 +365,19 @@ async def run(
         "safety_net_forced_in_apertura": enrich_counter["safety_net_forced_in_apertura"],
         "refined_undetermined": refined_counter.get(None, 0),
         "skipped_senza_stato": enrich_counter["skipped_senza_stato"],
+        "con_chiamate_fallite": enrich_counter["con_chiamate_fallite"],
+        "dimensioni_fallite": enrich_counter["dimensioni_fallite"],
+        "letti_da_ufficiale": letti_da_ufficiale,
+        "errori": errori,
         "dry_run": dry_run,
         "elapsed_s": round(elapsed, 1),
+        # §4: la spesa del passo e la copertura (§1). La riga di spesa si
+        # scrive solo fuori dal dry-run: dal Mac nessuna scrittura (§0).
+        "costo_usd": spesa.usd,
+        "spesa": spesa.come_dizionario(),
+        "copertura": copertura,
     }
+    if not dry_run:
+        _registra_spesa(spesa, copertura, elapsed, errori)
     logger.info("[enrich] === DONE | {} ===", counters)
     return counters

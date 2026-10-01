@@ -312,23 +312,77 @@ async def _resolve_slug_collision(slug: str, bando_id: int, max_attempts: int = 
 # Reachability check
 # ---------------------------------------------------------------------------
 
-async def _reachability_check(url: str, timeout_s: float = 5.0) -> bool:
-    """HEAD request: True se status < 400. Fallback a GET su 405/403."""
+async def _reachability_check(
+    url: str,
+    timeout_s: float = 5.0,
+    *,
+    pubblico: Any = None,
+    transport: Any = None,
+) -> bool:
+    """HEAD request: True se status < 400. Fallback a GET su 405/403.
+
+    Il `link_candidatura` lo sceglie il modello (contratto `bandi-giro-3`
+    §19.6): l'URL di partenza e ogni `Location` dei redirect passano dalla
+    guardia sugli indirizzi (`http.indirizzo_pubblico_async`) PRIMA della
+    richiesta, e i redirect si seguono a mano. Un host interno vale «non
+    raggiungibile» (il link si declassa a `missing`). `pubblico` (un DNS finto)
+    e `transport` (una rete finta) sono per i test.
+    """
     import httpx
 
     if not url or not url.startswith(("http://", "https://")):
         return False
     try:
-        async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=False,
+                                     transport=transport) as client:
             try:
-                r = await client.head(url)
-                if r.status_code in (405, 403):
-                    r = await client.get(url)
-                return r.status_code < 400
+                r = await _richiesta_guardata(client, "HEAD", url, pubblico)
+                if r is not None and r.status_code in (405, 403):
+                    r = await _richiesta_guardata(client, "GET", url, pubblico)
+                return r is not None and r.status_code < 400
             except Exception:
                 return False
     except Exception:
         return False
+
+
+#: Salti massimi dei redirect seguiti a mano (quelli di httpx per difetto).
+MAX_REDIRECT_LINK = 20
+
+
+async def _indirizzo_ammesso(url: str, pubblico: Any = None) -> bool:
+    """La guardia sugli indirizzi interni (§18.6). Nel dubbio no."""
+    try:
+        if pubblico is not None:
+            return bool(await pubblico(url))
+        from . import http as http_mod
+        return bool(await http_mod.indirizzo_pubblico_async(url))
+    except Exception as e:
+        logger.debug("[seo] guardia sugli indirizzi fallita: {}", type(e).__name__)
+        return False
+
+
+async def _richiesta_guardata(client: Any, metodo: str, url: str, pubblico: Any = None) -> Any:
+    """`metodo` su `url` con i redirect seguiti a mano, la guardia su ogni salto.
+
+    None se un salto porta a un host non pubblico (la richiesta non parte) o se
+    i salti superano `MAX_REDIRECT_LINK`. Il corpo non si legge: serve lo stato.
+    """
+    corrente = url
+    for _ in range(MAX_REDIRECT_LINK + 1):
+        if not await _indirizzo_ammesso(corrente, pubblico):
+            logger.info("[seo] link_candidatura: host non pubblico, nessuna richiesta")
+            return None
+        risposta = await client.send(client.build_request(metodo, corrente), stream=True)
+        try:
+            prossima = risposta.next_request
+        finally:
+            await risposta.aclose()
+        if prossima is None:
+            return risposta
+        metodo = prossima.method
+        corrente = str(prossima.url)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -905,6 +959,7 @@ def _build_seo_prompt(input_ctx: dict[str, Any], markdown: str) -> str:
     # regola 16 del system prompt (mai affermare lo stato corrente in prosa).
     tipo_link = input_ctx.get("tipo_link") or "(non specificato)"
     link_bando = input_ctx.get("link_bando") or "(nessun link disponibile)"
+    novita = blocco_novita(input_ctx.get("novita"))
 
     return f"""Genera la scheda editoriale del seguente bando.
 
@@ -933,7 +988,7 @@ CLASSIFICAZIONE (già fatta dall'enricher v7):
 RAW_DATA (metadata scraper, JSONB):
 {raw_data_str or "(vuoto)"}
 
-== MARKDOWN PAGINA UFFICIALE (Firecrawl) ==
+{novita}== MARKDOWN PAGINA UFFICIALE (Firecrawl) ==
 
 {md_block}
 
@@ -947,6 +1002,47 @@ RAW_DATA (metadata scraper, JSONB):
 6. Chi può partecipare, in quale forma e con quali requisiti: solo ciò che si legge nel markdown o nella classificazione (regola 18). Se la fonte tace, il testo tace.
 
 Chiama il tool save_seo_bando con il payload completo."""
+
+
+#: Quante novita' e quanti caratteri per citazione entrano nel prompt.
+MAX_NOVITA = 10
+MAX_CITAZIONE_NOVITA = 400
+
+
+def blocco_novita(novita: Any) -> str:
+    """Il blocco «novita' pubblicate dall'ente» del prompt (giro 3, §6). Puro.
+
+    Lo usa la riscrittura di una scheda gia' pubblicata dopo un evento (faq,
+    graduatoria, esito, rettifica di contenuto o allegati, o una data che la
+    sostituzione senza modello non ha saputo riallineare). Senza novita' il
+    prompt resta identico a quello di sempre: stringa vuota. L'URL della prova
+    entra come testo, non come link: il gate dei link resta quello del payload.
+    """
+    if not isinstance(novita, (list, tuple)) or not novita:
+        return ""
+    righe: list[str] = []
+    for voce in list(novita)[:MAX_NOVITA]:
+        if not isinstance(voce, Mapping):
+            continue
+        tipo = str(voce.get("tipo") or "aggiornamento")
+        campo = voce.get("campo")
+        etichetta = f"{tipo} ({campo})" if campo else tipo
+        citazione = _truncate(str(voce.get("citazione") or "").strip(), MAX_CITAZIONE_NOVITA)
+        fonte = str(voce.get("url_prova") or "").strip()
+        riga = f"- {etichetta}: «{citazione}»" if citazione else f"- {etichetta}"
+        if fonte:
+            riga += f" (pagina: {fonte})"
+        righe.append(riga)
+    if not righe:
+        return ""
+    return (
+        "== NOVITÀ PUBBLICATE DALL'ENTE (da integrare nella scheda) ==\n\n"
+        + "\n".join(righe)
+        + "\n\nLa scheda è già pubblicata: riscrivi il contenuto integrando queste novità "
+        "dove servono (date nuove, FAQ, graduatoria, esiti, documenti), senza togliere "
+        "informazioni ancora valide e senza inventare dettagli che le citazioni non dicono. "
+        "Vale la regola 16: mai lo stato del bando in prosa.\n\n"
+    )
 
 
 # ---------------------------------------------------------------------------

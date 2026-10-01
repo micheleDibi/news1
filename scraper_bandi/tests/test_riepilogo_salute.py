@@ -105,7 +105,11 @@ class TestSchema(unittest.TestCase):
             "discover": "ingresso", "scrape": "lettura", "preprocess": "estrazione",
             "enrich": "arricchimento", "resolver": "ricerca_fonti", "seo": "redazione",
             "monitor": "controllo_pagine", "ricontrolli": "ricontrolli",
-            "verifica_stato": "verifica_stato"})
+            "verifica_stato": "verifica_stato",
+            # giro 3 (§2)
+            "domini": "elenco_enti", "resolver_precoce": "ricerca_fonti_precoce",
+            "verifica_stato_ingresso": "verifica_ingresso", "link_verifica": "verifica_link",
+            "rielaborazione": "rielaborazione", "gemelli": "doppioni"})
 
     def test_solo_stdlib(self):
         albero = ast.parse((APP / "riepilogo_salute.py").read_text(encoding="utf-8"))
@@ -193,6 +197,30 @@ class TestSegnali(unittest.TestCase):
             telemetria.Voce(c, "allarme", "x", 1) for c in telemetria.CODICI_SALUTE
             if c != "non_misurato"))
         self.assertLessEqual(len(rs.riepilogo_pannello(molte, _misure(), ADESSO)["segnali"]), 40)
+
+
+class TestCoperturaNelRiepilogo(unittest.TestCase):
+    """Giro 3 (§1): `copertura_incompleta` arriva al pannello con un testo neutro."""
+
+    def test_copertura_incompleta_neutra_e_valida(self):
+        misure = _misure(ultime_pipeline=[
+            _riga(150 - i, "06:00", 6 * i + 0.5, contatori={"ricontrolli": {"copertura": {
+                "candidati": 900, "fatti": 400, "rimasti": 500, "motivo_rimasti": "tempo"}}})
+            for i in range(4)])
+        r = _riepilogo(misure=misure)
+        per_codice = {s["codice"]: s for s in r["segnali"]}
+        segnale = per_codice["copertura_incompleta:ricontrolli"]
+        self.assertEqual((segnale["livello"], segnale["misura"]), ("allarme", 500))
+        self.assertEqual(segnale["testo"], "Un passo del giro lascia fuori 500 bandi da quattro giri di fila.")
+        self.assertEqual(rs.valida_v1(r), [])
+
+    def test_ogni_codice_del_giro_3_passa_la_validazione(self):
+        codici = [c for c in telemetria.CODICI_SALUTE
+                  if c.startswith(("copertura_incompleta:", "configurazione:"))]
+        salute = telemetria.Salute(voci=tuple(telemetria.Voce(c, "allarme", "x", 3) for c in codici))
+        r = rs.riepilogo_pannello(salute, _misure(), ADESSO)
+        self.assertEqual(rs.valida_v1(r), [])
+        self.assertEqual({s["codice"] for s in r["segnali"]}, set(codici))
 
 
 class TestNienteCheNonSiaNeutro(unittest.TestCase):

@@ -170,8 +170,25 @@ def select_fonti_ready() -> list[dict[str, Any]]:
     return rows
 
 
-def select_bandi_scraped(limit: int | None = None) -> list[dict[str, Any]]:
+#: Le colonne che il preprocess legge sempre (giro 3, §8: piu' quelle della
+#: fonte ufficiale, `COLONNE_SEO_RESOLVER`, quando lo schema le espone).
+COLONNE_PREPROCESS: tuple[str, ...] = (
+    "id", "fonte_id", "titolo_raw", "descrizione_raw", "link_bando", "raw_data", "tipo_link",
+)
+#: Le colonne che l'enrich legge sempre (stesso discorso).
+COLONNE_ENRICH: tuple[str, ...] = COLONNE_PREPROCESS + (
+    "stato_bando", "data_pubblicazione", "data_apertura", "data_scadenza",
+)
+
+
+def select_bandi_scraped(
+    limit: int | None = None, *, strumento: Any | None = None,
+) -> list[dict[str, Any]]:
     """SELECT bandi pronti per pre-processing (stato_processing='scraped').
+
+    Giro 3 (§8): legge anche `fonte_ufficiale_url` e `fonte_ufficiale_stato`
+    (se la migrazione 01 c'e'), cosi' il preprocess legge la pagina dell'ente
+    trovata dal resolver precoce invece della scheda dell'aggregatore.
 
     Supabase REST API ha un default `max_rows=1000` per response. Per
     superarlo, paginariamo via `range(offset, offset+page_size-1)`
@@ -180,6 +197,8 @@ def select_bandi_scraped(limit: int | None = None) -> list[dict[str, Any]]:
     Se `limit` e' impostato, ci fermiamo quando lo raggiungiamo.
     """
     sb = get_supabase()
+    colonne = _colonne_con_opzionali(
+        "bando", COLONNE_PREPROCESS, COLONNE_SEO_RESOLVER, _controllo(strumento))
     PAGE = 1000  # supabase default cap
     all_rows: list[dict[str, Any]] = []
     offset = 0
@@ -194,7 +213,7 @@ def select_bandi_scraped(limit: int | None = None) -> list[dict[str, Any]]:
         try:
             res = (
                 sb.table("bando")
-                .select("id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, tipo_link")
+                .select(colonne)
                 .eq("stato_processing", "scraped")
                 .order("id")
                 .range(offset, offset + page_size - 1)
@@ -443,6 +462,8 @@ def upsert_bandi(records: list[dict[str, Any]]) -> dict[str, int]:
 def select_bandi_to_enrich(
     limit: int | None = None,
     include_enriched: bool = False,
+    *,
+    strumento: Any | None = None,
 ) -> list[dict[str, Any]]:
     """SELECT bandi candidati al enrichment.
 
@@ -452,8 +473,11 @@ def select_bandi_to_enrich(
     idempotente — la fase B sostituira' FK + junction + date eventualmente
     aggiornate).
     Paginato 1000 alla volta per superare il cap default Supabase.
+    Giro 3 (§8): legge anche le colonne della fonte ufficiale, se ci sono.
     """
     sb = get_supabase()
+    colonne = _colonne_con_opzionali(
+        "bando", COLONNE_ENRICH, COLONNE_SEO_RESOLVER, _controllo(strumento))
     PAGE = 1000
     all_rows: list[dict[str, Any]] = []
     offset = 0
@@ -479,11 +503,7 @@ def select_bandi_to_enrich(
         try:
             res = (
                 sb.table("bando")
-                .select(
-                    "id, fonte_id, titolo_raw, descrizione_raw, link_bando, raw_data, "
-                    "tipo_link, stato_bando, "
-                    "data_pubblicazione, data_apertura, data_scadenza"
-                )
+                .select(colonne)
                 .in_("stato_processing", stato_processing_values)
                 .or_(or_clause)
                 .order("id")
@@ -521,9 +541,25 @@ _CATALOGO_TABLES = {
 }
 
 
-@lru_cache(maxsize=1)
+#: Il catalogo letto per intero (§19.4): solo uno senza tabelle fallite resta
+#: in memoria per il processo. `azzera_catalogo` lo dimentica.
+_CATALOGO_LETTO: dict[str, list[dict[str, Any]]] | None = None
+
+
+def azzera_catalogo() -> None:
+    """Dimentica il catalogo in memoria (test, o dopo una modifica ai cataloghi)."""
+    global _CATALOGO_LETTO
+    _CATALOGO_LETTO = None
+
+
 def load_catalogo() -> dict[str, list[dict[str, Any]]]:
     """Carica tutte le 7 tabelle catalogo. Cache singleton.
+
+    Giro 3, §19.4: un catalogo con una tabella fallita **non** si mette in
+    cache. Con `lru_cache` l'errore di un momento restava fino al riavvio del
+    sender, e la rielaborazione marcava i bandi senza averli classificati. La
+    lettura parziale si restituisce lo stesso (la tabella fallita vale `[]`, e
+    l'enrich ne fa una dimensione fallita); la chiamata dopo riprova.
 
     Schema:
       tipologie:    {id, nome}
@@ -536,8 +572,12 @@ def load_catalogo() -> dict[str, list[dict[str, Any]]]:
 
     Se una tabella non esiste o e' vuota, ritorna [].
     """
+    global _CATALOGO_LETTO
+    if _CATALOGO_LETTO is not None:
+        return _CATALOGO_LETTO
     sb = get_supabase()
     catalogo: dict[str, list[dict[str, Any]]] = {}
+    fallite: list[str] = []
     for key, (table, columns) in _CATALOGO_TABLES.items():
         try:
             res = sb.table(table).select(columns).order("id").execute()
@@ -547,6 +587,12 @@ def load_catalogo() -> dict[str, list[dict[str, Any]]]:
         except Exception as e:
             logger.warning("[db] catalogo `{}` lookup fallito: {}", table, e)
             catalogo[key] = []
+            fallite.append(table)
+    if not fallite:
+        _CATALOGO_LETTO = catalogo
+    else:
+        logger.warning("[db] catalogo incompleto ({}): non resta in memoria, si riprova",
+                       ", ".join(fallite))
     return catalogo
 
 
@@ -1344,7 +1390,17 @@ COLONNE_RESOLVER: tuple[str, ...] = (
     "id", "titolo", "titolo_raw", "link_bando", "ente_erogatore", "area_geografica",
     "data_scadenza", "data_apertura", "importo_totale_eur", "stato_processing",
     "stato_bando", "fonte_id", "raw_data", "contenuto", "allegati",
+    # Giro 3 (§7): lo stato della fonte PRIMA del giro. Una riga gia'
+    # `trovata` (`--forza`, `--id`) non si tocca nelle colonne del monitor.
+    "fonte_ufficiale_stato",
 )
+
+#: I modi della selezione del resolver (§5; `precoce` dal giro 3, §7). Un modo
+#: fuori elenco e' un errore di chi chiama, non un «nuovi» implicito.
+MODI_RESOLVER: tuple[str, ...] = ("nuovi", "backlog", "ricontrolli", "precoce")
+#: Gli stati che escono dai ricontrolli (giro 3, §7): un bando chiuso o
+#: revocato non ha piu' bisogno di una fonte.
+STATI_FUORI_RICONTROLLI: tuple[str, ...] = ("chiuso", "revocato")
 
 
 def _colonne_disponibili(tabella: str, desiderate: Sequence[str], strumento: Any) -> str:
@@ -1475,8 +1531,10 @@ def select_bandi_da_risolvere(
     """I bandi candidati al resolver, secondo la selezione di §5.
 
     `modo`: `nuovi` (enriched senza fonte), `backlog` (pubblicati senza fonte),
-    `ricontrolli` (`in_verifica`/`non_trovata` con `prossimo_controllo_at`
-    scaduto — e li ricontrolla **solo** il resolver).
+    `ricontrolli` (`in_verifica`/`non_trovata`, pubblicati o `enriched`, non
+    chiusi ne' revocati: tutti a ogni giro, giro 3 §7), `precoce` (`scraped` e
+    `processed` senza fonte, giro 3 §7: il resto del filtro lo fa il
+    chiamante). Un modo fuori da `MODI_RESOLVER` solleva `ValueError`.
 
     `forza` toglie il filtro «senza fonte»: e' l'unico modo di rifare una riga
     gia' `trovata`, e per questo si chiede a mano.
@@ -1488,6 +1546,9 @@ def select_bandi_da_risolvere(
     PostgREST costringerebbe a un embed che la RLS di `bando_controllo` non
     concede. La selezione per data la fa il chiamante, su `select_controlli`.
     """
+    if modo not in MODI_RESOLVER:
+        # Prima del `try`: un modo sbagliato non e' «nessun candidato».
+        raise ValueError(f"modo del resolver sconosciuto: {modo!r}")
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste("bando"):
         return []
@@ -1523,6 +1584,9 @@ def _filtra_selezione(
     forza: bool,
     fonti_oe: Sequence[int],
 ) -> Any:
+    if modo not in MODI_RESOLVER:
+        # Un modo sconosciuto non e' un «nuovi» implicito (revisione #143).
+        raise ValueError(f"modo del resolver sconosciuto: {modo!r}")
     ha_stato = strumento.ha("bando", "fonte_ufficiale_stato")
     ha_pubblicato = strumento.ha("bando", "pubblicato")
     senza_fonte = ha_stato and not forza
@@ -1552,6 +1616,18 @@ def _filtra_selezione(
         query = (query.or_("pubblicato.eq.true,stato_processing.eq.enriched")
                  if ha_pubblicato
                  else query.in_("stato_processing", ["completed", "enriched"]))
+        # Giro 3 (§7): fuori i chiusi e i revocati (611 su 1 571, misura del
+        # 01/10). `not.in` esclude anche i NULL: misurati 0 fra i candidati.
+        query = query.not_.in_("stato_bando", list(STATI_FUORI_RICONTROLLI))
+    elif modo == "precoce":
+        # Giro 3 (§7): i bandi appena entrati, prima di preprocess ed enrich.
+        # I `processed` chiusi o revocati, e cio' che `_auto_reject` scarta,
+        # li toglie il chiamante: due `or` nella stessa query non si possono
+        # combinare con certezza in PostgREST, e uno `scraped` ha spesso lo
+        # stato ancora vuoto, che un `not.in` escluderebbe.
+        query = query.in_("stato_processing", ["scraped", "processed"])
+        if senza_fonte:
+            query = query.or_(SENZA_FONTE)
     else:                                              # nuovi
         query = query.eq("stato_processing", "enriched")
         if senza_fonte:
@@ -1618,7 +1694,7 @@ def select_controlli(
 
 def select_pubblicati_per_gemelli(
     *,
-    limit: int = 5000,
+    limit: int | None = None,
     con_calendario: bool = False,
     client: Any | None = None,
     strumento: Any | None = None,
@@ -1632,6 +1708,9 @@ def select_pubblicati_per_gemelli(
     aggiunge `bando_master_id`, per lasciare fuori le righe gia' fuse, e il
     `raw_data` delle sole righe senza `link_bando`: e' li' che il criterio
     `riga_calendario` legge la riga del calendario, e sono poche (86 al 30/09).
+
+    `limit=None` (il default dal giro 3, §1 e §11: niente lotti) legge tutti i
+    pubblicati; un numero resta un limite per chi lo chiede a mano.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste("bando"):
@@ -1658,7 +1737,7 @@ def select_pubblicati_per_gemelli(
         # esatte sui primi 1 000 pubblicati per id — meno di meta' del corpus —
         # e i doppioni con id alto erano invisibili per costruzione.
         righe = _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto),
-                        tetto=max(0, int(limit)))
+                        tetto=max(0, int(limit)) if limit is not None else None)
         if con_calendario and strumento.ha("bando", "raw_data"):
             senza_link = [r.get("id") for r in righe if not r.get("link_bando")]
             grezzi = {
@@ -1767,6 +1846,39 @@ def select_link_da_verificare(
         return []
 
 
+#: Le colonne di `bando` che servono a scegliere la pagina di riferimento di
+#: un link (giro 3, §10: `dominio_ufficiale.scegli_fonte` o `link_bando`).
+COLONNE_RIFERIMENTO: tuple[str, ...] = (
+    "id", "link_bando", "fonte_ufficiale_url", "fonte_ufficiale_stato",
+)
+
+
+def select_riferimenti_bandi(
+    bando_ids: Sequence[Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[Any, dict[str, Any]]:
+    """`{bando_id: riga}` con `COLONNE_RIFERIMENTO`, per la quarta prova di
+    `link-verifica` (giro 3, §10). A blocchi e a pagine (`_per_id`); `{}` se
+    `bando` non c'e' o la lettura fallisce: senza riferimento la prova
+    semplicemente non si fa."""
+    strumento = _controllo(strumento)
+    ids = list(dict.fromkeys(i for i in bando_ids if i is not None))
+    if not ids or not strumento.tabella_esiste("bando"):
+        return {}
+    colonne = _colonne_disponibili("bando", COLONNE_RIFERIMENTO, strumento)
+    try:
+        righe = _per_id(
+            lambda blocco: _client(client).table("bando").select(colonne).in_("id", blocco),
+            ids,
+        )
+    except Exception as e:
+        logger.warning("[db] select_riferimenti_bandi fallita: {}", e)
+        return {}
+    return {r.get("id"): dict(r) for r in righe}
+
+
 def select_fonti_per_domini(
     *, client: Any | None = None, strumento: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -1799,6 +1911,60 @@ def aggiorna_fonte_ufficiale(
             f"il resolver scrive solo le colonne fonte_ufficiale_*: {estranee}"
         )
     return _controllo(strumento).aggiorna("bando", bando_id, dati)
+
+
+#: La coda delle riscritture del monitor in `impronte_sezioni` (giro 3, §6):
+#: `{novita: [...], tentativi: n, dal: iso}`. Stessa chiave e stessa forma di
+#: `monitoraggio.CHIAVE_RISCRITTURA`, che la svuota.
+CHIAVE_CODA_RISCRITTURA = "__riscrittura__"
+
+
+def accoda_riscrittura(
+    bando_id: Any,
+    novita: Sequence[Mapping[str, Any]],
+    *,
+    adesso: Any = None,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """Aggiunge `novita` alla coda delle riscritture che il monitor riprende.
+
+    La rielaborazione la usa quando una data e' in colonna ma la prosa non si
+    e' riallineata e nemmeno `riscrivi_scheda` l'ha riscritta (P2 di #160).
+    `impronte_sezioni` e' la memoria del monitor (le impronte delle sezioni,
+    `__link__`, `__versione__`): si legge la riga, si tocca solo la chiave
+    della coda e si riscrive il resto com'era. **Se la lettura fallisce non si
+    scrive**: una colonna riscritta con la sola coda cancellerebbe le impronte
+    e il monitor vedrebbe cambiare tutte le sezioni. Le novita' si uniscono a
+    quelle gia' in coda senza doppioni (`rigenera.unisci_novita`); i tentativi
+    restano quelli del monitor. `prossimo_controllo_at` va ad adesso: anche un
+    chiuso torna al giro dopo, come fa il monitor con la sua coda.
+    """
+    from datetime import datetime, timezone
+    from .rigenera import unisci_novita
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_CONTROLLO) or not strumento.ha(
+            TABELLA_CONTROLLO, "impronte_sezioni"):
+        return {"scritto": False, "motivo": "colonne_assenti"}
+    try:
+        righe = (_client(client).table(TABELLA_CONTROLLO).select("bando_id,impronte_sezioni")
+                 .eq("bando_id", bando_id).execute().data or [])
+    except Exception as e:
+        logger.warning("[db] coda delle riscritture del bando {} non letta: {}", bando_id, e)
+        return {"scritto": False, "motivo": str(e)}
+    sezioni_lette = righe[0].get("impronte_sezioni") if righe else None
+    sezioni = dict(sezioni_lette) if isinstance(sezioni_lette, Mapping) else {}
+    coda = sezioni.get(CHIAVE_CODA_RISCRITTURA)
+    coda = dict(coda) if isinstance(coda, Mapping) else {}
+    momento = adesso if isinstance(adesso, datetime_cls) else datetime.now(tz=timezone.utc)
+    sezioni[CHIAVE_CODA_RISCRITTURA] = {
+        "novita": unisci_novita(coda.get("novita") or (), novita),
+        "tentativi": int(coda.get("tentativi") or 0),
+        "dal": coda.get("dal") or momento.isoformat(),
+    }
+    return aggiorna_controllo(
+        bando_id, {"impronte_sezioni": sezioni, "prossimo_controllo_at": momento.isoformat()},
+        client=client, strumento=strumento)
 
 
 def aggiorna_controllo(
@@ -2078,6 +2244,12 @@ RPC_CAPACITA_EVENTI = "bando_capacita_eventi"
 CAPACITA_TRADUZIONE = "traduce_stato_proposto"
 CAPACITA_STATI_CINQUE = "stati_cinque"
 
+#: Il marcatore della migrazione 14 (contratto `bandi-giro-3` §14 punto 5):
+#: le transizioni di sospensione e revoca sono ammesse dal trigger. Lo legge
+#: `capacita_sospensioni`; senza, il monitor tiene in ombra sospensione,
+#: revoca e annullamento della revoca.
+RPC_CAPACITA_SOSPENSIONI = "bando_capacita_sospensioni"
+
 #: Ramo terminale dei `processed` chiusi che nessuno lavorera' piu' (L8).
 #: Lo ammette il CHECK riscritto dalla migrazione 01: prima di quella un
 #: UPDATE con questo valore risponde 23514 e va evitato, non tentato.
@@ -2247,30 +2419,6 @@ COLONNE_MONITOR: tuple[str, ...] = (
     "data_scadenza", "ora_scadenza", "data_apertura_verificata",
 )
 
-#: Quante righe di `bando` la coda legge al massimo in un giro. La selezione
-#: vera (`monitoraggio.seleziona`) ordina per priorita' e taglia al tetto del
-#: giro, ma per ordinare bisogna prima leggere, e il filtro «ricontrollo
-#: scaduto» sta su `bando_controllo`: incrociarlo in una sola richiesta
-#: PostgREST vorrebbe un embed che la RLS di quella tabella non concede.
-#:
-#: Il numero non e' scelto a occhio: il piano misura **2 104 pubblicati** (di
-#: cui 1 683 con fonte ufficiale trovata, gli unici che entrano nel fetch).
-#: 5 000 e' quindi poco piu' del doppio del corpus di oggi — margine per la
-#: crescita, ma non tanto da nascondere il giorno in cui il corpus lo supera.
-#: Quel giorno la selezione per priorita' ordinerebbe una FETTA del corpus
-#: senza che nessuno se ne accorga: per questo il superamento non e' solo una
-#: riga di log ma un allarme del giro (`monitoraggio.FonteDatiSupabase`
-#: lo raccoglie e `run` lo porta nel riepilogo, cioe' in `pipeline_run`).
-TETTO_CODA_MONITOR = 5000
-
-#: Il testo dell'allarme, qui e non nel chiamante: chi legge `pipeline_run` e
-#: chi legge i log devono trovare la stessa frase.
-ALLARME_CODA_TRONCATA = (
-    f"coda del monitor troncata a {TETTO_CODA_MONITOR} righe: la selezione "
-    "per priorita' non vede il resto del corpus"
-)
-
-
 def select_bandi_da_monitorare(
     *,
     limit: int | None = None,
@@ -2284,6 +2432,12 @@ def select_bandi_da_monitorare(
     ufficiale `trovata` (senza, l'unico URL che abbiamo e' l'aggregatore, e
     quei bandi li ripassa il resolver). La scadenza del ricontrollo no: sta su
     `bando_controllo`, e la applica il chiamante dopo la `select_controlli`.
+
+    Si legge **tutto** (contratto `bandi-giro-3` §1 e §5: niente lotti). Il
+    tetto di 5 000 righe e il suo allarme di «coda troncata» non ci sono piu':
+    la selezione per priorita' deve ordinare il corpus intero, e l'unico
+    freno del monitor e' il tempo, con rotazione. `limit` resta solo per chi
+    lancia a mano un controllo su poche righe.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste("bando"):
@@ -2299,21 +2453,16 @@ def select_bandi_da_monitorare(
         # righe (trappola nota), e senza `id` due pagine si sovrappongono.
         return query.order("id")
 
-    tetto = int(limit) if limit is not None else TETTO_CODA_MONITOR
+    tetto = max(0, int(limit)) if limit is not None else None
     try:
         # Si scorre invece di limitare: `.limit(5000)` tornava 1 000 righe
         # (`max-rows`), quindi la coda vedeva meno di meta' dei pubblicati con
-        # fonte trovata e l'allarme qui sotto — tarato su 5 000 — non poteva
-        # scattare mai. Il troncamento era silenzioso proprio dove era stato
-        # scritto un allarme per non lasciarlo silenzioso.
-        righe = _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto),
-                        tetto=max(0, tetto))
+        # fonte trovata senza che nessuno lo dicesse.
+        return _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto),
+                       tetto=tetto)
     except Exception as e:
         logger.warning("[db] select_bandi_da_monitorare fallita: {}", e)
         return []
-    if limit is None and len(righe) >= TETTO_CODA_MONITOR:
-        logger.warning("[ALLARME] [db] {}", ALLARME_CODA_TRONCATA)
-    return righe
 
 
 #: Le voci di `pipeline_run.contatori` che alimentano i tetti giornalieri di
@@ -2328,34 +2477,46 @@ def consumo_oggi(
     adesso: Any = None,
     client: Any | None = None,
     strumento: Any | None = None,
-) -> dict[str, float]:
-    """Quanto hanno gia' consumato oggi i giri precedenti (§6.2).
+) -> dict[str, float] | None:
+    """Quanto hanno gia' consumato oggi e nel mese i giri precedenti (§6.2).
 
     Senza questa somma, con quattro giri al giorno il tetto giornaliero
     varrebbe quattro volte tanto. `{}` se `pipeline_run` non c'e' ancora: il
     tetto resta quello del singolo giro, che e' la degradazione giusta.
+    **None se la lettura fallisce** (giro 3, §18.5): un consumo ignoto non e'
+    «niente speso». La manutenzione lo tratta come tetto raggiunto
+    (`bilancio.verifica_con_consumo`), l'ingresso lo ignora.
+
+    Restituisce le `VOCI_CONSUMO` della giornata e, dal giro 3 (contratto
+    `bandi-giro-3` §4 e §16), `crediti_mese` e `usd_mese` del mese: il tetto
+    mensile si applica davvero, e per farlo basta **una** lettura, dalla
+    mezzanotte del primo del mese di Roma, scorsa fino in fondo, con le sole
+    voci estratte dal jsonb (le righe `pipeline` sono grandi). La giornata si
+    separa qui, sull'istante di `avviato_at`.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste(TABELLA_RUN):
         return {}
-    # La giornata e' quella del **calendario di Roma**, come ovunque nel
-    # package (`oggi_roma`). Con la data UTC i giri delle 00:00 italiane
-    # cadevano nel giorno precedente per un'ora (due in estate): il tetto
-    # giornaliero ripartiva da zero a mezzanotte di Londra, non di Roma, e
-    # nella finestra fra i due mezzanotti valeva il doppio. Si filtra
+    # La giornata e il mese sono quelli del **calendario di Roma**, come
+    # ovunque nel package (`oggi_roma`). Con la data UTC i giri delle 00:00
+    # italiane cadevano nel giorno precedente per un'ora (due in estate): il
+    # tetto giornaliero ripartiva da zero a mezzanotte di Londra, non di Roma,
+    # e nella finestra fra i due mezzanotti valeva il doppio. Si filtra
     # sull'ISTANTE di mezzanotte romana, non sulla sola data: `avviato_at` e'
     # un `timestamptz`, e una data nuda verrebbe letta come mezzanotte UTC.
-    from .stato_bando import adesso_roma
+    from .stato_bando import _istante, adesso_roma
     momento = adesso_roma(adesso if isinstance(adesso, datetime_cls) else None)
-    inizio = momento.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    inizio_giorno = momento.replace(hour=0, minute=0, second=0, microsecond=0)
+    inizio_mese = inizio_giorno.replace(day=1)
+    voci = ",".join(f"{voce}:contatori->>{voce}" for voce in VOCI_CONSUMO)
     try:
-        righe = list((
-            _client(client).table(TABELLA_RUN).select("id,step,contatori")
-            .gte("avviato_at", inizio).order("id").execute()
-        ).data or [])
+        righe = _scorri(lambda quanto, salto: _pagina(
+            _client(client).table(TABELLA_RUN).select(f"id,step,avviato_at,{voci}")
+            .gte("avviato_at", inizio_mese.isoformat()).order("id"),
+            quanto, salto))
     except Exception as e:
         logger.warning("[db] consumo_oggi fallita: {}", e)
-        return {}
+        return None
     # I lotti una tantum (`step='backfill:Lx'`) hanno tetti propri e non
     # consumano quelli di regime (bilancio, M19). Sommarli qui voleva dire che
     # un lotto lanciato a mano la mattina fermava il monitor di regime per il
@@ -2363,20 +2524,78 @@ def consumo_oggi(
     # «tetto giornaliero classificazioni raggiunto (201/30)». Resta fuori anche
     # la riga del giro (`step='pipeline'`), che risomma i crediti del resolver
     # gia' presenti nella sua riga: contata due volte (`bilancio.conta_nel_regime`).
+    # Lo stesso filtro vale per il mese.
     from .bilancio import conta_nel_regime
     somma = {voce: 0.0 for voce in VOCI_CONSUMO}
+    somma.update({VOCE_CREDITI_MESE: 0.0, VOCE_USD_MESE: 0.0})
     for riga in righe:
         if not conta_nel_regime(str(riga.get("step") or "")):
             continue
-        contatori = riga.get("contatori")
-        if not isinstance(contatori, Mapping):
+        valori = {voce: _voce_numerica(riga.get(voce)) for voce in VOCI_CONSUMO}
+        somma[VOCE_CREDITI_MESE] += valori["crediti"]
+        somma[VOCE_USD_MESE] += valori["usd"]
+        # Una riga con l'istante illeggibile conta nella giornata: per un
+        # tetto di spesa e' meglio fermarsi un giro prima che spendere due volte.
+        quando = _istante(riga.get("avviato_at"))
+        if quando is not None and quando < inizio_giorno:
             continue
         for voce in VOCI_CONSUMO:
-            try:
-                somma[voce] += float(contatori.get(voce) or 0)
-            except (TypeError, ValueError):
-                continue
+            somma[voce] += valori[voce]
     return somma
+
+
+#: Le due chiavi del mese che `consumo_oggi` aggiunge alle `VOCI_CONSUMO`
+#: della giornata (giro 3, §4: il tetto mensile si applica davvero).
+VOCE_CREDITI_MESE = "crediti_mese"
+VOCE_USD_MESE = "usd_mese"
+
+
+def _voce_numerica(valore: Any) -> float:
+    """Una voce di consumo estratta dal jsonb (`->>` la da' come testo). Un
+    valore assente o non numerico vale 0; un booleano non e' un numero."""
+    if valore is None or isinstance(valore, bool):
+        return 0.0
+    try:
+        return float(valore)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def consumo_passo_oggi(
+    step: str,
+    *,
+    adesso: Any = None,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, float] | None:
+    """`{crediti, usd}` delle righe di `step` dalla mezzanotte di Roma.
+
+    Serve ai passi `backfill:` il cui tetto vale sulla giornata e non sul
+    singolo lancio (la rielaborazione: 60 $ al giorno, revisione #146), e che
+    `consumo_oggi` lascia fuori di proposito. `{}` se `pipeline_run` non c'e'
+    (si parte da zero, come `consumo_oggi`); None se la lettura fallisce:
+    il chiamante decide, e per un tetto di spesa la scelta prudente e'
+    non partire.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_RUN):
+        return {}
+    from .stato_bando import adesso_roma
+    momento = adesso_roma(adesso if isinstance(adesso, datetime_cls) else None)
+    inizio_giorno = momento.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        righe = _scorri(lambda quanto, salto: _pagina(
+            _client(client).table(TABELLA_RUN)
+            .select("id,crediti:contatori->>crediti,usd:contatori->>usd")
+            .eq("step", step).gte("avviato_at", inizio_giorno.isoformat()).order("id"),
+            quanto, salto))
+    except Exception as e:
+        logger.warning("[db] consumo_passo_oggi({}) fallita: {}", step, e)
+        return None
+    return {
+        "crediti": sum(_voce_numerica(r.get("crediti")) for r in righe),
+        "usd": round(sum(_voce_numerica(r.get("usd")) for r in righe), 6),
+    }
 
 
 #: Tabella dei lock di esecuzione (`blocco.py`): la legge solo `salute`.
@@ -2669,13 +2888,14 @@ GIORNI_FERMI_IN_LAVORAZIONE = 7
 VISTA_PUBBLICA = "bando_pubblico"
 #: La lettura di prova di `vista_ms` (§19.6, codice `vista_lenta`): la query
 #: della Verifica 7 della 05 (in fondo alla 13, «Verifica a mano», punto 2),
-#: cioe' la prima pagina dei non chiusi. `link_bando`, `link_candidatura` e
-#: `allegati` passano da `bando_host_aggregatore()`, che legge
-#: `dominio_ufficiale`: sono le colonne che l'import completo di IndicePA puo'
-#: rallentare. `stato_da_verificare` (della 13) si chiede solo se la vista ce
-#: l'ha: senza, la lettura fallirebbe e la misura mancherebbe.
-COLONNE_VISTA_MS = ("id,slug,titolo,stato_effettivo,data_scadenza,link_bando,"
-                    "link_candidatura,allegati")
+#: cioe' la prima pagina dei non chiusi. `stato_da_verificare` (della 13) si
+#: chiede solo se la vista ce l'ha: senza, la lettura fallirebbe e la misura
+#: mancherebbe.
+#:
+#: Giro 3 (B30, contratto §10): niente `link_bando`, `link_candidatura` e
+#: `allegati`. La migrazione 07 li toglie dalla vista, e una misura che li
+#: chiede fallirebbe da quel giorno in poi (`vista_ms` None per sempre).
+COLONNE_VISTA_MS = "id,slug,titolo,stato_effettivo,data_scadenza"
 COLONNA_VISTA_MS_DA_VERIFICARE = "stato_da_verificare"
 STATI_VISTA_MS: tuple[str, ...] = ("aperto", "in apertura prossimamente")
 RIGHE_VISTA_MS = 20
@@ -2889,6 +3109,15 @@ def _misura_vista(
         return None, ruolo
     return round((time.monotonic() - inizio) * 1000, 1), ruolo
 
+#: Le chiavi di `state["steps"]` del giro, nell'ordine (contratto
+#: `bandi-giro-3` §2; `backend/app/bandi_pipeline.py`, che il test
+#: d'orchestrazione confronta con questo elenco).
+PASSI_DEL_GIRO: tuple[str, ...] = (
+    "discover", "scrape", "domini", "resolver_precoce", "preprocess", "enrich",
+    "resolver", "ricontrolli", "verifica_stato_ingresso", "seo", "link_verifica",
+    "rielaborazione", "monitor", "verifica_stato", "gemelli",
+)
+
 #: I contatori della riga `step='pipeline'` che salute e sorveglia giudicano,
 #: come percorsi dentro il jsonb. Chiavi misurate sul DB vivo il 30/09/2026
 #: (`docs/bandi-monitor/misure-giro-2-2026-10.md`, M6): le fonti tentate sono
@@ -2898,6 +3127,10 @@ def _misura_vista(
 #: contatori di sosta e fusione della SEO (`trattieni_e_fondi`) dalla
 #: revisione del 01/10, perche' la sorveglianza veda chi resta fuori dalla
 #: pubblicazione e perche'.
+#:
+#: Giro 3 (contratto §1 e §16): piu' la `copertura` di ciascuno dei 15 passi
+#: del giro (`PASSI_DEL_GIRO`), che ogni passo mette al primo livello del
+#: dizionario che restituisce e la riga del giro conserva.
 CONTATORI_PIPELINE: tuple[tuple[str, ...], ...] = (
     ("passi_non_ok",),
     ("riavvio_dopo_crash",),
@@ -2917,7 +3150,7 @@ CONTATORI_PIPELINE: tuple[tuple[str, ...], ...] = (
     ("seo", "trattenuti_senza_appiglio"),
     ("seo", "fusi_prima_della_pubblicazione"),
     ("seo", "fusioni_non_riuscite"),
-)
+) + tuple((passo, "copertura") for passo in PASSI_DEL_GIRO)
 #: Lo step delle righe dell'import di IndicePA (`fonte_ufficiale.STEP_DOMINI`).
 STEP_DOMINI = "domini"
 #: Quante righe dell'import legge `misure_salute`.
@@ -3316,8 +3549,9 @@ def select_enriched_da_leggere(
 
     Righe `enriched` non pubblicate: «aperto» senza `data_scadenza`, oppure
     schede OE con `status` '2'. Due letture unite per id invece di un `or=`
-    con un percorso JSON dentro. Il tetto (`VERIFICA_STATO_TETTO_INGRESSO`)
-    lo applica il passo. `[]` senza la tabella; un errore di rete si solleva.
+    con un percorso JSON dentro. Si leggono tutti: dal giro 3 il passo non ha
+    un tetto di numero, solo il tempo (`VERIFICA_STATO_TETTO_S`) con rotazione.
+    `[]` senza la tabella; un errore di rete si solleva.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste("bando"):
@@ -3982,6 +4216,39 @@ def capacita_eventi(
     return esito
 
 
+def capacita_sospensioni(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> bool:
+    """Vero solo se la migrazione 14 e' applicata (marcatore
+    `bando_capacita_sospensioni()` → `true`), sullo stampo di `capacita_eventi`.
+
+    Nel dubbio falso: RPC assente, chiamata fallita, risposta che non sia il
+    booleano `true` letterale. PostgREST puo' incapsulare lo scalare in una
+    lista o in un oggetto con il nome della funzione: si guarda dentro, ma
+    vale solo `True`, mai `"true"` o `1`. Un falso tiene in ombra un evento
+    (si applica al giro dopo la migrazione); un vero sbagliato manderebbe
+    alla RPC transizioni che il trigger rifiuta (23514).
+    """
+    strumento = _controllo(strumento)
+    if not strumento.rpc_disponibile(RPC_CAPACITA_SOSPENSIONI):
+        logger.info("[db] RPC {} assente: migrazione 14 non applicata",
+                    RPC_CAPACITA_SOSPENSIONI)
+        return False
+    try:
+        risposta = _client(client).rpc(RPC_CAPACITA_SOSPENSIONI, {}).execute()
+    except Exception as e:
+        logger.warning("[db] {} fallita: {}", RPC_CAPACITA_SOSPENSIONI, e)
+        return False
+    dati = getattr(risposta, "data", None)
+    if isinstance(dati, list):
+        dati = dati[0] if len(dati) == 1 else None
+    if isinstance(dati, Mapping):
+        dati = dati.get(RPC_CAPACITA_SOSPENSIONI) if len(dati) == 1 else None
+    return dati is True
+
+
 def archivia_bando(
     bando_id: Any,
     *,
@@ -4007,3 +4274,274 @@ def archivia_bando(
         return _saltato("colonne_assenti", scritto=False)
     return strumento.aggiorna(
         "bando", bando_id, {"stato_processing": STATO_ARCHIVIATO})
+
+
+# ---------------------------------------------------------------------------
+# Rielaborazione dei pubblicati (giro 3, contratto `bandi-giro-3` §9)
+# ---------------------------------------------------------------------------
+#
+# Letture e scritture di `app/rielabora_fonte.py`. Nessuna di queste funzioni
+# scrive `stato_processing`, `stato_bando`, `slug`, `titolo` o una data: le
+# date passano da un evento (`registra_evento_rpc`), la prosa da `rigenera`.
+
+#: Il prefisso del marcatore su `bando_link.impronta_contenuto` della riga
+#: della fonte: `rielab:v1:<YYYY-MM-DD>:<sha256 del testo letto>`.
+MARCATORE_RIELABORAZIONE = "rielab:v1:"
+#: Un bando rimasto incompleto (§18.3) porta `rielab:v1:incompleto:<n>`, con
+#: `n` i tentativi falliti: resta in coda, e al terzo si marca come fatto con
+#: il motivo (decisione del lead sui P2 di #160).
+MARCATORE_INCOMPLETO = MARCATORE_RIELABORAZIONE + "incompleto:"
+
+
+def da_rielaborare(marcatore: Any) -> bool:
+    """Il bando e' ancora da rielaborare? Nessun marcatore, uno d'altro tipo,
+    o un `rielab:v1:incompleto:<n>`."""
+    testo = str(marcatore or "")
+    return not testo.startswith(MARCATORE_RIELABORAZIONE) or testo.startswith(MARCATORE_INCOMPLETO)
+
+#: Le colonne di `bando` che la rielaborazione legge: quelle che servono a
+#: preprocess ed enrich, le date con la loro verifica, lo stato, la prosa, le
+#: tre FK e la fonte ufficiale.
+COLONNE_RIELABORAZIONE: tuple[str, ...] = (
+    "id", "slug", "titolo", "titolo_raw", "descrizione_raw", "link_bando", "raw_data",
+    "tipo_link", "fonte_id", "contenuto", "descrizione_breve", "stato_bando",
+    "data_pubblicazione", "data_apertura", "data_scadenza",
+    "data_apertura_verificata", "data_scadenza_verificata",
+    "tipologia_bando_id", "modalita_erogazione_id", "programma_id",
+    "fonte_ufficiale_url", "fonte_ufficiale_stato", "fonte_ufficiale_link_id",
+)
+
+#: Le tre FK che la rielaborazione puo' aggiornare (UPDATE delle sole tre).
+COLONNE_FK_CLASSIFICAZIONE: tuple[str, ...] = (
+    "tipologia_bando_id", "modalita_erogazione_id", "programma_id",
+)
+
+
+def select_da_rielaborare(
+    *,
+    ids: Sequence[Any] | None = None,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I pubblicati da rielaborare (§9), in ordine di id.
+
+    Pubblicati, non fusi, con fonte `trovata` e la riga della fonte in
+    `bando_link` (`fonte_ufficiale_link_id`) il cui `impronta_contenuto` e'
+    NULL, non e' un marcatore `rielab:v1:` o e' quello di un tentativo rimasto
+    incompleto (`rielab:v1:incompleto:<n>`). Il marcatore si legge per id dalla
+    riga della fonte e si mette in `_marcatore`. Con `ids` (lancio a mano) il
+    marcatore non filtra. `[]` se lo schema non ha ancora le colonne o se la
+    lettura fallisce (con un log): senza candidati il passo non fa niente.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando") or not strumento.ha("bando", "fonte_ufficiale_link_id"):
+        return []
+    colonne = _colonne_disponibili("bando", COLONNE_RIELABORAZIONE, strumento)
+
+    def _costruisci() -> Any:
+        query = _pubblicati(_client(client).table("bando").select(colonne), strumento)
+        query = query.eq("fonte_ufficiale_stato", "trovata").not_.is_(
+            "fonte_ufficiale_link_id", "null")
+        if strumento.ha("bando", "bando_master_id"):
+            query = query.is_("bando_master_id", "null")
+        if ids:
+            query = query.in_("id", list(ids))
+        return query.order("id")
+
+    try:
+        righe = _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto))
+        link_ids = [r.get("fonte_ufficiale_link_id") for r in righe]
+        marcatori = {
+            r.get("id"): r.get("impronta_contenuto") for r in _per_id(
+                lambda blocco: _client(client).table(TABELLA_LINK)
+                .select("id,impronta_contenuto").in_("id", blocco),
+                link_ids,
+            )
+        }
+    except Exception as e:
+        logger.warning("[db] select_da_rielaborare fallita: {}", e)
+        return []
+    for riga in righe:
+        riga["_marcatore"] = marcatori.get(riga.get("fonte_ufficiale_link_id"))
+    if ids:
+        return righe
+    return [r for r in righe if da_rielaborare(r.get("_marcatore"))]
+
+
+def select_junction(
+    bando_ids: Sequence[Any],
+    *,
+    client: Any | None = None,
+) -> dict[Any, dict[str, list[int]]]:
+    """`{bando_id: {dimensione: [id, ...]}}` per le quattro junction, a blocchi
+    di id e scorse a pagine (ordine `bando_id` piu' la FK: unico)."""
+    esito: dict[Any, dict[str, list[int]]] = {
+        i: {dimensione: [] for dimensione in _JUNCTION_TABLES} for i in bando_ids
+    }
+    for dimensione, (tabella, fk) in _JUNCTION_TABLES.items():
+        for blocco in _a_blocchi(list(bando_ids)):
+            righe = _scorri(lambda quanto, salto, _b=blocco, _t=tabella, _f=fk: _pagina(
+                _client(client).table(_t).select(f"bando_id,{_f}").in_("bando_id", _b)
+                .order("bando_id").order(_f), quanto, salto))
+            for riga in righe:
+                valore = riga.get(fk)
+                if valore is not None and riga.get("bando_id") in esito:
+                    esito[riga["bando_id"]][dimensione].append(int(valore))
+    for voce in esito.values():
+        for dimensione in voce:
+            voce[dimensione] = sorted(set(voce[dimensione]))
+    return esito
+
+
+def allinea_junction(
+    bando_id: Any,
+    dimensione: str,
+    ids: Sequence[Any],
+    *,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Porta una junction del bando agli `ids` (§9). Prima inserisce i nuovi,
+    poi toglie gli usciti: un errore a meta' lascia piu' voci, mai meno.
+
+    **Non svuota mai** una dimensione: con `ids` vuoti non si tocca niente
+    (una chiamata dell'enrich fallita o «nessuna voce» non sono una prova che
+    il bando non abbia regioni). Ritorna `{cambiato, prima, dopo, inseriti,
+    tolti}` oppure `{cambiato: False, errore}`: il chiamante registra prima e
+    dopo, cosi' si torna indietro con SQL.
+    """
+    if dimensione not in _JUNCTION_TABLES:
+        raise ValueError(f"dimensione sconosciuta: {dimensione!r}")
+    tabella, fk = _JUNCTION_TABLES[dimensione]
+    nuovi = sorted({int(i) for i in ids if i is not None})
+    if not nuovi:
+        return {"cambiato": False, "motivo": "nessuna voce: dimensione invariata"}
+    try:
+        prima = sorted({
+            int(r[fk]) for r in (_client(client).table(tabella).select(fk)
+                                 .eq("bando_id", bando_id).execute().data or [])
+            if r.get(fk) is not None
+        })
+    except Exception as e:
+        logger.warning("[db] lettura di {} per il bando {} fallita: {}", tabella, bando_id, e)
+        return {"cambiato": False, "errore": str(e)}
+    da_inserire = [i for i in nuovi if i not in prima]
+    da_togliere = [i for i in prima if i not in nuovi]
+    if not da_inserire and not da_togliere:
+        return {"cambiato": False, "prima": prima, "dopo": prima, "inseriti": [], "tolti": []}
+    inseriti: list[int] = []
+    try:
+        if da_inserire:
+            _client(client).table(tabella).insert(
+                [{"bando_id": bando_id, fk: i} for i in da_inserire]).execute()
+            inseriti = list(da_inserire)
+        if da_togliere:
+            (_client(client).table(tabella).delete()
+             .eq("bando_id", bando_id).in_(fk, da_togliere).execute())
+    except Exception as e:
+        logger.warning("[db] allineamento di {} per il bando {} fallito: {}", tabella, bando_id, e)
+        # A meta' (INSERT riuscito, DELETE fallito) il cambio c'e' stato: lo si
+        # restituisce com'e', cosi' il chiamante lo registra e lo si puo'
+        # togliere con SQL (revisione #146, P2).
+        if inseriti:
+            return {"cambiato": True, "parziale": True, "errore": str(e), "prima": prima,
+                    "dopo": sorted(set(prima) | set(inseriti)), "inseriti": inseriti, "tolti": []}
+        return {"cambiato": False, "errore": str(e), "prima": prima}
+    return {"cambiato": True, "prima": prima, "dopo": nuovi,
+            "inseriti": da_inserire, "tolti": da_togliere}
+
+
+def aggiorna_fk_bando(
+    bando_id: Any,
+    payload: Mapping[str, Any],
+    *,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """UPDATE delle sole tre FK di classificazione di un pubblicato (§9).
+    Qualunque altra chiave e' un errore di chi chiama."""
+    estranee = sorted(k for k in payload if k not in COLONNE_FK_CLASSIFICAZIONE)
+    if estranee:
+        raise PayloadBandoVietato(f"la rielaborazione scrive solo le tre FK: {estranee}")
+    if not payload:
+        return {"scritto": False, "motivo": "payload vuoto"}
+    return _controllo(strumento).aggiorna("bando", bando_id, dict(payload))
+
+
+#: L'unica colonna che `segna_cambiamento_pubblico` scrive (§20.1).
+COLONNE_CAMBIAMENTO_PUBBLICO: tuple[str, ...] = ("ultimo_cambiamento_at",)
+
+
+def segna_cambiamento_pubblico(
+    bando_id: Any,
+    *,
+    adesso: Any = None,
+    payload: Mapping[str, Any] | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """`ultimo_cambiamento_at = adesso` su un pubblicato, e nient'altro (§20.1).
+
+    Il trigger `bando_cambiamento_pubblico` (migrazione 01) muove la colonna
+    solo quando cambiano colonne di `bando`; le junction (regioni, settori,
+    beneficiari, codici ATECO) sono altre tabelle, e senza questo UPDATE l'API
+    (`updated_since`), il `lastmod` delle sitemap e BandoFit non vedrebbero i
+    cambi della rielaborazione. Il trigger lascia stare un valore scritto
+    direttamente. `payload` esiste solo per la guardia: qualunque chiave che
+    non sia la colonna e' un errore di chi chiama, come in `aggiorna_fk_bando`.
+    """
+    from datetime import datetime, timezone
+    momento = adesso if isinstance(adesso, datetime_cls) else datetime.now(tz=timezone.utc)
+    dati = dict(payload) if payload is not None else {"ultimo_cambiamento_at": momento.isoformat()}
+    estranee = sorted(k for k in dati if k not in COLONNE_CAMBIAMENTO_PUBBLICO)
+    if estranee or not dati:
+        raise PayloadBandoVietato(
+            f"segna_cambiamento_pubblico scrive solo ultimo_cambiamento_at: {estranee}")
+    return _controllo(strumento).aggiorna("bando", bando_id, dati)
+
+
+def azzera_rielaborazione(
+    bando_id: Any,
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """Rimette a NULL il marcatore della rielaborazione del bando (§5, §9):
+    il passo 12 lo rielabora al giro dopo. La chiama il monitor dopo una
+    rettifica di contenuto o allegati, o una riapertura. Non solleva."""
+    strumento = _controllo(strumento)
+    if not strumento.ha("bando", "fonte_ufficiale_link_id"):
+        return {"scritto": False, "motivo": "colonne_assenti"}
+    try:
+        righe = (_client(client).table("bando").select("fonte_ufficiale_link_id")
+                 .eq("id", bando_id).execute().data or [])
+    except Exception as e:
+        logger.warning("[db] azzera_rielaborazione {}: lettura fallita: {}", bando_id, e)
+        return {"scritto": False, "motivo": str(e)}
+    link_id = righe[0].get("fonte_ufficiale_link_id") if righe else None
+    if link_id is None:
+        return {"scritto": False, "motivo": "nessuna riga della fonte"}
+    return strumento.aggiorna(TABELLA_LINK, link_id, {"impronta_contenuto": None})
+
+
+def registra_evento_rpc(
+    parametri: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any] | None:
+    """`bando_registra_evento` con i parametri per nome (vedi
+    `eventi.PARAMETRI_REGISTRA_EVENTO`). Ritorna la risposta (`{id, nuovo,
+    applicato}`) o None se la RPC non c'e' o fallisce. Non solleva."""
+    from .eventi import RPC_REGISTRA_EVENTO
+    strumento = _controllo(strumento)
+    if not strumento.rpc_disponibile(RPC_REGISTRA_EVENTO):
+        logger.info("[db] RPC {} assente: evento non registrato", RPC_REGISTRA_EVENTO)
+        return None
+    try:
+        risposta = _client(client).rpc(RPC_REGISTRA_EVENTO, dict(parametri)).execute()
+    except Exception as e:
+        logger.warning("[db] {} fallita per il bando {}: {}",
+                       RPC_REGISTRA_EVENTO, parametri.get("p_bando_id"), e)
+        return None
+    dati = getattr(risposta, "data", None)
+    if isinstance(dati, list):
+        dati = dati[0] if dati else None
+    return dict(dati) if isinstance(dati, Mapping) else None

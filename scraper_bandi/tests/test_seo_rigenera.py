@@ -637,14 +637,16 @@ class TestConsumiDiRegime(unittest.TestCase):
         self.assertTrue(bilancio.e_backfill(runner.STEP_SEO_RIGENERA))
 
     def test_consumo_oggi_non_somma_la_rigenerazione(self):
+        # La forma della lettura del giro 3: voci estratte dal jsonb e
+        # `avviato_at` (una riga senza istante conta nella giornata).
         righe = [
-            {"id": 1, "step": "monitor", "contatori": {"usd": 0.10, "classificazioni": 2}},
-            {"id": 2, "step": runner.STEP_SEO_RIGENERA,
-             "contatori": {"usd": 5.0, "classificazioni": 40}},
+            {"id": 1, "step": "monitor", "usd": "0.10", "classificazioni": "2"},
+            {"id": 2, "step": runner.STEP_SEO_RIGENERA, "usd": "5.0", "classificazioni": "40"},
         ]
         client = mock.MagicMock()
         (client.table.return_value.select.return_value.gte.return_value
-         .order.return_value.execute.return_value) = types.SimpleNamespace(data=righe)
+         .order.return_value.limit.return_value.execute.return_value) = types.SimpleNamespace(
+            data=righe)
         strumento = mock.MagicMock()
         strumento.tabella_esiste.return_value = True
         somma = db.consumo_oggi(client=client, strumento=strumento)

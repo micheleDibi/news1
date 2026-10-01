@@ -11,6 +11,7 @@ Nessuna rete e nessun modello: il riscrittore e la scrittura sono iniettati.
 import sys
 import unittest
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tests.supporto import ALIAS, carica_modulo
@@ -914,6 +915,130 @@ def _scrivi(registro):
         registro.append((bando_id, payload))
         return True
     return scrivi
+
+
+class TestRiscriviSchedaConOpus(unittest.IsolatedAsyncioTestCase):
+    """Giro 3, §6: la riscrittura della scheda pubblicata con le novita'."""
+
+    RIGA = {"id": 7, "slug": "avviso-7", "stato_processing": "completed", "pubblicato": True,
+            "bando_master_id": None, "ultimo_cambiamento_at": "2026-09-30T10:00:00+00:00",
+            "contenuto": {"sections": [{"type": "p", "text": "vecchio"}]},
+            "descrizione_breve": "vecchia"}
+    NOVITA = [{"evento_id": 1, "tipo": "faq", "campo": None, "citazione": "Pubblicate le FAQ",
+               "url_prova": "https://ente.it/bando"}]
+    CONTENUTO = {"sections": [{"type": "p", "text": "Nuovo testo con le FAQ."}]}
+
+    def setUp(self):
+        self.bilancio = carica_modulo("bilancio")
+        self.scritte = []
+        self.input_ctx = {}
+
+    async def _riscrivi(self, *, riga=None, payload=None, tetti=None, gia_oggi=None, scrivi=True,
+                        markdown="Pubblicate le FAQ", **kw):
+        payload = payload if payload is not None else {
+            "contenuto": self.CONTENUTO, "descrizione_breve": "d" * 200}
+
+        async def genera(b, input_ctx, *, contatori, descrizione_facoltativa):
+            self.input_ctx = dict(input_ctx)
+            self.assertTrue(descrizione_facoltativa)
+            return SimpleNamespace(payload=payload or None, markdown=markdown, motivo="titolo lungo")
+
+        def scrivi_fn(bando_id, campi, *, ultimo_cambiamento_at=None):
+            self.scritte.append((bando_id, dict(campi), ultimo_cambiamento_at))
+            return scrivi
+
+        return await rigenera.riscrivi_scheda(
+            7, self.NOVITA, spesa=self.bilancio.Contatori(),
+            tetti=tetti or self.bilancio.Tetti(), gia_oggi=gia_oggi,
+            leggi=lambda ids: [dict(riga or self.RIGA)], contesto=lambda r, c: {"id": r["id"]},
+            catalogo={}, genera=genera, scrivi=scrivi_fn, **kw)
+
+    async def test_scrive_solo_contenuto_e_descrizione(self):
+        esito = await self._riscrivi()
+        self.assertEqual((esito.esito, esito.slug), ("scritta", "avviso-7"))
+        self.assertEqual(self.scritte, [(7, {"contenuto": self.CONTENUTO, "descrizione_breve": "d" * 200},
+                                         "2026-09-30T10:00:00+00:00")])
+        # Le novita' arrivano al prompt.
+        self.assertEqual(self.input_ctx["novita"], self.NOVITA)
+
+    async def test_descrizione_fuori_misura_resta_la_vecchia(self):
+        esito = await self._riscrivi(payload={"contenuto": self.CONTENUTO, "descrizione_breve": "corta"})
+        self.assertEqual(esito.esito, "scritta")
+        self.assertEqual(self.scritte[0][1], {"contenuto": self.CONTENUTO})
+
+    async def test_a_tetto_di_spesa_rinviata_senza_chiamate(self):
+        esito = await self._riscrivi(tetti=self.bilancio.Tetti(usd_giorno=5.0), gia_oggi={"usd": 5.0})
+        self.assertEqual(esito.esito, "rinviata")
+        self.assertIn("usd", esito.motivo)
+        self.assertEqual((self.scritte, self.input_ctx), ([], {}))
+
+    async def test_non_pubblicato_o_fuso_saltata(self):
+        for riga in ({**self.RIGA, "pubblicato": False}, {**self.RIGA, "bando_master_id": 3}):
+            with self.subTest(riga=riga):
+                esito = await self._riscrivi(riga=riga)
+                self.assertEqual(esito.esito, "saltata")
+        self.assertEqual(self.scritte, [])
+
+    async def test_seo_fallita_o_fuori_forma_non_scrive(self):
+        esito = await self._riscrivi(payload={})
+        self.assertEqual(esito.esito, "fallita")
+        self.assertIn("titolo lungo", esito.motivo)
+        esito = await self._riscrivi(payload={"contenuto": "una stringa"})
+        self.assertEqual((esito.esito, esito.motivo), ("fallita", "testo riscritto fuori forma"))
+        self.assertEqual(self.scritte, [])
+
+    async def test_affermazioni_non_sostenute_non_scrive(self):
+        seo = carica_modulo("bando_seo_runner")
+        with patch.object(seo, "affermazioni_non_sostenute", lambda testo, fonte: (("forma", "ATI"),)):
+            esito = await self._riscrivi()
+        self.assertEqual(esito.esito, "fallita")
+        self.assertIn("non sostenute", esito.motivo)
+        self.assertEqual(self.scritte, [])
+
+    async def test_scrittura_rifiutata_e_dry_run(self):
+        esito = await self._riscrivi(scrivi=False)
+        self.assertEqual(esito.esito, "fallita")
+        self.scritte.clear()
+        esito = await self._riscrivi(dry_run=True)
+        self.assertEqual((esito.esito, self.scritte), ("scritta", []))
+
+    async def test_un_errore_non_solleva(self):
+        def leggi(ids):
+            raise RuntimeError("giu'")
+        esito = await rigenera.riscrivi_scheda(
+            7, self.NOVITA, spesa=self.bilancio.Contatori(), tetti=self.bilancio.Tetti(), leggi=leggi)
+        self.assertEqual((esito.esito, esito.motivo), ("fallita", "errore: RuntimeError"))
+
+    async def test_oltre_il_limite_del_prompt_solo_le_prime(self):
+        molte = [dict(self.NOVITA[0], evento_id=i) for i in range(12)]
+
+        async def genera(b, input_ctx, *, contatori, descrizione_facoltativa):
+            self.input_ctx = dict(input_ctx)
+            return SimpleNamespace(payload={"contenuto": self.CONTENUTO}, markdown="Pubblicate le FAQ")
+
+        esito = await rigenera.riscrivi_scheda(
+            7, molte, spesa=self.bilancio.Contatori(), tetti=self.bilancio.Tetti(),
+            leggi=lambda ids: [dict(self.RIGA)], contesto=lambda r, c: {"id": r["id"]}, catalogo={},
+            genera=genera, scrivi=lambda *a, **k: True)
+        self.assertEqual(esito.novita_usate, rigenera.MAX_NOVITA_PER_RISCRITTURA)
+        self.assertEqual([v["evento_id"] for v in self.input_ctx["novita"]], list(range(10)))
+
+    def test_chi_chiede_la_riscrittura(self):
+        for tipo, campo, atteso in (("faq", None, True), ("graduatoria", None, True),
+                                    ("esito", None, True), ("rettifica", "contenuto", True),
+                                    ("rettifica", "allegati", True), ("rettifica", "data_scadenza", False),
+                                    ("proroga", None, False), ("apertura", None, False),
+                                    ("nuovo_allegato", None, False)):
+            with self.subTest(tipo=tipo, campo=campo):
+                self.assertIs(rigenera.chiede_riscrittura(tipo, campo), atteso)
+
+    def test_unisci_novita_senza_doppioni(self):
+        uno = {"evento_id": 1, "tipo": "faq", "citazione": "a"}
+        senza_id = {"evento_id": None, "tipo": "esito", "campo": None, "citazione": "b"}
+        unite = rigenera.unisci_novita([uno, senza_id], [dict(uno), dict(senza_id), {"evento_id": 2}])
+        self.assertEqual([v.get("evento_id") for v in unite], [1, None, 2])
+        self.assertEqual(rigenera.novita_da_evento(
+            {"id": 9, "tipo": "faq", "citazione": "x" * 500, "url_prova": "u"})["citazione"], "x" * 400)
 
 
 if __name__ == "__main__":       # pragma: no cover

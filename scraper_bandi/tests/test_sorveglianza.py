@@ -105,10 +105,13 @@ class StatoServizio(unittest.TestCase):
 
 
 class _DbFinto:
-    """Le cinque funzioni di `db` che la sorveglianza usa, con l'ordine delle chiamate."""
+    """Le sei funzioni di `db` che la sorveglianza usa, con l'ordine delle chiamate."""
 
     def __init__(self, *, misure=None, memoria=None, disponibile=True, scrive=True,
-                 misure_errore=None):
+                 misure_errore=None, sospensioni=False, transizioni=None, marcati=None):
+        self.sospensioni = sospensioni
+        self.transizioni = transizioni
+        self.marcati = marcati
         self.ordine: list[str] = []
         self.scritte: list[dict] = []
         self._misure = misure if misure is not None else {}
@@ -135,6 +138,20 @@ class _DbFinto:
         self.ordine.append("disponibile")
         return self._disponibile
 
+    def capacita_sospensioni(self):
+        self.ordine.append("sospensioni")
+        return self.sospensioni
+
+    def leggi_transizioni_da_decidere(self, **_kw):
+        # Sta in `sorveglianza` (la GET su pipeline_run), non in `db`.
+        self.ordine.append("transizioni")
+        return self.transizioni
+
+    def leggi_eventi_marcati(self, **_kw):
+        # Anche questa sta in `sorveglianza` (due GET con count su bando_evento).
+        self.ordine.append("marcati")
+        return self.marcati
+
     def scrivi_riepilogo_monitoraggio(self, riga):
         self.ordine.append("scrivi")
         self.scritte.append(riga)
@@ -142,11 +159,19 @@ class _DbFinto:
 
     def patch(self, caso):
         for nome in ("leggi_memoria_riepilogo", "misure_salute", "job_orario",
-                     "riepilogo_disponibile", "scrivi_riepilogo_monitoraggio"):
+                     "riepilogo_disponibile", "scrivi_riepilogo_monitoraggio",
+                     "capacita_sospensioni"):
             gestore = patch.object(db, nome, getattr(self, nome))
             gestore.start()
             caso.addCleanup(gestore.stop)
         gestore = patch.object(sorveglianza, "stato_servizio", return_value=dict(ATTIVO))
+        gestore.start()
+        caso.addCleanup(gestore.stop)
+        gestore = patch.object(sorveglianza, "leggi_transizioni_da_decidere",
+                               self.leggi_transizioni_da_decidere)
+        gestore.start()
+        caso.addCleanup(gestore.stop)
+        gestore = patch.object(sorveglianza, "leggi_eventi_marcati", self.leggi_eventi_marcati)
         gestore.start()
         caso.addCleanup(gestore.stop)
 
@@ -209,12 +234,231 @@ class Fotografa(unittest.TestCase):
         self.assertEqual(foto.stato.verifica_stato_modalita, "attivo")
         self.assertIs(foto.stato.verifica_stato_config_valida, False)
 
+    def test_giro_3_scartate_dismesse_e_sospensioni(self):
+        # Contratto `bandi-giro-3` §3 e §14: i NOMI dalle impostazioni, la
+        # migrazione 14 da `db.capacita_sospensioni`.
+        from dataclasses import replace
+        impostazioni = replace(settings.get_settings(), configurazione_scartate=("TEMPO_MONITOR_S",))
+        finte = SimpleNamespace(**{**vars(impostazioni), "variabili_dismesse": ("TETTO_FETCH_GIRO",)})
+        for sospensioni in (False, True):
+            finto = _DbFinto(sospensioni=sospensioni)
+            finto.patch(self)
+            with self.subTest(sospensioni=sospensioni), \
+                    patch.object(settings, "get_settings", return_value=finte):
+                foto = sorveglianza.fotografa(adesso=ADESSO, memoria={}, servizio=dict(ATTIVO))
+                self.assertEqual(foto.stato.configurazione_scartate, ("TEMPO_MONITOR_S",))
+                self.assertEqual(foto.stato.variabili_dismesse, ("TETTO_FETCH_GIRO",))
+                self.assertIs(foto.stato.sospensioni_attive, sospensioni)
+                esito = telemetria.salute(foto.stato, adesso=ADESSO)
+                self.assertIn("configurazione:tempo_monitor_s", {v.codice for v in esito.voci})
+                self.assertEqual("sospensioni in attesa della migrazione 14" in esito.informazioni,
+                                 not sospensioni)
+
+    def test_gemelli_e_domini_dalle_impostazioni(self):
+        # §18.8: `passo_degradato:redazione` e l'import di IndicePA leggono i
+        # loro interruttori, che arrivano qui dalle impostazioni.
+        from dataclasses import replace
+        finto = _DbFinto()
+        finto.patch(self)
+        for gemelli, domini in (("ombra", "ombra"), ("attivo", "ombra"), ("ombra", "attivo")):
+            impostazioni = replace(settings.get_settings(), gemelli_modalita=gemelli,
+                                   domini_modalita=domini)
+            with self.subTest(gemelli=gemelli, domini=domini), \
+                    patch.object(settings, "get_settings", return_value=impostazioni):
+                foto = sorveglianza.fotografa(adesso=ADESSO, memoria={}, servizio=dict(ATTIVO))
+                self.assertEqual((foto.stato.gemelli_modalita, foto.stato.domini_modalita),
+                                 (gemelli, domini))
+
+    def test_i_fusi_con_i_gemelli_attivi_non_sono_un_guasto_della_redazione(self):
+        from dataclasses import replace
+        riga = {"id": 9, "giro": "06:00", "esito": "ok",
+                "avviato_at": (ADESSO - timedelta(hours=1)).isoformat(),
+                "concluso_at": (ADESSO - timedelta(minutes=30)).isoformat(),
+                "contatori": {"seo": {"selected": 4, "fusi_prima_della_pubblicazione": 2,
+                                      "payload_ok": 0}}}
+        finto = _DbFinto()
+        finto.patch(self)
+        for gemelli, guasto in (("attivo", False), ("ombra", True)):
+            impostazioni = replace(settings.get_settings(), gemelli_modalita=gemelli,
+                                   verifica_stato_modalita="ombra")
+            with self.subTest(gemelli=gemelli), \
+                    patch.object(settings, "get_settings", return_value=impostazioni):
+                foto = sorveglianza.fotografa(adesso=ADESSO, memoria={}, servizio=dict(ATTIVO))
+                stato = replace(foto.stato, ultime_pipeline=(riga,))
+                codici = {v.codice for v in telemetria.salute(stato, adesso=ADESSO).voci}
+                self.assertEqual("passo_degradato:redazione" in codici, guasto)
+
+    def test_transizioni_da_decidere_nello_stato(self):
+        for valore in (None, 0, 4):
+            finto = _DbFinto(transizioni=valore)
+            finto.patch(self)
+            with self.subTest(transizioni=valore):
+                foto = sorveglianza.fotografa(adesso=ADESSO, memoria={}, servizio=dict(ATTIVO))
+                self.assertEqual(foto.stato.transizioni_da_decidere, valore)
+                self.assertIn("transizioni", finto.ordine)
+                informazioni = telemetria.salute(foto.stato, adesso=ADESSO).informazioni
+                self.assertEqual(any(i.startswith("rielaborazione: 4 transizioni") for i in informazioni),
+                                 valore == 4)
+
+    def test_eventi_marcati_nello_stato(self):
+        # §19.2: un'informazione col numero, mai un allarme.
+        for marcati, attesa in (
+                (None, None), ({"superato": 0, "transizione_non_ammessa": 0}, None),
+                ({"superato": 3, "transizione_non_ammessa": 1},
+                 "eventi marcati e non applicati: 3 superati, 1 con transizione non ammessa")):
+            finto = _DbFinto(marcati=marcati)
+            finto.patch(self)
+            with self.subTest(marcati=marcati):
+                foto = sorveglianza.fotografa(adesso=ADESSO, memoria={}, servizio=dict(ATTIVO))
+                self.assertEqual(foto.stato.eventi_marcati, marcati)
+                self.assertIn("marcati", finto.ordine)
+                esito = telemetria.salute(foto.stato, adesso=ADESSO)
+                righe = [i for i in esito.informazioni if i.startswith("eventi marcati")]
+                self.assertEqual(righe, [attesa] if attesa else [])
+                self.assertNotIn("eventi marcati", " ".join(esito.allarmi + esito.avvisi))
+
+    def test_eventi_marcati_non_letti_col_db_giu(self):
+        finto = _DbFinto(misure_errore=ConnectionError("giu'"), marcati={"superato": 2})
+        finto.patch(self)
+        foto = sorveglianza.fotografa(adesso=ADESSO, memoria=None, servizio=dict(ATTIVO))
+        self.assertIsNone(foto.stato.eventi_marcati)
+        self.assertNotIn("marcati", finto.ordine)
+
+    def test_transizioni_non_lette_col_db_giu(self):
+        finto = _DbFinto(misure_errore=ConnectionError("giu'"), transizioni=5)
+        finto.patch(self)
+        foto = sorveglianza.fotografa(adesso=ADESSO, memoria=None, servizio=dict(ATTIVO))
+        self.assertIsNone(foto.stato.transizioni_da_decidere)
+        self.assertNotIn("transizioni", finto.ordine)
+
+    def test_sospensioni_non_misurate_col_db_giu(self):
+        finto = _DbFinto(misure_errore=ConnectionError("giu'"), sospensioni=True)
+        finto.patch(self)
+        foto = sorveglianza.fotografa(adesso=ADESSO, memoria=None, servizio=dict(ATTIVO))
+        self.assertIsNone(foto.stato.sospensioni_attive)
+        self.assertNotIn("sospensioni", finto.ordine)
+
     def test_stato_salute_la_richiama(self):
         stato = telemetria.Stato()
         with patch.object(sorveglianza, "fotografa",
                           return_value=sorveglianza.Fotografia(stato=stato)) as spia:
             self.assertIs(cli._stato_salute(), stato)
         spia.assert_called_once_with()
+
+
+class _Interrogazione:
+    """Il client PostgREST finto: registra la catena, restituisce `righe`."""
+
+    def __init__(self, righe=None, errore=None):
+        self.righe = righe or []
+        self.errore = errore
+        self.catena: list[tuple] = []
+
+    def table(self, nome):
+        self.catena.append(("table", nome))
+        return self
+
+    def __getattr__(self, nome):
+        if nome in ("select", "eq", "order", "limit"):
+            def passo(*a, **k):
+                self.catena.append((nome, a, tuple(sorted(k.items()))))
+                return self
+            return passo
+        raise AttributeError(nome)
+
+    def execute(self):
+        if self.errore is not None:
+            raise self.errore
+        return SimpleNamespace(data=list(self.righe))
+
+
+class LeggiTransizioniDaDecidere(unittest.TestCase):
+    """§18.2: il contatore dell'ultima riga `backfill:rielaborazione`, con una GET."""
+
+    def test_lo_step_e_quello_della_rielaborazione(self):
+        rielabora = carica_modulo("rielabora_fonte")
+        self.assertEqual(sorveglianza.STEP_RIELABORAZIONE, rielabora.STEP)
+
+    def test_ultima_riga_del_passo(self):
+        client = _Interrogazione(righe=[{"id": 40, "transizioni": 3}])
+        self.assertEqual(sorveglianza.leggi_transizioni_da_decidere(client=client), 3)
+        self.assertEqual(client.catena[0], ("table", "pipeline_run"))
+        self.assertIn(("eq", ("step", "backfill:rielaborazione"), ()), client.catena)
+        self.assertIn(("order", ("avviato_at",), (("desc", True),)), client.catena)
+        self.assertIn(("limit", (1,), ()), client.catena)
+        # Il contatore dentro il jsonb, non tutta la colonna.
+        selezione = next(c for c in client.catena if c[0] == "select")[1][0]
+        self.assertIn("contatori->transizioni_da_decidere", selezione)
+
+    def test_nessuna_riga_contatore_assente_o_errore_e_none(self):
+        for client in (_Interrogazione(righe=[]),
+                       _Interrogazione(righe=[{"id": 40, "transizioni": None}]),
+                       _Interrogazione(righe=[{"id": 40, "transizioni": "x"}]),
+                       _Interrogazione(errore=ConnectionError("rifiutata: apikey=segretissima"))):
+            with self.subTest(righe=client.righe, errore=client.errore):
+                self.assertIsNone(sorveglianza.leggi_transizioni_da_decidere(client=client))
+
+    def test_zero_e_zero(self):
+        client = _Interrogazione(righe=[{"id": 40, "transizioni": 0}])
+        self.assertEqual(sorveglianza.leggi_transizioni_da_decidere(client=client), 0)
+
+
+class _Conteggi:
+    """Il client PostgREST finto per i `count=exact`: un conto per motivo."""
+
+    def __init__(self, conti=None, errore=None):
+        self.conti = dict(conti or {})
+        self.errore = errore
+        self.chieste: list[dict] = []
+        self._corrente: dict = {}
+
+    def table(self, nome):
+        self._corrente = {"tabella": nome}
+        return self
+
+    def select(self, *colonne, **kw):
+        self._corrente.update(colonne=colonne, **kw)
+        return self
+
+    def eq(self, colonna, valore):
+        self._corrente[colonna] = valore
+        return self
+
+    def limit(self, n):
+        self._corrente["limit"] = n
+        return self
+
+    def execute(self):
+        self.chieste.append(dict(self._corrente))
+        if self.errore is not None:
+            raise self.errore
+        return SimpleNamespace(data=[], count=self.conti.get(self._corrente.get("scartato_per")))
+
+
+class LeggiEventiMarcati(unittest.TestCase):
+    """§19.2: quanti eventi sono marcati, con due GET `count=exact`."""
+
+    def test_un_conteggio_per_motivo(self):
+        client = _Conteggi({"superato": 5, "transizione_non_ammessa": 0})
+        self.assertEqual(sorveglianza.leggi_eventi_marcati(client=client),
+                         {"superato": 5, "transizione_non_ammessa": 0})
+        self.assertEqual([c["scartato_per"] for c in client.chieste],
+                         ["superato", "transizione_non_ammessa"])
+        for chiesta in client.chieste:
+            self.assertEqual((chiesta["tabella"], chiesta["count"], chiesta["limit"]),
+                             ("bando_evento", "exact", 1))
+
+    def test_errore_o_conteggio_assente_e_none(self):
+        # Senza la 14 la colonna non c'e': PostgREST risponde con un errore.
+        for client in (_Conteggi(errore=RuntimeError("42703: column scartato_per does not exist")),
+                       _Conteggi({"superato": 5})):
+            with self.subTest(errore=client.errore):
+                self.assertIsNone(sorveglianza.leggi_eventi_marcati(client=client))
+
+    def test_i_motivi_sono_quelli_della_14(self):
+        monitoraggio = carica_modulo("monitoraggio")
+        self.assertEqual(sorveglianza.MOTIVI_MARCATI, ("superato", "transizione_non_ammessa"))
+        self.assertEqual(monitoraggio.COLONNA_SCARTATO, "scartato_per")
 
 
 class MemoriaNuova(unittest.TestCase):

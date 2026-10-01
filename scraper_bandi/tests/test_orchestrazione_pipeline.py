@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Orchestrazione di `backend/app/bandi_pipeline.py`: gli step 5 e 7 e IndexNow.
+"""Orchestrazione di `backend/app/bandi_pipeline.py`: l'ordine del giro e IndexNow.
 
-Che cosa si verifica (§16.3.10 per l'ordine, §5 per il resolver, §6.2 per il
-monitor, §7.5 per IndexNow, A15 per i codici di uscita):
+Che cosa si verifica (contratto `bandi-giro-3` §2 per l'ordine, §5 per il
+resolver, §6.2 per il monitor, §7.5 per IndexNow, A15 per i codici di uscita):
 
-  - i sette step girano **in ordine**, con il resolver fra `enrich` e `seo` e il
-    monitor dopo `seo`, e i due coesistono senza pestarsi i piedi;
+  - i quindici step girano **in ordine** (§2 del giro 3), con tre passate del
+    resolver (`precoce`, `nuovi`, `ricontrolli` senza `limit`), la
+    manutenzione solo nei giri di `MONITOR_GIRI` e mai al giro di avvio;
   - il monitor riceve `rigenerazione=` solo con `MONITOR_MODALITA=attivo`: e'
     quel parametro a decidere se uno slug entra in `slug_modificati`;
   - `submit_to_indexnow` viene chiamata **una volta sola per giro**, con gli
@@ -131,6 +132,17 @@ def _esegui(nome: str, percorso) -> types.ModuleType:
 
 pipeline = _carica()
 
+#: Le chiavi di `state["steps"]` nell'ordine del giro 3 (contratto §2), in un
+#: giro delle 06 con l'import dei domini gia' fatto nel mese.
+ORDINE_DEL_GIRO_3 = [
+    "discover", "scrape", "domini", "resolver_precoce", "preprocess", "enrich",
+    "resolver", "ricontrolli", "verifica_stato_ingresso", "seo", "link_verifica",
+    "rielaborazione", "monitor", "verifica_stato", "gemelli",
+]
+#: I passi della manutenzione (8, 11-15): solo nei giri di MONITOR_GIRI.
+MANUTENZIONE = ("ricontrolli", "link_verifica", "rielaborazione", "monitor",
+                "verifica_stato", "gemelli")
+
 
 def _monitoraggio(risposta: dict | None = None, errore: Exception | None = None):
     modulo = types.ModuleType("app.monitoraggio")
@@ -142,7 +154,15 @@ def _monitoraggio(risposta: dict | None = None, errore: Exception | None = None)
 def _fonte_ufficiale(risposta: dict | None = None):
     modulo = types.ModuleType("app.fonte_ufficiale")
     modulo.run = AsyncMock(return_value=risposta if risposta is not None else {"status": "ok"})
+    # Il passo 11 (giro 3): stesso modulo, ingresso diverso. Risposta propria,
+    # cosi' i test sui crediti del resolver contano solo le sue tre passate.
+    modulo.run_link_verifica = AsyncMock(return_value={"status": "ok"})
     return modulo
+
+
+def _modi(resolver) -> list[str]:
+    """I `modo` delle chiamate a `fonte_ufficiale.run`, nell'ordine."""
+    return [c.kwargs.get("modo") for c in resolver.run.await_args_list]
 
 
 class _ConPipeline(unittest.TestCase):
@@ -171,7 +191,7 @@ class _ConPipeline(unittest.TestCase):
 
     def esegui(self, *, giro: str | None = "06:00", monitor=None, resolver=None,
                modalita: str = "ombra", chiave: str = "", verifica: str | None = None,
-               **moduli) -> dict:
+               giri: tuple[str, ...] = ("06:00", "18:00"), **moduli) -> dict:
         extra = dict(moduli)
         if monitor is not None:
             extra["monitoraggio"] = monitor
@@ -179,8 +199,10 @@ class _ConPipeline(unittest.TestCase):
             extra["fonte_ufficiale"] = resolver
         # `anthropic_api_key` decide i due adattatori del G7: vuota per
         # difetto, cosi' i test che non la riguardano restano quelli di prima.
+        # `giri`: due ore e non le quattro del default, cosi' i test vedono
+        # anche un giro (12:00) in cui la manutenzione non parte.
         finte = types.SimpleNamespace(
-            monitor_modalita=modalita, monitor_giri=("06:00", "18:00"),
+            monitor_modalita=modalita, monitor_giri=giri,
             anthropic_api_key=chiave)
         if verifica is not None:
             finte.verifica_stato_modalita = verifica
@@ -191,24 +213,20 @@ class _ConPipeline(unittest.TestCase):
 class TestOrdineDegliStep(_ConPipeline):
     def test_gli_step_nell_ordine_del_piano(self):
         stato = self.esegui(monitor=_monitoraggio(), resolver=_fonte_ufficiale())
-        self.assertEqual(
-            list(stato["steps"]),
-            ["discover", "scrape", "preprocess", "enrich", "domini", "resolver",
-             "ricontrolli", "verifica_stato_ingresso", "seo", "monitor",
-             "verifica_stato", "gemelli"],
-        )
+        self.assertEqual(list(stato["steps"]), ORDINE_DEL_GIRO_3)
         self.assertEqual(stato["status"], "completed")
 
     def test_resolver_e_monitor_coesistono(self):
-        # Step 5 e step 7 sono due moduli diversi con due lock diversi: il
+        # Resolver e monitor sono due moduli diversi con due lock diversi: il
         # secondo non deve ne' sostituire ne' ereditare i parametri del primo.
         monitor, resolver = _monitoraggio(), _fonte_ufficiale()
         self.esegui(monitor=monitor, resolver=resolver)
-        # Due chiamate allo stesso modulo: i nuovi (step 5) e gli arretrati
-        # (step 5-bis). La prima non porta `modo`, cioe' vale il default.
-        self.assertEqual(resolver.run.await_count, 2)
-        primo = resolver.run.await_args_list[0].kwargs
-        self.assertEqual(primo, {"giro": "06:00"})
+        # Tre chiamate allo stesso modulo (giro 3, §2): precoce (step 4),
+        # nuovi (step 7) e ricontrolli (step 8), ciascuna con il suo `modo`.
+        self.assertEqual(resolver.run.await_count, 3)
+        self.assertEqual([c.kwargs for c in resolver.run.await_args_list[:2]],
+                         [{"giro": "06:00", "modo": "precoce"},
+                          {"giro": "06:00", "modo": "nuovi"}])
         monitor.run.assert_awaited_once()
         self.assertEqual(monitor.run.await_args.kwargs["giro"], "06:00")
         # `rigenerazione` e' del solo monitor: il resolver non la conosce.
@@ -253,14 +271,16 @@ class TestRicontrolli(_ConPipeline):
     rende riconoscibili centinaia di host.
     """
 
-    def test_i_ricontrolli_partono_nei_giri_del_monitor(self):
+    def test_i_ricontrolli_partono_nei_giri_del_monitor_senza_limit(self):
+        # Giro 3 (§1 e §7): niente lotti. Il tetto di 60 righe per giro e'
+        # sparito; resta solo il tempo, che il resolver gestisce da se'.
         resolver = _fonte_ufficiale()
         stato = self.esegui(giro="06:00", resolver=resolver, monitor=_monitoraggio())
-        self.assertEqual(resolver.run.await_count, 2)
-        secondo = resolver.run.await_args_list[1].kwargs
-        self.assertEqual(secondo["modo"], "ricontrolli")
-        self.assertEqual(secondo["limit"], pipeline.RICONTROLLI_PER_GIRO)
-        self.assertEqual(secondo["giro"], "06:00")
+        self.assertEqual(resolver.run.await_count, 3)
+        terzo = resolver.run.await_args_list[2].kwargs
+        self.assertEqual(terzo, {"giro": "06:00", "modo": "ricontrolli"})
+        self.assertNotIn("limit", terzo)
+        self.assertFalse(hasattr(pipeline, "RICONTROLLI_PER_GIRO"))
         self.assertEqual(stato["status"], "completed")
 
     def test_negli_altri_giri_non_partono(self):
@@ -268,8 +288,8 @@ class TestRicontrolli(_ConPipeline):
         # enti e' lo stesso che il monitor sta gia' facendo in quelle ore.
         resolver = _fonte_ufficiale()
         stato = self.esegui(giro="12:00", resolver=resolver)
-        self.assertEqual(resolver.run.await_count, 1,
-                         "fuori dai giri del monitor gira solo lo step 5")
+        self.assertEqual(_modi(resolver), ["precoce", "nuovi"],
+                         "fuori dai giri del monitor girano solo le due passate d'ingresso")
         self.assertEqual(stato["steps"]["ricontrolli"],
                          {"status": "ok", "saltato": "giro_non_previsto"})
 
@@ -280,12 +300,12 @@ class TestRicontrolli(_ConPipeline):
         resolver = _fonte_ufficiale()
 
         async def segna(**kwargs):
-            ordine.append(kwargs.get("modo", "nuovi"))
+            ordine.append(kwargs["modo"])
             return {"status": "ok"}
 
         resolver.run = AsyncMock(side_effect=segna)
         self.esegui(giro="06:00", resolver=resolver, monitor=_monitoraggio())
-        self.assertEqual(ordine, ["nuovi", "ricontrolli"])
+        self.assertEqual(ordine, ["precoce", "nuovi", "ricontrolli"])
 
     def test_un_ricontrollo_che_esplode_non_ferma_il_giro(self):
         resolver = _fonte_ufficiale()
@@ -293,7 +313,7 @@ class TestRicontrolli(_ConPipeline):
 
         async def a_volte(**_kwargs):
             chiamate["n"] += 1
-            if chiamate["n"] == 2:
+            if chiamate["n"] == 3:
                 raise RuntimeError("rete giu'")
             return {"status": "ok"}
 
@@ -491,7 +511,8 @@ class TestEsitiCheRestanoDati(_ConPipeline):
         self.assertEqual(riga.esito, telemetria.ESITO_INTERROTTO)
 
     def test_crediti_e_dollari_sommati_su_tutti_gli_step(self):
-        # Il resolver gira due volte (nuovi e ricontrolli) e il monitor una.
+        # Il resolver gira tre volte (precoce, nuovi e ricontrolli) e il
+        # monitor una.
         # La spesa degli arretrati e' spesa come le altre: se non entrasse nel
         # totale, `salute` misurerebbe un consumo piu' basso del vero e i tetti
         # mensili scatterebbero tardi.
@@ -500,8 +521,8 @@ class TestEsitiCheRestanoDati(_ConPipeline):
             monitor=_monitoraggio({"status": "ok", "crediti": 30, "costo_usd": 1.5}),
         )
         riga = self.righe[-1]
-        self.assertEqual(riga.crediti, 12 + 12 + 30)
-        self.assertAlmostEqual(riga.costo_usd, 0.25 + 0.25 + 1.5)
+        self.assertEqual(riga.crediti, 12 * 3 + 30)
+        self.assertAlmostEqual(riga.costo_usd, 0.25 * 3 + 1.5)
         self.assertEqual(stato["status"], "completed")
 
     def test_slug_modificati_finiscono_anche_nella_riga(self):
@@ -511,7 +532,8 @@ class TestEsitiCheRestanoDati(_ConPipeline):
     def test_modulo_assente_e_un_esito_buono(self):
         # Nessun `app.monitoraggio` registrato: e' la tappa successiva del piano.
         stato = self.esegui(monitor=None, resolver=None)
-        for nome in ("resolver", "monitor"):
+        for nome in ("resolver_precoce", "resolver", "ricontrolli", "link_verifica",
+                     "rielaborazione", "monitor"):
             with self.subTest(step=nome):
                 self.assertEqual(stato["steps"][nome]["status"], "ok")
                 self.assertEqual(stato["steps"][nome]["saltato"], pipeline.MODULO_ASSENTE)
@@ -574,6 +596,20 @@ class TestFunzioniPure(unittest.TestCase):
         stato = {"steps": {"a": {"counters": {"crediti": True, "costo_usd": "2"}},
                            "b": {"counters": {"crediti": 5, "costo_usd": 0.5}}}}
         self.assertEqual(pipeline._consumo(stato), (5, 0.5))
+
+    def test_la_riga_del_giro_non_copia_i_cambi_della_rielaborazione(self):
+        # Revisione #146: l'elenco dei cambi sta nella riga del passo.
+        cambi = [{"bando_id": 7, "dimensione": "regioni", "prima": [12], "dopo": [11]}]
+        stato = {"steps": {"rielaborazione": {"status": "ok", "counters": {
+            "status": "ok", "rielaborati": 1, "junction_cambiate": 1, "cambi": cambi,
+            "slug_modificati": ["contributi"], "copertura": {"candidati": 1}}}}}
+        riga = pipeline._contatori_della_riga(stato)
+        self.assertEqual(riga["rielaborazione"], {
+            "status": "ok", "rielaborati": 1, "junction_cambiate": 1,
+            "slug_modificati": ["contributi"], "copertura": {"candidati": 1}})
+        # Lo stato del giro resta intero: IndexNow legge gli slug da li'.
+        self.assertEqual(stato["steps"]["rielaborazione"]["counters"]["cambi"], cambi)
+        self.assertEqual(pipeline._slug_da_notificare(stato), ["contributi"])
 
     def test_interrotto_per_tetto_guarda_tutti_gli_step(self):
         self.assertFalse(pipeline._interrotto_per_tetto({"steps": {"a": {"counters": {}}}}))
@@ -690,15 +726,21 @@ class TestPassiDelGiro2(_ConPipeline):
         riga = self.righe[-1]
         self.assertIn("verifica_stato", riga.contatori["passi_non_ok"])
 
-    def test_gemelli_solo_alle_06_e_funzione_sincrona(self):
-        gemelli = _gemelli()
-        stato = self.esegui(giro="06:00", gemelli=gemelli)
-        gemelli.esegui_passo.assert_called_once_with(giro="06:00")
-        self.assertEqual(stato["steps"]["gemelli"]["status"], "ok")
-        gemelli = _gemelli()
-        stato = self.esegui(giro="18:00", gemelli=gemelli)
-        gemelli.esegui_passo.assert_not_called()
-        self.assertNotIn("gemelli", stato["steps"])
+    def test_gemelli_nei_giri_del_monitor_e_funzione_sincrona(self):
+        # Giro 3 (§2, §11): non piu' solo alle 06, ma a ogni giro di MONITOR_GIRI.
+        for giro in ("06:00", "18:00"):
+            with self.subTest(giro=giro):
+                gemelli = _gemelli()
+                stato = self.esegui(giro=giro, gemelli=gemelli)
+                gemelli.esegui_passo.assert_called_once_with(giro=giro)
+                self.assertEqual(stato["steps"]["gemelli"]["status"], "ok")
+        for giro in ("12:00", "boot"):
+            with self.subTest(giro=giro):
+                gemelli = _gemelli()
+                stato = self.esegui(giro=giro, gemelli=gemelli)
+                gemelli.esegui_passo.assert_not_called()
+                self.assertEqual(stato["steps"]["gemelli"],
+                                 {"status": "ok", "saltato": "giro_non_previsto"})
 
     def test_domini_alle_06_se_dovuto(self):
         fonte = _fonte_ufficiale()
@@ -751,6 +793,182 @@ class TestPassiDelGiro2(_ConPipeline):
         # Nel package finto non c'e' `app.db`: la lettura fallisce e non si importa.
         with _ambiente():
             self.assertFalse(pipeline._import_domini_dovuto())
+
+
+# --- giro 3 (contratto `bandi-giro-3` §2) ------------------------------------
+
+def _rielabora_fonte(risposta: dict | None = None):
+    modulo = types.ModuleType("app.rielabora_fonte")
+    modulo.run = AsyncMock(return_value=risposta if risposta is not None else {"status": "ok"})
+    return modulo
+
+
+class TestOrdineDelGiro3(_ConPipeline):
+    def _tutti(self):
+        return {"resolver": _fonte_ufficiale(), "monitor": _monitoraggio(),
+                "verifica_stato": _verifica_stato(), "gemelli": _gemelli(),
+                "rielabora_fonte": _rielabora_fonte()}
+
+    def test_ordine_dei_passi_che_partono_davvero(self):
+        # Non solo le chiavi: l'ordine in cui i moduli vengono CHIAMATI.
+        ordine: list[str] = []
+        moduli = self._tutti()
+
+        def segna(nome, risposta=None):
+            async def _passo(**kwargs):
+                ordine.append(kwargs.get("modo") and f"{nome}:{kwargs['modo']}"
+                              or (kwargs.get("fase") and f"{nome}:{kwargs['fase']}") or nome)
+                return risposta if risposta is not None else {"status": "ok"}
+            return AsyncMock(side_effect=_passo)
+
+        fonte = moduli["resolver"]
+        fonte.run = segna("resolver")
+        fonte.run_link_verifica = segna("link_verifica")
+        fonte.run_domini_import = segna("domini")
+        moduli["rielabora_fonte"].run = segna("rielaborazione")
+        moduli["monitor"].run = segna("monitor")
+        moduli["verifica_stato"].run = segna("verifica", {"status": "ok", "counters": {}})
+        moduli["gemelli"].esegui_passo = MagicMock(
+            side_effect=lambda **k: ordine.append("gemelli") or {"status": "ok"})
+        storici = {nome: segna(nome, {}) for nome in
+                   ("discover", "scrape", "preprocess", "enrich", "seo")}
+        with patch.object(pipeline, "_import_domini_dovuto", return_value=True), \
+                patch.object(pipeline, "_discover_run", storici["discover"]), \
+                patch.object(pipeline, "_scrape_run", storici["scrape"]), \
+                patch.object(pipeline, "_preprocess_run", storici["preprocess"]), \
+                patch.object(pipeline, "_enrich_run", storici["enrich"]), \
+                patch.object(pipeline, "_seo_run", storici["seo"]):
+            stato = self.esegui(giro="06:00", **moduli)
+        self.assertEqual(ordine, [
+            "discover", "scrape", "domini", "resolver:precoce", "preprocess", "enrich",
+            "resolver:nuovi", "resolver:ricontrolli", "verifica:ingresso", "seo",
+            "link_verifica", "rielaborazione", "monitor", "verifica:controlli", "gemelli",
+        ])
+        self.assertEqual(list(stato["steps"]), ORDINE_DEL_GIRO_3)
+        self.assertEqual(stato["status"], "completed")
+
+    def test_i_passi_nuovi_ricevono_il_giro(self):
+        moduli = self._tutti()
+        self.esegui(giro="18:00", **moduli)
+        moduli["resolver"].run_link_verifica.assert_awaited_once_with(giro="18:00")
+        moduli["rielabora_fonte"].run.assert_awaited_once_with(giro="18:00")
+
+    def test_rielaborazione_assente_vale_saltata(self):
+        # `app.rielabora_fonte` arriva con B4: fino ad allora il passo 12 e'
+        # «saltato, tutto bene», non un guasto del giro.
+        stato = self.esegui(giro="06:00", resolver=_fonte_ufficiale(), monitor=_monitoraggio())
+        self.assertEqual(stato["steps"]["rielaborazione"],
+                         {"status": "ok", "saltato": pipeline.MODULO_ASSENTE,
+                          "modulo": "app.rielabora_fonte"})
+        self.assertEqual(stato["status"], "completed")
+
+    def test_boot_senza_manutenzione(self):
+        moduli = self._tutti()
+        stato = self.esegui(giro="boot", **moduli)
+        self.assertEqual(_modi(moduli["resolver"]), ["precoce", "nuovi"])
+        for nome in MANUTENZIONE:
+            with self.subTest(passo=nome):
+                self.assertEqual(stato["steps"][nome],
+                                 {"status": "ok", "saltato": "giro_non_previsto"})
+        moduli["resolver"].run_link_verifica.assert_not_awaited()
+        moduli["rielabora_fonte"].run.assert_not_awaited()
+        moduli["monitor"].run.assert_not_awaited()
+        moduli["gemelli"].esegui_passo.assert_not_called()
+        self.assertNotIn("domini", stato["steps"])
+        self.assertEqual(stato["status"], "completed")
+
+    def test_con_i_giri_di_default_la_manutenzione_gira_a_ogni_ora(self):
+        # MONITOR_GIRI vale per difetto le quattro ore dello scheduler (§2).
+        self.assertEqual(impostazioni_vere._GIRI_DEFAULT, impostazioni_vere.GIRI_SCHEDULER)
+        for giro in impostazioni_vere.GIRI_SCHEDULER:
+            with self.subTest(giro=giro):
+                moduli = self._tutti()
+                stato = self.esegui(giro=giro, giri=impostazioni_vere._GIRI_DEFAULT, **moduli)
+                self.assertEqual(_modi(moduli["resolver"]), ["precoce", "nuovi", "ricontrolli"])
+                for nome in MANUTENZIONE:
+                    self.assertNotIn("saltato", stato["steps"][nome], nome)
+                moduli["gemelli"].esegui_passo.assert_called_once_with(giro=giro)
+
+    def test_la_cli_fa_tutto(self):
+        moduli = self._tutti()
+        stato = self.esegui(giro=None, **moduli)
+        self.assertEqual(_modi(moduli["resolver"]), ["precoce", "nuovi", "ricontrolli"])
+        for nome in MANUTENZIONE:
+            self.assertNotIn("saltato", stato["steps"][nome], nome)
+
+    def test_un_resolver_precoce_rotto_non_ferma_l_ingresso(self):
+        fonte = _fonte_ufficiale()
+
+        async def precoce_rotto(**kwargs):
+            if kwargs["modo"] == "precoce":
+                raise RuntimeError("rete giu'")
+            return {"status": "ok"}
+
+        fonte.run = AsyncMock(side_effect=precoce_rotto)
+        stato = self.esegui(giro="12:00", resolver=fonte)
+        self.assertEqual(stato["steps"]["resolver_precoce"]["status"], "error")
+        self.assertEqual(stato["steps"]["resolver"]["status"], "ok")
+        MODULI_APP["app.bando_preprocess_runner"].run.assert_awaited_once()
+        self.assertEqual(stato["status"], "partial")
+
+    def test_db_conosce_gli_stessi_passi(self):
+        # `db.CONTATORI_PIPELINE` legge la copertura di questi passi: un passo
+        # aggiunto qui e non li' resterebbe fuori da `salute` in silenzio.
+        self.assertEqual(list(carica_modulo("db").PASSI_DEL_GIRO), ORDINE_DEL_GIRO_3)
+
+    def test_la_riga_del_giro_conserva_la_copertura(self):
+        copertura = {"candidati": 12, "fatti": 10, "rimasti": 2, "motivo_rimasti": "tempo"}
+        verifica = _verifica_stato({
+            "status": "ok", "counters": {"esaminati": 4}, "copertura": copertura,
+            "proposte": [{"bando_id": 7}], "ids_da_rigenerare": [7]})
+        monitor = _monitoraggio({"status": "ok", "copertura": copertura})
+        self.esegui(verifica_stato=verifica, monitor=monitor)
+        riga = self.righe[-1]
+        self.assertEqual(riga.contatori["verifica_stato"],
+                         {"status": "ok", "counters": {"esaminati": 4}, "copertura": copertura})
+        self.assertEqual(riga.contatori["monitor"]["copertura"], copertura)
+
+    def test_la_seo_riceve_il_giro(self):
+        # Giro 3 (§4, M3): la riga di spesa della SEO porta il giro.
+        self.esegui(giro="18:00")
+        MODULI_APP["app.bando_seo_runner"].run.assert_awaited_once_with(giro="18:00")
+
+    def test_lucchetto_del_giro_di_sei_ore(self):
+        self.assertEqual(pipeline.LOCK_TTL_S, 6 * 3600)
+        self.assertEqual(self.esegui(giro="12:00")["lock"], blocco.ACQUISITO)
+        self.assertEqual(self.lock.call_args.args[2], 6 * 3600)
+
+
+class TestImportDominiSuDominiModalita(unittest.TestCase):
+    """`_import_domini_dovuto` legge DOMINI_MODALITA (giro 3, §3 e §12), non
+    piu' VERIFICA_STATO_MODALITA: in attivo conta come fatto solo un 'ok'."""
+
+    def _dovuto(self, *, domini: str, verifica: str) -> bool:
+        from datetime import datetime, timedelta, timezone
+        roma = timezone(timedelta(hours=2))
+        righe = [{"avviato_at": "2026-10-01T04:00:30Z", "esito": "ombra"}]
+
+        class _Query:
+            def __getattr__(self, _nome):
+                return lambda *a, **k: self
+
+            def execute(self):
+                return types.SimpleNamespace(data=righe)
+
+        db_finto = types.ModuleType("app.db")
+        db_finto.get_supabase = lambda: types.SimpleNamespace(table=lambda _n: _Query())
+        stato_bando = types.ModuleType("app.stato_bando")
+        stato_bando.adesso_roma = lambda: datetime(2026, 10, 1, 12, 0, tzinfo=roma)
+        finte = types.SimpleNamespace(domini_modalita=domini, verifica_stato_modalita=verifica)
+        with _ambiente(db=db_finto, stato_bando=stato_bando), \
+                patch.object(pipeline, "_get_settings", return_value=finte):
+            return pipeline._import_domini_dovuto()
+
+    def test_domini_in_ombra_un_import_in_ombra_basta(self):
+        self.assertFalse(self._dovuto(domini="ombra", verifica="attivo"))
+
+    def test_domini_attivo_serve_un_ok(self):
+        self.assertTrue(self._dovuto(domini="attivo", verifica="ombra"))
 
 
 if __name__ == "__main__":

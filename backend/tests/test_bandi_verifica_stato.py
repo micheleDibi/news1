@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""I passi del giro 2 nella pipeline dei bandi (contratto `bandi-giro-2` §11, §19.10).
+"""I passi del giro 2 e del giro 3 nella pipeline dei bandi (contratti
+`bandi-giro-2` §11, §19.10 e `bandi-giro-3` §2).
 
 Sull'AST di `backend/app/bandi_pipeline.py` (il python di sistema non ha i
-runner di `scraper_bandi`): l'ordine e le condizioni dei passi nuovi, nessun lock
+runner di `scraper_bandi`): l'ordine e le condizioni dei passi, nessun lock
 nuovo, la whitelist azzerata a inizio giro. Il comportamento con i moduli finti
 sta in `scraper_bandi/tests/test_orchestrazione_pipeline.py`.
 
@@ -72,22 +73,29 @@ class TestOrdineECondizioni(unittest.TestCase):
         self.passi = _assegnazioni_degli_step(self.corpo)
 
     def test_ordine(self):
-        riga = lambda nome: _prima_riga(self.passi, nome)  # noqa: E731
-        self.assertLess(riga("enrich"), riga("domini"))
-        self.assertLess(riga("domini"), riga("resolver"))
-        self.assertLess(riga("ricontrolli"), riga("verifica_stato_ingresso"))
-        self.assertLess(riga("verifica_stato_ingresso"), riga("seo"))
-        self.assertLess(riga("monitor"), riga("verifica_stato"))
-        self.assertLess(riga("verifica_stato"), riga("gemelli"))
+        # L'ordine del giro 3 (§2): ogni passo dopo il precedente.
+        ordine = ["discover", "scrape", "domini", "resolver_precoce", "preprocess",
+                  "enrich", "resolver", "ricontrolli", "verifica_stato_ingresso", "seo",
+                  "link_verifica", "rielaborazione", "monitor", "verifica_stato", "gemelli"]
+        righe = [_prima_riga(self.passi, nome) for nome in ordine]
+        self.assertEqual(righe, sorted(righe))
+        self.assertEqual(sorted({passo for _, passo, _ in self.passi}), sorted(ordine))
 
     def test_condizioni(self):
         condizione = lambda nome: _condizione_di(  # noqa: E731
             self.corpo, _prima_riga(self.passi, nome))
-        self.assertEqual(condizione("verifica_stato"), "_giro_previsto(giro)")
-        self.assertEqual(condizione("gemelli"), "giro == GIRO_DELLE_06")
+        # La manutenzione (8, 11-15) solo nei giri di MONITOR_GIRI; i gemelli
+        # non piu' solo alle 06 (giro 3, §2).
+        for nome in ("ricontrolli", "link_verifica", "rielaborazione", "monitor",
+                     "verifica_stato", "gemelli"):
+            with self.subTest(passo=nome):
+                self.assertEqual(condizione(nome), "_giro_previsto(giro)")
         self.assertIn("_import_domini_dovuto()", condizione("domini"))
-        # La fase ingresso gira in ogni giro: nessun if intorno.
-        self.assertEqual(condizione("verifica_stato_ingresso"), "")
+        # La catena d'ingresso gira in ogni giro: nessun if intorno.
+        for nome in ("resolver_precoce", "preprocess", "enrich", "resolver",
+                     "verifica_stato_ingresso", "seo"):
+            with self.subTest(passo=nome):
+                self.assertEqual(condizione(nome), "")
 
     def test_i_passi_chiamano_i_moduli_giusti(self):
         chiamate: dict[str, str] = {}
@@ -100,6 +108,13 @@ class TestOrdineECondizioni(unittest.TestCase):
         self.assertIn("rigenerazione=_rigenerazione_di_produzione()", chiamate["monitor"])
         self.assertIn("fase='ingresso'", chiamate["verifica_stato_ingresso"])
         self.assertIn("funzione='esegui_passo'", chiamate["gemelli"])
+        # Le tre passate del resolver (giro 3, §2): i ricontrolli senza limit.
+        self.assertIn("modo='precoce'", chiamate["resolver_precoce"])
+        self.assertIn("modo='nuovi'", chiamate["resolver"])
+        self.assertIn("modo='ricontrolli'", chiamate["ricontrolli"])
+        self.assertNotIn("limit", chiamate["ricontrolli"])
+        self.assertIn("funzione='run_link_verifica'", chiamate["link_verifica"])
+        self.assertIn("'app.rielabora_fonte'", chiamate["rielaborazione"])
         domini = [ast.unparse(n.value) for _, passo, n in self.passi if passo == "domini"]
         self.assertTrue(any("funzione='run_domini_import'" in c and "scarica_enti=True" in c
                             for c in domini))

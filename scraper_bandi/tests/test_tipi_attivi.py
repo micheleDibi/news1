@@ -348,6 +348,113 @@ class TestControlloPerTipo(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(esito.eventi_applicati, 1)
 
 
+class TestRielaborazioneDopoGliEventi(unittest.IsolatedAsyncioTestCase):
+    """Giro 3, §5: una rettifica di contenuto o allegati, o una riapertura,
+    applicata rimette il bando in coda alla rielaborazione."""
+
+    async def _controlla(self, evento, *, tipi, **kw):
+        dati = monitoraggio.FonteDati()
+        with _patch_gate():
+            esito = await monitoraggio.controlla(
+                _riga(), scarica=_scarica, classifica=_classificatore(evento),
+                fonte_dati=dati, tipi_attivi=tipi, adesso=ADESSO, casuale=lambda: 0.5, **kw)
+        return esito, dati
+
+    def _rettifica(self, campo, valore="nuovo testo"):
+        return eventi.Evento(tipo="rettifica", campo=campo, valore=valore, url_prova=URL_PROVA,
+                             citazione="Rettifica dell'avviso")
+
+    async def test_rettifica_di_contenuto_e_di_allegati(self):
+        for campo in ("contenuto", "allegati"):
+            with self.subTest(campo=campo):
+                esito, dati = await self._controlla(self._rettifica(campo), tipi=("rettifica",))
+                self.assertEqual(esito.eventi_applicati, 1)
+                self.assertEqual(dati.azzerati, [1])
+                self.assertTrue(esito.rielaborazione_richiesta)
+
+    async def test_riapertura(self):
+        riapertura = eventi.Evento(tipo="riapertura", valore="2026-12-15", url_prova=URL_PROVA,
+                                   citazione="Il bando e' riaperto fino al 15 dicembre 2026")
+        esito, dati = await self._controlla(riapertura, tipi=("riapertura",))
+        self.assertEqual(esito.eventi_applicati, 1)
+        self.assertEqual(dati.azzerati, [1])
+
+    async def test_altri_eventi_no(self):
+        for evento, tipi in ((_faq(), TIPI), (_proroga(), TIPI),
+                             (self._rettifica("data_scadenza", "2026-11-30"), ("rettifica",))):
+            with self.subTest(tipo=evento.tipo, campo=evento.campo):
+                esito, dati = await self._controlla(evento, tipi=tipi)
+                self.assertEqual(dati.azzerati, [])
+                self.assertFalse(esito.rielaborazione_richiesta)
+
+    async def test_solo_se_applicato_e_mai_in_dry_run(self):
+        # In ombra (tipo non attivo) l'evento non e' applicato: niente marcatore.
+        esito, dati = await self._controlla(self._rettifica("contenuto"), tipi=())
+        self.assertEqual((esito.eventi_applicati, dati.azzerati), (0, []))
+        esito, dati = await self._controlla(self._rettifica("contenuto"), tipi=("rettifica",),
+                                            dry_run=True)
+        self.assertEqual(dati.azzerati, [])
+
+    def test_regola_pura(self):
+        self.assertTrue(monitoraggio.rimette_in_rielaborazione("riapertura", None))
+        self.assertTrue(monitoraggio.rimette_in_rielaborazione("rettifica", "allegati"))
+        self.assertFalse(monitoraggio.rimette_in_rielaborazione("rettifica", "data_apertura"))
+        self.assertFalse(monitoraggio.rimette_in_rielaborazione("proroga", None))
+
+    def test_supabase_senza_la_funzione_di_b4_non_fa_niente(self):
+        fonte = monitoraggio.FonteDatiSupabase(controllo=object(), client=object())
+        with patch.object(db, "azzera_rielaborazione", None, create=True):
+            self.assertFalse(fonte.azzera_rielaborazione(1))
+        # `db.azzera_rielaborazione` risponde con un dict: conta `scritto`
+        # (§18.8), non il fatto che abbia risposto.
+        chiamate = []
+        for risposta, atteso in (({"scritto": True}, True),
+                                 ({"scritto": False, "motivo": "nessuna riga della fonte"}, False)):
+            with self.subTest(risposta=risposta), \
+                    patch.object(db, "azzera_rielaborazione",
+                                 lambda i, _r=risposta: (chiamate.append(i), _r)[1], create=True):
+                self.assertIs(fonte.azzera_rielaborazione(7), atteso)
+        self.assertEqual(chiamate, [7, 7])
+
+
+class TestTipiTuttiEMigrazione14(unittest.IsolatedAsyncioTestCase):
+    """Giro 3, §3: con `tutti`, sospensione/revoca/annullamento solo con la 14
+    applicata e `MONITOR_STATI_ESTESI` vero; altrimenti in ombra, senza allarme."""
+
+    async def _giro(self, *, sospensioni, stati_estesi):
+        dati = _FonteSenzaLimite(righe=[_riga()])
+        dati.sospensioni = sospensioni
+        with _patch_gate():
+            return await monitoraggio.run(
+                impostazioni=_impostazioni(monitor_tipi_attivi=eventi.TIPI_PROPONIBILI,
+                                           monitor_stati_estesi=stati_estesi),
+                fonte_dati=dati, scarica=_scarica, classifica=_classificatore(_faq()),
+                tabella_domini={}, lock=_lock_libero(), adesso=ADESSO, casuale=lambda: 0.5)
+
+    async def test_senza_la_14_restano_in_ombra(self):
+        for sospensioni, estesi in ((False, True), (True, False), (False, False)):
+            with self.subTest(sospensioni=sospensioni, estesi=estesi):
+                esito = await self._giro(sospensioni=sospensioni, stati_estesi=estesi)
+                self.assertEqual(esito["tipi_in_attesa_migrazione_14"],
+                                 ["sospensione", "revoca", "annullamento_revoca"])
+                for tipo in eventi.TIPI_STATI_ESTESI:
+                    self.assertNotIn(tipo, esito["tipi_attivi"])
+                self.assertIn("faq", esito["tipi_attivi"])
+                self.assertFalse(any("migrazione" in a for a in esito["allarmi"]))
+
+    async def test_con_la_14_e_gli_stati_estesi_tutti_attivi(self):
+        esito = await self._giro(sospensioni=True, stati_estesi=True)
+        self.assertEqual(esito["tipi_attivi"], list(eventi.TIPI_PROPONIBILI))
+        self.assertEqual(esito["tipi_in_attesa_migrazione_14"], [])
+
+    def test_regola_pura(self):
+        attivi, attesa = eventi.tipi_attivi_effettivi(("faq", "revoca", "faq"), capacita=True,
+                                                      stati_estesi=False)
+        self.assertEqual((attivi, attesa), (("faq",), ("revoca",)))
+        self.assertEqual(eventi.tipi_attivi_effettivi(("revoca",), capacita=True, stati_estesi=True),
+                         (("revoca",), ()))
+
+
 class TestGiroPerTipo(unittest.IsolatedAsyncioTestCase):
     async def _giro(self, **kw):
         dati = _FonteSenzaLimite(righe=[_riga()])
