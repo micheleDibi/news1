@@ -5,7 +5,9 @@ Supabase distinti. Produzione su servizi systemd (repo in `~/projects/news1`) di
 locale su macOS; nessuno staging documentato. Per architettura, pipeline e variabili d'ambiente in dettaglio:
 `README.md` (riallineato al codice il 25/09/2026; in caso di contrasto vale il codice). Fonti aggiornate:
 `docs/bandi-monitor/RIPRESA.md` (da leggere per primo nelle sessioni sui bandi), `docs/contratto-db-bandi.md`,
-`docs/api-v1.md`, `.env.example`.
+`docs/api-v1.md`, `.env.example`. Per capire la logica dei bandi: `docs/bandi-monitor/GUIDA-BANDI.md`. I documenti di
+lavoro dei giri passati (misure, studi, SQL di correzione, AVANZAMENTO) sono stati rimossi l'01/10/2026: stanno nella
+storia git.
 
 ## Stack
 - Linguaggio/versione: TypeScript `strict` (Node 22, in locale 22.14; i test usano `--experimental-strip-types`) e

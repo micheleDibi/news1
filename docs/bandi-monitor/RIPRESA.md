@@ -1,5 +1,13 @@
 # Bandi — punto di ripresa e verifiche
 
+> **01/10/2026: deploy del giro 2 FATTO** (10:10, giro di avvio finito bene alle 10:18); migrazioni 12 e 13
+> applicate; pannello di BandoFit rimandato. Per capire il sistema: `docs/bandi-monitor/GUIDA-BANDI.md`.
+> **Documenti di lavoro rimossi l'01/10/2026**: i file SQL di correzione già eseguiti, le misure e gli studi dei giri
+> passati (`misure-*.md`, `ombra-2026-10.md`, `rigenerazione-2026-10.md`, `doppioni-oe-da-fondere.md`,
+> `lettori-secondo-lotto.md`, `verifiche-michele-2026-10.md`), `AVANZAMENTO.md` e i contratti interni chiusi
+> (`docs/contracts/bandi-ripresa-ottobre.md`, `docs/contracts/studio-*.md`). Dove questo file o il codice li citano,
+> si recuperano dalla storia git: `git log --oneline -- <percorso>` e poi `git show <commit>^:<percorso>`.
+
 Questo file serve a riprendere il lavoro sui bandi dopo una pausa di giorni o di settimane, senza
 rileggere il piano né ricostruire il contesto. È aggiornato al **30 settembre 2026**, alla fine del
 giro «ripresa bandi, ottobre 2026»:
@@ -1531,8 +1539,11 @@ lettura; le correzioni sono file SQL che lancia il committente.
 - **41 coppie ObiettivoEuropa / fonte ufficiale** pubblicate tutte e due e mai fuse
   (`doppioni-oe-da-fondere.md`): lavoro con il committente, con `bando_fondi` e dopo aver deciso
   per BandoFit.
-- **Verifiche che solo il committente può fare**: `verifiche-michele-2026-10.md` (crediti, backup,
-  rotazione della password OE, 57014, unit, DNS della Basilicata).
+- **Verifiche che solo il committente può fare** (erano in `verifiche-michele-2026-10.md`, rimosso):
+  backup del DB bandi prima di operazioni irreversibili; credito Anthropic sopra i 10 USD o ricarica automatica;
+  residuo Firecrawl (si rinnova il 05/10); rotazione della password di ObiettivoEuropa (P0 aperto) e login dopo la
+  rotazione; errori 57014 nei log Postgres degli ultimi 7 giorni; il 07/10 il DNS della Basilicata
+  (`getent hosts portalebandi.regione.basilicata.it` dal server).
 
 ### 4.6 Giro 2 dei bandi, percorso A «stato da verificare» (30/09/2026, notte)
 
