@@ -3,7 +3,9 @@
 Flusso a 2 fasi:
   PHASE A - REFINEMENT: per ogni bando con stato_bando=NULL, Firecrawl +
     LLM Haiku determinano lo stato. Se diventa 'chiuso' -> skip; altrimenti
-    aggiunto agli enrich_targets.
+    aggiunto agli enrich_targets. Il 'chiuso' del modello con la scadenza
+    della riga da oggi in poi vale 'aperto', poi la riconciliazione con le
+    date (§21.1).
 
   PHASE B - ENRICHMENT: per ogni bando aperto/in apertura, 7 LLM call
     PARALLELE (asyncio.gather) per estrarre FK + junction. Update DB:
@@ -38,7 +40,12 @@ from .date_validation import parse_iso, reconcile_stato_bando
 from .dominio_ufficiale import scegli_fonte
 from .enricher import enrich_bando, refine_stato_bando
 from .logger import logger
-from .preprocessor import aggiungi_delta_scarico, conta_spesa, istantanea_scarico
+from .preprocessor import (
+    aggiungi_delta_scarico,
+    conta_spesa,
+    istantanea_scarico,
+    scarta_chiuso_del_modello,
+)
 from .settings import get_settings
 from .stato_bando import oggi_roma
 
@@ -93,6 +100,7 @@ async def run(
     if not bandi:
         logger.info("[enrich] nessun bando candidato all'enrichment")
         return {"refined_total": 0, "enriched_total": 0, "elapsed_s": 0,
+                "chiuso_modello_scartato": 0,
                 "copertura": telemetria.copertura(0, 0)}
 
     # La spesa del passo (§4): refine e classificazioni, contate dall'involucro
@@ -103,6 +111,9 @@ async def run(
     scarico_prima = istantanea_scarico()
     errori = 0
     letti_da_ufficiale = 0
+    # §21.1 (estensione): i 'chiuso' del refine scartati per la scadenza da
+    # oggi in poi (la riga va avanti alla fase B invece di restare nascosta).
+    chiuso_modello_scartato = 0
 
     # 2. Pre-load fonti + nomi catalogo
     fonte_ids = list({b["fonte_id"] for b in bandi if b.get("fonte_id") is not None})
@@ -144,11 +155,21 @@ async def run(
     if refine_targets:
         logger.info("[enrich] === PHASE A: refinement di {} bandi ===", len(refine_targets))
         sem_refine = asyncio.Semaphore(max(1, settings.enrich_concurrency_refine))
+        # §21.1 (estensione): un solo «oggi» (data civile di Roma) per tutta la
+        # fase A del lancio.
+        oggi_refine = oggi_roma()
 
         async def _do_refine(b: dict[str, Any]) -> tuple[int, str | None, float, str]:
             """Ritorna (bando_id, stato_o_None, confidenza, motivo). Lo stato e'
             None (nessuna scrittura, nessuna promozione) se il LLM fallisce, se
-            risponde fuori enum o se la confidenza e' sotto la soglia."""
+            risponde fuori enum o se la confidenza e' sotto la soglia.
+
+            §21.1 (estensione): lo stato del modello passa da
+            `scarta_chiuso_del_modello` (un 'chiuso' con la scadenza della riga
+            da oggi in poi vale 'aperto') e poi da `reconcile_stato_bando` con
+            le date della riga. Lo stato che ne esce e' quello scritto e quello
+            che decide la promozione alla fase B, anche in dry-run."""
+            nonlocal chiuso_modello_scartato
             bando_id = b["id"]
             fonte_ctx = fonti_by_id.get(b.get("fonte_id"), {})
             # Giro 3 (§8): lo stato si decide sulla pagina ufficiale quando
@@ -172,6 +193,24 @@ async def run(
                         bando_id, stato, conf,
                     )
                     return (bando_id, None, conf, reason)
+                # §21.1 (estensione): la riga e' `processed` e mai pubblicata, lo
+                # stato viene dal modello. Stesse date e stesso «oggi» della
+                # rete di sicurezza della fase B (che resta com'e').
+                scad = parse_iso(str(b.get("data_scadenza") or "")[:10])
+                apt = parse_iso(str(b.get("data_apertura") or "")[:10])
+                stato_modello, scartato = scarta_chiuso_del_modello(stato, scad, oggi_refine)
+                stato_finale = reconcile_stato_bando(stato_modello, apt, scad, today=oggi_refine)
+                if scartato:
+                    chiuso_modello_scartato += 1
+                if stato_finale != stato:
+                    logger.info(
+                        "[enrich/refine] bando_id={} stato del modello {!r} -> {!r} "
+                        "(apt={} scad={}, oggi={}, chiuso scartato={})",
+                        bando_id, stato, stato_finale, apt, scad, oggi_refine, scartato,
+                    )
+                if stato_finale is None:                  # pragma: no cover - difesa
+                    return (bando_id, None, conf, reason)
+                stato = stato_finale
                 if not dry_run:
                     await update_bando_refinement(bando_id, stato, confidence=conf)
                 return (bando_id, stato, conf, reason)
@@ -364,6 +403,9 @@ async def run(
         "safety_net_forced_chiuso": enrich_counter["safety_net_forced_chiuso"],
         "safety_net_forced_in_apertura": enrich_counter["safety_net_forced_in_apertura"],
         "refined_undetermined": refined_counter.get(None, 0),
+        # §21.1 (estensione): i 'chiuso' del refine scartati perche' la
+        # scadenza della riga era da oggi in poi
+        "chiuso_modello_scartato": chiuso_modello_scartato,
         "skipped_senza_stato": enrich_counter["skipped_senza_stato"],
         "con_chiamate_fallite": enrich_counter["con_chiamate_fallite"],
         "dimensioni_fallite": enrich_counter["dimensioni_fallite"],
