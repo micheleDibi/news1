@@ -769,7 +769,9 @@ vale §19. Tutto il resto delle sezioni A vale com'è scritto.
   **prima** di `p_adesso`. Nessuna funzione nuova per anon: l'insieme delle funzioni eseguibili da anon previsto dalla
   guardia della 12 non cambia.
 - La vista riceve **5 colonne in coda**: le 4 di §2.2 più `termine_indicato_fonte` (NULL quando `termine_indicato` è
-  NULL). La verifica attende colonne della vista = prima + 5. La 07 e il suo rollback portano le 5 colonne.
+  NULL). **[lead, revisione #104]** `stato_letto` e `stato_letto_at` della vista valgono NULL anche quando
+  `stato_letto_metodo` ≠ 'estrattore': il sito non deve dire «la pagina ufficiale lo indicava aperto» su una lettura
+  del modello, che la regola (A2) non considera una conferma. La verifica attende colonne della vista = prima + 5. La 07 e il suo rollback portano le 5 colonne.
 - Casi PG17 nuovi: in ombra (`esaminato_attivo_at` NULL) un aperto senza scadenza pubblicato da 30 giorni → NULL; lo
   stesso con `esaminato_attivo_at` → `senza_conferma`; segnale più recente di una conferma → `senza_conferma`;
   `termine_indicato` senza fonte → 23514; `SET ROLE anon`: la SELECT della vista restituisce le 5 colonne.
@@ -793,7 +795,21 @@ vale §19. Tutto il resto delle sezioni A vale com'è scritto.
   - **A6.** `termine_indicato` ≥ oggi → NULL;
   - **A7.** `pubblicato_at` al massimo 7 giorni fa → NULL (grazia);
   - **A8.** altrimenti → `senza_conferma`.
-- «Non esiste un motivo debole» vale ora solo per il ramo I e per l'ombra.
+- **[lead, 30/09 notte, revisione #104] Ramo I in ombra**: fra I6 e I7 si inserisce **I6-bis. `esaminato_attivo_at`
+  NULL → NULL**. In ombra nessuna lettura può confermare un «in apertura» (I5), quindi `senza_conferma` sul ramo I
+  compare solo dopo una lettura in attivo, come sul ramo A. I codici dei casi: `i6bis-*`.
+- **[lead, 30/09 notte, revisione #103] ORDINE DEFINITIVO — in ombra conta solo ciò che il bando dice di sé.**
+  `previsto_entro` e `termine_indicato` li scrive il passo nuovo, anche in ombra: prima dei 7 giorni di verifica
+  (`report-verifica-stato --verita`) non devono cambiare niente di pubblico. Le etichette restano le stesse, cambia
+  solo l'ordine di valutazione:
+  - **ramo I: I1, I2, I3, I6-bis, I4, I5, I6, I7** (in ombra solo I1 e I2; I3 richiede una lettura, che in ombra non
+    si scrive);
+  - **ramo A: A1, A2, A4, A3, A5, A6, A7, A8** (in ombra A1 e A2 non scattano per lo stesso motivo, quindi il ramo A
+    dà sempre NULL).
+  In attivo l'esito è identico all'ordine di prima, perché I6-bis e A4 non scattano. Conseguenza: in ombra l'unico
+  motivo pubblico è `data_apertura_passata` (I2), che dipende solo da `bando.data_apertura`. Il passo scrive
+  `esaminato_attivo_at` in attivo per OGNI candidato esaminato, compresi gli illeggibili (senza fetch).
+- «Non esiste un motivo debole» vale ora solo per l'ombra.
 - Casi obbligatori nuovi: A4-A8, il confine dei 7 giorni a mezzanotte di Roma, il segnale prima e dopo la conferma, il
   termine futuro con il segnale (→ `senza_conferma`), la conferma del modello che non spegne A8, l'ombra. **Almeno 80
   casi** nella sezione `certezza`.
@@ -829,6 +845,11 @@ vale §19. Tutto il resto delle sezioni A vale com'è scritto.
   `trattenuto_dal`; sempre una riga senza link_bando, fonte_ufficiale_url, bando_link e senza alcuna data (motivo
   'senza_appiglio'). In ombra la sosta conta e basta: si pubblica come oggi.
 
+- **[lead] Righe di `pipeline_run` del passo**: la fase controlli scrive una SUA riga `step='verifica_stato'`, la fase
+  ingresso una riga `step='verifica_stato_ingresso'`, entrambe con `giro` e i contatori di §5.9/§19.4 (come il monitor
+  con `step='monitor'`); la riga `'pipeline'` riporta solo lo stato del passo. `misure_salute` (`da_verificare`,
+  `verifica_7g`) legge solo le righe `step='verifica_stato'`.
+
 ### 19.5 Estrattori, date e ingresso (modifica §6)
 - **§6.1** Nuova chiave `generico` in ESTRATTORI: frasi compiute (`bando|avviso|sportello|domande` a non più di 60
   caratteri da `chius[oa]|scadut[oa]|sospes[oa]|esaurit[ae]|non è più possibile presentare`) nell'h1, nei badge/label e
@@ -849,12 +870,21 @@ vale §19. Tutto il resto delle sezioni A vale com'è scritto.
   nel testo della scheda (validate_date_candidate con provenienza aggregatore). Status '2' → 'in apertura
   prossimamente'; `on_arrival` escluso. Prompt invariati. «Nessun rifiuto all'ingresso» resta: la sosta è in §5.10.
 
+- **[lead, dopo #73]** Secondo lotto effettivo: `invitalia`, `toscana`, `fvg` (pr2127 è già il lettore `puglia`).
+  «Le date vincono» quando l'etichetta contraddice le date («In corso»/«Aperto» con termine passato, o un chiuso solo
+  segnale) → 'chiuso' senza `puo_chiudere`; un «Chiuso» strutturato con `puo_chiudere` resta chiusura (§5.6 e). Calabria
+  «Pre-informazione» → 'in apertura prossimamente' (come VERITA_NOTA 1261858, prevale sulla tabella di §6.1). Firma:
+  `leggi(html, url_finale, titolo, *, oggi=None)` e `leggi_generico` pubblica. **[lead, revisione #93]** Un'etichetta
+  di chiusura mai vista su una pagina vera vale solo segnale (`puo_chiudere=False`) finché non entra una fixture vera:
+  oggi toscana «Chiuso», fvg «[BANDO CHIUSO]», Piemonte «concluso», Calabria «Conclusione». Le fixture non contengono
+  dati personali (email, anche offuscate, e nomi): un test le scandisce.
+
 ### 19.6 Salute (aggiunte a §8, codici A)
 `allarmi_verifica_stato()` comprende: `aperti_senza_conferma` (avviso: quota di senza_conferma sugli aperti senza
 scadenza > 60%), `ingresso_trattenuti` (avviso: trattenuti_senza_appiglio > 10, oppure rilasciati_a_tempo > 50% in 7
 giorni), `indicepa_non_aggiornato` (avviso: ultimo import riuscito più vecchio di 40 giorni), **[lead]**
 `vista_lenta` (allarme: la lettura di prova di `bando_pubblico` con `limit=24`, misurata da `misure_salute` come chiave
-`vista_ms`, supera 2 000 ms; protegge il sito dall'effetto dell'import completo) e **[lead]** `indicepa_import_anomalo`
+`vista_ms`, supera 2 000 ms; protegge il sito dall'effetto dell'import completo. La GET si fa come anon se nell'ambiente c'è `PUBLIC_SUPABASE_BANDI_ANON_KEY`, altrimenti con la service key: `vista_ms_ruolo` dice quale; con 'servizio' il codice è un avviso, perché la RLS non è misurata) e **[lead]** `indicepa_import_anomalo`
 (avviso: l'ultimo import ha scartato più del 20% delle righe o ne ha trovate meno di 15 000).
 
 ### 19.7 Segnale dell'aggregatore (nuovo)
@@ -884,8 +914,10 @@ giorni), `indicepa_non_aggiornato` (avviso: ultimo import riuscito più vecchio 
     **non si scrive niente** e l'esito va in `indicepa_import_anomalo`;
   - se il download fallisce la tabella resta com'è e l'esito (data, righe lette, inserite, escluse per motivo) si
     registra per `indicepa_non_aggiornato` (nella riga `pipeline_run` del passo, contatori `indicepa_*`).
-- Il passo `domini` gira nel **primo giro delle 06 di ogni mese** (e al primo giro delle 06 dopo il deploy, se non c'è
-  un import riuscito negli ultimi 40 giorni: così non si aspetta il mese successivo). Modalità: segue
+- Il passo `domini` gira nel giro delle 06 **se nel mese di calendario di Roma non c'è ancora un import «fatto»** (in
+  ombra 'ok' o 'ombra', in attivo solo 'ok'; un import fallito si ritenta alle 06 del giorno dopo): copre il primo 06
+  del mese, il primo 06 dopo il deploy e il primo 06 dopo l'attivazione. I 40 giorni restano solo nel codice di salute
+  `indicepa_non_aggiornato`. [lead, allineato al codice di #82] Modalità: segue
   `VERIFICA_STATO_MODALITA` (in ombra: scarica, compone, conta, non scrive).
 
 ### 19.9 Gemelli (D2)
@@ -893,25 +925,37 @@ giorni), `indicepa_non_aggiornato` (avviso: ultimo import riuscito più vecchio 
   entrambe, descrizione del calendario normalizzata identica e non vuota (almeno 3 token), e stesso raw `source_url`
   oppure stessa data di chiusura del calendario. Positivi: 803614=803633, 803615=803634, 803623=803642,
   1260432=1260443. Negativi: stessa fonte con date diverse; fonti diverse.
+- **[lead] Guardie di prudenza sulle coppie per URL nel passo automatico** (non in `criteri_esatti`): l'URL comune
+  compare in esattamente 2 pubblicati (3 o più = pagina hub o lotti), titoli con somiglianza almeno 'medio', e
+  `data_scadenza` uguale o NULL su una delle due. Le scartate si contano in `coppie_scartate_per_prudenza`.
+  Per TUTTI i criteri del passo automatico: nessuna fusione se i titoli differiscono per anno, lotto, edizione,
+  annualità, finestra o tranche (`anni_o_lotti_diversi`); un doppione si fonde solo con una coppia prudente diretta
+  con il master; i gruppi con più di due righe restano a mano (`gruppi_oltre_due`); se la lettura dei pubblicati
+  tocca il limite della select il passo si ferma con errore.
 - Passo `gemelli` nel giro delle 06, con tetto `GEMELLI_FUSIONI_PER_GIRO` (10; 0 = spento). **[lead] Modalità:
   segue `VERIFICA_STATO_MODALITA`**: in ombra elenca e conta le fusioni che farebbe (riga `pipeline_run`), in attivo
   fonde. Così la prima fusione automatica arriva dopo almeno 7 giorni dal messaggio a BandoFit, che il contratto DB
   chiede prima di ogni lotto di fusioni.
 - Prima della pubblicazione `bando_seo_runner` fonde i gemelli esatti (la riga nuova è il doppione) con
-  `db.fondi_bandi`, con la stessa modalità.
+  `db.fondi_bandi`, con la stessa modalità. **[lead, revisione #102]** La fusione lascia tracce leggibili: una riga in
+  `bando_fusione` con l'id del doppione mai pubblicato (slug_originale NULL, da ignorare), l'evento `fusione`, i link
+  del doppione e un nuovo `ultimo_cambiamento_at` sul master; il doppione va in 'rejected' con il motivo.
 
 ### 19.10 Sender e pipeline (aggiunte a §11)
 Nuovi passi, tutti con `_passo_se_esiste` e dentro il lock del giro esistente:
-- `verifica_stato` (fase controlli) dopo il monitor, come in §11; `ids_da_rigenerare` passati a
+- `verifica_stato` (fase controlli) dopo il monitor, **solo nei giri delle 06 e delle 18** come il monitor ([lead, #82]); `ids_da_rigenerare` passati a
   `_rigenerazione_di_produzione`, slug solo per gli eventi applicati;
 - `verifica_stato` con `fase='ingresso'` prima della SEO, in ogni giro;
-- `domini` come in §19.8;
+- `domini` come in §19.8 (nel giro delle 06, se nel mese di calendario di Roma non c'è ancora un import «fatto»: in ombra 'ok' o 'ombra', in attivo solo 'ok');
 - `gemelli` come in §19.9.
 
 ### 19.11 Variabili (aggiunte a §12)
 `VERIFICA_STATO_MODALITA` (ombra|attivo, default ombra), `INGRESSO_SOSTA_GIRI` (4, da 0 a 12),
 `VERIFICA_STATO_TETTO_INGRESSO` (30), `GEMELLI_FUSIONI_PER_GIRO` (10, 0 = spento), `INDICEPA_URL` (default nel codice:
 la risorsa pubblica; la variabile serve solo a cambiarla). In `.env.example` solo i nomi.
+Attributi di `settings` (nomi fissi, 30/09 notte): `verifica_stato_modalita`, `ingresso_sosta_giri`,
+`verifica_stato_tetto_ingresso`, `gemelli_fusioni_per_giro`, `indicepa_url`. Chi li legge prima di #76 li prende con
+`getattr(settings, nome, predefinito)`.
 
 ### 19.12 CLI (aggiunte a §13)
 `domini --import --scarica-enti [--dry-run]`; `verifica-stato --dry-run [--fase ingresso] [--ids] [--senza-modello]
@@ -943,7 +987,7 @@ NULL»); `dominio_ufficiale.origine='indicepa'` e import completo mensile; fusio
 compreso `riga_calendario`, e la regola dell'avviso (§19.9). RIPRESA: §4.1 d risolta con l'import completo; §4.1 g
 risolta con D2; §4.1 c resta aperta; la trappola «resolver e monitor non leggono la tabella» è chiusa per resolver e
 verifica-stato. Il messaggio a BandoFit comprende la colonna nuova, il nuovo significato di `senza_conferma`, le fusioni
-automatiche (volume atteso: 18 nella prima settimana attiva, poi pochi al mese) e il cambio visibile in blocco
+automatiche (volume misurato il 30/09 in ombra, dopo tutte le guardie di prudenza: 52 fusioni (dopo la revisione del ciclo 2: 43 per URL e 9 di calendario), soprattutto le coppie LazioEuropa e schede dell'aggregatore uguali alla pagina dell'ente; con il tetto di 10 per giro delle 06 servono circa 6 giorni; il numero esatto lo dà `gemelli --dry-run` alla vigilia dell'attivazione; poi pochi al mese) e il cambio visibile in blocco
 (circa 220-260 schede con «da verificare» nelle 2-3 settimane dopo l'attivazione).
 
 ### 19.16 Ordine di rilascio (modifica §17)
@@ -953,3 +997,12 @@ soltanto; il preprocess a 8 000 caratteri è attivo subito (per 7 giorni si conf
 87%, e la distribuzione degli stati; se derivano si torna a 4 000 con la costante). **[lead]** Dopo il primo import in
 attivo Michele esegue una volta la query EXPLAIN della Verifica 7 (righe corte, in RIPRESA); il codice `vista_lenta`
 resta come rete automatica.
+
+### 19.17 Correzioni dopo la revisione avversaria (ciclo 1, 01/10)
+- Le fusioni automatiche (passo `gemelli` e fusione prima della pubblicazione) usano SOLO i criteri `url` e
+  `riga_calendario`; `chiave_esterna` e `atto` restano per l'uso manuale (`fondi-doppioni`).
+- Le viste (13, 07, rollback 07) espongono `termine_indicato` e `termine_indicato_fonte` solo con
+  `esaminato_attivo_at IS NOT NULL`: in ombra il termine non è pubblico. La funzione del motivo lo legge comunque.
+- La 07 non si applica finché il sito chiede `link_candidatura`, `link_candidatura_source` e `allegati`
+  (precondizione nella sua testa, test che fissa lo scarto).
+- Non si riesegue la 02 dopo la 13 (toglie i grant di colonna).

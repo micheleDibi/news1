@@ -13,7 +13,7 @@
  *
  * Modulo «foglia»: nessun import impuro, nessuna lettura dell'orologio.
  */
-import { STATI_BANDO } from '../stato-bando';
+import { motivoVisibile, STATI_BANDO } from '../stato-bando';
 import type { StatoBando } from '../stato-bando';
 
 export interface AspettoStato {
@@ -73,6 +73,23 @@ export const BARRA_SCONOSCIUTO = 'bg-[#d5dbe4]';
 export function aspettoStato(stato: string | null | undefined): AspettoStato | null {
   for (const valido of STATI_BANDO) if (stato === valido) return ASPETTO_STATO[valido];
   return null;
+}
+
+/**
+ * Come `aspettoStato`, con « · da verificare» in coda all'etichetta quando lo
+ * stato ha un motivo compatibile (`motivoVisibile`): «In apertura · da
+ * verificare», «Aperto · da verificare». Palette e barra restano quelle dello
+ * stato: il bando resta fra gli aperti o fra gli «in apertura», e la pillola
+ * lo dice a parole. Nessun conto alla rovescia in più: la card lo mostra solo
+ * per un aperto con scadenza, e il ramo A della regola non ne ha.
+ */
+export function aspettoConVerifica(
+  stato: string | null | undefined,
+  motivo: string | null | undefined,
+): AspettoStato | null {
+  const base = aspettoStato(stato);
+  if (base === null || motivoVisibile(stato, motivo) === null) return base;
+  return { ...base, etichetta: `${base.etichetta} · da verificare` };
 }
 
 /**

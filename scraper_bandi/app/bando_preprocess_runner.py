@@ -52,6 +52,12 @@ def _build_update(bando_id: int, analysis: dict[str, Any]) -> dict[str, Any]:
         update["data_pubblicazione"] = analysis.get("data_pubblicazione")
         update["data_apertura"] = analysis.get("data_apertura")
         update["data_scadenza"] = analysis.get("data_scadenza")
+        # Le ore solo quando la citazione le contiene: una chiave assente non
+        # tocca la colonna. `data_scadenza_verificata` non si scrive mai qui:
+        # la governa un evento (CHECK della 03).
+        for campo in ("ora_apertura", "ora_scadenza"):
+            if analysis.get(campo):
+                update[campo] = analysis[campo]
     else:
         update["stato_processing"] = "rejected"
         update["stato_bando"] = None
@@ -157,6 +163,12 @@ async def run(
     with_pub = 0
     with_apt = 0
     with_scad = 0
+    with_ora_apt = 0
+    with_ora_scad = 0
+    date_presunte_respinte = 0
+    origini_scadenza: Counter[str] = Counter()
+    chiusi_da_lettore = 0
+    status2_in_apertura = 0
 
     for bid, res in results:
         if isinstance(res, Exception):
@@ -172,6 +184,7 @@ async def run(
             fallback_rinviati += 1
             continue
         update = _build_update(bid, analysis)
+        date_presunte_respinte += int(analysis.get("_date_presunte_respinte") or 0)
         confidence_sum += update["confidence_score"]
         confidence_n += 1
         if analysis.get("_fallback_used"):
@@ -187,6 +200,15 @@ async def run(
                 with_apt += 1
             if update.get("data_scadenza"):
                 with_scad += 1
+                origini_scadenza[analysis.get("_origine_scadenza") or "altro"] += 1
+            if update.get("ora_apertura"):
+                with_ora_apt += 1
+            if update.get("ora_scadenza"):
+                with_ora_scad += 1
+            if analysis.get("_chiuso_da_lettore"):
+                chiusi_da_lettore += 1
+            if analysis.get("_status2_in_apertura"):
+                status2_in_apertura += 1
         else:
             rejected_updates.append(update)
 
@@ -212,6 +234,18 @@ async def run(
         "with_data_pubblicazione": with_pub,
         "with_data_apertura": with_apt,
         "with_data_scadenza": with_scad,
+        "with_ora_apertura": with_ora_apt,
+        "with_ora_scadenza": with_ora_scad,
+        # da dove viene la scadenza scritta (§6.3, §19.5): il modello resta la
+        # fonte principale, gli altri sono i ripieghi del giro 2
+        "scadenze_da_lettore": origini_scadenza["lettore"],
+        "scadenze_da_finestra": origini_scadenza["finestra"],
+        "scadenze_da_etichetta_oe": origini_scadenza["etichetta_oe"],
+        "chiusi_da_lettore": chiusi_da_lettore,
+        "status2_in_apertura": status2_in_apertura,
+        # date che G10 ha respinto perche' presunte: nei 7 giorni d'ombra
+        # separa l'effetto del prompt a 8 000 caratteri da quello di G10
+        "date_presunte_respinte": date_presunte_respinte,
         "fallback_used": fallback_used,
         "fallback_failed": fallback_failed,
         "fallback_rinviati": fallback_rinviati,

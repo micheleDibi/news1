@@ -119,6 +119,7 @@ const BANDO: BandoDto = {
     funding_method: null, sectors: [], beneficiaries: [], ateco_codes: [{ code: '62.01', description: null }],
     total_amount_eur: null, max_amount_per_project_eur: null, opens_on: null, source_published_on: null,
     official_source: FONTE_UFFICIALE, opens_on_verified: null, deadline_verified: null, last_checked_at: null,
+    stato_da_verificare: null,
   },
 };
 
@@ -325,7 +326,9 @@ test('schemi DTO: nullabilita\' coerente con i DTO', () => {
     ['DettagliBando', ['short_title', 'issuer', 'geographic_area', 'kind', 'program', 'funding_method',
       'total_amount_eur', 'max_amount_per_project_eur', 'opens_on', 'source_published_on',
       // v1.1: tutti nullabili, perche' oggi sono tutti null.
-      'official_source', 'opens_on_verified', 'deadline_verified', 'last_checked_at']],
+      'official_source', 'opens_on_verified', 'deadline_verified', 'last_checked_at',
+      // v1.2: null = nessuna prova contraria.
+      'stato_da_verificare']],
     ['FonteUfficiale', ['type', 'verified_on']],
     ['CodiceAteco', ['description']],
     ['RisorsaIndice', ['feeds']],

@@ -23,7 +23,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
@@ -391,6 +391,203 @@ async def escludi_doppioni_oe(
     return [b for b in bandi if b["id"] not in esclusi], contatori
 
 
+def _modalita_verifica_attiva() -> bool:
+    """`VERIFICA_STATO_MODALITA=attivo`? Nel dubbio no (ombra)."""
+    try:
+        valore = getattr(get_settings(), "verifica_stato_modalita", "ombra")
+    except Exception:
+        return False
+    return str(valore or "").strip().lower() == "attivo"
+
+
+async def trattieni_e_fondi(
+    bandi: Sequence[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+    attivo: bool | None = None,
+    adesso: datetime | None = None,
+    sosta_giri: int | None = None,
+    leggi_controlli: Callable[[list[Any]], Mapping[Any, Mapping[str, Any]]] | None = None,
+    leggi_link: Callable[[list[Any]], Sequence[Mapping[str, Any]]] | None = None,
+    leggi_pubblicati: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
+    fondi: Callable[[Any, Any, str], Any] | None = None,
+    rifiuta: Callable[[Any, str], bool] | None = None,
+    segna_trattenuto: Callable[[Any, Mapping[str, Any]], bool] | None = None,
+    colonna_sosta: bool | None = None,
+    limite_lettura: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """(bandi da mandare alla SEO, contatori): la sosta d'ingresso e i gemelli.
+
+    Contratto `bandi-giro-2` §19.4 (§5.10) e §19.9. In attivo
+    (`VERIFICA_STATO_MODALITA=attivo`, mai con `dry_run`):
+      - `ingresso.pubblicabile` trattiene un «aperto» senza scadenza ne' conferma
+        per al massimo `INGRESSO_SOSTA_GIRI` giri (e scrive `trattenuto_dal` la
+        prima volta) e sempre un bando senza appigli;
+      - un bando che ha **un solo** gemello esatto fra i pubblicati, con la
+        prudenza del passo `gemelli` (`motivo_di_prudenza`), si fonde su quel
+        pubblicato (`bando_fondi`, la riga nuova e' il doppione), esce dalla coda
+        (`rejected` con il motivo) e non si pubblica mai. Mai col fuzzy.
+    In ombra passa tutto e si conta soltanto. Una lettura che fallisce non ferma
+    lo step: passa tutto, come prima, e lo dicono i contatori.
+
+    Due guardie (revisione avversaria del 01/10):
+      - la sosta si applica solo se `bando_controllo.trattenuto_dal` esiste
+        (`colonna_sosta`): senza, una sosta non finirebbe mai. In attivo la
+        riga si pubblica come prima e si conta **solo** in
+        `sosta_senza_colonna`, non in `trattenuti`. Una riga senza appiglio
+        resta ferma anche senza la colonna: non le serve `trattenuto_dal`;
+      - se i pubblicati letti sono `limite_lettura` o piu', il corpus e'
+        tagliato: niente fusioni (`controllo_gemelli_troncato`), come nel passo
+        `gemelli`.
+    """
+    from . import gemelli as _gemelli
+    from . import ingresso as _ingresso
+
+    contatori: dict[str, Any] = {
+        "trattenuti": 0, "rilasciati_a_tempo": 0, "trattenuti_senza_appiglio": 0,
+        "fusi_prima_della_pubblicazione": 0, "gemelli_trovati": 0,
+        "fusioni_non_riuscite": 0, "controllo_ingresso_saltato": False,
+        "controllo_gemelli_saltato": False, "controllo_gemelli_troncato": False,
+        "sosta_senza_colonna": 0,
+    }
+    if not bandi:
+        return list(bandi), contatori
+    attivo = (_modalita_verifica_attiva() if attivo is None else bool(attivo)) and not dry_run
+    contatori["modalita_ingresso"] = "attivo" if attivo else "ombra"
+    if sosta_giri is None:
+        try:
+            sosta_giri = int(getattr(get_settings(), "ingresso_sosta_giri",
+                                     _ingresso.SOSTA_GIRI_PREDEFINITA))
+        except Exception:
+            sosta_giri = _ingresso.SOSTA_GIRI_PREDEFINITA
+    momento = adesso or datetime.now(timezone.utc)
+    ids = [b.get("id") for b in bandi if b.get("id") is not None]
+    esclusi: set[Any] = set()
+    if colonna_sosta is None:
+        # Dal modulo: qui sotto `controllo` e' la riga di bando_controllo.
+        try:
+            from . import db as _db
+            colonna_sosta = bool(_db.controllo.ha("bando_controllo", "trattenuto_dal"))
+        except Exception:
+            colonna_sosta = False
+    if limite_lettura is None:
+        limite_lettura = _gemelli.LIMITE_LETTURA_PUBBLICATI
+
+    # --- sosta d'ingresso ---------------------------------------------------
+    try:
+        from . import db as _db
+        controlli = dict((leggi_controlli or (lambda i: _db.select_letture_stato(ids=i)))(ids))
+        righe_link = list((leggi_link or (lambda i: select_link_da_verificare(bando_ids=i)))(ids))
+    except Exception as e:
+        logger.warning("[seo] sosta d'ingresso saltata: {}", e)
+        contatori["controllo_ingresso_saltato"] = True
+        controlli, righe_link = None, []
+    if controlli is not None:
+        link_per_bando: dict[Any, int] = {}
+        for riga in righe_link:
+            link_per_bando[riga.get("bando_id")] = link_per_bando.get(riga.get("bando_id"), 0) + 1
+        for bando in bandi:
+            controllo = dict(controlli.get(bando.get("id")) or {})
+            controllo["bando_link"] = link_per_bando.get(bando.get("id"), 0)
+            try:
+                pubblica, motivo = _ingresso.pubblicabile(
+                    bando, controllo, momento, sosta_giri=sosta_giri)
+            except Exception as e:
+                logger.warning("[seo] sosta del bando {} non valutata: {}", bando.get("id"), e)
+                continue
+            if motivo == _ingresso.MOTIVO_RILASCIATO:
+                contatori["rilasciati_a_tempo"] += 1
+            if pubblica:
+                continue
+            if attivo and not colonna_sosta and motivo == _ingresso.MOTIVO_SOSTA:
+                # Senza la colonna la sosta non finirebbe mai: si pubblica, e si
+                # conta solo qui. In `trattenuti` la telemetria la sottrarrebbe
+                # da quelle da redigere e nasconderebbe un guasto.
+                contatori["sosta_senza_colonna"] += 1
+                continue
+            chiave = ("trattenuti_senza_appiglio" if motivo == _ingresso.MOTIVO_SENZA_APPIGLIO
+                      else "trattenuti")
+            contatori[chiave] += 1
+            if not attivo:
+                continue
+            esclusi.add(bando.get("id"))
+            if motivo == _ingresso.MOTIVO_SOSTA and controllo.get("trattenuto_dal") is None:
+                scrivi = segna_trattenuto or (
+                    lambda i, c: _db.aggiorna_lettura_stato(i, c))
+                try:
+                    scrivi(bando.get("id"), {"trattenuto_dal": momento.isoformat()})
+                except Exception as e:
+                    logger.warning("[seo] trattenuto_dal del bando {} non scritto: {}",
+                                   bando.get("id"), e)
+
+    # --- gemelli esatti prima della pubblicazione ------------------------------
+    rimasti = [b for b in bandi if b.get("id") not in esclusi]
+    if rimasti:
+        try:
+            from . import db as _db
+            pubblicati = list((leggi_pubblicati or (
+                lambda: _db.select_pubblicati_per_gemelli(
+                    limit=limite_lettura, con_calendario=True)))())
+        except Exception as e:
+            logger.warning("[seo] controllo dei gemelli esatti saltato: {}", e)
+            contatori["controllo_gemelli_saltato"] = True
+            pubblicati = None
+        if pubblicati is not None and len(pubblicati) >= limite_lettura:
+            # Corpus tagliato: le righe per URL sarebbero sottostimate.
+            logger.warning("[seo] gemelli: {} pubblicati letti, limite {}: nessuna fusione",
+                           len(pubblicati), limite_lettura)
+            contatori["controllo_gemelli_troncato"] = True
+            pubblicati = None
+        if pubblicati is not None:
+            vivi = [p for p in pubblicati if p.get("bando_master_id") is None]
+            per_id = {p.get("id"): p for p in vivi}
+            # Le righe per URL contano anche il candidato: con due pubblicati
+            # sullo stesso URL e' una pagina condivisa, non un gemello.
+            righe_per_url: dict[str, int] = {}
+            for riga in [*pubblicati, *rimasti]:
+                for url in _gemelli.url_del_bando(riga):
+                    righe_per_url[url] = righe_per_url.get(url, 0) + 1
+            for bando in rimasti:
+                try:
+                    trovate = _gemelli.criteri_esatti(bando, vivi)
+                except Exception as e:
+                    logger.warning("[seo] gemelli del bando {} non valutati: {}", bando.get("id"), e)
+                    continue
+                if len(trovate) != 1:
+                    continue
+                corrispondenza = trovate[0]
+                master = per_id.get(corrispondenza.bando_id)
+                if master is None or _gemelli.motivo_di_prudenza(
+                        bando, master, corrispondenza, righe_per_url) is not None:
+                    continue
+                contatori["gemelli_trovati"] += 1
+                logger.info("[seo] gemello esatto: bando {} di {} ({})",
+                            bando.get("id"), master.get("id"), corrispondenza.criterio)
+                if not attivo:
+                    continue
+                motivo_fusione = f"{_gemelli.MOTIVO_FUSIONE}: {corrispondenza.criterio}"
+                try:
+                    effettivo = (fondi or _db.fondi_bandi)(
+                        master.get("id"), bando.get("id"), motivo_fusione)
+                except Exception as e:
+                    logger.warning("[seo] fusione del bando {} non riuscita: {}", bando.get("id"), e)
+                    effettivo = None
+                # Fuso o no, un gemello esatto non si pubblica in questo giro:
+                # se la fusione non e' riuscita si ritenta al giro dopo.
+                esclusi.add(bando.get("id"))
+                if effettivo is None:
+                    contatori["fusioni_non_riuscite"] += 1
+                    continue
+                contatori["fusi_prima_della_pubblicazione"] += 1
+                try:
+                    (rifiuta or rifiuta_doppione)(
+                        bando.get("id"), f"gemello esatto di {effettivo}: fuso")
+                except Exception as e:
+                    logger.warning("[seo] gemello fuso {} non tolto dalla coda: {}",
+                                   bando.get("id"), e)
+    return [b for b in bandi if b.get("id") not in esclusi], contatori
+
+
 def _link_del_bando(bando_id: int) -> tuple[list[dict[str, Any]], bool]:
     """(righe di `bando_link` del bando, la tabella era leggibile?).
 
@@ -442,6 +639,16 @@ async def run(
     bandi, doppioni = await escludi_doppioni_oe(bandi, dry_run=dry_run)
     if not bandi:
         logger.info("[seo] nessun bando da generare dopo il controllo dei doppioni OE")
+        return {"selected": selezionati, "elapsed_s": round(time.monotonic() - started, 1),
+                **doppioni}
+
+    # 1-ter. Giro 2 (§19.4, §19.9): la sosta d'ingresso e i gemelli esatti di
+    # un pubblicato. In ombra conta e basta; in attivo i trattenuti aspettano e
+    # i gemelli si fondono invece di essere pubblicati.
+    bandi, ingresso_gemelli = await trattieni_e_fondi(bandi, dry_run=dry_run)
+    doppioni = {**doppioni, **ingresso_gemelli}
+    if not bandi:
+        logger.info("[seo] nessun bando da generare dopo la sosta e i gemelli")
         return {"selected": selezionati, "elapsed_s": round(time.monotonic() - started, 1),
                 **doppioni}
 

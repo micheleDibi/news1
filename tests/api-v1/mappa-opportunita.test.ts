@@ -350,12 +350,14 @@ test('bando: fixture completa', () => {
       opens_on_verified: null,
       deadline_verified: null,
       last_checked_at: null,
+      // aperto con scadenza: fuori dai due rami della regola, nessun motivo
+      stato_da_verificare: null,
     },
   });
   assert.deepEqual(Object.keys(dto.details), [
     'short_title', 'issuer', 'geographic_area', 'topics', 'kind', 'program', 'funding_method', 'sectors',
     'beneficiaries', 'ateco_codes', 'total_amount_eur', 'max_amount_per_project_eur', 'opens_on', 'source_published_on',
-    'official_source', 'opens_on_verified', 'deadline_verified', 'last_checked_at',
+    'official_source', 'opens_on_verified', 'deadline_verified', 'last_checked_at', 'stato_da_verificare',
   ]);
   for (const a of dto.details.ateco_codes) assert.deepEqual(Object.keys(a), ['code', 'description']);
 });
@@ -430,6 +432,66 @@ test('i flag di verifica e l\'ultimo controllo passano solo se li sappiamo', () 
   assert.equal(senza.details.opens_on_verified, null);
   assert.equal(senza.details.deadline_verified, null);
   assert.equal(senza.details.last_checked_at, null);
+});
+
+test('stato_da_verificare dalla vista: il motivo del DB, solo se compatibile con status', () => {
+  const aperto = { stato_bando: 'aperto', data_scadenza: null };
+  for (const motivo of ['smentito_dalla_fonte', 'termine_passato', 'senza_conferma'] as const) {
+    const dto = bando({ ...aperto, stato_da_verificare: motivo });
+    assert.equal(dto.status, 'open');
+    assert.equal(dto.details.stato_da_verificare, motivo, motivo);
+  }
+  const inApertura = { stato_bando: 'in apertura prossimamente', data_apertura: '2026-10-15', data_scadenza: null };
+  for (const motivo of ['data_apertura_passata', 'smentito_dalla_fonte', 'previsione_scaduta', 'senza_conferma'] as const) {
+    const dto = bando({ ...inApertura, stato_da_verificare: motivo });
+    assert.equal(dto.status, 'upcoming');
+    assert.equal(dto.details.stato_da_verificare, motivo, motivo);
+  }
+  // mai `upcoming` con un motivo da aperto, mai un motivo accanto a uno stato
+  // che la regola non verifica
+  assert.equal(bando({ ...inApertura, stato_da_verificare: 'termine_passato' }).details.stato_da_verificare, null);
+  assert.equal(bando({ ...aperto, stato_da_verificare: 'previsione_scaduta' }).details.stato_da_verificare, null);
+  for (const stato_bando of ['chiuso', 'sospeso', 'revocato']) {
+    assert.equal(bando({ stato_bando, stato_da_verificare: 'senza_conferma' }).details.stato_da_verificare, null, stato_bando);
+  }
+  // un aperto con la scadenza passata e' `closed`: il motivo si spegne
+  assert.equal(
+    bando({ stato_bando: 'aperto', data_scadenza: '2026-09-01', stato_da_verificare: 'senza_conferma' }).details.stato_da_verificare,
+    null,
+  );
+  // null o un valore fuori vocabolario: null, anche se la riga sembrerebbe dubbia
+  assert.equal(bando({ ...inApertura, data_apertura: '2026-09-01', stato_da_verificare: null }).details.stato_da_verificare, null);
+  assert.equal(bando({ ...aperto, stato_da_verificare: 'boh' }).details.stato_da_verificare, null);
+  assert.equal(bando({ ...aperto, stato_da_verificare: 3 }).details.stato_da_verificare, null);
+});
+
+test('stato_da_verificare dalla tabella: la regola ricalcolata su oggi, senza lettura', () => {
+  const inApertura = { stato_bando: 'in apertura prossimamente', data_scadenza: null };
+  // I2: data di apertura passata e non verificata
+  assert.equal(
+    bando({ ...inApertura, data_apertura: '2026-09-15', data_apertura_verificata: false }).details.stato_da_verificare,
+    'data_apertura_passata',
+  );
+  // I1: apertura futura verificata
+  assert.equal(
+    bando({ ...inApertura, data_apertura: '2026-10-15', data_apertura_verificata: true, pubblicato_at: '2026-08-01T10:00:00+00:00' })
+      .details.stato_da_verificare,
+    null,
+  );
+  // I6-bis: la tabella non ha `esaminato_attivo_at`, quindi niente
+  // senza_conferma sul ramo I, a grazia finita o no
+  const recente = { ...inApertura, data_apertura: null, pubblicato_at: '2026-09-19T10:00:00+00:00' };
+  assert.equal(bando(recente, '2026-09-21').details.stato_da_verificare, null);
+  assert.equal(bando(recente, '2026-09-23').details.stato_da_verificare, null);
+  // I2 guarda solo le date, e conta su `oggi`, non sull'orologio
+  const annunciato = { ...inApertura, data_apertura: '2026-09-22' };
+  assert.equal(bando(annunciato, '2026-09-22').details.stato_da_verificare, null);
+  assert.equal(bando(annunciato, '2026-09-23').details.stato_da_verificare, 'data_apertura_passata');
+  // un aperto senza scadenza letto dalla tabella non ha mai un esame in attivo
+  assert.equal(
+    bando({ stato_bando: 'aperto', data_scadenza: null, pubblicato_at: '2026-08-01T10:00:00+00:00' }).details.stato_da_verificare,
+    null,
+  );
 });
 
 test('regola B: stato del sito (cinque valori) e scadenza passata', () => {

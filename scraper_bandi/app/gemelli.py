@@ -32,12 +32,14 @@ from __future__ import annotations
 import difflib
 import math
 import re
+from collections import Counter
 import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
+from .date_validation import extract_date_from_quote
 from .dominio_ufficiale import dominio_di, e_aggregatore, registrabile
 from .impronte import normalizza_url
 from .normalize import normalize_for_canonical
@@ -109,7 +111,83 @@ _RE_ATTO = re.compile(
 # sono due bandi diversi. Non cambiano l'esito (il fuzzy non fonde mai): finiscono
 # nel report, che e' dove qualcuno deve poter capire in due secondi.
 _RE_ANNO = re.compile(r"\b(?:19|20)\d{2}\b")
-_RE_LOTTO = re.compile(r"\b(?:lotto|lot|edizion\w*|annualit\w*|finestra|tranche)\s+([\w°]+)", re.I)
+
+# Le parole che numerano le parti di uno stesso avviso (revisione avversaria
+# del 01/10, ciclo 2): «Lotto n. 1» e «Lotto n. 2», «Sportello 1» e
+# «Sportello 2», «I edizione» e «II edizione» sono due bandi, non due copie.
+# Forma -> famiglia, cosi' «lotti 1 e 2» si confronta con «lotto 1».
+_FAMIGLIE_NUMERATE: tuple[tuple[str, str], ...] = (
+    (r"lott[oi]|lot", "lotto"),
+    (r"edizion[ei]", "edizione"),
+    (r"sportell[oi]", "sportello"),
+    (r"misur[ae]", "misura"),
+    (r"azion[ei]", "azione"),
+    (r"fas[ei]", "fase"),
+    (r"line(?:a|e|ee)", "linea"),
+    (r"ass[ei]", "asse"),
+    (r"intervent[oi]", "intervento"),
+    (r"modul[oi]", "modulo"),
+    (r"annualit\w*", "annualita"),
+    (r"finestr[ae]", "finestra"),
+    (r"tranches?", "tranche"),
+)
+_PAROLA_NUMERATA = "|".join(forma for forma, _ in _FAMIGLIE_NUMERATE)
+# L'avviso numerato («Avviso n. 3/2026»): il numero senza l'anno, che si
+# confronta gia' con gli anni. Ha una sua espressione perche' la barra qui non
+# separa un elenco.
+FAMIGLIA_AVVISO = "avviso"
+# I codici di programma: un titolo li cita, l'altro (spesso quello redazionale)
+# li tace, e la coppia resta la stessa (la riga di calendario 5596/40744 ha
+# «(Azione 4.6.1)» in un solo titolo). Contano solo se nominati in tutti e
+# due i titoli. Lotto, edizione, sportello, annualita', finestra e tranche
+# dicono quale istanza dell'avviso e': contano anche da una parte sola.
+_FAMIGLIE_SOLO_SE_IN_ENTRAMBI: frozenset[str] = frozenset({
+    "misura", "azione", "fase", "linea", "asse", "intervento", "modulo", FAMIGLIA_AVVISO})
+# Le famiglie in cui una lettera maiuscola e' un numero («Lotto A», «Linea
+# B», «Misura A/B»). Per le altre «A» sarebbe una preposizione.
+_FAMIGLIE_CON_LETTERA: frozenset[str] = frozenset({"lotto", *_FAMIGLIE_SOLO_SE_IN_ENTRAMBI})
+# I plurali: davanti a loro «I» e' l'articolo («I lotti»), non il numero romano.
+_RE_PLURALE_NUMERATO = re.compile(
+    r"^(?:lotti|edizioni|sportelli|misure|azioni|fasi|linee|assi|interventi|moduli|"
+    r"finestre|tranches)$", re.I)
+_ORDINALI_IN_LETTERE: dict[str, int] = {
+    "primo": 1, "prima": 1, "secondo": 2, "seconda": 2, "terzo": 3, "terza": 3,
+    "quarto": 4, "quarta": 4, "quinto": 5, "quinta": 5, "sesto": 6, "sesta": 6,
+    "settimo": 7, "settima": 7, "ottavo": 8, "ottava": 8, "nono": 9, "nona": 9,
+    "decimo": 10, "decima": 10,
+}
+# Romani solo maiuscoli: in minuscolo «vi», «di»... sono parole.
+_ROMANO = r"(?-i:[IVX]{1,6})(?![\w'’])"
+_ARABO = r"\d{1,4}(?:\.\d{1,3})*"
+_LETTERA = r"(?-i:[A-Z])(?![\w'’])"
+# Dopo la parola: «Lotto 2», «Lotto n. 2», «Lotto nr.2», «Fase II», «Sportello
+# 2°», «Linea B», «Linea di intervento A», «Asse prioritario 1», gli elenchi
+# «lotti 1/2», «1, 2 e 3», «A/B». Le lettere valgono solo nelle
+# `_FAMIGLIE_CON_LETTERA`.
+_ELEMENTO = rf"(?:{_ARABO}(?:\s*[°ºª^])?|{_ROMANO}|{_LETTERA})"
+_QUALIFICA = (r"(?:\s+(?:di|d['’])\s*(?:intervento|azione|attivit\w+|finanziamento)\b"
+              r"|\s+prioritari[oa]\b)?")
+_RE_NUMERATO_DOPO = re.compile(
+    rf"\b(?P<parola>{_PAROLA_NUMERATA})\b{_QUALIFICA}\s*"
+    r"(?:(?:numero|num|nr|n)\s*\.?\s*[°º]?\s*)?"
+    rf"(?P<numeri>{_ELEMENTO})"
+    rf"(?P<altri>(?:\s*(?:/|,|&|\be\b)\s*{_ELEMENTO})*)",
+    re.I,
+)
+_RE_ALTRO = re.compile(rf"\s*(?:/|,|&|\be\b)\s*(?P<elemento>{_ELEMENTO})", re.I)
+_RE_AVVISO = re.compile(
+    r"\bavvis[oi](?:\s+pubblic[oi])?\s*(?:(?:numero|num|nr|n)\s*\.?\s*[°º]?\s*)?"
+    r"(?P<numero>\d{1,4})(?:\s*/\s*(?:\d{4}|\d{2}))?\b",
+    re.I,
+)
+# Prima della parola: «I edizione», «2ª edizione», «1° sportello», «seconda
+# finestra».
+_RE_NUMERATO_PRIMA = re.compile(
+    rf"(?<![\w'])(?P<numero>\d{{1,3}}\s*[°ºª^]|\d{{1,3}}[ao](?=\s)|{_ROMANO}|"
+    rf"{'|'.join(_ORDINALI_IN_LETTERE)})\s+(?P<parola>{_PAROLA_NUMERATA})\b",
+    re.I,
+)
+_VALORI_ROMANI = {"I": 1, "V": 5, "X": 10}
 
 
 # --- tipi -------------------------------------------------------------------
@@ -118,7 +196,7 @@ _RE_LOTTO = re.compile(r"\b(?:lotto|lot|edizion\w*|annualit\w*|finestra|tranche)
 class Corrispondenza:
     """Un gemello certo: autorizza `bando_fondi`, in modalita' attiva."""
     bando_id: Any
-    criterio: str                      # url | chiave_esterna | atto
+    criterio: str                      # url | chiave_esterna | atto | riga_calendario
     dettaglio: str = ""
     applicabile: bool = True
 
@@ -330,6 +408,125 @@ def dominio_ufficiale_riga(riga: Mapping[str, Any]) -> str | None:
     return None
 
 
+# --- riga di calendario (contratto `bandi-giro-2` §19.9) ---------------------
+#
+# Le righe dei calendari in PDF, CSV o foglio non hanno un `link_bando`: il
+# criterio dell'URL non puo' vederle, e la stessa riga letta due volte (il PDF
+# e il CSV dello stesso calendario di VdA, la stessa tabella su due pagine del
+# documento Interreg) resta due bandi pubblicati. Qui la stessa riga si
+# riconosce dal suo contenuto: stessa fonte, stessa descrizione e stesso file,
+# oppure la stessa data di chiusura scritta nella riga.
+
+#: Il nome del quarto criterio esatto.
+CRITERIO_RIGA_CALENDARIO = "riga_calendario"
+#: Chiavi di `raw_data` che dicono dove sta la riga, non che cosa dice: la
+#: posizione nel file, il file stesso e le chiavi che scrive il nostro codice.
+METADATI_CALENDARIO: frozenset[str] = frozenset({
+    "row_index", "page", "riga", "pagina", "table_index", "source_url",
+    "source", "hash_senza_link",
+})
+#: Sotto questo numero di parole una descrizione non distingue niente
+#: (un'intestazione di tabella, un codice).
+TOKEN_MINIMI_CALENDARIO = 3
+#: Le parole dopo cui una riga di calendario scrive la sua chiusura.
+_RE_CHIUSURA = re.compile(r"chius\w*|fino\s+al?\b|scadenz\w*|termine", re.IGNORECASE)
+#: Quanti caratteri dopo la parola si cerca la data: oltre, la data e' di
+#: un'altra frase della cella.
+_FINESTRA_CHIUSURA = 60
+
+
+@lru_cache(maxsize=16384)
+def _testo_calendario(testo: str) -> str:
+    """Minuscole, senza accenti, senza punteggiatura, spazi compattati.
+
+    La punteggiatura si **cancella**, non si sostituisce con uno spazio: il PDF
+    del calendario di VdA scrive «l’assegnazione» e “Avviso 23AF”, il CSV dello
+    stesso calendario «lassegnazione» e nessuna virgoletta.
+    """
+    scomposto = unicodedata.normalize("NFKD", testo)
+    senza_accenti = "".join(c for c in scomposto if not unicodedata.combining(c)).lower()
+    pulito = "".join(c for c in senza_accenti if c.isalnum() or c.isspace())
+    return " ".join(pulito.split())
+
+
+def _valori_calendario(riga: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Le coppie (chiave, valore) del contenuto della riga, senza i metadati."""
+    coppie: list[tuple[str, str]] = []
+    for chiave, valore in _raw(riga).items():
+        if chiave in METADATI_CALENDARIO or isinstance(valore, bool):
+            continue
+        if isinstance(valore, (str, int, float)):
+            coppie.append((str(chiave), str(valore)))
+    return coppie
+
+
+def descrizione_calendario(riga: Mapping[str, Any]) -> str:
+    """Il contenuto normalizzato della riga di calendario, o "".
+
+    `titolo_raw` piu' tutti i valori di `raw_data` tranne i metadati, ognuno
+    normalizzato, **ordinati** (il PDF chiama le colonne `col_N`, il CSV
+    `Unnamed: N`) e uniti. Con meno di `TOKEN_MINIMI_CALENDARIO` parole vale
+    "": non basta a dire che due righe sono la stessa.
+    """
+    valori = [_testo_calendario(_testo(riga, "titolo_raw"))]
+    valori.extend(_testo_calendario(valore) for _chiave, valore in _valori_calendario(riga))
+    pieni = sorted(v for v in valori if v)
+    if sum(len(v.split()) for v in pieni) < TOKEN_MINIMI_CALENDARIO:
+        return ""
+    return " | ".join(pieni)
+
+
+def data_chiusura_calendario(riga: Mapping[str, Any]) -> Any:
+    """La data di chiusura scritta nella riga di calendario, o None.
+
+    In una colonna di chiusura (`DATA_CHIUSURA`, «Scadenza») vale la data della
+    cella; altrove la prima data **dopo** «chiusura», «fino a», «scadenza» o
+    «termine», entro `_FINESTRA_CHIUSURA` caratteri: «apertura 01/01 chiusura
+    31/03» deve dare il 31/03, non l'apertura. Con piu' date, la piu' tarda.
+    """
+    trovate = []
+    for chiave, valore in _valori_calendario(riga):
+        if _RE_CHIUSURA.search(chiave.replace("_", " ")):
+            data = extract_date_from_quote(valore)
+            if data is not None:
+                trovate.append(data)
+            continue
+        for parola in _RE_CHIUSURA.finditer(valore):
+            data = extract_date_from_quote(valore[parola.end():parola.end() + _FINESTRA_CHIUSURA])
+            if data is not None:
+                trovate.append(data)
+    return max(trovate) if trovate else None
+
+
+def _sorgente_calendario(riga: Mapping[str, Any]) -> str:
+    return str(_raw(riga).get("source_url") or "").strip()
+
+
+def _riga_calendario(
+    candidato: Mapping[str, Any],
+    descrizione: str,
+    riga: Mapping[str, Any],
+) -> str | None:
+    """Il dettaglio della coincidenza `riga_calendario`, o None.
+
+    Stessa `fonte_id`, nessun `link_bando` su tutte e due, stessa descrizione
+    non vuota, e poi lo stesso file (`source_url`) oppure la stessa data di
+    chiusura. Una riga senza file comune e senza data non basta: due edizioni
+    annuali dello stesso avviso in due calendari si scrivono uguali.
+    """
+    if not descrizione or not _stessa_fonte(candidato, riga):
+        return None
+    if _testo(riga, "link_bando") or descrizione_calendario(riga) != descrizione:
+        return None
+    sorgente = _sorgente_calendario(candidato)
+    if sorgente and sorgente == _sorgente_calendario(riga):
+        return f"stesso file|{sorgente}"
+    chiusura = data_chiusura_calendario(candidato)
+    if chiusura is not None and chiusura == data_chiusura_calendario(riga):
+        return f"stessa chiusura|{chiusura.isoformat()}"
+    return None
+
+
 # --- criteri esatti ---------------------------------------------------------
 
 def criteri_esatti(
@@ -338,7 +535,7 @@ def criteri_esatti(
 ) -> tuple[Corrispondenza, ...]:
     """I gemelli certi del candidato fra le righe pubblicate.
 
-    Tre criteri, tutti esatti e tutti verificabili da chiunque rilegga la riga:
+    Quattro criteri, tutti esatti e tutti verificabili da chiunque rilegga la riga:
       1. `url`  — un URL normalizzato del candidato (`link_bando` o
          `fonte_ufficiale_url`) coincide con uno di un pubblicato e almeno uno
          dei due e' un `link_bando`. **Nessun vincolo di stessa fonte**
@@ -346,7 +543,11 @@ def criteri_esatti(
          ufficiale, che due lotti dello stesso ente condividono;
       2. `chiave_esterna` — stessa fonte e stessa chiave: e' la stessa riga
          presso la fonte, con l'URL cambiato;
-      3. `atto` — stesso atto numerato sullo stesso dominio ufficiale.
+      3. `atto` — stesso atto numerato sullo stesso dominio ufficiale;
+      4. `riga_calendario` — stessa fonte, nessun `link_bando`, stessa
+         descrizione del calendario e stesso file o stessa data di chiusura
+         (contratto `bandi-giro-2` §19.9). Serve a `raw_data`: chi legge le
+         righe senza, non lo vede scattare.
 
     Il candidato viene «preparato» una volta sola prima del ciclo: chiave,
     atto, dominio e i suoi URL normalizzati non dipendono dalla riga con cui lo
@@ -364,6 +565,8 @@ def criteri_esatti(
     identificativo = candidato.get("id")
     urls_candidato = frozenset(url_del_bando(candidato))
     link_candidato = link_del_bando(candidato)
+    # La descrizione serve solo alle righe senza link: le altre non la pagano.
+    descrizione = "" if _testo(candidato, "link_bando") else descrizione_calendario(candidato)
 
     trovate: list[Corrispondenza] = []
     for riga in pubblicati:
@@ -380,6 +583,10 @@ def criteri_esatti(
             continue
         if atto and dominio and numero_atto(riga) == atto and dominio_ufficiale_riga(riga) == dominio:
             trovate.append(Corrispondenza(riga.get("id"), "atto", f"{atto}@{dominio}"))
+            continue
+        dettaglio = _riga_calendario(candidato, descrizione, riga)
+        if dettaglio:
+            trovate.append(Corrispondenza(riga.get("id"), CRITERIO_RIGA_CALENDARIO, dettaglio))
     return tuple(trovate)
 
 
@@ -439,17 +646,101 @@ def _blocco_con(chiavi: tuple[str, str, str], riga: Mapping[str, Any]) -> str:
     return ""
 
 
+def _famiglia(parola: str) -> str:
+    for forma, famiglia in _FAMIGLIE_NUMERATE:
+        if re.fullmatch(forma, parola, re.I):
+            return famiglia
+    return parola.lower()
+
+
+def _romano(testo: str) -> int | None:
+    """Il valore di un numero romano fatto di I, V e X, o None se non e' ben formato."""
+    valori = [_VALORI_ROMANI.get(c) for c in testo]
+    if not valori or None in valori:
+        return None
+    totale = 0
+    for i, valore in enumerate(valori):
+        prossimo = valori[i + 1] if i + 1 < len(valori) else 0
+        totale += -valore if valore < prossimo else valore
+    return totale if totale > 0 else None
+
+
+def _numero_canonico(testo: str) -> str | None:
+    """«02» -> «2», «II» -> «2», «2°» -> «2», «seconda» -> «2», «1.01» -> «1.1»,
+    «A» -> «A». None se non e' un numero."""
+    pulito = re.sub(r"[\s°ºª^]+$", "", testo.strip())
+    if not pulito:
+        return None
+    ordinale = _ORDINALI_IN_LETTERE.get(pulito.lower())
+    if ordinale is not None:
+        return str(ordinale)
+    if re.fullmatch(r"\d{1,3}[ao]", pulito, re.I):
+        pulito = pulito[:-1]
+    if re.fullmatch(_ARABO, pulito):
+        return ".".join(str(int(parte)) for parte in pulito.split("."))
+    if re.fullmatch(r"[IVX]{1,6}", pulito):
+        valore = _romano(pulito)
+        return str(valore) if valore is not None else None
+    if re.fullmatch(r"[A-Z]", pulito):
+        return pulito
+    return None
+
+
+def _numerazioni(testo: str) -> set[str]:
+    """Le parti numerate nominate nel titolo, come «famiglia numero»: «Lotto
+    n. 2» -> {"lotto 2"}, «lotti 1/2» -> {"lotto 1", "lotto 2"}, «II edizione»
+    -> {"edizione 2"}, «Linea di intervento A/B» -> {"linea A", "linea B"},
+    «Avviso n. 3/2026» -> {"avviso 3"}. Numeri arabi, romani e ordinali; la
+    lettera maiuscola solo nelle `_FAMIGLIE_CON_LETTERA`."""
+    trovate: set[str] = set()
+    for m in _RE_NUMERATO_DOPO.finditer(testo):
+        famiglia = _famiglia(m.group("parola"))
+        grezzi = [m.group("numeri"),
+                  *(a.group("elemento") for a in _RE_ALTRO.finditer(m.group("altri") or ""))]
+        for grezzo in grezzi:
+            lettera = re.fullmatch(r"[A-Z]", grezzo.strip()) and grezzo.strip() not in "IVX"
+            if lettera and famiglia not in _FAMIGLIE_CON_LETTERA:
+                continue
+            numero = _numero_canonico(grezzo)
+            if numero is not None:
+                trovate.add(f"{famiglia} {numero}")
+    for m in _RE_AVVISO.finditer(testo):
+        numero = m.group("numero")
+        if _RE_ANNO.fullmatch(numero):
+            continue                      # «Avviso 2026»: e' un anno, non un numero
+        trovate.add(f"{FAMIGLIA_AVVISO} {int(numero)}")
+    for m in _RE_NUMERATO_PRIMA.finditer(testo):
+        parola = m.group("parola")
+        # «I lotti» e' l'articolo, non «primo lotto».
+        if m.group("numero") == "I" and _RE_PLURALE_NUMERATO.match(parola):
+            continue
+        numero = _numero_canonico(m.group("numero"))
+        if numero is not None:
+            trovate.add(f"{_famiglia(parola)} {numero}")
+    return trovate
+
+
 def _differenze(a: str, b: str) -> tuple[str, ...]:
-    """Anni e numeri di lotto/edizione che compaiono in un titolo e non
-    nell'altro: il motivo per cui una proposta quasi certa va guardata."""
+    """Anni e parti numerate (lotto, edizione, sportello, misura, azione,
+    fase, linea, annualita', finestra, tranche) che compaiono in un titolo e
+    non nell'altro: il motivo per cui una proposta quasi certa va guardata, e
+    per cui il passo automatico non fonde (`motivo_di_prudenza`). E' la
+    differenza simmetrica dei due insiemi; per misura, azione, fase, linea,
+    asse, intervento, modulo e avviso solo se la parola e' numerata in tutti e
+    due i titoli (`_FAMIGLIE_SOLO_SE_IN_ENTRAMBI`)."""
     trovate: list[str] = []
     anni_a, anni_b = set(_RE_ANNO.findall(a)), set(_RE_ANNO.findall(b))
     for anno in sorted(anni_a ^ anni_b):
         trovate.append(f"anno {anno}")
-    lotti_a = {m.group(0).lower() for m in _RE_LOTTO.finditer(a)}
-    lotti_b = {m.group(0).lower() for m in _RE_LOTTO.finditer(b)}
-    for lotto in sorted(lotti_a ^ lotti_b):
-        trovate.append(re.sub(r"\s+", " ", lotto))
+    parti_a, parti_b = _numerazioni(a), _numerazioni(b)
+    famiglie_a = {parte.split(" ", 1)[0] for parte in parti_a}
+    famiglie_b = {parte.split(" ", 1)[0] for parte in parti_b}
+    for parte in sorted(parti_a ^ parti_b):
+        famiglia = parte.split(" ", 1)[0]
+        if famiglia in _FAMIGLIE_SOLO_SE_IN_ENTRAMBI and not (
+                famiglia in famiglie_a and famiglia in famiglie_b):
+            continue
+        trovate.append(parte)
     return tuple(trovate)
 
 
@@ -790,3 +1081,359 @@ def doppione_oe(
 def motivo_doppione(master_id: Any, criterio: str) -> str:
     """Il `rejection_reason` del §6."""
     return f"doppione probabile di {master_id}: {criterio}"
+
+
+# --- passo `gemelli` del giro delle 06 (contratto `bandi-giro-2` §19.9) -------
+#
+# Le fusioni automatiche dei gemelli certi, decise da Michele il 30/09 (D2):
+# solo con `criteri_esatti`, mai con il fuzzy; al massimo `tetto` per giro; in
+# ombra si elencano e si contano, in attivo si fondono con `bando_fondi`. La
+# modalita' segue `VERIFICA_STATO_MODALITA`: la prima fusione automatica arriva
+# cosi' dopo almeno 7 giorni dal messaggio a BandoFit.
+#
+# L'I/O e' iniettato (`leggi`, `fondi`): il modulo resta puro e il passo si
+# prova senza rete.
+
+#: `GEMELLI_FUSIONI_PER_GIRO` predefinito (§19.11); 0 spegne il passo.
+FUSIONI_PER_GIRO = 10
+MODALITA_OMBRA = "ombra"
+MODALITA_ATTIVO = "attivo"
+#: Quante fusioni si elencano nei contatori: la riga di `pipeline_run` resta piccola.
+TETTO_ELENCO_FUSIONI = 50
+#: Il motivo scritto in `bando_fusione`, che BandoFit legge: niente nomi interni.
+MOTIVO_FUSIONE = "gemello esatto"
+CRITERI_ESATTI: tuple[str, ...] = ("url", "chiave_esterna", "atto", CRITERIO_RIGA_CALENDARIO)
+
+
+def _ordine_id(identificativo: Any) -> tuple:
+    """Ordine degli id: i numeri per valore, poi il resto come testo."""
+    numero = isinstance(identificativo, int) and not isinstance(identificativo, bool)
+    return (not numero, identificativo if numero else 0, str(identificativo))
+
+
+def _indici_dei_gemelli(righe: Sequence[Mapping[str, Any]]) -> list[tuple[int, int]]:
+    """Le coppie (i, j), i < j, che **potrebbero** essere gemelle.
+
+    Un indice per criterio al posto del confronto di ogni riga con tutte le
+    altre: su 2 100 pubblicati sono 2 100 righe invece di 4,4 milioni di
+    coppie. Le chiavi sono le stesse di `criteri_esatti`, che poi conferma ogni
+    coppia: l'indice sceglie chi confrontare, non decide niente.
+    """
+    per_url: dict[str, list[int]] = {}
+    per_chiave: dict[tuple[Any, str], list[int]] = {}
+    per_atto: dict[tuple[str, str], list[int]] = {}
+    per_calendario: dict[tuple[Any, str], list[int]] = {}
+    for indice, riga in enumerate(righe):
+        for url in url_del_bando(riga):
+            per_url.setdefault(url, []).append(indice)
+        fonte = riga.get("fonte_id")
+        chiave = chiave_esterna(riga)
+        if chiave and fonte is not None:
+            per_chiave.setdefault((fonte, chiave), []).append(indice)
+        atto, dominio = numero_atto(riga), dominio_ufficiale_riga(riga)
+        if atto and dominio:
+            per_atto.setdefault((atto, dominio), []).append(indice)
+        if fonte is not None and not _testo(riga, "link_bando"):
+            descrizione = descrizione_calendario(riga)
+            if descrizione:
+                per_calendario.setdefault((fonte, descrizione), []).append(indice)
+
+    coppie: set[tuple[int, int]] = set()
+    for indice, riga in enumerate(righe):
+        link = link_del_bando(riga)
+        for altro in per_url.get(link, ()) if link else ():
+            if altro != indice:
+                coppie.add((min(indice, altro), max(indice, altro)))
+    for gruppo in (*per_chiave.values(), *per_atto.values(), *per_calendario.values()):
+        for posizione, primo in enumerate(gruppo):
+            for secondo in gruppo[posizione + 1:]:
+                coppie.add((min(primo, secondo), max(primo, secondo)))
+    return sorted(coppie)
+
+
+def coppie_certe(
+    righe: Sequence[Mapping[str, Any]],
+) -> list[tuple[Mapping[str, Any], Mapping[str, Any], Corrispondenza]]:
+    """Le coppie di gemelli certi fra `righe`, confermate da `criteri_esatti`.
+
+    Righe senza `id` escluse. L'ordine e' quello degli id: due esecuzioni sulle
+    stesse righe danno le stesse coppie.
+    """
+    valide = sorted((r for r in righe if r.get("id") is not None),
+                    key=lambda r: _ordine_id(r.get("id")))
+    trovate = []
+    for primo, secondo in _indici_dei_gemelli(valide):
+        a, b = valide[primo], valide[secondo]
+        conferme = criteri_esatti(a, [b])
+        if conferme:
+            trovate.append((a, b, conferme[0]))
+    return trovate
+
+
+def gruppi_di_gemelli(
+    coppie: Sequence[tuple[Mapping[str, Any], Mapping[str, Any], Corrispondenza]],
+) -> list[tuple[Mapping[str, Any], list[tuple[Mapping[str, Any], str]]]]:
+    """(master, [(doppione, criterio)…]) per ogni gruppo di gemelli.
+
+    Un gruppo e' una componente connessa delle coppie: se A=B e B=C sono certe,
+    C e' lo stesso bando di A anche senza una coppia A=C. Il master e'
+    `scegli_master` (ordine di §14); il criterio di un doppione e' quello della
+    sua prima coppia. Gruppi in ordine di id minimo, doppioni in ordine di id.
+    """
+    padre: dict[Any, Any] = {}
+    righe: dict[Any, Mapping[str, Any]] = {}
+    criterio: dict[Any, str] = {}
+
+    def radice(chiave: Any) -> Any:
+        while padre[chiave] != chiave:
+            padre[chiave] = padre[padre[chiave]]
+            chiave = padre[chiave]
+        return chiave
+
+    for a, b, corrispondenza in coppie:
+        for riga in (a, b):
+            identificativo = riga.get("id")
+            righe.setdefault(identificativo, riga)
+            padre.setdefault(identificativo, identificativo)
+            criterio.setdefault(identificativo, corrispondenza.criterio)
+        ra, rb = radice(a.get("id")), radice(b.get("id"))
+        if ra != rb:
+            padre[max(ra, rb, key=_ordine_id)] = min(ra, rb, key=_ordine_id)
+
+    componenti: dict[Any, list[Any]] = {}
+    for identificativo in padre:
+        componenti.setdefault(radice(identificativo), []).append(identificativo)
+    gruppi = []
+    for membri in componenti.values():
+        master = scegli_master([righe[m] for m in membri])
+        if master is None:
+            continue
+        doppioni = sorted((m for m in membri if m != master.get("id")), key=_ordine_id)
+        primo = min(membri, key=_ordine_id)
+        gruppi.append((primo, master, [(righe[m], criterio[m]) for m in doppioni]))
+    gruppi.sort(key=lambda g: _ordine_id(g[0]))
+    return [(master, doppioni) for _primo, master, doppioni in gruppi]
+
+
+#: Perche' il passo automatico non fonde una coppia **per URL** (decisione del
+#: lead del 30/09 notte, dopo la prova sul corpus: 76 coppie per URL). Il
+#: criterio resta esatto per `criteri_esatti` e per chi fonde a mano; una
+#: fusione che nessuno guarda chiede tre prove in piu':
+#:   - l'URL comune sta in **esattamente due** righe pubblicate: con tre o piu'
+#:     e' una pagina hub o una pagina di lotti, non la pagina di un bando;
+#:   - i titoli si somigliano almeno al livello «medio» del gate G3v
+#:     (`fonte_ufficiale.somiglianza_titolo`, nei due versi);
+#:   - le scadenze sono uguali, oppure una delle due manca.
+PRUDENZA_URL_CONDIVISO = "url_condiviso"
+PRUDENZA_TITOLI_DIVERSI = "titoli_diversi"
+PRUDENZA_SCADENZE_DIVERSE = "scadenze_diverse"
+#: Per TUTTI i criteri del passo (revisione del 30/09 notte): anni o lotti che
+#: compaiono nel titolo di una riga e non dell'altra. «… - Lotto 1» e
+#: «… - Lotto 2» con la pagina del lotto 1 come fonte ufficiale del lotto 2
+#: passavano le altre tre prove, ed erano due bandi.
+PRUDENZA_ANNI_O_LOTTI = "anni_o_lotti_diversi"
+#: I soli criteri con cui si fonde IN AUTOMATICO (D2 del 30/09 e contratto DB:
+#: «stesso URL, oppure stessa riga di calendario»). `chiave_esterna` e `atto`
+#: restano criteri esatti per il resolver e per `fondi-doppioni` a mano, ma una
+#: stessa delibera che approva piu' avvisi sullo stesso dominio basterebbe a
+#: fondere due bandi diversi, e una fusione sbagliata non si disfa da sola
+#: (revisione avversaria del 01/10, P1).
+CRITERI_AUTOMATICI: tuple[str, ...] = ("url", CRITERIO_RIGA_CALENDARIO)
+PRUDENZA_CRITERIO_NON_AUTOMATICO = "criterio_non_automatico"
+#: Quante righe legge al massimo la lettura predefinita del passo
+#: (`db.select_pubblicati_per_gemelli`, `TETTO_GEMELLI` del resolver): se se ne
+#: leggono tante quante, il corpus e' tagliato e i conteggi (le righe per URL
+#: dell'hub) sarebbero sottostimati. Il passo allora non fonde niente.
+LIMITE_LETTURA_PUBBLICATI = 5000
+
+
+def somiglianza_fra_righe(a: Mapping[str, Any], b: Mapping[str, Any]) -> float:
+    """La somiglianza dei titoli di due righe, con la funzione del gate G3v.
+
+    Il titolo editoriale e quello della fonte di una riga contro le parole dei
+    due titoli dell'altra, nei due versi; vale il migliore.
+    """
+    from .fonte_ufficiale import contesto_da_bando, somiglianza_titolo, token
+
+    def parole(riga: Mapping[str, Any]) -> frozenset[str]:
+        return token(_testo(riga, "titolo")) | token(_testo(riga, "titolo_raw"))
+
+    return max(somiglianza_titolo(contesto_da_bando(a), parole(b))[0],
+               somiglianza_titolo(contesto_da_bando(b), parole(a))[0])
+
+
+def motivo_di_prudenza(
+    a: Mapping[str, Any],
+    b: Mapping[str, Any],
+    corrispondenza: Corrispondenza,
+    righe_per_url: Mapping[str, int],
+) -> str | None:
+    """Il motivo per cui il passo automatico NON fonde la coppia, o None.
+
+    Prima di tutto il criterio: in automatico solo `CRITERI_AUTOMATICI`.
+    Anni o parti numerate diverse nei titoli (`_differenze` su `titolo` e su
+    `titolo_raw`, ciascuno solo se pieno su tutte e due) valgono per ogni
+    criterio; le altre tre prove solo per il
+    criterio `url`. `righe_per_url` conta, per ogni URL normalizzato, le righe
+    pubblicate che lo portano (`url_del_bando`).
+    """
+    if corrispondenza.criterio not in CRITERI_AUTOMATICI:
+        return PRUDENZA_CRITERIO_NON_AUTOMATICO
+    # L'hub per primo: e' il motivo piu' forte e `hub_esclusi` lo conta.
+    if corrispondenza.criterio == "url" and righe_per_url.get(corrispondenza.dettaglio, 0) != 2:
+        return PRUDENZA_URL_CONDIVISO
+    for campo in ("titolo", "titolo_raw"):
+        # Un campo si confronta solo se e' pieno su tutte e due le righe: uno
+        # vuoto non dice che anni e lotti siano diversi.
+        testo_a, testo_b = _testo(a, campo), _testo(b, campo)
+        if testo_a and testo_b and _differenze(testo_a, testo_b):
+            return PRUDENZA_ANNI_O_LOTTI
+    if corrispondenza.criterio != "url":
+        return None
+    from .fonte_ufficiale import JACCARD_MEDIO
+    if somiglianza_fra_righe(a, b) < JACCARD_MEDIO:
+        return PRUDENZA_TITOLI_DIVERSI
+    scadenza_a = str(a.get("data_scadenza") or "")[:10]
+    scadenza_b = str(b.get("data_scadenza") or "")[:10]
+    if scadenza_a and scadenza_b and scadenza_a != scadenza_b:
+        return PRUDENZA_SCADENZE_DIVERSE
+    return None
+
+
+def _impostazione(nome: str, predefinito: Any) -> Any:
+    """Un valore di `Settings` (§19.11), o il predefinito finche' non c'e'."""
+    try:
+        from .settings import get_settings
+        return getattr(get_settings(), nome, predefinito)
+    except Exception:
+        return predefinito
+
+
+def esegui_passo(
+    giro: str | None = None,
+    *,
+    modalita: str | None = None,
+    tetto: int | None = None,
+    leggi: Any = None,
+    fondi: Any = None,
+    limite_lettura: int = LIMITE_LETTURA_PUBBLICATI,
+) -> dict[str, Any]:
+    """Il passo `gemelli`: trova i gemelli certi fra i pubblicati e li fonde.
+
+    - `modalita`: 'attivo' fonde, qualunque altro valore vale 'ombra' (elenca e
+      conta). Senza, `settings.verifica_stato_modalita`;
+    - `tetto`: fusioni al massimo per giro, 0 spegne il passo senza leggere
+      niente. Senza, `settings.gemelli_fusioni_per_giro`;
+    - `leggi()`: i pubblicati con `raw_data` delle righe senza link e
+      `bando_master_id` (le righe gia' fuse restano fuori: altrimenti ogni giro
+      ritroverebbe le stesse coppie e consumerebbe il tetto per niente);
+    - `fondi(master_id, doppione_id, motivo)`: l'id del master effettivo, o
+      None se la fusione non e' riuscita (`db.fondi_bandi`).
+
+    Ogni coppia passa da `motivo_di_prudenza`: quelle scartate non si fondono
+    e si contano in `coppie_scartate_per_prudenza` (per motivo) e, se l'URL e'
+    condiviso da piu' di due righe, in `hub_esclusi`. Si fondono poi solo i
+    gruppi di **due** righe, cioe' un doppione con una coppia prudente diretta
+    col master: una catena A=B=C non si fonde in automatico e si conta in
+    `gruppi_oltre_due`. `coppie_per_criterio` conta le coppie dei gruppi che il
+    passo fonderebbe. Se la lettura restituisce `limite_lettura` righe o piu',
+    il corpus e' tagliato: `status='errore'` e nessuna fusione.
+
+    Non solleva: un errore diventa `status='errore'` con il solo tipo
+    dell'eccezione (il messaggio puo' portarsi dietro URL o chiavi).
+    """
+    try:
+        return _esegui_passo(giro, modalita=modalita, tetto=tetto, leggi=leggi, fondi=fondi,
+                             limite_lettura=limite_lettura)
+    except Exception as e:
+        return {"status": "errore", "giro": giro, "motivo": type(e).__name__}
+
+
+def _esegui_passo(
+    giro: str | None,
+    *,
+    modalita: str | None,
+    tetto: int | None,
+    leggi: Any,
+    fondi: Any,
+    limite_lettura: int = LIMITE_LETTURA_PUBBLICATI,
+) -> dict[str, Any]:
+    if modalita is None:
+        modalita = _impostazione("verifica_stato_modalita", MODALITA_OMBRA)
+    modalita = MODALITA_ATTIVO if str(modalita).strip().lower() == MODALITA_ATTIVO else MODALITA_OMBRA
+    if tetto is None:
+        tetto = _impostazione("gemelli_fusioni_per_giro", FUSIONI_PER_GIRO)
+    tetto = max(0, int(tetto))
+    if tetto == 0:
+        return {"status": "ok", "giro": giro, "saltato": "spento", "modalita": modalita}
+
+    if leggi is None or fondi is None:
+        from . import db
+        leggi = leggi or (lambda: db.select_pubblicati_per_gemelli(
+            limit=limite_lettura, con_calendario=True))
+        fondi = fondi or db.fondi_bandi
+
+    lette = list(leggi())
+    if len(lette) >= limite_lettura:
+        # Corpus tagliato: le righe per URL sarebbero sottostimate e un hub
+        # potrebbe sembrare una coppia. Meglio nessuna fusione.
+        return {"status": "errore", "giro": giro, "modalita": modalita,
+                "motivo": "lettura_troncata", "lette": len(lette)}
+    righe = [r for r in lette if r.get("bando_master_id") is None]
+    # Le righe per URL si contano su tutti i pubblicati letti, fusi compresi:
+    # un URL che porta tre righe resta una pagina condivisa anche dopo una fusione.
+    righe_per_url = Counter(url for riga in lette for url in url_del_bando(riga))
+    coppie = []
+    scartate: dict[str, int] = {}
+    hub: set[str] = set()
+    for a, b, corrispondenza in coppie_certe(righe):
+        motivo = motivo_di_prudenza(a, b, corrispondenza, righe_per_url)
+        if motivo is None:
+            coppie.append((a, b, corrispondenza))
+            continue
+        scartate[motivo] = scartate.get(motivo, 0) + 1
+        if motivo == PRUDENZA_URL_CONDIVISO:
+            hub.add(corrispondenza.dettaglio)
+    tutti = gruppi_di_gemelli(coppie)
+    # Solo i gruppi di due righe: il doppione ha una coppia prudente diretta
+    # col master. Una catena si guarda a mano (`fondi-doppioni`).
+    gruppi = [g for g in tutti if len(g[1]) == 1]
+    in_gruppi = {r.get("id") for master, doppioni in gruppi for r in [master, *(d for d, _ in doppioni)]}
+    coppie = [c for c in coppie if c[0].get("id") in in_gruppi]
+
+    contatori: dict[str, Any] = {
+        "status": "ok", "giro": giro, "modalita": modalita, "tetto": tetto,
+        "esaminati": len(righe),
+        "coppie_per_criterio": {nome: 0 for nome in CRITERI_ESATTI},
+        "coppie_scartate_per_prudenza": scartate,
+        "hub_esclusi": len(hub),
+        "gruppi": len(gruppi),
+        "gruppi_oltre_due": len(tutti) - len(gruppi),
+        "fusioni_previste": sum(len(doppioni) for _master, doppioni in gruppi),
+        "fusi": 0, "fusioni_non_riuscite": 0, "oltre_tetto": 0, "master_corretti": 0,
+        "fusioni": [],
+    }
+    for _a, _b, corrispondenza in coppie:
+        per_criterio = contatori["coppie_per_criterio"]
+        per_criterio[corrispondenza.criterio] = per_criterio.get(corrispondenza.criterio, 0) + 1
+
+    fatte = 0
+    for master, doppioni in gruppi:
+        for doppione, criterio in doppioni:
+            if fatte >= tetto:
+                contatori["oltre_tetto"] += 1
+                continue
+            fatte += 1
+            voce = [doppione.get("id"), master.get("id"), criterio]
+            if len(contatori["fusioni"]) < TETTO_ELENCO_FUSIONI:
+                contatori["fusioni"].append(voce)
+            if modalita != MODALITA_ATTIVO:
+                continue
+            effettivo = fondi(master.get("id"), doppione.get("id"), f"{MOTIVO_FUSIONE}: {criterio}")
+            if effettivo is None:
+                contatori["fusioni_non_riuscite"] += 1
+                continue
+            contatori["fusi"] += 1
+            if effettivo != master.get("id"):
+                contatori["master_corretti"] += 1
+    return contatori

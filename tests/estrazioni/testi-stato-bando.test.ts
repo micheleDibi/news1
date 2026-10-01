@@ -213,3 +213,142 @@ test('riga scadenza della card: prima lo stato, poi la data', () => {
   assert.equal(rigaScadenza('aperto', null, OGGI), null);
   assert.equal(rigaScadenza('aperto', 'da definire', OGGI), null);
 });
+
+// ---------------------------------------------------------------------------
+// Stato da verificare (contratto interno del giro 2, §15 con §19.14)
+// ---------------------------------------------------------------------------
+
+test('sottotesto: «in apertura» per ogni motivo', () => {
+  const base = { stato: 'in apertura prossimamente' as const, data_apertura: '2026-10-15', oggi: OGGI };
+  assert.equal(
+    sottotestoStato({ ...base, motivo_da_verificare: 'smentito_dalla_fonte' }),
+    'La pagina ufficiale non lo indica più come in arrivo: lo stato è in verifica.',
+  );
+  assert.equal(
+    sottotestoStato({ ...base, motivo_da_verificare: 'previsione_scaduta' }),
+    'Il periodo di apertura previsto dal calendario è passato senza un avviso pubblicato.',
+  );
+  assert.equal(
+    sottotestoStato({ ...base, motivo_da_verificare: 'senza_conferma' }),
+    'L\'apertura è annunciata ma non è confermata sulla fonte ufficiale: verifica sul sito dell\'ente.',
+  );
+  // data_apertura_passata: il testo di sempre, costruito sulla data
+  assert.equal(
+    sottotestoStato({ ...base, data_apertura: '2026-09-01', motivo_da_verificare: 'data_apertura_passata' }),
+    sottotestoStato({ ...base, data_apertura: '2026-09-01' }),
+  );
+  assert.match(
+    sottotestoStato({ ...base, data_apertura: '2026-09-01', motivo_da_verificare: 'data_apertura_passata' }) ?? '',
+    /^L'apertura era annunciata per il 1 settembre 2026/,
+  );
+  // senza motivo non cambia niente
+  assert.equal(
+    sottotestoStato(base),
+    'L\'apertura è annunciata per il 15 ottobre 2026: la data non è ancora verificata sulla pagina ufficiale.',
+  );
+});
+
+test('sottotesto: «aperto» per smentita e mancata conferma', () => {
+  const base = { stato: 'aperto' as const, oggi: OGGI };
+  assert.equal(
+    sottotestoStato({ ...base, motivo_da_verificare: 'smentito_dalla_fonte' }),
+    'La pagina ufficiale dell\'ente non lo indica più come aperto: verifica prima di presentare domanda.',
+  );
+  assert.equal(
+    sottotestoStato({ ...base, motivo_da_verificare: 'senza_conferma' }),
+    'Non abbiamo una conferma recente dalla pagina ufficiale dell\'ente: verifica prima di presentare domanda.',
+  );
+});
+
+test('sottotesto: termine passato secondo la provenienza (fonte NULL = testo)', () => {
+  const passato = (termine_indicato_fonte: string | null) => sottotestoStato({
+    stato: 'aperto', motivo_da_verificare: 'termine_passato',
+    termine_indicato: '2026-09-01', termine_indicato_fonte, oggi: OGGI,
+  });
+  // il calendario ufficiale e' la fonte: nessuna riserva «non confermato dalla fonte»
+  assert.equal(
+    passato('calendario_ufficiale'),
+    'Il calendario ufficiale indica un termine di presentazione che sembra già passato: verifica sul sito dell\'ente.',
+  );
+  assert.equal(passato('calendario_ufficiale')?.includes('non confermato'), false);
+  assert.equal(
+    passato('pagina'),
+    'La pagina dell\'ente indica un termine di presentazione che sembra già passato: verifica sul sito dell\'ente prima di presentare domanda.',
+  );
+  assert.equal(
+    passato('testo'),
+    'Il testo del bando indica un termine di presentazione che sembra già passato, non confermato dalla fonte: verifica sul sito dell\'ente.',
+  );
+  assert.equal(
+    passato('aggregatore'),
+    'Un portale aggregatore indica un termine di presentazione che sembra già passato, non verificato: verifica sul sito dell\'ente.',
+  );
+  assert.equal(passato(null), passato('testo'));
+  assert.equal(passato('boh'), passato('testo'));
+});
+
+test('sottotesto: aperto senza scadenza e senza motivo, lettura e termine futuro', () => {
+  const base = { stato: 'aperto' as const, oggi: OGGI };
+  const sportello = 'Sportello aperto: la fonte non indica una data di scadenza.';
+  // una lettura «aperto» recente, con la data civile di Roma
+  assert.equal(
+    sottotestoStato({ ...base, stato_letto: 'aperto', stato_letto_at: '2026-09-20T08:00:00+00:00' }),
+    'Sportello aperto: la pagina ufficiale lo indicava ancora aperto il 20 settembre 2026.',
+  );
+  // 22:30 UTC del 19/09 e' gia' il 20/09 a Roma
+  assert.equal(
+    sottotestoStato({ ...base, stato_letto: 'aperto', stato_letto_at: '2026-09-19T22:30:00+00:00' }),
+    'Sportello aperto: la pagina ufficiale lo indicava ancora aperto il 20 settembre 2026.',
+  );
+  // confine dei 30 giorni: il 24/08 vale (30 giorni prima del 23/09), il 23/08 no
+  assert.match(
+    sottotestoStato({ ...base, stato_letto: 'aperto', stato_letto_at: '2026-08-24T08:00:00+02:00' }) ?? '',
+    /il 24 agosto 2026\.$/,
+  );
+  assert.equal(
+    sottotestoStato({ ...base, stato_letto: 'aperto', stato_letto_at: '2026-08-23T23:59:00+02:00' }),
+    sportello,
+  );
+  // una lettura diversa da «aperto» o senza data non conferma niente
+  assert.equal(sottotestoStato({ ...base, stato_letto: 'chiuso', stato_letto_at: '2026-09-20T08:00:00+00:00' }), sportello);
+  assert.equal(sottotestoStato({ ...base, stato_letto: 'aperto', stato_letto_at: null }), sportello);
+  // termine indicato da oggi in poi, secondo la provenienza
+  const futuro = (termine_indicato_fonte: string | null, termine_indicato = '2026-10-31') =>
+    sottotestoStato({ ...base, termine_indicato, termine_indicato_fonte });
+  assert.equal(futuro('calendario_ufficiale'), 'Il calendario ufficiale indica come termine il 31 ottobre 2026.');
+  assert.equal(futuro('pagina'), 'La pagina dell\'ente indica come termine il 31 ottobre 2026.');
+  assert.equal(
+    futuro('testo'),
+    'Il testo del bando indica come termine il 31 ottobre 2026, non ancora verificato sulla pagina ufficiale.',
+  );
+  assert.equal(futuro('aggregatore'), 'Un portale aggregatore indica come termine il 31 ottobre 2026, non verificato.');
+  assert.equal(futuro(null), futuro('testo'));
+  assert.equal(futuro('pagina', OGGI), 'La pagina dell\'ente indica come termine il 23 settembre 2026.');
+  // un termine passato senza motivo (in ombra) non si racconta come futuro
+  assert.equal(futuro('pagina', '2026-09-22'), sportello);
+  // la lettura viene prima del termine
+  assert.match(
+    sottotestoStato({
+      ...base, stato_letto: 'aperto', stato_letto_at: '2026-09-20T08:00:00+00:00',
+      termine_indicato: '2026-10-31', termine_indicato_fonte: 'pagina',
+    }) ?? '',
+    /^Sportello aperto: la pagina ufficiale/,
+  );
+  // con una scadenza il testo resta quello di sempre, lettura o no
+  assert.match(
+    sottotestoStato({
+      ...base, data_scadenza: '2026-10-31', stato_letto: 'aperto', stato_letto_at: '2026-09-20T08:00:00+00:00',
+    }) ?? '',
+    /^Si può presentare domanda fino al 31 ottobre 2026/,
+  );
+});
+
+test('sottotesto: il motivo non tocca chiuso, sospeso e revocato', () => {
+  for (const stato of ['chiuso', 'sospeso', 'revocato'] as const) {
+    assert.equal(
+      sottotestoStato({ stato, data_scadenza: '2026-09-01', motivo_da_verificare: 'senza_conferma', oggi: OGGI }),
+      sottotestoStato({ stato, data_scadenza: '2026-09-01', oggi: OGGI }),
+      stato,
+    );
+  }
+});

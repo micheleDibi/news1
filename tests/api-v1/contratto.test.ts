@@ -16,6 +16,7 @@ import { documentoOpenApi } from '../../src/lib/api-v1/openapi.ts';
 import { CODICI_ERRORE } from '../../src/lib/api-v1/errori.ts';
 import { SLUG_REGIONI } from '../../src/lib/api-v1/parametri.ts';
 import { SEZIONI } from '../../src/lib/api-v1/sezioni.ts';
+import { MOTIVI_DA_VERIFICARE } from '../../src/lib/stato-bando.ts';
 import { mappaArticolo } from '../../src/lib/api-v1/mappa-articoli.ts';
 import { mappaCategorie } from '../../src/lib/api-v1/mappa-categorie.ts';
 import { mappaBando, mappaInterpello, mappaSelezione } from '../../src/lib/api-v1/mappa-opportunita.ts';
@@ -30,7 +31,7 @@ import { Semaforo } from '../../src/lib/api-v1/semaforo.ts';
 import { CacheRisposte } from '../../src/lib/api-v1/cache.ts';
 import { ErroreDati } from '../../src/lib/api-v1/errori.ts';
 import {
-  RICHIESTA_ERRORE_PARAMETRI, esempioErroreLimite, esempioErroreParametri,
+  PARAGRAFO_STATO_DA_VERIFICARE, RICHIESTA_ERRORE_PARAMETRI, esempioErroreLimite, esempioErroreParametri,
 } from '../../src/lib/api-v1/testi-doc.ts';
 import {
   BANDO_COMPLETO, COLONNE_VIETATE_BANDO, COLONNE_VIETATE_INTERPELLO, COLONNE_VIETATE_SELEZIONE, INTERPELLO_COMPLETO,
@@ -519,6 +520,10 @@ test('mapper: interpello, selezione, bando, articolo e categorie rispettano gli 
       data_scadenza: null, data_apertura: null, data_pubblicazione: null, importo_totale_eur: null, tipologia: null,
       programma: null, modalita: null, bando_regioni: [], bando_settori: null, bando_codici_ateco: [], stato_bando: null,
     }],
+    ['aperto da verificare (vista)', { stato_bando: 'aperto', data_scadenza: null, stato_da_verificare: 'senza_conferma' }],
+    ['in apertura da verificare (tabella)', {
+      stato_bando: 'in apertura prossimamente', data_apertura: '2026-09-01', data_scadenza: null,
+    }],
   ] as const) {
     const bando = mappaBando({ ...BANDO, ...extra }, OGGI);
     assert.ok(bando, descrizione);
@@ -637,4 +642,13 @@ test('enum dello schema = costanti del codice', () => {
   assert.equal(discriminatore.propertyName, 'type');
   assert.deepEqual(Object.keys(discriminatore.mapping as Oggetto), ['interpello', 'selezione-personale', 'bando']);
   assert.deepEqual(proprieta('Problema').code.enum, CODICI_ERRORE);
+  // I cinque motivi della regola `stato_da_verificare`, piu' null
+  assert.deepEqual(proprieta('DettagliBando').stato_da_verificare.enum, [...MOTIVI_DA_VERIFICARE, null]);
+  assert.deepEqual(proprieta('DettagliBando').stato_da_verificare.type, ['string', 'null']);
+  // Ogni motivo e' spiegato nello schema e nella guida pubblica
+  const descrizione = String(proprieta('DettagliBando').stato_da_verificare.description);
+  for (const motivo of MOTIVI_DA_VERIFICARE) {
+    assert.ok(descrizione.includes(motivo), `schema: ${motivo}`);
+    assert.ok(PARAGRAFO_STATO_DA_VERIFICARE.includes(motivo), `guida: ${motivo}`);
+  }
 });

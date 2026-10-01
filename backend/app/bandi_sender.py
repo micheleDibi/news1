@@ -34,7 +34,13 @@ import time
 
 import schedule
 
-from .bandi_pipeline import GIRI_SCHEDULER, rilascia_lock_orfani, run_bandi_pipeline
+from .bandi_pipeline import (
+    GIRI_SCHEDULER,
+    lock_del_giro_rilasciato,
+    registra_avvio_saltato,
+    rilascia_lock_orfani,
+    run_bandi_pipeline,
+)
 from .logger import logger
 
 # Giro dell'esecuzione immediata al boot. NON e' una delle ore dello scheduler,
@@ -75,15 +81,30 @@ if __name__ == "__main__":
         # nessun lock: si liberano quelli dei processi precedenti morti in un
         # `systemctl restart` (contratto di ottobre, §8). Non deve mai fermare
         # l'avvio: al peggio il lock scade da solo, come prima.
+        orfani: dict = {}
         try:
-            rilascia_lock_orfani()
+            orfani = rilascia_lock_orfani()
         except Exception as e:
             logger.warning("[bandi_sender] lock orfani non rilasciati: {}", e)
-        logger.info("[bandi_sender] Avvio immediato della pipeline (giro={})...", GIRO_BOOT)
-        _run_sync(giro=GIRO_BOOT)
-        logger.info("[bandi_sender] Pipeline iniziale completata. Avvio scheduler...")
+        if lock_del_giro_rilasciato(orfani):
+            # Il processo precedente e' morto a meta' giro: ripartire subito
+            # con un giro di boot rifarebbe lo stesso lavoro nello stesso
+            # stato, e un giro che fa cadere il processo diventerebbe un ciclo
+            # di riavvii. Si lascia una riga in `pipeline_run` (la sorveglianza
+            # conta i riavvii) e si aspetta il prossimo giro dello scheduler.
+            logger.warning(
+                "[bandi_sender] Il processo precedente e' morto a meta' giro: "
+                "giro di boot saltato, avvio dello scheduler.")
+            registra_avvio_saltato(giro=GIRO_BOOT)
+        else:
+            logger.info("[bandi_sender] Avvio immediato della pipeline (giro={})...", GIRO_BOOT)
+            _run_sync(giro=GIRO_BOOT)
+            logger.info("[bandi_sender] Pipeline iniziale completata. Avvio scheduler...")
         schedule_bandi_pipeline()
     except KeyboardInterrupt:
         logger.info("[bandi_sender] Shutdown richiesto da utente.")
     except Exception as e:
         logger.exception("[bandi_sender] Errore fatale: {}", e)
+        # Uscita 1: systemd (`Restart=on-failure`) riavvia il servizio. Senza,
+        # lo scheduler morto finiva con exit 0 e il sender restava giu'.
+        raise SystemExit(1)

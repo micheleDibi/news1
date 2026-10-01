@@ -39,6 +39,17 @@ cp .env.example .env
 | `REACHABILITY_TIMEOUT_S` | `15` | Timeout HEAD/GET per testare `attivo` |
 | `REACHABILITY_CONCURRENCY` | `10` | Numero di test reachability paralleli |
 | `HTTP_USER_AGENT` | browser realistico | UA inviato dalle request |
+| `SORVEGLIA_SERVIZIO_SENDER` | `edunews-bandi-sender` | Servizio systemd del sender che `sorveglia` interroga; resta sul server, mai nel riepilogo |
+| `PUBLIC_SUPABASE_BANDI_ANON_KEY` | assente | Facoltativa: con lei la lettura di prova di `bando_pubblico` (misura `vista_ms` di `salute`) si fa come anon, con la RLS del sito; senza, con la service key |
+| `VERIFICA_STATO_MODALITA` | `ombra` | `ombra` \| `attivo` (giro 2, percorso A). Governa verifica dello stato, import di IndicePA e fusioni automatiche; un valore sconosciuto vale `ombra` e accende `configurazione:verifica_stato` |
+| `VERIFICA_STATO_TETTO_LETTURE` | `40` | Letture per giro della fase controlli (1-200) |
+| `VERIFICA_STATO_TETTO_S` | `900` | Secondi per giro della fase controlli (60-1800) |
+| `VERIFICA_STATO_MAX_CHIUSURE` | `20` | Eventi `chiusura` per giro (0-50) |
+| `VERIFICA_STATO_USA_MODELLO` | `true` | Il modello legge le pagine (i)-(iii) senza lettore per ente |
+| `VERIFICA_STATO_TETTO_INGRESSO` | `30` | Letture per giro della fase ingresso (senza modello) |
+| `INGRESSO_SOSTA_GIRI` | `4` | Giri di sosta di un «aperto» senza scadenza né prova prima della pubblicazione (0-12; 0 = niente sosta) |
+| `GEMELLI_FUSIONI_PER_GIRO` | `10` | Fusioni automatiche dei doppioni certi nel giro delle 06 (0 = spento) |
+| `INDICEPA_URL` | risorsa CKAN pubblica di `enti.xlsx` | Da cambiare solo se IndicePA sposta la risorsa |
 
 ## Comandi
 
@@ -282,21 +293,20 @@ echo $! > /tmp/bandi_sender.pid
 **Timing atteso per ciclo**: ~70-80 min totali.
 Tra cicli (6h interval): ~4h libere = margine 5× sul tempo richiesto.
 
-**Esempio systemd unit file** (produzione, da adattare):
+**Esempio systemd unit file** (produzione, da adattare). In produzione il servizio si chiama
+`edunews-bandi-sender` e il repo sta in `~/projects/news1`:
 
 ```ini
-# /etc/systemd/system/bandi-sender.service
+# /etc/systemd/system/edunews-bandi-sender.service
 [Unit]
 Description=EduNews24 Bandi Pipeline Sender (4x/day)
 After=network.target
 
 [Service]
 Type=simple
-User=micheledibisceglia
-WorkingDirectory=/Users/micheledibisceglia/Developer/news1
-ExecStart=/Users/micheledibisceglia/Developer/news1/scraper_bandi/.venv/bin/python -m backend.app.bandi_sender
-Restart=on-failure
-RestartSec=30s
+User=<UTENTE>
+WorkingDirectory=/home/<UTENTE>/projects/news1
+ExecStart=/home/<UTENTE>/projects/news1/scraper_bandi/.venv/bin/python -m backend.app.bandi_sender
 StandardOutput=journal
 StandardError=journal
 
@@ -304,15 +314,117 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
+La politica di riavvio sta nel drop-in `deploy/edunews-bandi-sender-riavvio.conf` (giro 2):
+`Restart=on-failure`, `RestartSec=20min`, `StartLimitIntervalSec=0`. Un errore fatale dello
+scheduler fa uscire il sender con 1, e systemd lo riavvia dopo 20 minuti. Se il processo precedente è
+morto a metà giro (all'avvio viene rilasciato il suo lock del giro), il sender non rifà il giro di
+boot: scrive una riga `riavvio_dopo_crash` in `pipeline_run` e aspetta lo scheduler.
+
 ```bash
-sudo systemctl enable --now bandi-sender.service
-sudo journalctl -u bandi-sender -f
+sudo mkdir -p /etc/systemd/system/edunews-bandi-sender.service.d
+sudo cp scraper_bandi/deploy/edunews-bandi-sender-riavvio.conf \
+  /etc/systemd/system/edunews-bandi-sender.service.d/riavvio.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now edunews-bandi-sender.service   # solo la prima volta
+sudo journalctl -u edunews-bandi-sender -f
 ```
+
+Dopo un cambio del drop-in basta **un solo** `systemctl restart edunews-bandi-sender`, nella
+finestra sicura (12:30-16:30 o 19:00-22:30).
 
 **Test smoke (un giro singolo, senza schedule)**:
 ```bash
 scraper_bandi/.venv/bin/python -m backend.app.bandi_pipeline
 ```
+
+## Sorveglianza (`sorveglia`, giro 2)
+
+Niente notifiche (scelta del committente, confermata il 30/09): chi vuole sapere se il produttore dei
+bandi è vivo guarda il pannello di BandoFit. Il pannello legge un **riepilogo neutro** con la chiave
+di `monitoraggio_catalogo` (migrazione 12, contratto DB §14); `sorveglia` è il comando che lo scrive.
+
+```bash
+cd scraper_bandi
+# dal Mac o sul server: legge (anche la memoria), stampa il JSON e i codici, NON scrive
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app sorveglia --dry-run
+# sul server lo lancia il timer, ogni 15 minuti
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app sorveglia
+```
+
+Un giro di `sorveglia`:
+1. legge la memoria della volta prima dalla riga del riepilogo;
+2. fa la fotografia di `salute` (misure del DB, `systemctl show` del sender, job orario della 12);
+3. costruisce il riepilogo v1 (`app/riepilogo_salute.py`): codici stabili, testi senza nomi di
+   fornitori, host, URL né dollari;
+4. lo valida; se non passa scrive il riepilogo minimo con il codice `riepilogo_non_valido`, e il
+   dettaglio va solo nel journal;
+5. fa l'upsert della riga unica (`id = 1`).
+
+Exit code: **0 anche con allarmi** (li mostra il pannello); **1** su un errore interno o un upsert
+fallito. Senza la migrazione 12 scrive un warning ed esce con 0. Nessun file di stato (niente
+`StateDirectory`, niente flock): la memoria (`nrestarts` delle ultime 6 ore e il `dal` di ogni codice)
+sta nella riga. Nessuna chiamata di rete oltre a PostgREST del DB bandi. Il servizio sorvegliato si
+cambia con `SORVEGLIA_SERVIZIO_SENDER` (default `edunews-bandi-sender`), che non esce mai nel
+riepilogo.
+
+**Installazione** (una volta sola, sul server; le unit di esempio sono in `deploy/`, con percorsi
+assoluti e `<UTENTE>` da sostituire):
+
+```bash
+sudo cp scraper_bandi/deploy/edunews-bandi-sorveglianza.service \
+  scraper_bandi/deploy/edunews-bandi-sorveglianza.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now edunews-bandi-sorveglianza.timer
+systemctl list-timers edunews-bandi-sorveglianza.timer
+journalctl -u edunews-bandi-sorveglianza --since -1h
+```
+
+Il timer gira ai minuti 05, 20, 35 e 50 (`Persistent=true`). Se il pannello non vede una riga nuova
+da 45 minuti mostra «in ritardo» da solo. I codici, cosa significano e cosa fare sono in
+`docs/bandi-monitor/RIPRESA.md` §3.1.
+
+## Stato da verificare (`verifica-stato`, giro 2 percorso A)
+
+Un bando «in apertura» o «aperto» senza scadenza non resta per sempre in quello stato senza che
+nessuno lo controlli: il passo `verifica_stato` rilegge la pagina ufficiale e, alla lettura, la vista
+`bando_pubblico` dice nella colonna `stato_da_verificare` perché lo stato non è certo (migrazione 13,
+contratto DB §4.1). Nessuna chiusura a tempo: si chiude solo con un evento provato.
+
+- **Fase controlli**, nei giri delle 06 e delle 18, dopo il monitor: al massimo 40 letture e 900 s,
+  al massimo 20 chiusure per giro, con un freno per ente.
+- **Fase ingresso**, in ogni giro prima della SEO, senza modello: cerca la scadenza dei bandi nuovi e
+  trattiene per al massimo 4 giri un «aperto» senza scadenza né prova (`app/ingresso.py`).
+- **Domini**: import completo di IndicePA nel primo giro delle 06 del mese (solo host assenti).
+- **Gemelli**: fusione automatica dei doppioni certi fra pubblicati nel giro delle 06, al massimo 10;
+  una riga nuova gemella di un pubblicato si fonde nella SEO, a ogni giro e senza tetto.
+
+Tutto segue `VERIFICA_STATO_MODALITA`. In `ombra` (il default) legge, calcola e conta, ma qualcosa
+di pubblico cambia già: il motivo `data_apertura_passata` nella vista e, sui bandi nuovi, le date del
+preprocess a 8 000 caratteri. Solo in `attivo` arrivano lo stato letto, gli altri motivi, il termine
+indicato (il passo lo scrive anche in ombra, ma la vista lo espone solo per i bandi esaminati in
+attivo), gli eventi, le fusioni, la scrittura dell'import e la sosta (RIPRESA §1, «Giro 2»).
+
+```bash
+cd scraper_bandi
+# il report per bando e la verità nota: «difformi: 0» prima di attivare (exit 1 se ce ne sono)
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app report-verifica-stato --verita
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app report-verifica-stato --json --ramo aperto --motivo senza_conferma
+# prova del passo: solo --dry-run, niente lock né scritture; dal Mac sempre --senza-modello
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app verifica-stato --dry-run --senza-modello --limit 20
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app verifica-stato --dry-run --senza-modello --fase ingresso
+# le fusioni che il giro delle 06 farebbe (solo --dry-run; quelle a mano restano fondi-doppioni)
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app gemelli --dry-run
+# import completo di IndicePA: lo fa il giro delle 06 una volta al mese; a mano solo per provarlo.
+# Anche `domini --import --attivo [--enti PATH]` aggiunge solo host nuovi e non modifica righe esistenti.
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app domini --import --scarica-enti --dry-run
+```
+
+Senza la migrazione 13 il passo non parte (`motivo_saltato: migrazione_assente` nella riga
+`verifica_stato` di `pipeline_run`). Finché la verifica non è attiva, anche con la 13 applicata,
+`salute` dà l'avviso «non misurato da salute: … stato da verificare (verifica non attiva o
+migrazione 13 assente)», e nel riepilogo (`sorveglia --dry-run`) `da_verificare` è null e compare
+in `non_misurati`: in ombra è normale. I codici di salute del passo e cosa fare sono in
+`docs/bandi-monitor/RIPRESA.md` §3.1.
 
 ## SQL migration prerequisito
 

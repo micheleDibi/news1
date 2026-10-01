@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
-import { supabaseBandi, loadCatalogo, todayRomeISO, FONTE_BANDI, type CatalogoRow } from './supabase-bandi';
-import { statoEffettivo } from './stato-bando';
+import { supabaseBandi, loadCatalogo, todayRomeISO, FONTE_BANDI, selectConMotivo, type CatalogoRow } from './supabase-bandi';
+import { motivoDellaRiga, statoEffettivo } from './stato-bando';
 import { inScadenza } from './bandi/aspetto';
 import { giorniAllaScadenza } from './bandi/testi-stato';
 import { regionePerValore, regionePerSlug } from './regioni';
@@ -48,6 +48,11 @@ export type GruppoConteggioBandi = 'regione' | 'settore' | 'programma' | 'tipolo
 /** Conteggi della lista bandi: tessere dell'hero, segmenti di stato, numeri delle opzioni. */
 export interface ConteggiBandi {
   perStato: Record<string, number>;
+  /**
+   * Per stato effettivo, quanti hanno un motivo «da verificare» compatibile con
+   * lo stato (`motivoDellaRiga`). Lo mostra solo l'hero degli «in apertura».
+   */
+  daVerificare: Record<string, number>;
   inScadenza: number;
   /**
    * gruppo -> id di catalogo -> bandi pubblicati. Un gruppo manca se la sua
@@ -313,6 +318,11 @@ interface RigaBando {
   data_pubblicazione: string | null;
   /** Solo dalla vista: lo stato che il DB calcola alla lettura. */
   stato_effettivo?: string | null;
+  /** Dalla vista `stato_da_verificare`, dalla tabella i campi per ricalcolarlo. */
+  stato_da_verificare?: string | null;
+  data_apertura?: string | null;
+  data_apertura_verificata?: boolean | null;
+  pubblicato_at?: string | null;
 }
 
 /** Slug di una voce di catalogo: per le regioni vince il registro statico. */
@@ -379,8 +389,9 @@ async function costruisciBandi(): Promise<Corpus> {
       // Lo stato calcolato si chiede solo se la fonte ce l'ha: sulla tabella
       // `stato_effettivo` non esiste e la richiesta fallirebbe con 42703,
       // spegnendo tutte le pagine filtro insieme.
-      const colonne = 'id, programma_id, tipologia_bando_id, modalita_erogazione_id, stato_bando, data_scadenza, data_pubblicazione'
-        + (FONTE_BANDI.colonnaStato === null ? '' : `, ${FONTE_BANDI.colonnaStato}`);
+      // Il motivo «da verificare» segue la stessa logica (`selectConMotivo`).
+      const colonne = selectConMotivo('id, programma_id, tipologia_bando_id, modalita_erogazione_id, stato_bando, data_scadenza, data_pubblicazione'
+        + (FONTE_BANDI.colonnaStato === null ? '' : `, ${FONTE_BANDI.colonnaStato}`));
       let query = supabaseBandi
         .from(FONTE_BANDI.tabella)
         .select(colonne);
@@ -458,7 +469,9 @@ async function costruisciBandi(): Promise<Corpus> {
   conteggiPerId.modalita = perFk('modalita_erogazione_id');
 
   const oggi = todayRomeISO();
+  const adesso = new Date();
   const perStato: Record<string, number> = {};
+  const daVerificare: Record<string, number> = {};
   let urgenti = 0;
 
   const acc = new Accumulatore('bandi');
@@ -479,6 +492,9 @@ async function costruisciBandi(): Promise<Corpus> {
     // Stessa regola del filtro `?in_scadenza=si`: aperto, scadenza fra oggi e oggi+15.
     const urgente = inScadenza(stato, giorniAllaScadenza(b.data_scadenza, oggi));
     perStato[stato] = (perStato[stato] ?? 0) + 1;
+    if (motivoDellaRiga(b as unknown as Record<string, unknown>, stato, adesso) !== null) {
+      daVerificare[stato] = (daVerificare[stato] ?? 0) + 1;
+    }
     if (urgente) urgenti++;
     const data = b.data_pubblicazione;
 
@@ -539,7 +555,7 @@ async function costruisciBandi(): Promise<Corpus> {
     faccette: acc.faccette,
     incroci: acc.incroci,
     generatoIl: Date.now(),
-    bandi: { perStato, inScadenza: urgenti, perId: conteggiPerId },
+    bandi: { perStato, daVerificare, inScadenza: urgenti, perId: conteggiPerId },
   };
 }
 

@@ -92,6 +92,13 @@ _RE_SCRIPT = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.IGNORECASE | re.DO
 _RE_TAG = re.compile(r"<[^>]+>")
 
 
+#: Come seguire i redirect (contratto `bandi-giro-2` §7): tutti, come sempre,
+#: oppure solo finche' restano sullo stesso host.
+REDIRECT_TUTTI = "tutti"
+REDIRECT_STESSO_HOST = "stesso_host"
+REDIRECT_AMMESSI: tuple[str, ...] = (REDIRECT_TUTTI, REDIRECT_STESSO_HOST)
+
+
 class ScaricoVietatoError(RuntimeError):
     """Host in blocklist: la pagina non e' scaricabile come fonte (A35)."""
 
@@ -116,6 +123,14 @@ class Risposta:
     #: L'host non risolve (errore DNS): la pagina non e' stata letta, e non
     #: e' una notizia sul bando. Chi tiene i tentativi non ne consuma uno.
     host_irraggiungibile: bool = False
+    #: L'URL a cui si e' arrivati dopo i redirect (contratto `bandi-giro-2`
+    #: §7). Vuoto vale `url`: chi costruisce una risposta senza redirect non
+    #: deve saperlo. Resolver e monitor continuano a leggere `url`.
+    url_finale: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.url_finale:
+            object.__setattr__(self, "url_finale", self.url)
 
     @property
     def vuota(self) -> bool:
@@ -415,6 +430,7 @@ class Scarico:
         etag: str | None = None,
         modificata_dopo: str | None = None,
         usa_cache: bool = True,
+        redirect: str = REDIRECT_TUTTI,
     ) -> Risposta:
         """Scarica `url`.
 
@@ -429,7 +445,13 @@ class Scarico:
         significa «niente e' cambiato».
         Un host che in questo giro non ha risolto il DNS non si interroga piu':
         la risposta torna subito, senza stato e con `host_irraggiungibile`.
+        `redirect='stesso_host'` segue i redirect solo finche' restano sullo
+        stesso host (`host_di`): il primo verso un altro host si ferma, e la
+        risposta e' quel 3xx, con `url_finale` sull'ultimo URL dello stesso
+        host. `redirect='tutti'` e' il comportamento di sempre.
         """
+        if redirect not in REDIRECT_AMMESSI:
+            raise ValueError(f"redirect sconosciuto: {redirect!r}")
         # Una blocklist iniettata nel costruttore vale sempre (e' una scelta
         # esplicita del chiamante e sostituisce `AGGREGATORI`); altrimenti la
         # denylist degli aggregatori entra in gioco solo per la fonte ufficiale.
@@ -438,8 +460,11 @@ class Scarico:
             self.contatori.vietati += 1
             raise ScaricoVietatoError(f"host in blocklist, scarico rifiutato: {host_di(url)}")
 
+        # La cache di sempre resta sulla chiave `url`; una lettura che si
+        # ferma sullo stesso host e' un'altra risposta e ha una chiave sua.
+        chiave = url if redirect == REDIRECT_TUTTI else f"{url}\x00{redirect}"
         if usa_cache and not (etag or modificata_dopo):
-            in_cache = self._da_cache(url)
+            in_cache = self._da_cache(chiave)
             if in_cache is not None:
                 self.contatori.da_cache += 1
                 return in_cache
@@ -448,9 +473,12 @@ class Scarico:
             self.contatori.saltati_dns += 1
             return Risposta(url=url, stato=None, host_irraggiungibile=True)
 
-        risposta = await self._via_httpx(url, etag=etag, modificata_dopo=modificata_dopo)
+        risposta = await self._via_httpx(
+            url, etag=etag, modificata_dopo=modificata_dopo, redirect=redirect)
 
-        if principale and self._serve_ripiego(url, risposta):
+        # Il ripiego rilegge `url` seguendo i redirect su qualunque host: con
+        # 'stesso_host' sarebbe la pagina di un altro host attribuita all'ente.
+        if principale and redirect == REDIRECT_TUTTI and self._serve_ripiego(url, risposta):
             ripiego = await self._via_firecrawl(url)
             if ripiego is not None and not ripiego.vuota:
                 risposta = ripiego
@@ -466,7 +494,7 @@ class Scarico:
         # In cache solo cio' che e' servito a qualcosa: mai un errore, mai un
         # corpo vuoto (e' il difetto della vecchia `_FIRECRAWL_CACHE`).
         if usa_cache and risposta.ok and not risposta.vuota:
-            self._cache[url] = (self._orologio() + self.ttl_s, risposta)
+            self._cache[chiave] = (self._orologio() + self.ttl_s, risposta)
         return risposta
 
     async def testo(self, url: str, *, principale: bool = False, **kwargs: Any) -> str:
@@ -514,6 +542,7 @@ class Scarico:
 
     async def _via_httpx(
         self, url: str, *, etag: str | None, modificata_dopo: str | None,
+        redirect: str = REDIRECT_TUTTI,
     ) -> Risposta:
         intestazioni: dict[str, str] = {}
         if etag:
@@ -530,7 +559,8 @@ class Scarico:
             # lasciato una fonte irraggiungibile bussare a costo zero.
             self.contatori.fetch += 1
             try:
-                stato, corpo, testata, troncata = await self._una_get(url, intestazioni)
+                stato, corpo, testata, troncata, finale = await self._una_get(
+                    url, intestazioni, redirect=redirect)
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 ultimo_errore = e
                 # L'host che ha fallito il DNS non e' per forza quello chiesto:
@@ -562,6 +592,7 @@ class Scarico:
                 return Risposta(
                     url=url, stato=304,
                     etag=testata.get("etag"), last_modified=testata.get("last-modified"),
+                    url_finale=finale,
                 )
             if stato in _STATI_RITENTABILI and tentativo < self.tentativi:
                 await self._dormi(self._attesa(tentativo))
@@ -569,7 +600,7 @@ class Scarico:
             if stato >= 400:
                 self.contatori.errori += 1
                 logger.debug("[scarico] {} stato={}", url, stato)
-                return Risposta(url=url, stato=stato, troncata=troncata)
+                return Risposta(url=url, stato=stato, troncata=troncata, url_finale=finale)
 
             html = corpo
             return Risposta(
@@ -580,6 +611,7 @@ class Scarico:
                 etag=testata.get("etag"),
                 last_modified=testata.get("last-modified"),
                 troncata=troncata,
+                url_finale=finale,
             )
 
         self.contatori.errori += 1
@@ -588,13 +620,23 @@ class Scarico:
         return Risposta(url=url, stato=None)
 
     async def _una_get(
-        self, url: str, intestazioni: dict[str, str],
-    ) -> tuple[int, str, dict[str, str], bool]:
+        self, url: str, intestazioni: dict[str, str], *, redirect: str = REDIRECT_TUTTI,
+    ) -> tuple[int, str, dict[str, str], bool, str]:
         """GET in streaming: il corpo si legge fino al limite e poi si tronca,
-        cosi' un PDF da 200 MB non entra mai in memoria."""
+        cosi' un PDF da 200 MB non entra mai in memoria. L'ultimo valore e'
+        l'URL finale, dopo i redirect seguiti."""
         client = self.client()
         richiesta = client.build_request("GET", url, headers=intestazioni or None)
-        risposta = await client.send(richiesta, stream=True, follow_redirects=True)
+        if redirect == REDIRECT_TUTTI:
+            risposta = await client.send(richiesta, stream=True, follow_redirects=True)
+        else:
+            risposta = await self._segui_sullo_stesso_host(client, richiesta)
+            if risposta.next_request is not None:
+                # Il redirect porta fuori dall'host: ci si ferma sul 3xx, il
+                # suo corpo non serve a nessuno.
+                await risposta.aclose()
+                testate = {k.lower(): v for k, v in risposta.headers.items()}
+                return risposta.status_code, "", testate, False, str(risposta.url)
         try:
             pezzi: list[bytes] = []
             letti = 0
@@ -608,9 +650,34 @@ class Scarico:
             grezzo = b"".join(pezzi)[: self.limite_byte]
             testate = {k.lower(): v for k, v in risposta.headers.items()}
             codifica = risposta.encoding or "utf-8"
-            return risposta.status_code, grezzo.decode(codifica, "replace"), testate, troncata
+            return (risposta.status_code, grezzo.decode(codifica, "replace"), testate,
+                    troncata, str(risposta.url))
         finally:
             await risposta.aclose()
+
+    @staticmethod
+    async def _segui_sullo_stesso_host(
+        client: httpx.AsyncClient, richiesta: httpx.Request,
+    ) -> httpx.Response:
+        """I redirect a mano, finche' restano su `host_di` della richiesta.
+
+        Ritorna la risposta finale, oppure il 3xx il cui `next_request` porta
+        su un altro host (ancora aperto: lo chiude il chiamante). Il tetto dei
+        passi e' quello di httpx (`max_redirects`), con la stessa eccezione.
+        """
+        host = host_di(str(richiesta.url))
+        passi = 0
+        while True:
+            risposta = await client.send(richiesta, stream=True, follow_redirects=False)
+            prossima = risposta.next_request
+            if prossima is None or host_di(str(prossima.url)) != host:
+                return risposta
+            await risposta.aclose()
+            passi += 1
+            if passi > client.max_redirects:
+                raise httpx.TooManyRedirects(
+                    "troppi redirect sullo stesso host", request=prossima)
+            richiesta = prossima
 
     def _segna_irraggiungibile(self, host: str) -> None:
         """`host` e' il nome che non ha risolto, esatto (`nome_host`)."""
@@ -743,7 +810,8 @@ async def scarica_markdown(url: str, **kwargs: Any) -> str:
 
 
 __all__ = [
-    "AGGREGATORI", "Contatori", "Risposta", "Scarico", "ScaricoVietatoError",
+    "AGGREGATORI", "Contatori", "REDIRECT_AMMESSI", "REDIRECT_STESSO_HOST", "REDIRECT_TUTTI",
+    "Risposta", "Scarico", "ScaricoVietatoError",
     "chiudi", "contatori", "e_app_shell", "host_di", "imposta_scarico",
     "in_blocklist", "scarica_markdown", "scarica_testo", "scarico_corrente",
     "svuota", "testo_da_html",

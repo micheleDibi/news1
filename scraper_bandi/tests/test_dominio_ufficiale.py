@@ -455,3 +455,96 @@ class TestSottodominiDeiPattern(unittest.TestCase):
         # prefisso ammesso finisce con un punto, quindi il confine di etichetta
         # resta rispettato.
         self.assertEqual(self._tipo("maxiregione.lombardia.it"), "sconosciuto")
+
+
+# --- import completo di IndicePA e righe del DB (contratto `bandi-giro-2` §19.8) ---
+
+def _ente(codice, sito, nome="Ente"):
+    return {"Codice_IPA": codice, "Denominazione_ente": nome, "Sito_istituzionale": sito}
+
+
+class PiattaformeCondivise(unittest.TestCase):
+    def test_piattaforme_e_loro_sottodomini(self):
+        for host in ("sites.google.com", "https://sites.google.com/view/comune",
+                     "comunexyz.altervista.org", "bit.ly", "www.facebook.com/comune"):
+            with self.subTest(host=host):
+                self.assertTrue(dominio_ufficiale.piattaforma_condivisa(host))
+        for host in ("comune.roma.it", "altervista.org.it", "google.com", None, ""):
+            with self.subTest(host=host):
+                self.assertFalse(dominio_ufficiale.piattaforma_condivisa(host))
+
+    def test_gli_accorciatori_sono_piattaforme(self):
+        self.assertLessEqual(dominio_ufficiale.ACCORCIATORI, dominio_ufficiale.PIATTAFORME_CONDIVISE)
+        self.assertEqual(dominio_ufficiale.ACCORCIATORI,
+                         frozenset({"rpu.gl", "bit.ly", "tinyurl.com", "goo.gl", "t.ly"}))
+
+
+class AnalisiIndicePA(unittest.TestCase):
+    RIGHE = [
+        _ente("c_a001", "www.comune.esempio.it", "Comune di Esempio"),
+        _ente("c_a002", "https://comune.esempio.it/uffici", "Ufficio due"),     # 2 codici: entra
+        _ente("asl_1", "www.asl.esempio.it"),
+        _ente("asl_2", "asl.esempio.it"),
+        _ente("asl_3", "https://asl.esempio.it/sede"),                           # 3 codici: fuori
+        _ente("c_b001", "https://comunebeta.altervista.org"),                    # piattaforma
+        _ente("c_c001", "https://bandi.it/ente"),                                # blocklist del seed
+        _ente("c_d001", ""),                                                     # senza sito
+        _ente("c_e001", "http://"),                                              # host non valido
+        _ente("c_f001", "portale.gestionale.example"),                           # blocklist del DB
+    ]
+
+    def test_esclusioni_con_motivo(self):
+        tabella = dominio_ufficiale.costruisci(
+            [dominio_ufficiale.Dominio("gestionale.example", "aggregatore", 1.0, origine="db")])
+        esito = dominio_ufficiale.analizza_indicepa(self.RIGHE, tabella=tabella)
+        self.assertEqual([d.host for d in esito.domini], ["comune.esempio.it"])
+        self.assertEqual(esito.domini[0].ente, "Comune di Esempio")
+        self.assertEqual(esito.esclusi, {
+            "host_condiviso": 3, "piattaforma_condivisa": 1, "blocklist": 2,
+            "senza_sito": 1, "host_non_valido": 1,
+        })
+        self.assertEqual((esito.righe_lette, esito.righe_utili), (10, 8))
+        self.assertEqual(esito.colonne_mancanti, ())
+
+    def test_senza_tabella_vale_la_blocklist_del_seed(self):
+        esito = dominio_ufficiale.analizza_indicepa(self.RIGHE)
+        self.assertIn("portale.gestionale.example", [d.host for d in esito.domini])
+        self.assertEqual(esito.esclusi["blocklist"], 1)
+
+    def test_colonne_mancanti(self):
+        righe = [{"Codice_IPA": "x", "Sito_istituzionale": "comune.x.it"}]
+        self.assertEqual(dominio_ufficiale.analizza_indicepa(righe).colonne_mancanti,
+                         ("denominazione",))
+        self.assertEqual(dominio_ufficiale.analizza_indicepa([]).colonne_mancanti,
+                         ("sito_istituzionale", "denominazione", "codice_ipa"))
+
+    def test_importa_indicepa_restituisce_i_soli_ammessi(self):
+        self.assertEqual([d.host for d in dominio_ufficiale.importa_indicepa(self.RIGHE)],
+                         ["comune.esempio.it", "portale.gestionale.example"])
+
+
+class RigheDelDB(unittest.TestCase):
+    def test_conversione(self):
+        righe = [
+            {"id": 1, "host": "LazioEuropa.it", "tipo": "ente", "confidenza": "0.60",
+             "ente": "Regione Lazio", "codice_ipa": None, "fonte_id": "237",
+             "origine": "manuale", "attivo": True, "note": None},
+            {"id": 2, "host": "vecchio.it", "tipo": "ente", "confidenza": 1, "attivo": False},
+            {"id": 3, "host": "", "tipo": "ente"},
+            {"id": 4, "host": "senza-tipo.it", "tipo": None},
+        ]
+        domini = dominio_ufficiale.da_righe_db(righe)
+        self.assertEqual([d.host for d in domini], ["lazioeuropa.it", "vecchio.it"])
+        self.assertEqual((domini[0].confidenza, domini[0].fonte_id, domini[0].origine),
+                         (0.60, 237, "manuale"))
+        self.assertFalse(domini[1].attivo)
+
+    def test_la_riga_del_db_corretta_a_mano_vince(self):
+        """Una confidenza abbassata a mano a DB toglie la verificabilita' della fonte."""
+        tabella = dominio_ufficiale.costruisci(
+            dominio_ufficiale.da_righe_db([{"host": "lazioeuropa.it", "tipo": "ente",
+                                            "confidenza": 0.6, "origine": "manuale"}]),
+            fonti=[{"id": 237, "link": "https://www.lazioeuropa.it/bandi/"}])
+        self.assertEqual(dominio_ufficiale.corrispondenza("lazioeuropa.it", tabella).origine,
+                         "manuale")
+        self.assertFalse(dominio_ufficiale.verificabile("lazioeuropa.it", tabella))

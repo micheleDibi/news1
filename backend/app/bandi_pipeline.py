@@ -13,6 +13,15 @@ Chaining sequenziale degli step (la numerazione e' quella del piano §16.3.10):
                       coda per fase, eventi con i gate G1-G9, lock `monitor` e riga
                       propria in `pipeline_run`; se il modulo manca, lo step e' saltato
 
+Giro 2 (contratto `bandi-giro-2` §11 e §19.10), tutti con `_passo_se_esiste`
+e dentro il lock del giro, nessun lock nuovo:
+  4-bis. domini          — import completo di IndicePA, solo alle 06 e se nel
+                           mese non ce n'e' uno fatto (`domini_dovuto`)
+  5-ter. verifica_stato_ingresso — fase ingresso di verifica-stato, ogni giro,
+                           prima della SEO (che poi applica la sosta)
+  8. verifica_stato      — fase controlli, nei giri del monitor, dopo il monitor
+  9. gemelli             — fusioni dei gemelli certi, solo alle 06
+
 Giro esplicito (§16.2 M13): `run_bandi_pipeline(giro="06:00")`. Gli step che
 girano solo in alcuni giri (il monitor) confrontano `giro` con
 `settings.monitor_giri`; `giro=None` (CLI) vale «sempre».
@@ -56,6 +65,7 @@ Tempi attesi per ciclo (~80 min totali):
 from __future__ import annotations
 
 import functools
+import inspect
 import os
 import sys
 import time
@@ -214,7 +224,11 @@ async def _safe_run(name: str, fn: Callable, **kwargs) -> dict[str, Any]:
     started = time.monotonic()
     logger.info("--- bandi_pipeline: STEP {} START ---", name)
     try:
-        result = await fn(**kwargs)
+        # Anche le funzioni sincrone (il passo `gemelli`): si attende solo cio'
+        # che e' davvero attendibile.
+        result = fn(**kwargs)
+        if inspect.isawaitable(result):
+            result = await result
         elapsed = time.monotonic() - started
         logger.info(
             "--- bandi_pipeline: STEP {} OK | elapsed={:.1f}s | counters={} ---",
@@ -297,6 +311,9 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
         # niente) e i contatori sommerebbero l'intera vita del processo, facendo
         # scattare i tetti per costruzione.
         _scarico.svuota()
+        # Giro 2 (§19.8): la whitelist dei domini si rilegge dal DB una volta
+        # per giro, non una volta per processo.
+        _azzera_tabella_domini()
 
         # Step 1: discover (no kwargs)
         state["steps"]["discover"] = await _safe_run("discover", _discover_run)
@@ -309,6 +326,19 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
 
         # Step 4: enrich (no kwargs: opera su 'processed')
         state["steps"]["enrich"] = await _safe_run("enrich", _enrich_run)
+
+        # Step 4-bis (giro 2, §19.8): l'import COMPLETO di IndicePA, nel giro
+        # delle 06 se nel mese di calendario non ce n'e' ancora uno fatto.
+        # Prima del resolver, perche' il resolver del giro veda gli host nuovi
+        # (l'import azzera da se' la tabella in memoria).
+        if giro == GIRO_DELLE_06:
+            if _import_domini_dovuto():
+                state["steps"]["domini"] = await _passo_se_esiste(
+                    "domini", "app.fonte_ufficiale", giro=giro,
+                    funzione="run_domini_import", scarica_enti=True,
+                )
+            else:
+                state["steps"]["domini"] = {"status": "ok", "saltato": "gia_fatto_nel_mese"}
 
         # Step 5: resolver della fonte ufficiale — fra enrich e seo, cosi' la
         # skill SEO puo' gia' leggere la pagina ufficiale invece di quella
@@ -348,6 +378,13 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
                 "status": "ok", "saltato": "giro_non_previsto",
             }
 
+        # Step 5-ter (giro 2, §19.4 §5.10): la fase ingresso di verifica-stato,
+        # in ogni giro, prima della SEO: cerca una scadenza ai bandi nuovi che
+        # la SEO altrimenti pubblicherebbe «aperti» senza data. Senza modello.
+        state["steps"]["verifica_stato_ingresso"] = await _passo_se_esiste(
+            "verifica_stato_ingresso", "app.verifica_stato", giro=giro, fase="ingresso",
+        )
+
         # Step 6: seo (no kwargs: opera su 'enriched')
         state["steps"]["seo"] = await _safe_run("seo", _seo_run)
 
@@ -366,6 +403,27 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
         else:
             logger.info("--- bandi_pipeline: STEP monitor SALTATO (giro {} non previsto) ---", giro)
             state["steps"]["monitor"] = {"status": "ok", "saltato": "giro_non_previsto"}
+
+        # Step 8 (giro 2, §11 e §19.10): verifica-stato, fase controlli. Come il
+        # monitor, solo nei suoi giri (06 e 18: decisione del lead, per
+        # dimezzare costo e ritmo delle chiusure). La prosa la riallinea il
+        # passo con lo stesso adattatore del monitor; gli slug degli eventi
+        # applicati li legge `_slug_da_notificare`.
+        if _giro_previsto(giro):
+            state["steps"]["verifica_stato"] = await _passo_se_esiste(
+                "verifica_stato", "app.verifica_stato", giro=giro, fase="controlli",
+                rigenerazione=_rigenerazione_di_produzione(per_verifica=True),
+            )
+        else:
+            state["steps"]["verifica_stato"] = {"status": "ok", "saltato": "giro_non_previsto"}
+
+        # Step 9 (giro 2, §19.9): le fusioni dei gemelli certi, nel giro delle
+        # 06. Modalita' e tetto dal `.env` (VERIFICA_STATO_MODALITA,
+        # GEMELLI_FUSIONI_PER_GIRO): in ombra elenca e conta.
+        if giro == GIRO_DELLE_06:
+            state["steps"]["gemelli"] = await _passo_se_esiste(
+                "gemelli", "app.gemelli", giro=giro, funzione="esegui_passo",
+            )
     finally:
         # Il client HTTP muore con il giro: `asyncio.run` chiude l'event loop
         # subito dopo, e un client sopravvissuto esploderebbe al giro seguente
@@ -408,7 +466,7 @@ async def run_bandi_pipeline(giro: str | None = None) -> dict[str, Any]:
 
 
 async def _passo_se_esiste(
-    nome: str, modulo: str, *, giro: str | None, **extra: Any,
+    nome: str, modulo: str, *, giro: str | None, funzione: str = "run", **extra: Any,
 ) -> dict[str, Any]:
     """Esegue uno step opzionale, o lo dichiara saltato se il modulo non c'e'.
 
@@ -420,8 +478,16 @@ async def _passo_se_esiste(
     `rigenerazione=`, i due adattatori del G7 e i `contatori` del giro):
     restano qui e non nel corpo comune perche' passarli a tutti significherebbe
     offrire al resolver argomenti che non conosce.
+
+    `funzione` e' il nome dell'ingresso nel modulo (`run` per resolver e
+    monitor, `run_domini_import` ed `esegui_passo` per i passi del giro 2). Uno
+    step che non solleva ma dice `status: 'errore'` nei suoi contatori
+    (`gemelli`, `verifica_stato`) diventa `status: error` qui: altrimenti un
+    guasto interno contava come un giro riuscito e non entrava in
+    `passi_non_ok`.
     """
-    funzione, motivo = _passo_opzionale(modulo)
+    ingresso = funzione
+    funzione, motivo = _passo_opzionale(modulo, ingresso)
     if funzione is None:
         if motivo == MODULO_ASSENTE:
             logger.info(
@@ -432,10 +498,88 @@ async def _passo_se_esiste(
             "--- bandi_pipeline: STEP {} NON PARTITO ({} rotto: {}) ---", nome, modulo, motivo,
         )
         return {"status": "error", "saltato": "modulo_rotto", "modulo": modulo, "error": motivo}
-    return await _safe_run(nome, funzione, giro=giro, **extra)
+    esito = await _safe_run(nome, funzione, giro=giro, **extra)
+    contatori = esito.get("counters")
+    if esito.get("status") == "ok" and isinstance(contatori, dict) \
+            and contatori.get("status") == STATUS_ERRORE_INTERNO:
+        esito["status"] = "error"
+        esito["error"] = "errore interno del passo"
+    return esito
 
 
-def _rigenerazione_di_produzione() -> Callable | None:
+#: Il giro dei passi mensili e giornalieri del giro 2: l'import di IndicePA
+#: (§19.8) e i gemelli (§19.9).
+GIRO_DELLE_06 = "06:00"
+#: Il valore di `status` con cui un passo che non solleva dice «guasto».
+STATUS_ERRORE_INTERNO = "errore"
+#: Gli esiti dell'import di IndicePA che contano come «fatto nel mese»: in
+#: ombra anche 'ombra' (altrimenti il foglio si riscaricherebbe ogni mattina),
+#: in attivo solo 'ok'.
+ESITI_IMPORT_FATTO_OMBRA: tuple[str, ...] = ("ok", "ombra")
+ESITI_IMPORT_FATTO_ATTIVO: tuple[str, ...] = ("ok",)
+
+
+def domini_dovuto(
+    adesso_roma: datetime,
+    ultimi: list[dict[str, Any]],
+    attivo: bool,
+) -> bool:
+    """Vero se nel mese di calendario di Roma non c'e' un import «fatto». Pura.
+
+    `ultimi` sono le righe `pipeline_run` step='domini' (`avviato_at` e
+    `esito`, cioe' `indicepa_esito`). Copre il primo giro delle 06 del mese e
+    il primo dopo il deploy; un import fallito si ritenta al giro delle 06
+    seguente.
+    """
+    fatti = ESITI_IMPORT_FATTO_ATTIVO if attivo else ESITI_IMPORT_FATTO_OMBRA
+    inizio_mese = adesso_roma.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    for riga in ultimi:
+        if riga.get("esito") not in fatti:
+            continue
+        # `lock_orfani.istante`, non `fromisoformat`: su Python 3.10 le frazioni
+        # a cinque cifre di PostgREST («…12.87927+00:00») non si leggerebbero, e
+        # l'import ripartirebbe ogni mattina.
+        quando = _lock_orfani.istante(riga.get("avviato_at"))
+        if quando is not None and quando >= inizio_mese:
+            return False
+    return True
+
+
+def _import_domini_dovuto() -> bool:
+    """`domini_dovuto` con le ultime righe dell'import lette dal DB (solo GET).
+
+    Se la lettura fallisce non si importa: il DB non risponde, e l'import
+    fallirebbe comunque. Non solleva.
+    """
+    try:
+        from app import db as _db  # type: ignore
+        from app.stato_bando import adesso_roma  # type: ignore
+        risposta = (
+            _db.get_supabase().table("pipeline_run")
+            .select("avviato_at,esito:contatori->>indicepa_esito")
+            .eq("step", "domini").order("avviato_at", desc=True).limit(5).execute()
+        )
+        ultimi = list(getattr(risposta, "data", None) or [])
+        modalita = str(getattr(_get_settings(), "verifica_stato_modalita", "ombra") or "")
+        return domini_dovuto(adesso_roma(), ultimi, modalita.strip().lower() == "attivo")
+    except Exception as e:
+        logger.warning("[bandi_pipeline] ultimo import dei domini non letto, niente import: {}", e)
+        return False
+
+
+def _azzera_tabella_domini() -> None:
+    """Dimentica la whitelist in memoria (`fonte_ufficiale.azzera_tabella_corrente`).
+
+    Non solleva: senza, al peggio il giro usa la tabella letta al giro prima.
+    """
+    try:
+        from app import fonte_ufficiale as _fonte  # type: ignore
+        _fonte.azzera_tabella_corrente()
+    except Exception as e:
+        logger.warning("[bandi_pipeline] whitelist dei domini non azzerata: {}", e)
+
+
+def _rigenerazione_di_produzione(*, per_verifica: bool = False) -> Callable | None:
     """L'adattatore che porta la prosa in linea con le date nuove (§6.2, §12).
 
     Gemello di `_rigenerazione_di_produzione` in
@@ -451,11 +595,19 @@ def _rigenerazione_di_produzione() -> Callable | None:
     sono cambiate **non** finisce in `slug_modificati`: e' la scelta del
     monitor, ed e' quella giusta — notificare a Google una pagina che dice
     ancora la data vecchia e' peggio che tacere.
+
+    `per_verifica` (il passo `verifica_stato`): si costruisce **anche** con
+    `VERIFICA_STATO_MODALITA=attivo`, che sostituisce date pure con il monitor
+    in ombra (revisione avversaria del 01/10). Al monitor la condizione resta
+    la sua: la verifica attiva non gli rende raggiungibile `scrivi_su_db`.
     """
     try:
         impostazioni = _get_settings()
+        verifica_attiva = per_verifica and getattr(
+            impostazioni, "verifica_stato_modalita", "ombra") == "attivo"
         if (impostazioni.monitor_modalita != "attivo"
-                and not getattr(impostazioni, "monitor_tipi_attivi", ())):
+                and not getattr(impostazioni, "monitor_tipi_attivi", ())
+                and not verifica_attiva):
             return None
         from app import rigenera as _rigenera  # type: ignore
         return functools.partial(
@@ -617,9 +769,10 @@ def _registra(
     """Riga in `pipeline_run` + riepilogo JSON. Non solleva mai: la telemetria
     non deve poter far fallire un giro (le tabelle potrebbero non esistere)."""
     try:
-        contatori = {
-            nome: passo.get("counters") or {} for nome, passo in state.get("steps", {}).items()
-        }
+        contatori = _contatori_della_riga(state)
+        # Quali step non sono andati, per nome: `errori` li conta e basta, e
+        # la sorveglianza deve poter dire «lo stesso passo, due giri di fila».
+        contatori["passi_non_ok"] = _passi_non_ok(state)
         errori = sum(1 for passo in state.get("steps", {}).values() if passo.get("status") != "ok")
         interrotto = _interrotto_per_tetto(state)
         crediti, dollari = _consumo(state)
@@ -641,6 +794,85 @@ def _registra(
         _telemetria.scrivi_pipeline_run(concluso)
     except Exception as e:
         logger.warning("[bandi_pipeline] telemetria non registrata: {}", e)
+
+
+#: Gli step il cui risultato porta elenchi per bando (`proposte`,
+#: `ids_da_rigenerare`): nella riga 'pipeline' entrano solo esito e contatori,
+#: gli elenchi stanno nelle righe proprie del passo (revisione del 01/10).
+PASSI_SOLO_CONTATORI: tuple[str, ...] = ("verifica_stato", "verifica_stato_ingresso")
+CHIAVI_PASSI_SOLO_CONTATORI: tuple[str, ...] = ("status", "counters")
+
+
+def _contatori_della_riga(state: dict[str, Any]) -> dict[str, Any]:
+    """I contatori dei passi per la riga 'pipeline' di `pipeline_run`. Pura."""
+    contatori: dict[str, Any] = {}
+    for nome, passo in state.get("steps", {}).items():
+        valore = passo.get("counters") or {}
+        if nome in PASSI_SOLO_CONTATORI and isinstance(valore, dict):
+            valore = {k: valore[k] for k in CHIAVI_PASSI_SOLO_CONTATORI if k in valore}
+        contatori[nome] = valore
+    return contatori
+
+
+def _passi_non_ok(state: dict[str, Any]) -> list[str]:
+    """I nomi, ordinati, degli step con `status` diverso da `ok`. Pura.
+
+    Solo i nomi veri degli step, mai il testo dell'errore: la riga di
+    `pipeline_run` finisce nel riepilogo per il pannello, e un messaggio
+    d'eccezione puo' portarsi dietro host, URL o chiavi.
+    """
+    passi = state.get("steps") if isinstance(state, dict) else None
+    if not isinstance(passi, dict):
+        return []
+    return sorted(
+        str(nome) for nome, passo in passi.items()
+        if not isinstance(passo, dict) or passo.get("status") != "ok"
+    )
+
+
+#: Il contatore della riga scritta al posto del giro di boot saltato.
+MOTIVO_RIAVVIO_DOPO_CRASH = "riavvio_dopo_crash"
+
+
+def lock_del_giro_rilasciato(esito: Any, nome: str = LOCK_PIPELINE) -> bool:
+    """Vero se `rilascia_lock_orfani` ha rilasciato il lock del giro. Pura.
+
+    Il lock del giro di un processo morto vuol dire che il processo precedente
+    e' morto a meta' giro (crash, OOM, `systemctl restart` durante un giro).
+    Ripartire subito con un giro di boot rifarebbe lo stesso lavoro nello
+    stesso stato, e con `Restart=on-failure` un giro che fa cadere il processo
+    diventerebbe un ciclo di riavvii. Contano solo i `rilasciati`: un rilascio
+    fallito lascia il lock preso, e il giro di boot si salta da solo per lock.
+    """
+    if not isinstance(esito, dict):
+        return False
+    rilasciati = esito.get("rilasciati")
+    if not isinstance(rilasciati, list):
+        return False
+    return any(isinstance(voce, dict) and voce.get("nome") == nome for voce in rilasciati)
+
+
+def registra_avvio_saltato(
+    motivo: str = MOTIVO_RIAVVIO_DOPO_CRASH,
+    *,
+    giro: str = "boot",
+) -> None:
+    """Riga di `pipeline_run` per il giro di boot NON eseguito. Non solleva mai.
+
+    Senza questa riga un riavvio dopo un crash non lascerebbe traccia nel DB, e
+    la sorveglianza non potrebbe contare i riavvii ripetuti. L'esito e' quello
+    di un giro saltato; i contatori dicono perche'. `giro` arriva dal sender
+    (`GIRO_BOOT`): importarlo da qui sarebbe un import circolare.
+    """
+    try:
+        riga = _telemetria.PipelineRun(step="pipeline", giro=giro).concludi(
+            durata_s=0.0,
+            esito=_telemetria.esito_da_contatori(saltato_per_lock=True),
+            contatori={motivo: 1},
+        )
+        _telemetria.scrivi_pipeline_run(riga)
+    except Exception as e:
+        logger.warning("[bandi_pipeline] giro di boot saltato non registrato: {}", e)
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@
  * - I test (tests/api-v1/openapi.test.ts) difendono la coerenza con i DTO.
  */
 import { SLUG_VALIDO } from '../slug';
+import { MOTIVI_DA_VERIFICARE } from '../stato-bando';
 import {
   BASE_API, ELEMENTI_FEED, LIMITE_MASSIMO, LIMITE_PREDEFINITO, LUNGHEZZA_MASSIMA_CURSORE, LUNGHEZZA_MASSIMA_QUERY,
   LUNGHEZZA_SINTESI, RATE_LIMIT_CAPACITA, RATE_LIMIT_POLICY, RATE_LIMIT_RICARICA, SITO, TESTO_ATTRIBUZIONE,
@@ -372,6 +373,16 @@ function schemaDettagliBando(): Schema {
     ['deadline_verified', { type: ['boolean', 'null'],
       description: 'La data di scadenza è stata verificata sulla fonte ufficiale? null = non lo sappiamo. Aggiunto in 1.1.' }],
     ['last_checked_at', istanteONull('Ultimo controllo sulla fonte ufficiale. Aggiunto in 1.1.')],
+    ['stato_da_verificare', {
+      type: ['string', 'null'],
+      enum: [...MOTIVI_DA_VERIFICARE, null],
+      description: 'Perché lo stato va verificato; null = nessuna prova contraria (non vuol dire «verificato»). ' +
+        'Ramo upcoming: data_apertura_passata, smentito_dalla_fonte, previsione_scaduta, senza_conferma. ' +
+        'Ramo open senza scadenza: smentito_dalla_fonte, termine_passato, senza_conferma (nessuna conferma recente ' +
+        'dalla pagina ufficiale dell\'ente). Finché la verifica non è attiva l\'unico motivo possibile è ' +
+        'data_apertura_passata: gli altri compaiono solo dopo un controllo della verifica automatica attiva. ' +
+        'Sempre null con closed, suspended e revoked. Aggiunto in 1.2.',
+    }],
   ]);
 }
 

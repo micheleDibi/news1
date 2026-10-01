@@ -1130,15 +1130,28 @@ class Controllo:
 
     # --- interrogazioni ----------------------------------------------------
 
-    def colonne(self, tabella: str) -> frozenset[str]:
-        """Colonne esposte per `tabella`; insieme vuoto = «non so»."""
+    def _definizioni(self) -> dict[str, Any] | None:
+        """Le definizioni delle tabelle nello schema, o None se non ci sono."""
         schema = self.schema()
         definizioni = schema.get("definitions")
         if not isinstance(definizioni, dict):
             # PostgREST >= 12 / OpenAPI 3: components.schemas
             componenti = schema.get("components")
             definizioni = componenti.get("schemas") if isinstance(componenti, dict) else None
-        if not isinstance(definizioni, dict):
+        return definizioni if isinstance(definizioni, dict) else None
+
+    def schema_leggibile(self) -> bool:
+        """Vero se lo schema e' stato letto e descrive delle tabelle.
+
+        Falso quando `schema()` ha degradato a `{}` (DB o rete giu', chiave
+        sbagliata): allora di una tabella non si puo' dire che manca.
+        """
+        return bool(self._definizioni())
+
+    def colonne(self, tabella: str) -> frozenset[str]:
+        """Colonne esposte per `tabella`; insieme vuoto = «non so»."""
+        definizioni = self._definizioni()
+        if definizioni is None:
             return frozenset()
         voce = definizioni.get(tabella)
         proprieta = voce.get("properties") if isinstance(voce, dict) else None
@@ -1606,6 +1619,7 @@ def select_controlli(
 def select_pubblicati_per_gemelli(
     *,
     limit: int = 5000,
+    con_calendario: bool = False,
     client: Any | None = None,
     strumento: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -1613,6 +1627,11 @@ def select_pubblicati_per_gemelli(
 
     Colonne minime: id, la chiave della fonte, i due URL confrontabili e cio'
     che serve a `scegli_master`. Mai `contenuto`, mai `raw_data` completo.
+
+    `con_calendario=True` (il passo `gemelli`, contratto `bandi-giro-2` §19.9)
+    aggiunge `bando_master_id`, per lasciare fuori le righe gia' fuse, e il
+    `raw_data` delle sole righe senza `link_bando`: e' li' che il criterio
+    `riga_calendario` legge la riga del calendario, e sono poche (86 al 30/09).
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste("bando"):
@@ -1621,7 +1640,8 @@ def select_pubblicati_per_gemelli(
         "bando",
         ("id", "titolo", "titolo_raw", "link_bando", "fonte_id", "fonte_ufficiale_url",
          "fonte_ufficiale_host", "fonte_ufficiale_tipo", "fonte_ufficiale_stato",
-         "chiave_esterna", "data_scadenza", "pubblicato_at", "slug"),
+         "chiave_esterna", "data_scadenza", "pubblicato_at", "slug")
+        + (("bando_master_id",) if con_calendario else ()),
         strumento,
     )
     def _costruisci() -> Any:
@@ -1637,9 +1657,25 @@ def select_pubblicati_per_gemelli(
         # taglia in silenzio. `gemelli.py` cercava quindi le corrispondenze
         # esatte sui primi 1 000 pubblicati per id — meno di meta' del corpus —
         # e i doppioni con id alto erano invisibili per costruzione.
-        return _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto),
-                       tetto=max(0, int(limit)))
+        righe = _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto),
+                        tetto=max(0, int(limit)))
+        if con_calendario and strumento.ha("bando", "raw_data"):
+            senza_link = [r.get("id") for r in righe if not r.get("link_bando")]
+            grezzi = {
+                r.get("id"): r.get("raw_data") for r in _per_id(
+                    lambda blocco: _client(client).table("bando")
+                    .select("id,raw_data").in_("id", blocco),
+                    senza_link)
+            }
+            for riga in righe:
+                if riga.get("id") in grezzi:
+                    riga["raw_data"] = grezzi[riga.get("id")]
+        return righe
     except Exception as e:
+        if con_calendario:
+            # Il passo `gemelli` deve poter dire «non ho letto», non «nessun
+            # gemello»: una lista vuota somiglia troppo a un giro pulito.
+            raise
         logger.warning("[db] select_pubblicati_per_gemelli fallita: {}", e)
         return []
 
@@ -2373,6 +2409,8 @@ def misure_salute(
     adesso: Any = None,
     client: Any | None = None,
     strumento: Any | None = None,
+    client_anon: Any | None = None,
+    verifica_attiva: bool | None = None,
 ) -> dict[str, Any]:
     """Le righe che `salute` giudica (`telemetria.stato_da_misure`). Solo letture.
 
@@ -2383,19 +2421,48 @@ def misure_salute(
     Una tabella o una colonna che lo schema non espone vale `None` (misura non
     disponibile, e `salute` lo dice negli avvisi). Se lo schema non e' leggibile
     affatto si solleva: «non so niente» non deve somigliare a «tutto bene».
-    Ogni lettura che puo' superare le 1 000 righe passa da `_scorri`.
+    Ogni lettura che puo' superare le 1 000 righe passa da `_scorri`; i
+    conteggi si chiedono al server (`count=exact`) invece di scaricare le righe.
+
+    Le chiavi del giro 2 (contratto `bandi-giro-2` §8 e §14, percorso B):
+
+    - `ultime_pipeline` / `ultimi_monitor`: righe recenti prima, con i soli
+      contatori di `CONTATORI_PIPELINE` / `CONTATORI_MONITOR`, rimessi nella
+      forma annidata del jsonb (`_contatori_mirati`);
+    - `fermi_in_lavorazione`: bandi in `processed` o `enriched` entrati da
+      oltre `ORE_SCRAPED_FERMO` ore e da meno di `GIORNI_FERMI_IN_LAVORAZIONE`
+      giorni; `arretrato_in_lavorazione`: gli stessi senza finestra (solo
+      informativo); `ultimo_bando_nuovo_at`: il `created_at` piu' recente;
+    - `proposte_7g` (senza `TIPI_EVENTO_DI_SERVIZIO`), `ammessi_non_applicati`,
+      `in_attesa_pubblicazione`: conteggi su `bando_evento`;
+    - `vista_ms` / `vista_ms_ruolo` (percorso A, §19.6): quanto impiega una
+      pagina di `bando_pubblico`, come anon se l'ambiente ha la anon key;
+    - `da_verificare` (percorso A): `None` finche' `VERIFICA_STATO_MODALITA`
+      non e' `attivo` (`verifica_attiva`, per difetto dalle impostazioni).
+      In ombra il riepilogo per BandoFit lo deve dare `null` (contratto DB,
+      revisione avversaria del 01/10, ciclo 2): passare da `null` a oggetto
+      cambia il tipo, e lo si fa insieme all'attivazione.
+
+    `job_orario` resta fuori: e' una RPC, e la chiama chi fa la fotografia.
     """
     strumento = _controllo(strumento)
     if not strumento.tabella_esiste("bando"):
         raise RuntimeError("schema del DB bandi non leggibile: la tabella `bando` non risulta")
     from datetime import timedelta
     from .stato_bando import adesso_roma
-    from .telemetria import GIORNI_NUOVI, SOGLIA_CONTROLLI_FALLITI
+    from .telemetria import GIORNI_NUOVI, ORE_SCRAPED_FERMO, SOGLIA_CONTROLLI_FALLITI
     momento = adesso_roma(adesso if isinstance(adesso, datetime_cls) else None)
     sb = _client(client)
     misure: dict[str, Any] = {
         "monitor": None, "pipeline": None, "mese": None, "nuovi": None,
         "vivi": None, "falliti": None, "lock": None, "scraped_fermi": None,
+        "ultime_pipeline": None, "ultimi_monitor": None,
+        "fermi_in_lavorazione": None, "arretrato_in_lavorazione": None,
+        "ultimo_bando_nuovo_at": None,
+        "proposte_7g": None, "ammessi_non_applicati": None, "in_attesa_pubblicazione": None,
+        "vista_ms": None, "vista_ms_ruolo": None, "ultimi_import_indicepa": None,
+        "da_verificare": None, "letture_scadute": None, "verifica_7g": None,
+        "ultime_verifiche": None, "ultimi_ingressi": None, "aperti_senza_scadenza": None,
     }
 
     if strumento.tabella_esiste(TABELLA_RUN):
@@ -2423,6 +2490,37 @@ def misure_salute(
             .select("id,step,crediti:contatori->>crediti,usd:contatori->>usd")
             .gte("avviato_at", inizio_mese.isoformat()).order("id"),
             quanto, salto))
+        # Le ultime 20 righe del giro, anche quelle saltate e quelle di boot:
+        # `riavvii_ripetuti` le conta, `passo_degradato` salta le saltate.
+        # `id` come secondo ordine: due righe con lo stesso `avviato_at` non
+        # devono scambiarsi di posto fra una lettura e l'altra.
+        misure["ultime_pipeline"] = [
+            _contatori_mirati(riga, CONTATORI_PIPELINE) for riga in (
+                sb.table(TABELLA_RUN)
+                .select(_select_con_contatori(CONTATORI_PIPELINE))
+                .eq("step", "pipeline")
+                .order("avviato_at", desc=True).order("id", desc=True)
+                .limit(RIGHE_ULTIME_PIPELINE).execute()
+            ).data or []]
+        # Gli ultimi import di IndicePA (§19.8): la loro riga ha step='domini'.
+        misure["ultimi_import_indicepa"] = [
+            _contatori_mirati(riga, CONTATORI_INDICEPA) for riga in (
+                sb.table(TABELLA_RUN)
+                .select(_select_con_contatori(CONTATORI_INDICEPA))
+                .eq("step", STEP_DOMINI)
+                .order("avviato_at", desc=True).order("id", desc=True)
+                .limit(RIGHE_IMPORT_INDICEPA).execute()
+            ).data or []]
+        # Solo il monitor di regime, come `monitor`: le chiavi degli eventi
+        # sono misurate su queste righe (misure del giro 2, M6).
+        misure["ultimi_monitor"] = [
+            _contatori_mirati(riga, CONTATORI_MONITOR) for riga in (
+                sb.table(TABELLA_RUN)
+                .select(_select_con_contatori(CONTATORI_MONITOR))
+                .eq("step", "monitor").not_.is_("giro", "null")
+                .order("avviato_at", desc=True).order("id", desc=True)
+                .limit(RIGHE_ULTIMI_MONITOR).execute()
+            ).data or []]
 
     if all(strumento.ha("bando", c) for c in ("pubblicato", "pubblicato_at", "fonte_ufficiale_stato")):
         dal = (momento - timedelta(days=GIORNI_NUOVI)).isoformat()
@@ -2447,12 +2545,34 @@ def misure_salute(
     if strumento.ha("bando", "created_at"):
         # I bandi entrati e mai passati dal preprocess: col credito Anthropic a
         # zero (dal 26/09/2026) restavano li' senza che niente lo dicesse.
-        from .telemetria import ORE_SCRAPED_FERMO
         soglia = (momento - timedelta(hours=ORE_SCRAPED_FERMO)).isoformat()
         misure["scraped_fermi"] = _scorri(lambda quanto, salto: _pagina(
             sb.table("bando").select("id")
             .eq("stato_processing", "scraped").lt("created_at", soglia).order("id"),
             quanto, salto))
+        # Lo stesso limite per chi e' passato dal preprocess e si e' fermato
+        # dopo: arricchimento o redazione non lo portano a `completed`. Solo
+        # gli ultimi `GIORNI_FERMI_IN_LAVORAZIONE` giorni: le 569 righe
+        # `processed` ferme da giugno (misurate il 30/09) terrebbero l'avviso
+        # acceso per sempre, e un avviso sempre acceso non avvisa piu'.
+        # L'arretrato intero resta visibile in `arretrato_in_lavorazione`.
+        dal_fermi = (momento - timedelta(days=GIORNI_FERMI_IN_LAVORAZIONE)).isoformat()
+        misure["fermi_in_lavorazione"] = _conta(
+            sb.table("bando").select("id", count="exact")
+            .in_("stato_processing", list(STATI_IN_LAVORAZIONE))
+            .gte("created_at", dal_fermi).lt("created_at", soglia))
+        misure["arretrato_in_lavorazione"] = _conta(
+            sb.table("bando").select("id", count="exact")
+            .in_("stato_processing", list(STATI_IN_LAVORAZIONE)))
+        # L'ultimo bando entrato, qualunque sia il suo stato: dice se
+        # l'ingresso produce ancora righe. I NULL fuori, perche' in un ordine
+        # decrescente Postgres li mette in testa.
+        ultimo = list((
+            sb.table("bando").select("created_at")
+            .not_.is_("created_at", "null")
+            .order("created_at", desc=True).limit(1).execute()
+        ).data or [])
+        misure["ultimo_bando_nuovo_at"] = ultimo[0].get("created_at") if ultimo else None
 
     if strumento.tabella_esiste(TABELLA_LOCK):
         misure["lock"] = list((
@@ -2460,7 +2580,1025 @@ def misure_salute(
             .order("nome").execute()
         ).data or [])
 
+    # Conteggi sugli eventi, ciascuno solo se le sue colonne esistono.
+    if strumento.ha(TABELLA_EVENTO, "rilevato_at"):
+        # Senza i tipi di servizio: al 30/09 erano 8 943 righe su 9 232 in una
+        # settimana (fonte ufficiale trovata o no, segnali del listing), e il
+        # numero non diceva piu' niente sulle proposte vere.
+        dal_7g = (momento - timedelta(days=GIORNI_PROPOSTE)).isoformat()
+        proposte = sb.table(TABELLA_EVENTO).select("id", count="exact").gte("rilevato_at", dal_7g)
+        if strumento.ha(TABELLA_EVENTO, "tipo"):
+            proposte = proposte.not_.in_("tipo", list(TIPI_EVENTO_DI_SERVIZIO))
+        misure["proposte_7g"] = _conta(proposte)
+    if strumento.ha(TABELLA_EVENTO, "verificato") and strumento.ha(TABELLA_EVENTO, "applicato"):
+        # Ammessi dai gate e non ancora riversati in `bando`.
+        misure["ammessi_non_applicati"] = _conta(
+            sb.table(TABELLA_EVENTO).select("id", count="exact")
+            .eq("verificato", True).eq("applicato", False))
+    if strumento.ha(TABELLA_EVENTO, "applicato") and strumento.ha(TABELLA_EVENTO, "leggibile"):
+        # Applicati ma senza cursore: `bando` e' cambiato, BandoFit non lo vede
+        # (RIPRESA §5, trappola 8: servono due scritture).
+        misure["in_attesa_pubblicazione"] = _conta(
+            sb.table(TABELLA_EVENTO).select("id", count="exact")
+            .eq("applicato", True).eq("leggibile", False))
+
+    # Le tre misure del percorso A (§14 e §19.6): None finche' la 13 non c'e'.
+    # `da_verificare` anche finche' la verifica non e' attiva.
+    if verifica_attiva is None:
+        verifica_attiva = _verifica_attiva()
+    if verifica_attiva:
+        misure["da_verificare"] = _misura_da_verificare(sb, strumento, momento)
+    misure["letture_scadute"] = _misura_letture_scadute(sb, strumento, momento)
+    if strumento.tabella_esiste(TABELLA_RUN):
+        misure["verifica_7g"] = _misura_verifica_7g(sb, momento)
+        # Le righe del passo per i codici A di `telemetria` (#76): le ultime
+        # dieci della fase controlli, e quelle della fase ingresso della
+        # settimana. Contatori mirati, nella forma annidata di `ultime_pipeline`.
+        misure["ultime_verifiche"] = [
+            _contatori_mirati(riga, CONTATORI_ULTIME_VERIFICHE) for riga in (
+                sb.table(TABELLA_RUN)
+                .select(_select_con_contatori(CONTATORI_ULTIME_VERIFICHE))
+                .eq("step", STEP_VERIFICA_STATO)
+                .order("avviato_at", desc=True).order("id", desc=True)
+                .limit(RIGHE_ULTIME_VERIFICHE).execute()
+            ).data or []]
+        dal_ingressi = (momento - timedelta(days=GIORNI_VERIFICA)).isoformat()
+        misure["ultimi_ingressi"] = [
+            _contatori_mirati(riga, CONTATORI_INGRESSO) for riga in _scorri(
+                lambda quanto, salto: _pagina(
+                    sb.table(TABELLA_RUN).select(_select_con_contatori(CONTATORI_INGRESSO))
+                    .eq("step", STEP_VERIFICA_INGRESSO).gte("avviato_at", dal_ingressi)
+                    .order("avviato_at", desc=True).order("id", desc=True), quanto, salto))]
+    if strumento.ha(VISTA_PUBBLICA, "stato_effettivo"):
+        # Il denominatore di `aperti_senza_conferma` (§19.6): gli aperti senza
+        # scadenza come li vede il sito.
+        misure["aperti_senza_scadenza"] = _conta(
+            sb.table(VISTA_PUBBLICA).select("id", count="exact")
+            .eq("stato_effettivo", STATO_APERTO).is_("data_scadenza", "null"))
+
+    if strumento.tabella_esiste(VISTA_PUBBLICA):
+        colonne = COLONNE_VISTA_MS
+        if strumento.ha(VISTA_PUBBLICA, COLONNA_VISTA_MS_DA_VERIFICARE):
+            colonne = f"{colonne},{COLONNA_VISTA_MS_DA_VERIFICARE}"
+        misure["vista_ms"], misure["vista_ms_ruolo"] = _misura_vista(
+            sb, client_anon if client_anon is not None else _client_anon(), colonne=colonne)
+
     return misure
+
+
+#: Quante righe `step='pipeline'` legge `misure_salute` per il giro 2 (§14).
+RIGHE_ULTIME_PIPELINE = 20
+#: Quante righe del monitor di regime legge `misure_salute` per il giro 2.
+RIGHE_ULTIMI_MONITOR = 10
+#: Finestra di `proposte_7g`, in giorni.
+GIORNI_PROPOSTE = 7
+#: I tipi di evento che non sono proposte ma lavoro di servizio del resolver
+#: e del listing: fuori da `proposte_7g` (decisione del lead, 30/09).
+TIPI_EVENTO_DI_SERVIZIO: tuple[str, ...] = (
+    "fonte_ufficiale_non_trovata", "fonte_ufficiale_verificata",
+    "segnale_fonte", "sparito_dalla_fonte",
+)
+#: Gli stati di chi e' entrato, e' passato dal preprocess e non e' ancora
+#: `completed`: la misura `fermi_in_lavorazione`.
+STATI_IN_LAVORAZIONE: tuple[str, ...] = ("processed", "enriched")
+#: Quanto indietro guarda `fermi_in_lavorazione`, in giorni (decisione del
+#: lead, 30/09): l'arretrato piu' vecchio sta in `arretrato_in_lavorazione`.
+GIORNI_FERMI_IN_LAVORAZIONE = 7
+
+#: La vista pubblica che il sito e BandoFit leggono con la anon key.
+VISTA_PUBBLICA = "bando_pubblico"
+#: La lettura di prova di `vista_ms` (§19.6, codice `vista_lenta`): la query
+#: della Verifica 7 della 05 (in fondo alla 13, «Verifica a mano», punto 2),
+#: cioe' la prima pagina dei non chiusi. `link_bando`, `link_candidatura` e
+#: `allegati` passano da `bando_host_aggregatore()`, che legge
+#: `dominio_ufficiale`: sono le colonne che l'import completo di IndicePA puo'
+#: rallentare. `stato_da_verificare` (della 13) si chiede solo se la vista ce
+#: l'ha: senza, la lettura fallirebbe e la misura mancherebbe.
+COLONNE_VISTA_MS = ("id,slug,titolo,stato_effettivo,data_scadenza,link_bando,"
+                    "link_candidatura,allegati")
+COLONNA_VISTA_MS_DA_VERIFICARE = "stato_da_verificare"
+STATI_VISTA_MS: tuple[str, ...] = ("aperto", "in apertura prossimamente")
+RIGHE_VISTA_MS = 20
+#: La anon key del DB bandi, con lo stesso nome del `.env` del sito. Se c'e'
+#: nell'ambiente del processo `vista_ms` si misura come anon, cioe' con la RLS
+#: che il sito paga; senza, con la service key (che la RLS la salta).
+VARIABILE_ANON = "PUBLIC_SUPABASE_BANDI_ANON_KEY"
+RUOLO_ANON = "anon"
+RUOLO_SERVIZIO = "servizio"
+
+
+#: Lo step della riga di `pipeline_run` del passo verifica-stato.
+STEP_VERIFICA_STATO = "verifica_stato"
+#: Lo stato effettivo di un candidato -> il ramo della regola (§3, §19.3).
+RAMI_DA_VERIFICARE: dict[str, str] = {
+    "in apertura prossimamente": "in_apertura",
+    "aperto": "aperto",
+}
+#: I contatori della riga del passo che il riepilogo porta (§5.9, §9.1).
+CONTATORI_VERIFICA: tuple[tuple[str, ...], ...] = (
+    ("modalita",), ("proposte_per_tipo",), ("applicati_per_tipo",),
+    ("trattenute_per_freno",), ("pagine_rimosse",), ("forse_non_bandi",),
+)
+#: Lo step della riga della fase ingresso del passo (§5.10): diverso, perche'
+#: «l'ultima riga `verifica_stato`» resti quella dei controlli.
+STEP_VERIFICA_INGRESSO = "verifica_stato_ingresso"
+RIGHE_ULTIME_VERIFICHE = 10
+#: I contatori delle righe della fase controlli per i codici A (#76).
+CONTATORI_ULTIME_VERIFICHE: tuple[tuple[str, ...], ...] = (
+    ("fase",), ("modalita",), ("motivo_saltato",), ("letture_non_verificanti",),
+    ("trattenute_per_freno",), ("prosa_non_riscritta",), ("eventi_non_scritti",),
+    # Codice `eventi_non_leggibili`, come `eventi_invisibili` del monitor.
+    ("eventi_non_leggibili",),
+)
+#: I contatori delle righe della fase ingresso (codice `ingresso_trattenuti`).
+CONTATORI_INGRESSO: tuple[tuple[str, ...], ...] = (
+    ("trattenuti",), ("trattenuti_senza_appiglio",), ("rilasciati_a_tempo",),
+)
+#: Dopo quanti giorni una lettura leggibile e' «scaduta» (codice `leggibile_non_letto`).
+GIORNI_LETTURA_SCADUTA = 16
+#: La finestra di `verifica_7g` e di `chiusure_applicate_7g`.
+GIORNI_VERIFICA = 7
+
+
+def _intero_o_zero(valore: Any) -> int:
+    try:
+        return int(valore or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _verifica_attiva() -> bool:
+    """`VERIFICA_STATO_MODALITA == 'attivo'`. Impostazioni illeggibili: ombra."""
+    try:
+        return getattr(get_settings(), "verifica_stato_modalita", "ombra") == "attivo"
+    except Exception:
+        return False
+
+
+def _misura_da_verificare(sb: Any, strumento: Any, momento: Any) -> dict[str, Any] | None:
+    """`da_verificare` del riepilogo (§9.1): i motivi per ramo e i numeri del passo.
+
+    I conteggi vengono dalla vista, come li vedono il sito e BandoFit: una sola
+    GET delle righe con un motivo (poche centinaia), contate qui per ramo e
+    motivo, invece di dieci conteggi ognuno dei quali ricalcolerebbe la vista
+    intera. Il ramo e' quello dello `stato_effettivo` (un «in apertura» con
+    l'apertura raggiunta sta nel ramo A). `None` senza la 13.
+    """
+    from datetime import timedelta
+    if not strumento.ha(VISTA_PUBBLICA, "stato_da_verificare"):
+        return None
+    esito: dict[str, Any] = {ramo: {} for ramo in RAMI_DA_VERIFICARE.values()}
+    for riga in _scorri(lambda quanto, salto: _pagina(
+            sb.table(VISTA_PUBBLICA).select("id,stato_effettivo,stato_da_verificare")
+            .not_.is_("stato_da_verificare", "null").order("id"), quanto, salto)):
+        ramo = RAMI_DA_VERIFICARE.get(str(riga.get("stato_effettivo") or ""))
+        motivo = riga.get("stato_da_verificare")
+        if ramo and motivo:
+            esito[ramo][motivo] = esito[ramo].get(motivo, 0) + 1
+
+    contatori: Mapping[str, Any] = {}
+    if strumento.tabella_esiste(TABELLA_RUN):
+        ultime = list((
+            sb.table(TABELLA_RUN).select(_select_con_contatori(CONTATORI_VERIFICA))
+            .eq("step", STEP_VERIFICA_STATO)
+            .order("avviato_at", desc=True).order("id", desc=True).limit(1).execute()
+        ).data or [])
+        if ultime:
+            contatori = _contatori_mirati(ultime[0], CONTATORI_VERIFICA)["contatori"]
+    proposte = contatori.get("proposte_per_tipo")
+    proposte = proposte if isinstance(proposte, Mapping) else {}
+    applicati = contatori.get("applicati_per_tipo")
+    applicati = applicati if isinstance(applicati, Mapping) else {}
+    if contatori.get("modalita") == "attivo":
+        # In attivo «in ombra» sono le proposte non applicate (tetto, freno).
+        in_ombra = {t: max(0, _intero_o_zero(n) - _intero_o_zero(applicati.get(t)))
+                    for t, n in proposte.items()}
+    else:
+        in_ombra = {t: _intero_o_zero(n) for t, n in proposte.items()}
+    frenati = contatori.get("trattenute_per_freno")
+    esito["proposte_in_ombra_per_tipo"] = {t: n for t, n in in_ombra.items() if n}
+    esito["host_frenati"] = sum(
+        1 for n in (frenati.values() if isinstance(frenati, Mapping) else ()) if _intero_o_zero(n))
+    esito["pagine_rimosse"] = _intero_o_zero(contatori.get("pagine_rimosse"))
+    esito["forse_non_bandi"] = _intero_o_zero(contatori.get("forse_non_bandi"))
+
+    esito["chiusure_applicate_7g"] = 0
+    if all(strumento.ha(TABELLA_EVENTO, c) for c in ("tipo", "origine", "applicato", "rilevato_at")):
+        dal = (momento - timedelta(days=GIORNI_VERIFICA)).isoformat()
+        esito["chiusure_applicate_7g"] = _conta(
+            sb.table(TABELLA_EVENTO).select("id", count="exact")
+            .eq("tipo", "chiusura").eq("origine", "worker").eq("applicato", True)
+            .gte("rilevato_at", dal)) or 0
+    return esito
+
+
+def _misura_letture_scadute(sb: Any, strumento: Any, momento: Any) -> int | None:
+    """Candidati con una pagina leggibile e l'ultima lettura piu' vecchia di 16 giorni.
+
+    Due letture di soli id, incrociate qui: le letture scadute (non
+    'illeggibile') e i candidati di `select_da_verificare`. `None` senza la 13.
+    """
+    from datetime import timedelta
+    if not strumento.ha(TABELLA_CONTROLLO, "lettura_stato"):
+        return None
+    soglia = (momento - timedelta(days=GIORNI_LETTURA_SCADUTA)).isoformat()
+    scadute = {r.get("bando_id") for r in _scorri(lambda quanto, salto: _pagina(
+        sb.table(TABELLA_CONTROLLO).select("bando_id")
+        .lt("lettura_stato_at", soglia).neq("lettura_stato->>pagina", "illeggibile")
+        .order("bando_id"), quanto, salto))}
+    if not scadute:
+        return 0
+
+    def _candidati() -> Any:
+        query = sb.table("bando").select("id")
+        if strumento.ha("bando", "pubblicato"):
+            query = query.eq("pubblicato", True)
+        if strumento.ha("bando", "bando_master_id"):
+            query = query.is_("bando_master_id", "null")
+        return query.or_(
+            f'stato_bando.eq."{STATO_IN_APERTURA}",'
+            f"and(stato_bando.eq.{STATO_APERTO},data_scadenza.is.null)"
+        ).order("id")
+
+    candidati = {r.get("id") for r in _scorri(lambda quanto, salto: _pagina(
+        _candidati(), quanto, salto))}
+    return len(scadute & candidati)
+
+
+def _misura_verifica_7g(sb: Any, momento: Any) -> dict[str, dict[str, int]] | None:
+    """`esiti_per_estrattore` sommati sulle righe del passo degli ultimi 7 giorni.
+
+    `{chiave: {letture, esiti}}`, per `estrattore_muto`. `None` se il passo non
+    ha righe nella finestra: nessuna misura, non «zero letture».
+    """
+    from datetime import timedelta
+    dal = (momento - timedelta(days=GIORNI_VERIFICA)).isoformat()
+    righe = _scorri(lambda quanto, salto: _pagina(
+        sb.table(TABELLA_RUN).select("id,esiti:contatori->esiti_per_estrattore")
+        .eq("step", STEP_VERIFICA_STATO).gte("avviato_at", dal).order("id"),
+        quanto, salto))
+    if not righe:
+        return None
+    somma: dict[str, dict[str, int]] = {}
+    for riga in righe:
+        esiti = riga.get("esiti")
+        if not isinstance(esiti, Mapping):
+            continue
+        for chiave, valori in esiti.items():
+            if not isinstance(valori, Mapping):
+                continue
+            voce = somma.setdefault(str(chiave), {"letture": 0, "esiti": 0})
+            voce["letture"] += _intero_o_zero(valori.get("letture"))
+            voce["esiti"] += _intero_o_zero(valori.get("esiti"))
+    return somma
+
+
+def _client_anon() -> Any | None:
+    """Un client con la anon key, se l'ambiente ce l'ha. La chiave non si stampa."""
+    import os
+    chiave = (os.environ.get(VARIABILE_ANON) or "").strip()
+    if not chiave:
+        return None
+    try:
+        return create_client(get_settings().supabase_url, chiave)
+    except Exception as e:
+        # Solo il tipo: il messaggio di un client rifiutato puo' citare la chiave.
+        logger.warning("[db] client anon non creato: {}", type(e).__name__)
+        return None
+
+
+def _misura_vista(
+    servizio: Any, anon: Any | None, *, colonne: str = COLONNE_VISTA_MS,
+) -> tuple[float | None, str]:
+    """(millisecondi, ruolo) della lettura di prova di `bando_pubblico`: filtro,
+    ordine e limite della Verifica 7.
+
+    `None` se la lettura fallisce: una misura mancante, non una vista veloce.
+    """
+    import time
+    client, ruolo = (anon, RUOLO_ANON) if anon is not None else (servizio, RUOLO_SERVIZIO)
+    inizio = time.monotonic()
+    try:
+        (client.table(VISTA_PUBBLICA).select(colonne)
+         .in_("stato_effettivo", list(STATI_VISTA_MS))
+         .order("data_pubblicazione", desc=True, nullsfirst=False).order("id")
+         .limit(RIGHE_VISTA_MS).execute())
+    except Exception as e:
+        logger.warning("[db] lettura di prova di {} fallita ({}): {}",
+                       VISTA_PUBBLICA, ruolo, type(e).__name__)
+        return None, ruolo
+    return round((time.monotonic() - inizio) * 1000, 1), ruolo
+
+#: I contatori della riga `step='pipeline'` che salute e sorveglia giudicano,
+#: come percorsi dentro il jsonb. Chiavi misurate sul DB vivo il 30/09/2026
+#: (`docs/bandi-monitor/misure-giro-2-2026-10.md`, M6): le fonti tentate sono
+#: `fonti_processate + fonti_errors`, e `doppioni_oe` ed `enriched_db_ok`
+#: mancano sulle righe vecchie (valgono 0). `passi_non_ok`,
+#: `riavvio_dopo_crash` e `scrape.fonti_in_errore` arrivano col giro 2; i
+#: contatori di sosta e fusione della SEO (`trattieni_e_fondi`) dalla
+#: revisione del 01/10, perche' la sorveglianza veda chi resta fuori dalla
+#: pubblicazione e perche'.
+CONTATORI_PIPELINE: tuple[tuple[str, ...], ...] = (
+    ("passi_non_ok",),
+    ("riavvio_dopo_crash",),
+    ("saltato_per_lock",),
+    ("scrape", "fonti_totali"),
+    ("scrape", "fonti_processate"),
+    ("scrape", "fonti_errors"),
+    ("scrape", "fonti_in_errore"),
+    ("preprocess", "processed_total"),
+    ("preprocess", "errors"),
+    ("enrich", "enriched_total"),
+    ("enrich", "enriched_db_ok"),
+    ("seo", "selected"),
+    ("seo", "doppioni_oe"),
+    ("seo", "payload_ok"),
+    ("seo", "trattenuti"),
+    ("seo", "trattenuti_senza_appiglio"),
+    ("seo", "fusi_prima_della_pubblicazione"),
+    ("seo", "fusioni_non_riuscite"),
+)
+#: Lo step delle righe dell'import di IndicePA (`fonte_ufficiale.STEP_DOMINI`).
+STEP_DOMINI = "domini"
+#: Quante righe dell'import legge `misure_salute`.
+RIGHE_IMPORT_INDICEPA = 3
+#: I contatori dell'import che servono ai codici `indicepa_non_aggiornato` e
+#: `indicepa_import_anomalo`.
+CONTATORI_INDICEPA: tuple[tuple[str, ...], ...] = (
+    ("indicepa_esito",), ("indicepa_at",), ("indicepa_modalita",),
+    ("indicepa_righe_lette",), ("indicepa_righe_utili",), ("indicepa_ammessi",),
+    ("indicepa_inseriti",), ("indicepa_esclusi",), ("indicepa_lotti_falliti",),
+)
+#: I contatori delle righe `step='monitor'` per il giro 2.
+CONTATORI_MONITOR: tuple[tuple[str, ...], ...] = (
+    ("classificazioni",),
+    ("classificazioni_fallite",),
+    ("eventi_non_applicati",),
+    ("eventi_non_scritti",),
+    # Codice A `prosa_non_riscritta` (§8): la prosa non riallineata alle date.
+    ("prosa_non_riscritta",),
+    # Codice `eventi_non_leggibili`: eventi applicati ma non resi leggibili.
+    ("eventi_invisibili",),
+)
+#: Le colonne di `pipeline_run` lette insieme ai contatori mirati.
+COLONNE_RIGA_RUN: tuple[str, ...] = (
+    "id", "giro", "avviato_at", "concluso_at", "esito", "interrotto_per_tetto",
+)
+
+
+def _alias_contatore(percorso: Sequence[str]) -> str:
+    """Alias PostgREST di un percorso: `("scrape", "fonti_errors")` → `c_scrape__fonti_errors`."""
+    return "c_" + "__".join(percorso)
+
+
+def _select_con_contatori(percorsi: Sequence[Sequence[str]]) -> str:
+    """`select=` con le colonne di `COLONNE_RIGA_RUN` e un alias per percorso.
+
+    Si usa `->` fino in fondo e non `->>`: PostgREST restituisce il valore
+    JSON com'e' (numeri, liste, booleani), non il suo testo.
+    """
+    voci = list(COLONNE_RIGA_RUN)
+    for percorso in percorsi:
+        voci.append(f"{_alias_contatore(percorso)}:contatori->" + "->".join(percorso))
+    return ",".join(voci)
+
+
+def _contatori_mirati(
+    riga: Mapping[str, Any],
+    percorsi: Sequence[Sequence[str]],
+) -> dict[str, Any]:
+    """La riga con i contatori mirati rimessi dentro `contatori`, annidati.
+
+    La forma e' quella del jsonb (`contatori.scrape.fonti_errors`), cosi' una
+    regola di salute legge allo stesso modo questa riga e una riga intera. Un
+    percorso che il DB restituisce `null` (chiave assente in quella riga) non
+    compare: «assente» resta distinguibile da «zero».
+    """
+    alias = {_alias_contatore(p): tuple(p) for p in percorsi}
+    uscita: dict[str, Any] = {k: v for k, v in riga.items() if k not in alias}
+    contatori: dict[str, Any] = {}
+    for nome, percorso in alias.items():
+        valore = riga.get(nome)
+        if valore is None:
+            continue
+        nodo = contatori
+        for chiave in percorso[:-1]:
+            nodo = nodo.setdefault(chiave, {})
+        nodo[percorso[-1]] = valore
+    uscita["contatori"] = contatori
+    return uscita
+
+
+def _conta(query: Any) -> int | None:
+    """Il conteggio `count=exact` di una select gia' filtrata, senza scaricare righe.
+
+    `None` se la risposta non porta il conteggio: una misura mancante, non uno zero.
+    """
+    conto = getattr(query.limit(1).execute(), "count", None)
+    return int(conto) if isinstance(conto, int) and not isinstance(conto, bool) else None
+
+
+# --- monitoraggio (migrazione 12, contratto `bandi-giro-2` §2.1 e §14) -------
+
+#: La riga unica del riepilogo per il pannello. Scrive solo `sorveglia`.
+TABELLA_RIEPILOGO = "monitoraggio_riepilogo"
+#: Lo stato del job orario di pg_cron, letto con la service key.
+RPC_JOB_ORARIO = "monitoraggio_job_orario"
+#: L'unica riga ammessa da `CHECK (id = 1)`.
+ID_RIEPILOGO = 1
+#: Le colonne che `scrivi_riepilogo_monitoraggio` scrive. `aggiornato_at` non
+#: c'e' di proposito: lo imposta il trigger con l'orologio del DB, ed e' su
+#: quello che il pannello calcola il ritardo.
+COLONNE_RIEPILOGO: tuple[str, ...] = (
+    "id", "calcolato_at", "intervallo_ritardo", "versione", "riepilogo", "memoria",
+)
+
+
+def riepilogo_disponibile(*, strumento: Any | None = None) -> bool | None:
+    """La tabella del riepilogo (migrazione 12) c'e'? Tre risposte:
+
+    - `True`: c'e';
+    - `False`: lo schema si legge e la tabella non c'e' (12 non applicata);
+    - `None`: lo schema non si legge (DB o rete giu', chiave sbagliata), quindi
+      non si sa.
+
+    Serve a `sorveglia` per distinguere «niente da scrivere, la 12 non e'
+    applicata» (exit 0) da «l'upsert e' fallito» o «il DB non risponde» (exit
+    1): per `scrivi_riepilogo_monitoraggio` sono tutti un `False`, e un DB giu'
+    non deve sembrare una migrazione mancante.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.schema_leggibile():
+        return None
+    return bool(strumento.tabella_esiste(TABELLA_RIEPILOGO))
+
+
+def job_orario(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any] | None:
+    """Lo stato del job orario delle transizioni (RPC di sola lettura della 12).
+
+    `None` se la funzione non c'e' (12 non applicata), se la chiamata fallisce
+    o se la risposta non e' un oggetto: la misura manca, e `salute` lo dice.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.rpc_disponibile(RPC_JOB_ORARIO):
+        logger.info("[db] RPC {} assente: migrazione 12 non applicata", RPC_JOB_ORARIO)
+        return None
+    try:
+        # In GET: la funzione legge e basta, e dal Mac (`salute`, `sorveglia
+        # --dry-run`) si fanno solo GET (§1).
+        risposta = _client(client).rpc(RPC_JOB_ORARIO, {}, get=True).execute()
+    except Exception as e:
+        logger.warning("[db] {} fallita: {}", RPC_JOB_ORARIO, e)
+        return None
+    dati = getattr(risposta, "data", None)
+    if isinstance(dati, list) and len(dati) == 1:
+        dati = dati[0]
+    return dict(dati) if isinstance(dati, Mapping) else None
+
+
+def leggi_memoria_riepilogo(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any] | None:
+    """La `memoria` di `sorveglia` salvata nella riga del riepilogo.
+
+    `{}` se la riga non c'e' ancora (primo giro); `None` se la tabella manca o
+    la lettura fallisce. Non solleva: senza memoria `sorveglia` riparte da
+    adesso, non si ferma.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_RIEPILOGO):
+        return None
+    try:
+        righe = list((
+            _client(client).table(TABELLA_RIEPILOGO).select("memoria")
+            .eq("id", ID_RIEPILOGO).limit(1).execute()
+        ).data or [])
+    except Exception as e:
+        logger.warning("[db] lettura della memoria del riepilogo fallita: {}", e)
+        return None
+    if not righe:
+        return {}
+    memoria = righe[0].get("memoria")
+    return dict(memoria) if isinstance(memoria, Mapping) else {}
+
+
+def scrivi_riepilogo_monitoraggio(
+    riga: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> bool:
+    """Upsert della riga unica (`id=1`) del riepilogo. `True` solo se scritta.
+
+    Si scrivono solo le chiavi di `COLONNE_RIEPILOGO` che lo schema espone;
+    `id` e' sempre 1, qualunque cosa arrivi. Senza la tabella (12 non
+    applicata) un warning e `False`, senza richieste. Non solleva.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_RIEPILOGO):
+        logger.warning("[db] {} assente: migrazione 12 non applicata, riepilogo non scritto",
+                       TABELLA_RIEPILOGO)
+        return False
+    presenti = strumento.colonne(TABELLA_RIEPILOGO)
+    pulita = {
+        k: v for k, v in riga.items()
+        if k in COLONNE_RIEPILOGO and (not presenti or k in presenti)
+    }
+    pulita["id"] = ID_RIEPILOGO
+    try:
+        (_client(client).table(TABELLA_RIEPILOGO)
+         .upsert(pulita, on_conflict="id").execute())
+    except Exception as e:
+        logger.warning("[db] upsert di {} fallito: {}", TABELLA_RIEPILOGO, e)
+        return False
+    return True
+
+
+# --- verifica dello stato (contratto `bandi-giro-2` §14 e §19.13) ----------
+#
+# Le letture e le scritture del passo `verifica-stato`, della fase ingresso,
+# del segnale dell'aggregatore e della lista bianca letta dal DB. Stessa regola
+# delle sezioni precedenti per lo schema: una colonna o una tabella che la 13
+# non ha ancora portato vale «niente» (`{}`, `[]`, `False`) con un log.
+#
+# Le **letture** che il passo usa per decidere (`select_da_verificare`,
+# `select_letture_stato`, `select_enriched_da_leggere`) invece sollevano su un
+# errore di rete: una lettura vuota vorrebbe dire «mai letto», e il passo
+# riscriverebbe `lettura_stato` perdendo la `storia` su cui si fonda la doppia
+# lettura del gate G7e.
+
+#: Le colonne della 13 su `bando_controllo`: le 12 di §2.2 e le 5 di §19.2.
+COLONNE_LETTURA_STATO: tuple[str, ...] = (
+    "stato_letto", "stato_letto_su", "stato_letto_at", "stato_letto_url",
+    "stato_letto_citazione", "stato_letto_metodo",
+    "lettura_stato", "lettura_stato_at", "prossima_lettura_at", "letture_stato_nulle",
+    "previsto_entro", "termine_indicato",
+    "esaminato_attivo_at", "termine_indicato_fonte",
+    "segnale_aggregatore", "segnale_aggregatore_at", "trattenuto_dal",
+)
+#: Le colonne di `bando` che il passo legge per un candidato.
+COLONNE_DA_VERIFICARE: tuple[str, ...] = (
+    "id", "slug", "titolo", "titolo_raw", "descrizione_breve",
+    "stato_bando", "stato_processing", "pubblicato",
+    "data_apertura", "data_apertura_verificata", "ora_apertura",
+    "data_scadenza", "ora_scadenza", "pubblicato_at", "created_at",
+    # Per il passo (#76): G5 («mai sovrascrivere una colonna gia' verificata»,
+    # §5.6) e la data di pubblicazione che `data_verificata` non ripete.
+    "data_scadenza_verificata", "data_pubblicazione",
+    "fonte_id", "link_bando", "bando_master_id",
+    "fonte_ufficiale_url", "fonte_ufficiale_stato", "fonte_ufficiale_tipo",
+    "fonte_ufficiale_host", "raw_data",
+)
+STATO_IN_APERTURA = "in apertura prossimamente"
+STATO_APERTO = "aperto"
+#: Le sole colonne di `bando` che la fase ingresso scrive (§19.4, §5.7), e
+#: solo su righe non pubblicate. `data_scadenza_verificata` non c'e': la tocca
+#: solo un evento (CHECK della 03).
+COLONNE_INGRESSO_BANDO: tuple[str, ...] = ("data_scadenza", "ora_scadenza", "stato_bando")
+#: L'unico stato che la fase ingresso puo' scrivere.
+STATO_INGRESSO = "chiuso"
+#: Le colonne di `dominio_ufficiale` che la lista bianca legge.
+COLONNE_DOMINIO: tuple[str, ...] = (
+    "id", "host", "tipo", "confidenza", "ente", "codice_ipa", "fonte_id",
+    "origine", "attivo", "note",
+)
+COLONNE_SEGNALE: tuple[str, ...] = ("segnale_aggregatore", "segnale_aggregatore_at")
+
+
+def _host_delle_fonti(
+    fonte_ids: Iterable[Any],
+    *,
+    client: Any | None,
+    strumento: Any,
+) -> dict[Any, str | None]:
+    """`{fonte_id: host di fonte.link}` per le fonti date."""
+    if not strumento.ha("fonte", "link"):
+        return {}
+    from .dominio_ufficiale import dominio_di
+    righe = _per_id(
+        lambda blocco: _client(client).table("fonte").select("id,link").in_("id", blocco),
+        sorted({f for f in fonte_ids if f is not None}, key=str),
+    )
+    return {r.get("id"): dominio_di(str(r.get("link") or "")) for r in righe}
+
+
+def _con_host_fonte(
+    righe: list[dict[str, Any]],
+    *,
+    client: Any | None,
+    strumento: Any,
+) -> list[dict[str, Any]]:
+    """Le righe con `host_fonte`, l'host della fonte di scraping (§5.3)."""
+    host = _host_delle_fonti((r.get("fonte_id") for r in righe), client=client, strumento=strumento)
+    for riga in righe:
+        riga["host_fonte"] = host.get(riga.get("fonte_id"))
+    return righe
+
+
+def select_da_verificare(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I candidati del passo verifica-stato (§5.2), con `host_fonte`.
+
+    Pubblicati non fusi, «in apertura» oppure «aperto» senza `data_scadenza`:
+    e' un soprainsieme esatto dei candidati, perche' lo `stato_effettivo` (che
+    puo' portare un «in apertura» ad «aperto») lo calcola il passo. Nessun
+    filtro su `fonte_ufficiale_stato`. `[]` senza la tabella; un errore di
+    rete si solleva.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_disponibili("bando", COLONNE_DA_VERIFICARE, strumento)
+
+    def _costruisci() -> Any:
+        query = _client(client).table("bando").select(colonne)
+        if strumento.ha("bando", "pubblicato"):
+            query = query.eq("pubblicato", True)
+        if strumento.ha("bando", "bando_master_id"):
+            query = query.is_("bando_master_id", "null")
+        return query.or_(
+            f'stato_bando.eq."{STATO_IN_APERTURA}",'
+            f"and(stato_bando.eq.{STATO_APERTO},data_scadenza.is.null)"
+        ).order("id")
+
+    righe = _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto))
+    return _con_host_fonte(righe, client=client, strumento=strumento)
+
+
+def select_letture_stato(
+    ids: Iterable[Any] | None = None,
+    dal: Any = None,
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[Any, dict[str, Any]]:
+    """`{bando_id: riga}` delle letture di `bando_controllo` (§14).
+
+    Con `ids` quelle righe; altrimenti quelle con `lettura_stato_at` dal
+    momento `dal`, o tutte quelle lette almeno una volta. Le colonne sono
+    `COLONNE_LETTURA_STATO` piu' `candidato_prioritario` (la pagina ii-c di
+    §19.4). `{}` senza la 13; un errore di rete si solleva.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.ha(TABELLA_CONTROLLO, "lettura_stato"):
+        return {}
+    colonne = _colonne_disponibili(
+        TABELLA_CONTROLLO,
+        ("bando_id", *COLONNE_LETTURA_STATO, "candidato_prioritario"),
+        strumento,
+    )
+    sb = _client(client)
+    if ids is not None:
+        righe = _per_id(
+            lambda blocco: sb.table(TABELLA_CONTROLLO).select(colonne).in_("bando_id", blocco),
+            list(ids), ordine="bando_id",
+        )
+    else:
+        def _costruisci() -> Any:
+            query = sb.table(TABELLA_CONTROLLO).select(colonne)
+            if dal is not None:
+                inizio = dal.isoformat() if isinstance(dal, datetime_cls) else str(dal)
+                query = query.gte("lettura_stato_at", inizio)
+            else:
+                query = query.not_.is_("lettura_stato_at", "null")
+            return query.order("bando_id")
+
+        righe = _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto))
+    return {r.get("bando_id"): r for r in righe if r.get("bando_id") is not None}
+
+
+def aggiorna_lettura_stato(
+    bando_id: Any,
+    colonne: Mapping[str, Any],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> bool:
+    """Upsert su `bando_controllo` delle sole colonne della 13 che lo schema ha.
+
+    `False` se non resta niente da scrivere (13 non applicata) o se la
+    scrittura fallisce (i CHECK della 13: lettura completa, termine con la sua
+    fonte). Non solleva.
+    """
+    strumento = _controllo(strumento)
+    presenti = strumento.colonne(TABELLA_CONTROLLO)
+    riga = {k: v for k, v in colonne.items() if k in COLONNE_LETTURA_STATO and k in presenti}
+    scartate = sorted(set(colonne) - set(riga))
+    if scartate:
+        logger.info("[db] bando_controllo id={}: colonne non scritte {}", bando_id, scartate)
+    if not riga:
+        return False
+    riga["bando_id"] = bando_id
+    try:
+        (_client(client).table(TABELLA_CONTROLLO)
+         .upsert(riga, on_conflict="bando_id").execute())
+    except Exception as e:
+        logger.warning("[db] lettura dello stato di {} non scritta: {}", bando_id, e)
+        return False
+    return True
+
+
+def select_enriched_da_leggere(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """I candidati della fase ingresso (§19.4, §5.10), con `host_fonte`.
+
+    Righe `enriched` non pubblicate: «aperto» senza `data_scadenza`, oppure
+    schede OE con `status` '2'. Due letture unite per id invece di un `or=`
+    con un percorso JSON dentro. Il tetto (`VERIFICA_STATO_TETTO_INGRESSO`)
+    lo applica il passo. `[]` senza la tabella; un errore di rete si solleva.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    colonne = _colonne_disponibili("bando", COLONNE_DA_VERIFICARE, strumento)
+    sb = _client(client)
+
+    def _base() -> Any:
+        query = sb.table("bando").select(colonne).eq("stato_processing", "enriched")
+        if strumento.ha("bando", "pubblicato"):
+            query = query.eq("pubblicato", False)
+        return query
+
+    aperti = _scorri(lambda quanto, salto: _pagina(
+        _base().eq("stato_bando", STATO_APERTO).is_("data_scadenza", "null").order("id"),
+        quanto, salto))
+    in_uscita = []
+    if strumento.ha("bando", "raw_data"):
+        in_uscita = _scorri(lambda quanto, salto: _pagina(
+            _base().eq("raw_data->>status", "2").order("id"), quanto, salto))
+    per_id = {r.get("id"): r for r in (*aperti, *in_uscita) if r.get("id") is not None}
+    righe = [per_id[i] for i in sorted(per_id, key=lambda i: (not isinstance(i, int), str(i)
+                                                               if not isinstance(i, int) else i))]
+    return _con_host_fonte(righe, client=client, strumento=strumento)
+
+
+def aggiorna_ingresso(
+    bando_id: Any,
+    colonne_bando: Mapping[str, Any] | None,
+    colonne_controllo: Mapping[str, Any] | None,
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """Le scritture della fase ingresso su una riga **non pubblicata** (§19.4).
+
+    `{bando, controllo, rifiutato}`. Una riga pubblicata (o `completed`) si
+    rifiuta senza scrivere niente: il contratto DB vuole che un pubblicato
+    cambi solo per evento. Su `bando` passano solo `COLONNE_INGRESSO_BANDO`, e
+    `stato_bando` solo se vale 'chiuso'. L'UPDATE porta anche il filtro
+    `pubblicato=false`: se la riga viene pubblicata fra la lettura e la
+    scrittura, non tocca niente. Non solleva.
+    """
+    esito: dict[str, Any] = {"bando": False, "controllo": False, "rifiutato": None}
+    strumento = _controllo(strumento)
+    sb = _client(client)
+    try:
+        lette = list((
+            sb.table("bando").select("id,pubblicato,stato_processing")
+            .eq("id", bando_id).limit(1).execute()
+        ).data or [])
+    except Exception as e:
+        logger.warning("[db] ingresso {}: riga non letta, niente scritture: {}", bando_id, e)
+        esito["rifiutato"] = "lettura_fallita"
+        return esito
+    if not lette:
+        esito["rifiutato"] = "assente"
+        return esito
+    if lette[0].get("pubblicato") is True or lette[0].get("stato_processing") == "completed":
+        logger.warning("[db] ingresso {}: riga pubblicata, nessuna scrittura", bando_id)
+        esito["rifiutato"] = "pubblicato"
+        return esito
+
+    presenti = strumento.colonne("bando")
+    payload: dict[str, Any] = {}
+    scartate: list[str] = []
+    for chiave, valore in (colonne_bando or {}).items():
+        ammessa = chiave in COLONNE_INGRESSO_BANDO and (not presenti or chiave in presenti)
+        if chiave == "stato_bando" and valore != STATO_INGRESSO:
+            ammessa = False
+        if ammessa:
+            payload[chiave] = valore
+        else:
+            scartate.append(chiave)
+    if scartate:
+        logger.info("[db] ingresso {}: colonne di bando non scritte {}", bando_id, sorted(scartate))
+    if payload:
+        assicura_payload_bando(payload)
+        try:
+            scritte = (
+                sb.table("bando").update(payload)
+                .eq("id", bando_id).eq("pubblicato", False).execute()
+            ).data or []
+        except Exception as e:
+            logger.warning("[db] ingresso {}: update di bando fallito: {}", bando_id, e)
+            scritte = None
+        if scritte == []:
+            # Nessuna riga toccata: pubblicata nel frattempo.
+            esito["rifiutato"] = "pubblicato"
+            return esito
+        esito["bando"] = bool(scritte)
+    if colonne_controllo:
+        esito["controllo"] = aggiorna_lettura_stato(
+            bando_id, colonne_controllo, client=client, strumento=strumento)
+    return esito
+
+
+def select_domini_ufficiali(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Le righe di `dominio_ufficiale` per la lista bianca (§19.8), per id.
+
+    `[]` senza la tabella o se la lettura fallisce (con un warning): chi la
+    usa ripiega sul seed compilato, che e' il comportamento di prima.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_DOMINIO):
+        return []
+    colonne = _colonne_disponibili(TABELLA_DOMINIO, COLONNE_DOMINIO, strumento)
+    try:
+        return _scorri(lambda quanto, salto: _pagina(
+            _client(client).table(TABELLA_DOMINIO).select(colonne).order("id"),
+            quanto, salto))
+    except Exception as e:
+        logger.warning("[db] {} non letta, si usa il seed: {}", TABELLA_DOMINIO, e)
+        return []
+
+
+def select_host_dei_link(
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> list[str]:
+    """Gli host dei link dei pubblicati, ordinati: `link_bando`,
+    `fonte_ufficiale_url` e gli `url` di `bando_link`.
+
+    Serve al report dell'import di IndicePA: quanti host dei nostri link sono
+    verificanti prima e dopo. Le righe di `bando_link` non sono un dettaglio:
+    il 30/09 i 51 host che l'import rendeva verificanti venivano tutti da li'
+    (misure-giro-2-percorso-a.md, M10). `[]` se la lettura fallisce, con un
+    warning.
+    """
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste("bando"):
+        return []
+    from .dominio_ufficiale import dominio_di
+    colonne = _colonne_disponibili("bando", ("id", "link_bando", "fonte_ufficiale_url"), strumento)
+
+    def _costruisci() -> Any:
+        query = _client(client).table("bando").select(colonne)
+        if strumento.ha("bando", "pubblicato"):
+            query = query.eq("pubblicato", True)
+        return query.order("id")
+
+    try:
+        righe = _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto))
+        collegati: list[dict[str, Any]] = []
+        if strumento.ha(TABELLA_LINK, "url"):
+            collegati = _per_id(
+                lambda blocco: _client(client).table(TABELLA_LINK)
+                .select("id,bando_id,url").in_("bando_id", blocco),
+                [r.get("id") for r in righe], ordine="id",
+            )
+    except Exception as e:
+        logger.warning("[db] host dei link non letti: {}", e)
+        return []
+    host = {
+        dominio_di(str(riga.get(campo) or ""))
+        for riga in righe for campo in ("link_bando", "fonte_ufficiale_url")
+        if riga.get(campo)
+    }
+    host.update(dominio_di(str(riga.get("url") or "")) for riga in collegati if riga.get("url"))
+    return sorted(h for h in host if h)
+
+
+def aggiorna_segnale_aggregatore(
+    righe: Sequence[Mapping[str, Any]],
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> int:
+    """Upsert del segnale dell'aggregatore su `bando_controllo` (§19.7). Righe scritte.
+
+    Ogni riga e' `{bando_id, segnale_aggregatore, segnale_aggregatore_at}`; un
+    `None` azzera (la riga e' ricomparsa pulita nel listing). Si scrivono solo
+    quelle tre chiavi, a blocchi. `0` senza le colonne della 13. Non solleva.
+    """
+    strumento = _controllo(strumento)
+    if not all(strumento.ha(TABELLA_CONTROLLO, c) for c in COLONNE_SEGNALE):
+        logger.info("[db] segnale dell'aggregatore non scritto: colonne della 13 assenti")
+        return 0
+    pulite = [
+        {"bando_id": r.get("bando_id"), **{c: r.get(c) for c in COLONNE_SEGNALE}}
+        for r in righe if r.get("bando_id") is not None
+    ]
+    scritte = 0
+    for blocco in _a_blocchi(pulite):
+        try:
+            (_client(client).table(TABELLA_CONTROLLO)
+             .upsert(blocco, on_conflict="bando_id").execute())
+        except Exception as e:
+            logger.warning("[db] segnale dell'aggregatore: blocco di {} non scritto: {}",
+                           len(blocco), e)
+            continue
+        scritte += len(blocco)
+    return scritte
+
+
+def inserisci_domini_nuovi(
+    righe: Sequence[Mapping[str, Any]],
+    lotto: int = 500,
+    *,
+    client: Any | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """Inserisce in `dominio_ufficiale` i soli host che non ci sono (§19.8).
+
+    Una riga esistente non si modifica mai e niente si cancella: si leggono gli
+    host presenti, si tengono gli assenti (una volta sola ciascuno) e si
+    scrivono a lotti con `ON CONFLICT (host) DO NOTHING`
+    (`upsert(ignore_duplicates=True)`), cosi' anche una riga comparsa nel
+    frattempo resta com'e'. Se la lettura degli host presenti fallisce non si
+    scrive niente. Non solleva.
+    """
+    esito: dict[str, Any] = {
+        "lette": len(righe), "gia_presenti": 0, "scartate": 0,
+        "inserite": 0, "lotti_falliti": 0, "errore": None,
+    }
+    strumento = _controllo(strumento)
+    if not strumento.tabella_esiste(TABELLA_DOMINIO):
+        esito["errore"] = "tabella_assente"
+        return esito
+    presenti_colonne = strumento.colonne(TABELLA_DOMINIO)
+    sb = _client(client)
+    try:
+        esistenti = {
+            str(r.get("host") or "").strip().lower()
+            for r in _scorri(lambda quanto, salto: _pagina(
+                sb.table(TABELLA_DOMINIO).select("id,host").order("id"), quanto, salto))
+        }
+    except Exception as e:
+        logger.warning("[db] {}: host presenti non letti, nessuna scrittura: {}", TABELLA_DOMINIO, e)
+        esito["errore"] = "lettura_fallita"
+        return esito
+
+    nuove: dict[str, dict[str, Any]] = {}
+    for riga in righe:
+        host = str(riga.get("host") or "").strip().lower()
+        if not host:
+            esito["scartate"] += 1
+            continue
+        if host in esistenti:
+            esito["gia_presenti"] += 1
+            continue
+        if host in nuove:
+            continue
+        pulita = {
+            k: v for k, v in riga.items()
+            if k != "id" and (not presenti_colonne or k in presenti_colonne)
+        }
+        pulita["host"] = host
+        nuove[host] = pulita
+
+    # Lotti con le stesse chiavi: postgrest-py manda `columns=` con l'unione
+    # delle chiavi del lotto, e PostgREST scrive NULL (non il DEFAULT) nelle
+    # chiavi che mancano a una riga. Righe con chiavi diverse vanno in lotti
+    # diversi.
+    per_chiavi: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for riga in nuove.values():
+        per_chiavi.setdefault(tuple(sorted(riga)), []).append(riga)
+    passo = max(1, int(lotto))
+    blocchi = [
+        gruppo[inizio:inizio + passo]
+        for gruppo in per_chiavi.values()
+        for inizio in range(0, len(gruppo), passo)
+    ]
+    for blocco in blocchi:
+        try:
+            risposta = (
+                sb.table(TABELLA_DOMINIO)
+                .upsert(blocco, on_conflict="host", ignore_duplicates=True).execute()
+            )
+        except Exception as e:
+            logger.warning("[db] {}: lotto di {} host non scritto: {}",
+                           TABELLA_DOMINIO, len(blocco), e)
+            esito["lotti_falliti"] += 1
+            continue
+        esito["inserite"] += len(getattr(risposta, "data", None) or [])
+    return esito
 
 
 def select_bandi_pubblicati_contenuto(

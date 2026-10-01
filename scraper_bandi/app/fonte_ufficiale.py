@@ -2350,12 +2350,39 @@ def _ambiente_predefinito(*, step: str, attivo: bool) -> Ambiente:
     return ambiente
 
 
+#: Quanto vive in memoria la tabella letta dal DB: un giro la legge una volta
+#: sola (contratto `bandi-giro-2` §19.8), e il giro dopo, sei ore piu' tardi, la
+#: rilegge. Il sender vive per giorni: senza scadenza un import di IndicePA non
+#: entrerebbe mai in un processo gia' avviato.
+TTL_TABELLA_S = 45 * 60
+_CACHE_TABELLA: dict[str, tuple[float, Tabella]] = {}
+
+
+def azzera_tabella_corrente() -> None:
+    """Dimentica la tabella in memoria: a inizio giro, dopo un import, nei test."""
+    _CACHE_TABELLA.clear()
+
+
 def _tabella_corrente() -> Tabella:
-    """Whitelist in memoria: righe di `dominio_ufficiale` se la tabella esiste,
-    piu' gli host di `fonte`, piu' il seed compilato."""
-    from .dominio_ufficiale import costruisci
-    fonti = db.select_fonti_per_domini()
-    return costruisci(fonti=fonti)
+    """La whitelist in memoria: le righe di `dominio_ufficiale` in testa, poi
+    gli host di `fonte`, poi il seed compilato.
+
+    Le righe del DB **vincono** (§19.8): una confidenza corretta a mano, una
+    riga disattivata o l'import di IndicePA valgono piu' del seed che sta nel
+    codice. Fino al 30/09 qui entravano solo `fonte` e seed, e la tabella a DB
+    non la leggeva nessuno. Una lettura vuota (tabella assente o errore) non va
+    in memoria: il giro dopo riprova.
+    """
+    adesso = time.monotonic()
+    voce = _CACHE_TABELLA.get("tabella")
+    if voce is not None and adesso - voce[0] < TTL_TABELLA_S:
+        return voce[1]
+    from .dominio_ufficiale import costruisci, da_righe_db
+    righe_db = db.select_domini_ufficiali()
+    tabella = costruisci(da_righe_db(righe_db), fonti=db.select_fonti_per_domini())
+    if righe_db:
+        _CACHE_TABELLA["tabella"] = (adesso, tabella)
+    return tabella
 
 
 # --- runner: `oe-dettaglio` -------------------------------------------------
@@ -3013,6 +3040,10 @@ async def run_domini_import(
     enti: str | None = None,
     fonti: Sequence[Mapping[str, Any]] | None = None,
     indicepa: Sequence[Mapping[str, Any]] | None = None,
+    scarica_enti: bool = False,
+    scarica: Callable[[str], bytes] | None = None,
+    soglia_righe: int | None = None,
+    giro: str | None = None,
 ) -> dict[str, Any]:
     """Compone la whitelist e la scrive in `dominio_ufficiale`.
 
@@ -3020,13 +3051,31 @@ async def run_domini_import(
     foglio IndicePA (`--enti PATH`, letto con `openpyxl`, gia' installato) e il
     seed compilato. Senza `--enti` l'import fa comunque il suo lavoro con le
     altre due: e' meglio di non poterlo lanciare affatto.
+
+    In attivo scrive **solo host assenti** (`db.inserisci_domini_nuovi`): una
+    riga esistente non si modifica mai, come nell'import completo.
+
+    Con `scarica_enti=True` e' invece l'import **completo** e automatico di
+    IndicePA (contratto `bandi-giro-2` §19.8, `_importa_indicepa_completo`):
+    scarica il foglio, lo controlla e inserisce i soli host assenti.
     """
-    from .dominio_ufficiale import costruisci
+    if scarica_enti:
+        return _importa_indicepa_completo(
+            dry_run=dry_run, attivo=attivo, indicepa=indicepa, scarica=scarica,
+            soglia_righe=SOGLIA_RIGHE_INDICEPA if soglia_righe is None else soglia_righe,
+            giro=giro,
+        )
+    from .dominio_ufficiale import analizza_indicepa, costruisci, da_fonti
 
     attivo = _modalita_attiva(attivo)
     righe_fonte = list(fonti) if fonti is not None else db.select_fonti_per_domini()
     righe_enti = list(indicepa) if indicepa is not None else _leggi_enti(enti)
-    tabella = costruisci(fonti=righe_fonte, indicepa=righe_enti)
+    # Le righe IndicePA passano dalle stesse esclusioni dell'import completo
+    # (§19.8): piattaforme condivise, host con 3 o piu' codici, e la
+    # blocklist della tabella corrente (DB piu' seed), non del solo seed.
+    analisi = analizza_indicepa(righe_enti, tabella=_tabella_corrente()) if righe_enti else None
+    tabella = costruisci(
+        [*da_fonti(righe_fonte), *(analisi.domini if analisi is not None else ())])
     attive = tabella.attive()
     composte = len(attive)
     # `limit is not None` e non `if limit`: uno zero e' un limite (la
@@ -3043,8 +3092,15 @@ async def run_domini_import(
         for riga in attive
     ]
     scritte = 0
-    if not dry_run and attivo:
-        scritte = db.upsert_domini(payload)
+    gia_presenti = 0
+    if payload and not dry_run and attivo:
+        # Solo host assenti (§19.8): una riga che c'e' gia' (seed, fonte,
+        # manuale, un import precedente) non si aggiorna mai. Prima qui c'era
+        # `upsert_domini`, che riscriveva tipo e confidenza corretti a mano.
+        esito_scrittura = db.inserisci_domini_nuovi(payload, lotto=LOTTO_DOMINI)
+        scritte = int(esito_scrittura.get("inserite") or 0)
+        gia_presenti = int(esito_scrittura.get("gia_presenti") or 0)
+        azzera_tabella_corrente()
     troncati = composte - len(payload)
     if troncati > 0:
         # Il `--limit` qui e' un troncamento del PREFISSO, non un cursore: la
@@ -3061,7 +3117,8 @@ async def run_domini_import(
         "status": "ok", "dry_run": dry_run, "attivo": attivo,
         "fonti": len(righe_fonte), "indicepa": len(righe_enti),
         "domini": len(payload), "composti": composte, "troncati": troncati,
-        "scritte": scritte,
+        "scritte": scritte, "gia_presenti": gia_presenti,
+        "indicepa_esclusi": dict(analisi.esclusi) if analisi is not None else {},
     }
 
 
@@ -3070,18 +3127,186 @@ def _leggi_enti(percorso: str | None) -> list[dict[str, Any]]:
     if not percorso:
         return []
     try:
-        from openpyxl import load_workbook
+        from openpyxl import load_workbook  # noqa: F401
     except Exception as e:                               # pragma: no cover - ambiente
         logger.warning("[domini] openpyxl non disponibile ({}): IndicePA saltato", e)
         return []
     try:
-        foglio = load_workbook(percorso, read_only=True, data_only=True).active
-        righe = foglio.iter_rows(values_only=True)
-        intestazioni = [str(c or "") for c in next(righe)]
-        return [dict(zip(intestazioni, valori)) for valori in righe]
+        return _righe_del_foglio(percorso)
     except Exception as e:
         logger.warning("[domini] {} non leggibile: {}", percorso, e)
         return []
+
+
+def _righe_del_foglio(sorgente: Any) -> list[dict[str, Any]]:
+    """Le righe del primo foglio di un xlsx (percorso o file in memoria), per intestazione."""
+    from openpyxl import load_workbook
+    foglio = load_workbook(sorgente, read_only=True, data_only=True).active
+    righe = foglio.iter_rows(values_only=True)
+    intestazioni = [str(c or "") for c in next(righe, ())]
+    return [dict(zip(intestazioni, valori)) for valori in righe]
+
+
+# --- import completo di IndicePA (contratto `bandi-giro-2` §19.8) ----------
+
+#: La risorsa pubblica di IndicePA (CKAN, dataset «enti», XLSX), misurata il
+#: 30/09/2026 (`docs/bandi-monitor/misure-giro-2-percorso-a.md`, M10). La
+#: variabile `INDICEPA_URL` serve solo a cambiarla. Se un giorno la risorsa
+#: cambiasse id, la si ritrova con
+#: `https://indicepa.gov.it/ipa-dati/api/3/action/package_show?id=enti`.
+INDICEPA_URL_PREDEFINITO = (
+    "https://indicepa.gov.it/ipa-dati/dataset/5baa3eb8-266e-455a-8de8-b1f434c279b2"
+    "/resource/d09adf99-dc10-4349-8c53-27b1e5aa97b6/download/enti.xlsx"
+)
+#: Sotto queste righe utili il foglio e' anomalo e non si scrive niente: il 30/09
+#: erano 22 891 su 23 750.
+SOGLIA_RIGHE_INDICEPA = 15_000
+#: Il foglio pesa 4,3 MB: oltre questo tetto non e' il foglio che ci aspettiamo.
+TETTO_BYTE_INDICEPA = 20 * 1024 * 1024
+TIMEOUT_INDICEPA_S = 60.0
+#: Righe per INSERT in `dominio_ufficiale`.
+LOTTO_DOMINI = 500
+#: Lo step della riga di `pipeline_run` dell'import: il posto fisso dove la
+#: salute cerca l'ultimo import (codici `indicepa_non_aggiornato` e
+#: `indicepa_import_anomalo`).
+STEP_DOMINI = "domini"
+ESITO_INDICEPA_OK = "ok"
+ESITO_INDICEPA_OMBRA = "ombra"
+ESITO_INDICEPA_ANOMALO = "anomalo"
+ESITO_INDICEPA_DOWNLOAD_FALLITO = "download_fallito"
+ESITO_INDICEPA_SCRITTURA_PARZIALE = "scrittura_parziale"
+
+
+def scarica_indicepa(
+    url: str,
+    *,
+    transport: Any = None,
+    timeout: float = TIMEOUT_INDICEPA_S,
+    tetto_byte: int = TETTO_BYTE_INDICEPA,
+) -> bytes:
+    """GET del foglio IndicePA. Solleva su un errore HTTP o oltre `tetto_byte`."""
+    import httpx
+
+    with httpx.Client(transport=transport, timeout=timeout, follow_redirects=True) as client:
+        with client.stream("GET", url) as risposta:
+            risposta.raise_for_status()
+            dati = bytearray()
+            for pezzo in risposta.iter_bytes():
+                dati.extend(pezzo)
+                if len(dati) > tetto_byte:
+                    raise ValueError(f"foglio IndicePA oltre {tetto_byte} byte")
+    return bytes(dati)
+
+
+def _modalita_indicepa(attivo: bool | None) -> bool:
+    """L'import segue `VERIFICA_STATO_MODALITA` (§19.8); un `attivo` esplicito vince."""
+    if attivo is not None:
+        return bool(attivo)
+    try:
+        from .settings import get_settings
+        valore = getattr(get_settings(), "verifica_stato_modalita", "ombra")
+    except Exception:
+        return False
+    return str(valore).strip().lower() == "attivo"
+
+
+def _importa_indicepa_completo(
+    *,
+    dry_run: bool,
+    attivo: bool | None,
+    indicepa: Sequence[Mapping[str, Any]] | None,
+    scarica: Callable[[str], bytes] | None,
+    soglia_righe: int,
+    giro: str | None,
+) -> dict[str, Any]:
+    """Import completo di IndicePA, con le regole prudenti di §19.8.
+
+    - si inseriscono **solo host assenti** (`db.inserisci_domini_nuovi`): una
+      riga esistente non si modifica mai e niente si cancella;
+    - host condivisi, piattaforme e blocklist restano fuori
+      (`dominio_ufficiale.analizza_indicepa`), ognuno col suo motivo;
+    - un foglio con meno di `soglia_righe` righe utili, o senza una colonna
+      attesa, e' anomalo: non si scrive niente;
+    - un download fallito lascia la tabella com'e';
+    - in ombra si scarica, si compone e si conta; con `dry_run` non si scrive
+      niente di niente, nemmeno la riga di `pipeline_run`.
+    L'esito (`indicepa_*`) va anche in una riga `pipeline_run` step='domini'.
+    """
+    from .dominio_ufficiale import analizza_indicepa
+
+    attivo = _modalita_indicepa(attivo)
+    avvio = time.monotonic()
+    contatori: dict[str, Any] = {
+        "indicepa_esito": None,
+        "indicepa_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "indicepa_modalita": "attivo" if attivo else "ombra",
+        "indicepa_righe_lette": 0, "indicepa_righe_utili": 0, "indicepa_ammessi": 0,
+        "indicepa_gia_presenti": 0, "indicepa_inseriti": 0, "indicepa_esclusi": {},
+        "indicepa_lotti_falliti": 0, "indicepa_colonne_mancanti": [],
+    }
+
+    def chiudi(esito: str) -> dict[str, Any]:
+        contatori["indicepa_esito"] = esito
+        if not dry_run:
+            guasto = esito in (ESITO_INDICEPA_ANOMALO, ESITO_INDICEPA_DOWNLOAD_FALLITO)
+            riga = telemetria.PipelineRun(step=STEP_DOMINI, giro=giro).concludi(
+                durata_s=time.monotonic() - avvio,
+                esito=telemetria.esito_da_contatori(errori=1 if guasto else 0),
+                contatori=contatori,
+            )
+            telemetria.scrivi_pipeline_run(riga)
+        return {"status": "ok", "dry_run": dry_run, "attivo": attivo, **contatori}
+
+    righe = indicepa
+    if righe is None:
+        try:
+            from .settings import get_settings
+            url = getattr(get_settings(), "indicepa_url", "") or INDICEPA_URL_PREDEFINITO
+        except Exception:
+            url = INDICEPA_URL_PREDEFINITO
+        try:
+            dati = (scarica or scarica_indicepa)(url)
+            from io import BytesIO
+            righe = _righe_del_foglio(BytesIO(dati))
+        except Exception as e:
+            logger.warning("[domini] IndicePA non scaricato o non leggibile: {}", type(e).__name__)
+            return chiudi(ESITO_INDICEPA_DOWNLOAD_FALLITO)
+
+    analisi = analizza_indicepa(righe, tabella=_tabella_corrente())
+    contatori.update({
+        "indicepa_righe_lette": analisi.righe_lette,
+        "indicepa_righe_utili": analisi.righe_utili,
+        "indicepa_ammessi": len(analisi.domini),
+        "indicepa_esclusi": dict(analisi.esclusi),
+        "indicepa_colonne_mancanti": list(analisi.colonne_mancanti),
+    })
+    if analisi.colonne_mancanti or analisi.righe_utili < soglia_righe:
+        logger.warning(
+            "[ALLARME] [domini] foglio IndicePA anomalo: {} righe utili (soglia {}), "
+            "colonne mancanti {}: nessuna scrittura",
+            analisi.righe_utili, soglia_righe, list(analisi.colonne_mancanti))
+        return chiudi(ESITO_INDICEPA_ANOMALO)
+
+    payload = [
+        {"host": d.host, "tipo": d.tipo, "confidenza": d.confidenza, "ente": d.ente,
+         "codice_ipa": d.codice_ipa, "origine": d.origine, "attivo": True}
+        for d in analisi.domini
+    ]
+    if dry_run or not attivo:
+        presenti = {str(r.get("host") or "").strip().lower()
+                    for r in db.select_domini_ufficiali()}
+        contatori["indicepa_gia_presenti"] = sum(1 for r in payload if r["host"] in presenti)
+        return chiudi(ESITO_INDICEPA_OMBRA)
+
+    scritte = db.inserisci_domini_nuovi(payload, lotto=LOTTO_DOMINI)
+    contatori["indicepa_gia_presenti"] = int(scritte.get("gia_presenti") or 0)
+    contatori["indicepa_inseriti"] = int(scritte.get("inserite") or 0)
+    contatori["indicepa_lotti_falliti"] = int(scritte.get("lotti_falliti") or 0)
+    # La tabella in memoria e' cambiata: il resto del giro deve vedere l'import.
+    azzera_tabella_corrente()
+    if scritte.get("errore") or contatori["indicepa_lotti_falliti"]:
+        return chiudi(ESITO_INDICEPA_SCRITTURA_PARZIALE)
+    return chiudi(ESITO_INDICEPA_OK)
 
 
 __all__ = [
@@ -3099,6 +3324,7 @@ __all__ = [
     "prossimo_controllo", "punteggia", "punti_dominio", "query_ricerca", "righe_link",
     "scaduto",
     "risolvi", "run", "run_domini_import", "run_fondi_doppioni", "run_link_verifica",
+    "azzera_tabella_corrente", "scarica_indicepa", "INDICEPA_URL_PREDEFINITO",
     "schede_gia_lette",
     "run_oe_dettaglio", "scrivi_esito", "token", "zona_grigia",
 ]

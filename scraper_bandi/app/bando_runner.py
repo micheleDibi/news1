@@ -65,6 +65,9 @@ COLONNE_CONFRONTO_NUOVE: tuple[str, ...] = (
 # NULL»), quindi `sparito_dalla_fonte` non potrebbe mai essere emesso.
 COLONNE_CONTROLLO_LETTE: tuple[str, ...] = (
     "bando_id", "ultimo_visto_in_fonte_at", "priorita_controllo",
+    # Il segnale dell'aggregatore (13, §19.7): il valore attuale, perche' si
+    # scrive solo quando cambia. Filtrate sullo schema come le altre.
+    "segnale_aggregatore", "segnale_aggregatore_at",
 )
 TABELLA_CONTROLLO = "bando_controllo"
 TABELLA_FONTE_RUN = "fonte_run"
@@ -193,6 +196,151 @@ def _fondi_controlli(righe: dict[str, dict[str, Any]], controllo: Any, sb: Any) 
     except Exception as e:
         logger.warning("[bando_runner] colonne di {} non lette, degrado: {}",
                        TABELLA_CONTROLLO, e)
+
+
+def leggi_pubblicati_della_fonte(
+    fonte_id: Any, esclusi: set[str],
+) -> dict[str, dict[str, Any]]:
+    """`hash_bando -> riga` dei pubblicati non fusi della fonte fuori da `esclusi`.
+
+    Sono le righe che il listing di questo giro NON ha elencato: `esistenti`
+    viene riletto per gli hash del listing e quindi non le contiene mai. Con
+    le colonne di `bando_controllo` fuse dentro, come `leggi_esistenti`. Un
+    errore vale `{}` (nessun segnale di assenza), mai un'eccezione.
+    """
+    try:
+        from .db import _pagina, _scorri, controllo, get_supabase
+        colonne = list(COLONNE_CONFRONTO) + [
+            c for c in COLONNE_CONFRONTO_NUOVE if controllo.ha("bando", c)]
+        sb = get_supabase()
+
+        def _costruisci() -> Any:
+            query = sb.table("bando").select(",".join(colonne)).eq("fonte_id", fonte_id)
+            if controllo.ha("bando", "pubblicato"):
+                query = query.eq("pubblicato", True)
+            if controllo.ha("bando", "bando_master_id"):
+                query = query.is_("bando_master_id", "null")
+            return query.order("id")
+
+        righe = {
+            str(r["hash_bando"]): r
+            for r in _scorri(lambda quanto, salto: _pagina(_costruisci(), quanto, salto))
+            if r.get("hash_bando") and str(r["hash_bando"]) not in esclusi
+        }
+        _fondi_controlli(righe, controllo, sb)
+        return righe
+    except Exception as e:
+        logger.warning("[bando_runner] fonte_id={} pubblicati non letti per il segnale: {}",
+                       fonte_id, e)
+        return {}
+
+
+def aggiorna_segnali_aggregatore(
+    fonte: Mapping[str, Any],
+    records: Sequence[Mapping[str, Any]],
+    esistenti: Mapping[str, Mapping[str, Any]],
+    confronto: Any,
+    *,
+    adesso: datetime | None = None,
+    leggi_assenti: Callable[[Any, set[str]], Mapping[str, Mapping[str, Any]]] | None = None,
+    scrivi: Callable[[list[dict[str, Any]]], int] | None = None,
+    strumento: Any | None = None,
+) -> dict[str, Any]:
+    """Passo 6-bis del giro 2: `segnale_aggregatore` delle righe OE (§19.7).
+
+    Solo per la famiglia Obiettivo Europa e solo con le colonne della 13. Per le
+    righe del listing e, con la copertura piena, per i pubblicati della fonte
+    che il listing non elenca, si calcola il valore voluto
+    (`segnali.segnale_aggregatore`) e si scrivono **solo le righe che
+    cambiano**. `segnale_aggregatore_at` prende l'ora di adesso quando il
+    valore cambia e torna NULL quando si azzera; non si rinfresca a ogni giro,
+    altrimenti una conferma della pagina ufficiale letta dopo il segnale (A2
+    di §19.3) non potrebbe mai essere «piu' recente». Non solleva.
+
+    Due guardie sugli assenti (revisione del 30/09 notte): con un listing
+    vuoto gli assenti non si guardano affatto (una fonte che per un giro non
+    risponde non sparisce); e se gli assenti nuovi supererebbero
+    `segnali.QUOTA_ASSENTI_SOSPETTA` dei pubblicati vivi della fonte, nessuno
+    si scrive: e' un listing rotto, non centinaia di bandi usciti. Resta un
+    `[ALLARME]` nel journal e il contatore `segnali_aggregatore_bloccati`.
+    """
+    from .gemelli import FAMIGLIA_OE, famiglia
+    esito: dict[str, Any] = {"segnali_aggregatore": {}, "segnali_aggregatore_azzerati": 0,
+                             "segnali_aggregatore_bloccati": 0}
+    genere = famiglia(records[0], fonte) if records else famiglia({}, fonte)
+    if genere != FAMIGLIA_OE:
+        return esito
+    try:
+        from . import db
+        controllo = strumento if strumento is not None else db.controllo
+        if not all(controllo.ha(TABELLA_CONTROLLO, c) for c in segnali_mod.COLONNE_SEGNALE_AGGREGATORE):
+            logger.info("[bando_runner] segnale dell'aggregatore non scritto: colonne della 13 assenti")
+            return esito
+        momento = adesso or datetime.now(timezone.utc)
+        piena = bool(getattr(confronto, "copertura_piena", False))
+        nel_listing = {str(r.get("hash_bando")): r for r in records if r.get("hash_bando")}
+        cambi: list[dict[str, Any]] = []
+
+        def valuta(record: Mapping[str, Any] | None, riga: Mapping[str, Any]) -> dict[str, Any] | None:
+            if riga.get("id") is None:
+                return None
+            voluto = segnali_mod.segnale_aggregatore(
+                record, riga, momento, copertura_piena=piena)
+            attuale = riga.get("segnale_aggregatore") or None
+            if voluto == attuale:
+                return None
+            return {
+                "bando_id": riga["id"],
+                "segnale_aggregatore": voluto,
+                "segnale_aggregatore_at": momento.isoformat() if voluto else None,
+            }
+
+        vivi = 0
+        for chiave, riga in esistenti.items():
+            vivi += segnali_mod.pubblicata_e_viva(riga, momento)
+            cambio = valuta(nel_listing.get(chiave), riga)
+            if cambio is not None:
+                cambi.append(cambio)
+        # Un listing vuoto non dice che i bandi sono spariti: dice che la
+        # fonte, per questo giro, non ha risposto come doveva.
+        if piena and nel_listing:
+            lettore = leggi_assenti or leggi_pubblicati_della_fonte
+            assenti: list[dict[str, Any]] = []
+            for riga in lettore(fonte.get("id"), set(nel_listing)).values():
+                vivi += segnali_mod.pubblicata_e_viva(riga, momento)
+                cambio = valuta(None, riga)
+                if cambio is None:
+                    continue
+                if cambio["segnale_aggregatore"] == segnali_mod.SEGNALE_ASSENTE:
+                    assenti.append(cambio)
+                else:
+                    cambi.append(cambio)
+            if assenti and len(assenti) > segnali_mod.QUOTA_ASSENTI_SOSPETTA * vivi:
+                logger.warning(
+                    "[ALLARME] [segnali] listing sospetto: fonte_id={} {} bandi assenti su {} "
+                    "pubblicati vivi (oltre il {:.0%}), nessun assente_dal_listing scritto",
+                    fonte.get("id"), len(assenti), vivi, segnali_mod.QUOTA_ASSENTI_SOSPETTA)
+                esito["segnali_aggregatore_bloccati"] = len(assenti)
+            else:
+                cambi.extend(assenti)
+        if not cambi:
+            return esito
+        scritte = (scrivi or db.aggiorna_segnale_aggregatore)(cambi)
+        if scritte != len(cambi):
+            logger.warning("[bando_runner] fonte_id={} segnale dell'aggregatore: {} righe su {}",
+                           fonte.get("id"), scritte, len(cambi))
+            return esito
+        for cambio in cambi:
+            valore = cambio["segnale_aggregatore"]
+            if valore is None:
+                esito["segnali_aggregatore_azzerati"] += 1
+            else:
+                esito["segnali_aggregatore"][valore] = esito["segnali_aggregatore"].get(valore, 0) + 1
+        return esito
+    except Exception as e:
+        logger.warning("[bando_runner] fonte_id={} segnale dell'aggregatore non aggiornato: {}",
+                       fonte.get("id"), e)
+        return esito
 
 
 def scrivi_segnali(confronto: Any, fonte: Mapping[str, Any]) -> int:
@@ -373,6 +521,7 @@ async def run(
     scrivi: Callable[[Any, Mapping[str, Any]], int] | None = None,
     marca: Callable[[Any, Mapping[str, Mapping[str, Any]]], int] | None = None,
     conteggi_precedenti: Mapping[Any, int] | None = None,
+    segnala: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Esegue lo scraping completo. Ritorna counters per il log finale.
 
@@ -385,6 +534,8 @@ async def run(
         conteggi_precedenti: `fonte_id -> elementi dell'ultimo giro`, per la
             guardia di §6.1 («la fonte non si e' dimezzata»). Se non passato
             si legge da `fonte_run`.
+        segnala: il passo 6-bis del giro 2 (`aggiorna_segnali_aggregatore`),
+            iniettabile nei test come gli altri tre.
     """
     started = time.monotonic()
     logger.info(
@@ -408,6 +559,9 @@ async def run(
         "fonti_skipped_no_strategy": 0,
         "fonti_skipped_skip_strategy": 0,
         "fonti_errors": 0,
+        # Giro 2 (§8): quali fonti, non solo quante. Solo gli id interi: e'
+        # cosi' che `salute` vede una fonte ad accesso riservato in errore.
+        "fonti_in_errore": [],
         "bandi_estratti": 0,
         "bandi_con_link": 0,
         "bandi_senza_link": 0,
@@ -419,11 +573,17 @@ async def run(
         "segnali": 0,
         "spariti": 0,
         "controlli_aggiornati": 0,
+        # Giro 2, §19.7: le righe OE a cui il listing ha acceso o spento il
+        # segnale dell'aggregatore in questo giro.
+        "segnali_aggregatore": {},
+        "segnali_aggregatore_azzerati": 0,
+        "segnali_aggregatore_bloccati": 0,
     }
 
     lettore = leggi if leggi is not None else leggi_esistenti
     scrittore = scrivi if scrivi is not None else scrivi_segnali
     marcatore = marca if marca is not None else aggiorna_controlli
+    segnalatore = segnala if segnala is not None else aggiorna_segnali_aggregatore
     # La guardia «la fonte non si e' dimezzata» ha bisogno di un «prima»: se
     # il chiamante non lo passa, lo si va a prendere in `fonte_run`.
     precedenti = dict(conteggi_precedenti or {})
@@ -469,7 +629,7 @@ async def run(
                 "[bando_runner] fonte_id={} get_scraper fallito strategy={}: {}",
                 fonte_id, strategy_name, e,
             )
-            overall["fonti_errors"] += 1
+            _conta_fonte_in_errore(overall, fonte_id)
             continue
 
         # Esegui scraping
@@ -480,7 +640,7 @@ async def run(
                 "[bando_runner] fonte_id={} scrape fallito: {}",
                 fonte_id, e,
             )
-            overall["fonti_errors"] += 1
+            _conta_fonte_in_errore(overall, fonte_id)
             continue
 
         # Compose record + counters
@@ -531,7 +691,7 @@ async def run(
                 overall["bandi_upsert_processed"] += res["processed"]
             except Exception as e:
                 logger.exception("[bando_runner] fonte_id={} upsert fallito: {}", fonte_id, e)
-                overall["fonti_errors"] += 1
+                _conta_fonte_in_errore(overall, fonte_id)
                 continue
         elif records:
             logger.info(
@@ -557,6 +717,23 @@ async def run(
                 segnalati = scrittore(confronto, fonte)
             except Exception as e:
                 logger.warning("[bando_runner] fonte_id={} segnali non scritti: {}", fonte_id, e)
+
+        # Passo 6-bis del giro 2: il segnale dell'aggregatore (§19.7). Mai in
+        # dry_run: e' una scrittura su `bando_controllo`.
+        if not dry_run:
+            try:
+                segnalati_aggregatore = segnalatore(fonte, records, esistenti, confronto)
+            except Exception as e:
+                logger.warning("[bando_runner] fonte_id={} segnale dell'aggregatore: {}",
+                               fonte_id, e)
+                segnalati_aggregatore = {}
+            for valore, quanti in dict(segnalati_aggregatore.get("segnali_aggregatore") or {}).items():
+                overall["segnali_aggregatore"][valore] = (
+                    overall["segnali_aggregatore"].get(valore, 0) + int(quanti))
+            overall["segnali_aggregatore_azzerati"] += int(
+                segnalati_aggregatore.get("segnali_aggregatore_azzerati") or 0)
+            overall["segnali_aggregatore_bloccati"] += int(
+                segnalati_aggregatore.get("segnali_aggregatore_bloccati") or 0)
 
         overall["fonti_processate"] += 1
         overall["bandi_estratti"] += len(records)
@@ -586,6 +763,13 @@ async def run(
         elapsed, overall,
     )
     return overall
+
+
+def _conta_fonte_in_errore(overall: dict[str, Any], fonte_id: Any) -> None:
+    """Una fonte in errore: il conteggio di sempre e il suo id in `fonti_in_errore`."""
+    overall["fonti_errors"] += 1
+    if isinstance(fonte_id, int) and not isinstance(fonte_id, bool):
+        overall["fonti_in_errore"].append(fonte_id)
 
 
 def _telemetria_fonte(

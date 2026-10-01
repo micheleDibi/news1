@@ -350,5 +350,94 @@ class TestScadenzaDaLabel(unittest.TestCase):
         self.assertIsNone(segnali.scadenza_da_label(None))
 
 
+
+class TestSegnaleAggregatore(unittest.TestCase):
+    """`segnale_aggregatore` (contratto `bandi-giro-2` §19.7): valore voluto, puro."""
+
+    # 08:00 di Roma del 1° ottobre 2026.
+    ADESSO = datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)
+
+    def _riga(self, **extra):
+        riga = {"id": 1, "pubblicato": True, "stato_bando": "aperto",
+                "segnale_aggregatore": None,
+                "ultimo_visto_in_fonte_at": "2026-10-01T00:00:00+00:00"}
+        riga.update(extra)
+        return riga
+
+    def _voluto(self, record, riga, piena=True):
+        return segnali.segnale_aggregatore(record, riga, self.ADESSO, copertura_piena=piena)
+
+    @staticmethod
+    def _record(**raw):
+        return {"hash_bando": "h", "raw_data": raw}
+
+    def test_status_due_e_in_uscita(self):
+        self.assertEqual(self._voluto(self._record(status="2"), self._riga()), "in_uscita")
+        self.assertEqual(self._voluto(self._record(status=2), self._riga()), "in_uscita")
+        # Lo status vince anche su un'etichetta scaduta.
+        self.assertEqual(self._voluto(self._record(status="2", deadline_label="Scade il 30/09/2026"),
+                                      self._riga()), "in_uscita")
+
+    def test_etichetta_scaduta(self):
+        self.assertEqual(self._voluto(self._record(status="1", deadline_label="Scade il 30/09/2026"),
+                                      self._riga()), "scadenza_passata")
+        # Oggi non e' «prima di oggi».
+        self.assertIsNone(self._voluto(self._record(status="1", deadline_label="Scade il 01/10/2026"),
+                                       self._riga()))
+
+    def test_ricomparsa_pulita_azzera(self):
+        for attuale in segnali.SEGNALI_AGGREGATORE:
+            with self.subTest(attuale=attuale):
+                self.assertIsNone(self._voluto(
+                    self._record(status="1", deadline_label="Scade il 31/12/2026"),
+                    self._riga(segnale_aggregatore=attuale)))
+
+    def test_status_illeggibile(self):
+        self.assertIsNone(self._voluto(self._record(), self._riga(segnale_aggregatore="assente_dal_listing")))
+        self.assertEqual(self._voluto(self._record(), self._riga(segnale_aggregatore="in_uscita")),
+                         "in_uscita")
+
+    def test_assente_dopo_tre_giri_con_copertura_piena(self):
+        # Tre giri da sei ore: 18 ore.
+        vista_19_ore_fa = (self.ADESSO - timedelta(hours=19)).isoformat()
+        vista_17_ore_fa = (self.ADESSO - timedelta(hours=17)).isoformat()
+        self.assertEqual(self._voluto(None, self._riga(ultimo_visto_in_fonte_at=vista_19_ore_fa)),
+                         "assente_dal_listing")
+        self.assertIsNone(self._voluto(None, self._riga(ultimo_visto_in_fonte_at=vista_17_ore_fa)))
+        # Esattamente al confine: non ancora.
+        confine = (self.ADESSO - timedelta(hours=18)).isoformat()
+        self.assertIsNone(self._voluto(None, self._riga(ultimo_visto_in_fonte_at=confine)))
+
+    def test_mai_visto_vale_la_data_della_semina(self):
+        self.assertEqual(segnali.DATA_SEMINA_VISTO.isoformat(), "2026-09-23T00:00:00+02:00")
+        self.assertEqual(self._voluto(None, self._riga(ultimo_visto_in_fonte_at=None)),
+                         "assente_dal_listing")
+        # Con la semina appena fatta non sono ancora passati tre giri.
+        subito_dopo = datetime(2026, 9, 23, 8, 0, tzinfo=timezone.utc)
+        self.assertIsNone(segnali.segnale_aggregatore(
+            None, self._riga(ultimo_visto_in_fonte_at=None), subito_dopo, copertura_piena=True))
+
+    def test_copertura_parziale_nessun_assente(self):
+        riga = self._riga(ultimo_visto_in_fonte_at=None)
+        self.assertIsNone(self._voluto(None, riga, piena=False))
+        self.assertEqual(self._voluto(None, dict(riga, segnale_aggregatore="in_uscita"), piena=False),
+                         "in_uscita")
+
+    def test_chiusi_e_non_pubblicati_non_cambiano(self):
+        chiuso = self._riga(stato_bando="chiuso", ultimo_visto_in_fonte_at=None)
+        self.assertIsNone(self._voluto(None, chiuso))
+        non_pubblicato = self._riga(pubblicato=False)
+        self.assertIsNone(self._voluto(self._record(status="2"), non_pubblicato))
+
+    def test_pubblicata_e_viva(self):
+        self.assertTrue(segnali.pubblicata_e_viva(self._riga(), self.ADESSO))
+        self.assertFalse(segnali.pubblicata_e_viva(self._riga(stato_bando="chiuso"), self.ADESSO))
+        self.assertFalse(segnali.pubblicata_e_viva(self._riga(pubblicato=False), self.ADESSO))
+        self.assertEqual(segnali.QUOTA_ASSENTI_SOSPETTA, 0.20)
+
+    def test_un_valore_sconosciuto_vale_niente(self):
+        self.assertIsNone(self._voluto(self._record(status="1"), self._riga(segnale_aggregatore="boh")))
+
+
 if __name__ == "__main__":       # pragma: no cover
     unittest.main()

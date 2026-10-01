@@ -7,14 +7,14 @@ import {
   F2_DISPONIBILE, caricaLinkEEventi, risolviSlugStorico,
   type Bando, type BandoDetail,
 } from '../../lib/supabase-bandi';
-import { statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
+import { motivoDellaRiga, statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
 import { corpoBando } from '../../lib/bandi/contenuto';
 import { soloPubblicabili } from '../../lib/bandi/domini';
 import {
   giorniAllaScadenza, oraItaliana, partecipazioneAperta, rigaScadenza, sottotestoStato,
   testoFonteUfficiale, testoGiorniMancanti,
 } from '../../lib/bandi/testi-stato';
-import { aspettoStato, inScadenza, PALETTE_SCADENZA } from '../../lib/bandi/aspetto';
+import { aspettoConVerifica, inScadenza, PALETTE_SCADENZA } from '../../lib/bandi/aspetto';
 import { calendario } from '../../lib/bandi/calendario';
 import { eur } from '../../lib/bandi/elenco';
 import { sceltaCta } from '../../lib/bandi/cta';
@@ -210,7 +210,11 @@ const statoRegistrato = typeof statoDalDb === 'string' && statoDalDb !== ''
       ora_scadenza: campoTesto('ora_scadenza'),
     });
 const stato = statoDaEventi(eventi) ?? statoRegistrato;
-const aspetto = aspettoStato(stato);
+// Il motivo «da verificare»: dalla vista, o ricalcolato sulla tabella. Vale solo
+// se compatibile con lo stato mostrato, quindi uno stato preso da un evento
+// (una sospensione) spegne il bollino.
+const motivo = motivoDellaRiga(colonne, stato);
+const aspetto = aspettoConVerifica(stato, motivo);
 const sottotesto = sottotestoStato({
   stato,
   data_apertura: bando.data_apertura,
@@ -218,6 +222,11 @@ const sottotesto = sottotestoStato({
   data_scadenza: bando.data_scadenza,
   ora_scadenza: campoTesto('ora_scadenza'),
   data_scadenza_verificata: campo('data_scadenza_verificata') === true,
+  motivo_da_verificare: motivo,
+  stato_letto: campoTesto('stato_letto'),
+  stato_letto_at: campoTesto('stato_letto_at'),
+  termine_indicato: campoTesto('termine_indicato'),
+  termine_indicato_fonte: campoTesto('termine_indicato_fonte'),
   oggi,
 });
 // Su un sospeso o un revocato spariscono CTA e conto alla rovescia: invitare a

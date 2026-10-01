@@ -14,6 +14,7 @@ import json
 import random
 import re
 from functools import lru_cache
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, unquote
 
@@ -22,11 +23,21 @@ from .settings import get_settings
 from .stato_bando import data_italiana, oggi_roma
 
 
-# Budget del testo di pagina nel prompt di preprocess (fix 8.a.2). Il valore e'
-# quello che il prompt usava gia': cambiarlo cambierebbe il costo di ogni giro,
-# e la selezione per sezioni (`impronte.seleziona_sezioni`, budget 6 000)
-# arrivera' insieme al modulo che la implementa.
-BUDGET_PROMPT_CHAR = 4000
+# Budget del testo di pagina nel prompt di preprocess (contratto del giro 2,
+# §6.3 con §19.5). Con i soli primi 4 000 caratteri il modello vedeva quasi
+# solo menu, e su LazioEuropa perdeva la scadenza. Ora entrano le prime
+# TESTA_PROMPT_CHAR battute intere (dove stanno titolo ed etichetta di stato)
+# e, fino a BUDGET_PROMPT_CHAR, le sezioni con date e parole utili scelte da
+# `impronte.seleziona_sezioni`. BUDGET_PROMPT_CHAR e' la sola costante da
+# riportare a 4000 se, nei 7 giorni d'ombra, la quota di bandi con scadenza o
+# la distribuzione degli stati derivano.
+BUDGET_PROMPT_CHAR = 8000
+TESTA_PROMPT_CHAR = 1500
+
+# Tetto per rileggere la pagina con il lettore per ente dopo il modello. Quasi
+# sempre e' una lettura dalla cache del giro (l'ha appena presa il markdown);
+# altrimenti una GET httpx, mai il ripiego a pagamento.
+TETTO_LETTORE_S = 30.0
 
 
 # URL slug pattern: identifica gli URL che sembrano indici di sezione
@@ -288,6 +299,25 @@ def system_prompt(oggi=None) -> str:
     return SYSTEM_PROMPT_TEMPLATE.replace("{oggi}", data_italiana(oggi or oggi_roma()))
 
 
+def blocco_pagina(testo: str | None, budget: int = BUDGET_PROMPT_CHAR) -> str:
+    """Il testo di pagina che entra nel prompt, al massimo `budget` caratteri.
+
+    La testa (`TESTA_PROMPT_CHAR`) entra intera, perche' li' stanno il titolo e
+    l'etichetta di stato; del resto entrano le sezioni con date e parole utili,
+    nell'ordine del documento. Stringa vuota se non c'e' testo.
+    """
+    if not testo:
+        return ""
+    testa = testo[:TESTA_PROMPT_CHAR]
+    resto = testo[TESTA_PROMPT_CHAR:]
+    spazio = budget - len(testa) - 1          # 1 = l'a capo fra le due parti
+    if not resto.strip() or spazio <= 0:
+        return testa[:budget]
+    from .impronte import seleziona_sezioni
+    scelte = seleziona_sezioni(resto, spazio)
+    return f"{testa}\n{scelte}" if scelte else testa
+
+
 def _truncate(text: str | None, max_chars: int) -> str:
     """Tronca a max_chars con ellipsi. None -> stringa vuota."""
     if not text:
@@ -349,8 +379,8 @@ def _build_user_prompt(
     hints_block = ("\nANALISI URL:\n- " + "\n- ".join(url_hints)) if url_hints else ""
 
     # Budget del prompt (fix 8.a.2): il testo arriva intero da `scarico.py` e
-    # si taglia QUI, dove entra nel prompt, non alla sorgente.
-    md_block = _truncate(markdown, BUDGET_PROMPT_CHAR) if markdown else "(non disponibile)"
+    # si riduce QUI, dove entra nel prompt, non alla sorgente.
+    md_block = blocco_pagina(markdown) if markdown else "(non disponibile)"
 
     return f"""Analizza questo record candidato a bando.
 
@@ -459,15 +489,48 @@ def _extract_tool_input(response: Any) -> dict[str, Any]:
     )
 
 
+def _presunta_respinta(candidate: Any, markdown: str, label: str) -> bool:
+    """Vero se la candidata passerebbe tutti i gate tranne G10 (data presunta).
+
+    Serve solo al contatore `date_presunte_respinte`: nei 7 giorni d'ombra
+    distingue l'effetto del prompt a 8 000 caratteri da quello di G10.
+    """
+    from . import date_validation as dv
+    if not isinstance(candidate, dict):
+        return False
+    parsed = dv.parse_iso(candidate.get("date") if isinstance(candidate.get("date"), str) else None)
+    quote = candidate.get("quote")
+    if (parsed is None or not isinstance(quote, str) or not quote
+            or candidate.get("source") not in dv._AUTHORITATIVE_SOURCES
+            or dv.norm_cit(quote) not in dv.norm_cit(markdown)):
+        return False
+    compatibili = [d for d in dv.estrai_date_con_ruolo(quote)
+                   if d.data == parsed and dv.ruolo_compatibile(d.ruolo, label)]
+    return bool(compatibili) and all(dv.e_presunta(dv._intorno(quote, d)) for d in compatibili)
+
+
+def _ora(candidate: Any, data: Any, ruolo: str) -> str | None:
+    """L'ora della data validata, letta nella sua citazione ("HH:MM:SS")."""
+    from .date_validation import ora_nella_citazione
+    if data is None or not isinstance(candidate, dict):
+        return None
+    ora = ora_nella_citazione(candidate.get("quote"), data, ruolo)
+    return ora.isoformat() if ora is not None else None
+
+
 def _validate_analysis(
     analysis: dict[str, Any],
     markdown: str,
     bando_id: Any,
+    *,
+    provenienza: str | None = None,
 ) -> dict[str, Any]:
     """Validazione output LLM con triple-gate sulle date.
 
     Le date vengono validate via _validate_date_candidate (substring + source
     autoritativo + regex date in quote). Se NON passa il gate -> None.
+    `provenienza` ('ente' | 'aggregatore') e' l'host di `link_bando`, deciso
+    dal codice (§6.3).
 
     Poi applica reconciliation guard data-driven:
       - data_scadenza < oggi -> stato_bando='chiuso'
@@ -497,19 +560,25 @@ def _validate_analysis(
     pub_date = None
     apt_date = None
     scad_date = None
+    presunte = 0
     if is_valid:
         pub_date = validate_date_candidate(
             analysis.get("data_pubblicazione"), markdown, bando_id, "pubblicazione",
-            log_prefix="preprocess/date",
+            log_prefix="preprocess/date", provenienza=provenienza,
         )
         apt_date = validate_date_candidate(
             analysis.get("data_apertura"), markdown, bando_id, "apertura",
-            log_prefix="preprocess/date",
+            log_prefix="preprocess/date", provenienza=provenienza,
         )
         scad_date = validate_date_candidate(
             analysis.get("data_scadenza"), markdown, bando_id, "scadenza",
-            log_prefix="preprocess/date",
+            log_prefix="preprocess/date", provenienza=provenienza,
         )
+        for campo, label, valida in (("data_pubblicazione", "pubblicazione", pub_date),
+                                     ("data_apertura", "apertura", apt_date),
+                                     ("data_scadenza", "scadenza", scad_date)):
+            if valida is None and _presunta_respinta(analysis.get(campo), markdown, label):
+                presunte += 1
         # Coerenza temporale: pub <= apt <= scad. Se incoerente -> coerce tutte a None.
         from .date_validation import check_dates_coherence
         if not check_dates_coherence(pub_date, apt_date, scad_date):
@@ -535,7 +604,193 @@ def _validate_analysis(
         "data_pubblicazione": pub_date.isoformat() if pub_date else None,
         "data_apertura": apt_date.isoformat() if apt_date else None,
         "data_scadenza": scad_date.isoformat() if scad_date else None,
+        "ora_apertura": _ora(analysis.get("data_apertura"), apt_date, "apertura"),
+        "ora_scadenza": _ora(analysis.get("data_scadenza"), scad_date, "scadenza"),
+        "_origine_scadenza": "modello" if scad_date else None,
+        "_date_presunte_respinte": presunte,
     }
+
+
+def provenienza_di(link: str | None) -> str | None:
+    """'aggregatore' se `link_bando` sta su un aggregatore, 'ente' altrimenti (§6.3)."""
+    from .dominio_ufficiale import dominio_di, e_aggregatore
+    host = dominio_di(link) if link else None
+    if not host:
+        return None
+    return "aggregatore" if e_aggregatore(host) else "ente"
+
+
+def _coerente(pub: Any, apt: Any, fine: Any) -> bool:
+    """Una scadenza candidata non precede ne' la pubblicazione ne' l'apertura."""
+    return (pub is None or fine >= pub) and (apt is None or fine >= apt)
+
+
+def _scadenza_oe_citata(raw: Mapping[str, Any], markdown: str, bando_id: Any, oggi: Any) -> Any:
+    """La data della `deadline_label` di OE, solo se la scheda la cita (§19.5).
+
+    Vale con status '1', una data da oggi in poi e la citazione «Scadenza: …»
+    nel testo della scheda scaricata; poi passa da `validate_date_candidate`
+    con provenienza aggregatore, come le scadenze OE che il modello legge gia'.
+    La citazione e' «Scadenza: <etichetta>», «Scadenza: <data della
+    etichetta>» oppure l'etichetta intera («Scade il 30/11/2026»): nient'altro
+    (forme approvate dal lead il 30/09; manca ancora una scheda vera nelle
+    fixture).
+    """
+    from .date_validation import norm_cit, termine_da_etichetta_oe, validate_date_candidate
+    termine = termine_da_etichetta_oe(dict(raw))
+    if termine is None or termine[0] < oggi:
+        return None
+    data = termine[0]
+    etichetta = str(raw.get("deadline_label") or "").strip()
+    testo = norm_cit(markdown)
+    for citazione in (f"Scadenza: {etichetta}", f"Scadenza: {data:%d/%m/%Y}", etichetta):
+        if norm_cit(citazione) in testo:
+            return validate_date_candidate(
+                {"date": data.isoformat(), "source": "official_page", "quote": citazione},
+                markdown, bando_id, "scadenza", log_prefix="preprocess/oe",
+                provenienza="aggregatore")
+    return None
+
+
+def completa_dopo_il_modello(
+    analysis: dict[str, Any],
+    bando: Mapping[str, Any],
+    markdown: str,
+    lettura: Any = None,
+    *,
+    oggi: Any = None,
+) -> dict[str, Any]:
+    """Quello che il preprocess aggiunge dopo il modello, senza chiamarlo (§6.3, §19.5). Pura.
+
+    Solo per un bando valido; la scadenza del modello non si tocca mai.
+    1. Lettore per ente (`lettura`, gia' filtrata: niente generico, niente solo
+       segnale): il termine finale diventa `data_scadenza` se il modello non
+       l'ha data; un 'chiuso' con `puo_chiudere` porta lo stato a 'chiuso'.
+    2. Finestra di presentazione nel testo della pagina: la fine piu' tarda,
+       certa e con un verbo di presentazione, se la scadenza manca ancora.
+    3. OE: la `deadline_label` citata sulla scheda (status '1'), per ultima
+       perche' e' la fonte meno affidabile. Status '2' → 'in apertura
+       prossimamente', salvo un 'chiuso' per date. `on_arrival` non si usa.
+    Le date nuove non precedono mai pubblicazione e apertura.
+    """
+    from .date_validation import estrai_finestra, parse_iso, reconcile_stato_bando
+    risultato = dict(analysis)
+    risultato.setdefault("_origine_scadenza", "modello" if analysis.get("data_scadenza") else None)
+    if not analysis.get("is_valid_bando"):
+        return risultato
+    giorno = oggi or oggi_roma()
+    pub = parse_iso(analysis.get("data_pubblicazione"))
+    apt = parse_iso(analysis.get("data_apertura"))
+    scad = parse_iso(analysis.get("data_scadenza"))
+    ora_scad = analysis.get("ora_scadenza")
+    origine = risultato["_origine_scadenza"]
+    chiuso_da_lettore = False
+
+    if lettura is not None:
+        termine = getattr(lettura, "termine_finale", None)
+        if scad is None and termine is not None and _coerente(pub, apt, termine.data):
+            scad, origine = termine.data, "lettore"
+            ora_scad = termine.ora.isoformat() if termine.ora is not None else None
+        chiuso_da_lettore = lettura.stato == "chiuso" and bool(lettura.puo_chiudere)
+
+    if scad is None:
+        finestre = [f for f in estrai_finestra(markdown)
+                    if f.fine is not None and f.per_presentare and not f.presunta
+                    and _coerente(pub, apt, f.fine)]
+        if finestre:
+            ultima = max(finestre, key=lambda f: f.fine)
+            scad, origine = ultima.fine, "finestra"
+            ora_scad = ultima.ora_fine.isoformat() if ultima.ora_fine is not None else None
+
+    raw = bando.get("raw_data")
+    status = str(raw.get("status") or "").strip() if isinstance(raw, Mapping) else ""
+    if scad is None and status == "1":
+        dalla_scheda = _scadenza_oe_citata(raw, markdown, bando.get("id"), giorno)
+        if dalla_scheda is not None and _coerente(pub, apt, dalla_scheda):
+            scad, origine, ora_scad = dalla_scheda, "etichetta_oe", None
+
+    stato = reconcile_stato_bando(analysis.get("stato_bando"), apt, scad, today=giorno)
+    status2 = False
+    if chiuso_da_lettore:
+        stato = "chiuso"
+    elif status == "2" and stato != "chiuso":
+        stato, status2 = "in apertura prossimamente", True
+
+    risultato.update({
+        "stato_bando": stato,
+        "data_scadenza": scad.isoformat() if scad else None,
+        "ora_scadenza": ora_scad if scad else None,
+        "_origine_scadenza": origine if scad else None,
+        "_chiuso_da_lettore": chiuso_da_lettore,
+        "_status2_in_apertura": status2,
+    })
+    return risultato
+
+
+#: Gli elementi che nel testo della pagina fanno un paragrafo a se'.
+_BLOCCHI_HTML: tuple[str, ...] = (
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "tr", "dt", "dd", "blockquote",
+    "section", "article", "div",
+)
+_SPAZI_IN_RIGA_RE = re.compile(r"[ \t\u00a0]+")
+_A_CAPO_RE = re.compile(r" *\n *")
+_RIGHE_VUOTE_RE = re.compile(r"\n{3,}")
+
+
+def testo_strutturato(markdown: str, html: str | None) -> str:
+    """Il testo della pagina diviso in paragrafi, per il blocco del prompt.
+
+    Il markdown di Firecrawl ha gia' i suoi a capo e resta com'e'. Il testo
+    visibile che arriva da httpx invece e' una riga sola, menu compresi, e
+    `seleziona_sezioni` non ci troverebbe nessuna sezione: su LazioEuropa la
+    scadenza restava fuori. In quel caso il testo si ricostruisce dall'HTML
+    della stessa risposta, ripulito come per le impronte (`impronte.pulisci`,
+    niente menu ne' contorno), con un paragrafo per elemento di blocco e gli
+    spazi fra un tag e l'altro («le ore 17:00», non «le ore17:00»).
+    """
+    if not html or markdown.count("\n") >= 3:
+        return markdown
+    from .impronte import pulisci
+    zuppa = pulisci(html)
+    radice = zuppa.body or zuppa
+    for tag in radice.find_all(_BLOCCHI_HTML):
+        tag.insert_before("\n\n")
+        tag.insert_after("\n\n")
+    testo = _SPAZI_IN_RIGA_RE.sub(" ", radice.get_text(" "))
+    testo = _RIGHE_VUOTE_RE.sub("\n\n", _A_CAPO_RE.sub("\n", testo)).strip()
+    return testo or markdown
+
+
+async def _pagina_in_cache(link: str) -> Any:
+    """La risposta della pagina del bando, di norma dalla cache del giro.
+
+    `scarica_markdown` l'ha appena messa in cache sotto la stessa chiave, quindi
+    qui non si scarica niente. Se la cache non c'e' e' una GET httpx
+    (`principale=False`): MAI il ripiego a pagamento.
+    """
+    from . import scarico as scarico_mod
+    try:
+        risposta = await asyncio.wait_for(
+            scarico_mod.scarico_corrente().scarica(link, principale=False), TETTO_LETTORE_S)
+    except Exception as e:                    # tempo scaduto, rete, host vietato
+        logger.debug("[preprocess] pagina non riletta {}: {}", link, e)
+        return None
+    return risposta if risposta.ok else None
+
+
+def lettura_per_ente(pagina: Any, link: str, titolo: str, oggi: Any) -> Any:
+    """La lettura di un lettore per ente sulla pagina, o None.
+
+    Il lettore generico e le letture solo segnale non cambiano niente
+    all'ingresso: restano fuori.
+    """
+    from .etichette_stato import leggi
+    if pagina is None or not getattr(pagina, "html", ""):
+        return None
+    lettura = leggi(pagina.html, getattr(pagina, "url_finale", "") or link, titolo, oggi=oggi)
+    if lettura is None or lettura.estrattore == "generico" or lettura.solo_segnale:
+        return None
+    return lettura
 
 
 async def analyze_bando(
@@ -605,7 +860,10 @@ async def analyze_bando(
             "_needs_fallback": True,
         }
 
-    # 4. LLM call Haiku 4.5
+    # 4. LLM call Haiku 4.5, sul testo della pagina con i suoi paragrafi (la
+    #    stessa risposta serve dopo al lettore per ente).
+    pagina = await _pagina_in_cache(link)
+    markdown = testo_strutturato(markdown, getattr(pagina, "html", None))
     settings = get_settings()
     client = _get_anthropic_client()
     user_prompt = _build_user_prompt(bando, fonte_ctx, markdown=markdown)
@@ -622,7 +880,17 @@ async def analyze_bando(
     raw_analysis = _extract_tool_input(response)
 
     # 5. Validation + reconciliation
-    analysis = _validate_analysis(raw_analysis, markdown, bando_id)
+    provenienza = provenienza_di(link)
+    analysis = _validate_analysis(raw_analysis, markdown, bando_id, provenienza=provenienza)
+
+    # 6. Dopo il modello (§6.3, §19.5): lettore per ente, finestra, etichetta
+    #    OE. Il lettore non legge le schede degli aggregatori.
+    if analysis["is_valid_bando"]:
+        giorno = oggi_roma()
+        lettura = None
+        if provenienza == "ente":
+            lettura = lettura_per_ente(pagina, link, str(bando.get("titolo_raw") or ""), giorno)
+        analysis = completa_dopo_il_modello(analysis, bando, markdown, lettura, oggi=giorno)
     analysis["_needs_fallback"] = False
 
     logger.debug(

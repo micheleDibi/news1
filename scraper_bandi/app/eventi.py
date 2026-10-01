@@ -58,6 +58,7 @@ from .date_validation import (
     parse_iso,
     ruolo_compatibile,
 )
+from . import impronte
 from .dominio_ufficiale import TABELLA_SEED, dominio_di, e_aggregatore, verificabile
 from .logger import logger
 from .stato_bando import TRANSIZIONI, oggi_roma, transizione_ammessa
@@ -836,13 +837,18 @@ def _atto_recente(data: date_cls, ctx: Contesto) -> bool:
         data >= ctx.ultimo_controllo - timedelta(days=MARGINE_ATTO_GIORNI)
 
 
-def g8_dedup(evento: Evento, ctx: Contesto, *, giorni: int = FINESTRA_DEDUP_GIORNI) -> tuple[bool, str]:
+def g8_dedup(
+    evento: Evento, ctx: Contesto, *, giorni: int = FINESTRA_DEDUP_GIORNI,
+    giorno_di: Callable[[Mapping[str, Any]], date_cls | None] | None = None,
+) -> tuple[bool, str]:
     """Nessun evento uguale negli ultimi 30 giorni (§6.2 G8, §16.2 M6).
 
     «Uguale» e' (tipo, campo, valore): la stessa proroga vista in due giri
     consecutivi e' un solo fatto, e due righe leggibili nel box «Aggiornamenti»
-    sarebbero due volte la stessa notizia.
+    sarebbero due volte la stessa notizia. `giorno_di` sceglie da quale data
+    si misura la finestra (il monitor: `_giorno_evento`).
     """
+    giorno_di = giorno_di or _giorno_evento
     oggi = ctx.giorno
     for passato in ctx.eventi_recenti:
         if str(passato.get("tipo") or "") != evento.tipo:
@@ -851,7 +857,7 @@ def g8_dedup(evento: Evento, ctx: Contesto, *, giorni: int = FINESTRA_DEDUP_GIOR
             continue
         if _valore_evento(passato) != (evento.valore or None):
             continue
-        quando = _giorno_evento(passato)
+        quando = giorno_di(passato)
         if quando is None:
             continue
         if 0 <= (oggi - quando).days <= giorni:
@@ -873,6 +879,13 @@ def _valore_evento(riga: Mapping[str, Any]) -> str | None:
     return str(valore) if valore is not None else None
 
 
+def _giorno_registrato(riga: Mapping[str, Any]) -> date_cls | None:
+    """Il giorno in cui l'evento e' stato registrato (`rilevato_at`); senza,
+    come il monitor. Serve al G8 del percorso verifica: una chiusura ha come
+    `data_evento` il termine letto, che puo' essere di mesi prima."""
+    return _giorno_evento({"rilevato_at": riga.get("rilevato_at")}) or _giorno_evento(riga)
+
+
 def _giorno_evento(riga: Mapping[str, Any]) -> date_cls | None:
     for nome in ("data_evento", "rilevato_at", "pubblicato_at"):
         valore = riga.get(nome)
@@ -887,7 +900,9 @@ def _giorno_evento(riga: Mapping[str, Any]) -> date_cls | None:
     return None
 
 
-def transizione_evento(stato: str | None, evento: Evento) -> str | None:
+def transizione_evento(
+    stato: str | None, evento: Evento, *, percorso: str = "monitor",
+) -> str | None:
     """Stato di destinazione dell'evento, o None se lo stato non cambia (§4).
 
     E' la tabella di §4 riga per riga. `chiusura` porta a `chiuso` **senza**
@@ -911,7 +926,14 @@ def transizione_evento(stato: str | None, evento: Evento) -> str | None:
             return "in apertura prossimamente" if evento.campo == "data_apertura" else "aperto"
         return None
     if tipo == "chiusura":
-        return "chiuso" if stato == "aperto" else None
+        if stato == "aperto":
+            return "chiuso"
+        # Riga 24 della lista bianca (contratto `bandi-giro-2` §4): da «in
+        # apertura» chiude solo il percorso verifica_stato, con i suoi gate.
+        # Il monitor resta com'era.
+        if stato == "in apertura prossimamente" and percorso == PERCORSO_VERIFICA:
+            return "chiuso"
+        return None
     if tipo == "annullamento_revoca":
         # §4: la revoca e' terminale; l'annullamento esiste solo con nuova prova
         # e non e' nella lista bianca delle transizioni: G9 lo fermera'.
@@ -1457,6 +1479,577 @@ def tabella_transizioni() -> tuple[dict[str, Any], ...]:
     return tuple(righe)
 
 
+# --- percorso verifica_stato (contratto `bandi-giro-2` §5.5, §5.6, §4, §19.4) --
+#
+# Il passo verifica-stato legge la pagina ufficiale con un lettore strutturato
+# (o col modello) e propone eventi: chiusura, rettifica di data_scadenza,
+# data_verificata, apertura. Non passa da `valuta()` del monitor: ha gate
+# propri, piu' severi sulla provenienza (G2v, G3v) e con una seconda prova
+# diversa, la doppia lettura strutturata ad almeno 60 ore (G7e).
+
+PERCORSO_MONITOR = "monitor"
+PERCORSO_VERIFICA = "verifica_stato"
+
+TIPI_VERIFICA: tuple[str, ...] = ("chiusura", "rettifica", "data_verificata", "apertura")
+#: I campi che `data_verificata` puo' dichiarare (mai stato, mai pubblicazione).
+CAMPI_DATA_VERIFICATA: tuple[str, ...] = ("data_apertura", "ora_apertura", "data_scadenza", "ora_scadenza")
+#: Pagine che ammettono eventi: (i) fonte ufficiale, (ii) pagina d'origine,
+#: (ii-c) candidato prioritario sullo stesso host, (iii) sorella. La (iv) mai.
+PAGINE_CON_EVENTI: tuple[str, ...] = ("i", "ii", "ii-c", "iii")
+LIVELLI_TITOLO_AMMESSI: tuple[str, ...] = ("alto", "medio")
+ORE_DOPPIA_LETTURA = 60
+#: Una chiusura e' una notizia solo se una lettura «aperto» dello stesso
+#: estrattore la precede di al massimo tanti giorni, e la data non e' piu'
+#: vecchia di tanti giorni (§5.6).
+GIORNI_NOTIZIA = 30
+GIORNI_RETROATTIVITA = 14
+#: Le letture del modello non producono mai questi tipi (§5.5).
+TIPI_MAI_DAL_MODELLO: frozenset[str] = frozenset({
+    "chiusura", "sospensione", "riapertura", "revoca", "proroga",
+})
+ESTRATTORE_GENERICO = "generico"
+METODO_MODELLO = "modello"
+G7_DOPPIA_LETTURA = "doppia_lettura_strutturata"
+G7_DOPPIO_MODELLO = "doppio_modello"
+#: G6 della chiusura nel percorso verifica (§5.5).
+PAROLE_G6_CHIUSURA_VERIFICA = re.compile(r"chius|scadut|conclus", re.I)
+#: «Data chiusura 23/6/2026» (Invitalia): nel solo percorso verifica e solo da
+#: un lettore strutturato, la chiusura vale come parola della scadenza
+#: (decisione del lead, 30/09). Il monitor resta invariato.
+PAROLE_G6_SCADENZA_ESTRATTORE = re.compile(r"chius", re.I)
+_PESI_VERIFICA: dict[str, float] = {
+    "G1": 0.15, "G2v": 0.15, "G3v": 0.10, "G5": 0.10, "G6": 0.10,
+    "G7e": 0.20, "G8": 0.05, "G9": 0.05, "G10": 0.10,
+}
+
+
+def _istante_verifica(valore: Any) -> datetime | None:
+    """Un istante ISO (anche con le frazioni a 5 cifre di PostgREST) -> aware."""
+    if isinstance(valore, datetime):
+        letto = valore
+    elif isinstance(valore, str) and valore.strip():
+        testo = re.sub(r"(\d{2}:\d{2}:\d{2})\.\d+", r"\1", valore.strip()).replace("Z", "+00:00")
+        try:
+            letto = datetime.fromisoformat(testo)
+        except ValueError:
+            return None
+    else:
+        return None
+    from datetime import timezone as _tz
+    return letto if letto.tzinfo else letto.replace(tzinfo=_tz.utc)
+
+
+@dataclass(frozen=True)
+class LetturaStato:
+    """Una lettura di stato: quella di adesso o una voce di `lettura_stato.storia` (§5.8)."""
+    at: datetime
+    estrattore: str | None
+    url: str
+    etichetta: str
+    stato: str
+    #: (ruolo, data) delle date certe lette.
+    date: tuple[tuple[str, date_cls], ...] = ()
+
+    @classmethod
+    def da(cls, voce: Any) -> "LetturaStato | None":
+        """Da una voce della storia: `{at, estrattore, url, etichetta, stato, date}`."""
+        if isinstance(voce, LetturaStato):
+            return voce
+        if not isinstance(voce, Mapping):
+            return None
+        quando = _istante_verifica(voce.get("at"))
+        if quando is None:
+            return None
+        date_lette: list[tuple[str, date_cls]] = []
+        grezze = voce.get("date") or ()
+        if isinstance(grezze, Mapping):
+            grezze = [{"ruolo": k, "data": v} for k, v in grezze.items()]
+        for d in grezze if isinstance(grezze, (list, tuple)) else ():
+            ruolo, valore = (d.get("ruolo"), d.get("data")) if isinstance(d, Mapping) else (
+                (d[0], d[1]) if isinstance(d, (list, tuple)) and len(d) >= 2 else (None, None))
+            giorno = valore if isinstance(valore, date_cls) else parse_iso(str(valore)[:10]) if valore else None
+            if ruolo and giorno is not None:
+                date_lette.append((str(ruolo), giorno))
+        return cls(quando, voce.get("estrattore") or None, str(voce.get("url") or ""),
+                   str(voce.get("etichetta") or ""), str(voce.get("stato") or ""), tuple(date_lette))
+
+    def come_voce(self) -> dict[str, Any]:
+        """La voce da scrivere in `lettura_stato.storia` (la forma che `da` rilegge)."""
+        return {"at": self.at.isoformat(), "estrattore": self.estrattore, "url": self.url,
+                "etichetta": self.etichetta, "stato": self.stato,
+                "date": [{"ruolo": r, "data": d.isoformat()} for r, d in self.date]}
+
+
+@dataclass(frozen=True)
+class Proposta:
+    """Un evento proposto dal passo verifica-stato, prima dei gate."""
+    tipo: str
+    ramo: str                                  # 'I' («in apertura») | 'A' («aperto» senza scadenza)
+    citazione: str
+    url_prova: str
+    metodo: str                                # 'estrattore:<chiave>' | 'modello'
+    campo: str | None = None
+    valore_dopo: Mapping[str, Any] = field(default_factory=dict)
+    data_evento: date_cls | None = None
+    etichetta: str = ""
+    in_aggiornamenti: bool = False
+
+    @property
+    def estrattore(self) -> str | None:
+        return self.metodo.split(":", 1)[1] if self.metodo.startswith("estrattore:") else None
+
+    @property
+    def da_modello(self) -> bool:
+        return self.metodo == METODO_MODELLO
+
+    @property
+    def data(self) -> date_cls | None:
+        """La data che la proposta dichiara (nuova scadenza o data verificata)."""
+        if self.campo in ("data_apertura", "data_scadenza"):
+            valore = self.valore_dopo.get(self.campo)
+            return valore if isinstance(valore, date_cls) else parse_iso(str(valore)) if valore else None
+        return self.data_evento
+
+
+@dataclass(frozen=True)
+class ContestoVerifica:
+    """Quello che i gate del percorso verifica devono sapere. Nessun accesso esterno."""
+    bando_id: int | None = None
+    #: Lo stato di `bando` riletto dal DB subito prima (G9).
+    stato: str | None = None
+    data_apertura: date_cls | None = None
+    data_scadenza: date_cls | None = None
+    data_pubblicazione: date_cls | None = None
+    apertura_verificata: bool = False
+    scadenza_verificata: bool = False
+    #: 'i' | 'ii' | 'ii-c' | 'iii' | 'iv' | 'illeggibile' (§5.3, §19.4).
+    pagina_tipo: str = "illeggibile"
+    url_finale: str = ""
+    #: Il testo visibile della pagina letta (`scarico.testo_da_html`).
+    testo_pagina: str = ""
+    #: 'alto' | 'medio' | 'basso' dalla somiglianza del titolo (G3v), calcolata dal passo.
+    livello_titolo: str | None = None
+    lettura: LetturaStato | None = None
+    storia: tuple[LetturaStato, ...] = ()
+    eventi_recenti: tuple[Mapping[str, Any], ...] = ()
+    seconda_opinione: Any = None
+    prove: tuple[Prova, ...] = ()
+    tabella_domini: Any = None
+    adesso: datetime | None = None
+    #: Le altre proposte dello stesso bando in questo giro (G5-dv).
+    proposte_insieme: tuple["Proposta", ...] = ()
+
+    @property
+    def giorno(self) -> date_cls:
+        if self.adesso is None:
+            return oggi_roma()
+        from .stato_bando import adesso_roma
+        return adesso_roma(self.adesso).date()
+
+
+def _evento_equivalente(proposta: Proposta) -> Evento:
+    """L'`Evento` del monitor con la stessa semantica, per riusare G5, G7 e G8."""
+    if proposta.tipo in ("rettifica", "data_verificata") and proposta.campo in ("data_apertura", "data_scadenza"):
+        data = proposta.data
+        return Evento("rettifica", proposta.citazione, proposta.url_prova, campo=proposta.campo,
+                      valore=data.isoformat() if data else None)
+    if proposta.tipo == "chiusura":
+        return Evento("chiusura", proposta.citazione, proposta.url_prova)
+    return Evento(proposta.tipo, proposta.citazione, proposta.url_prova, campo=proposta.campo)
+
+
+def _contesto_monitor(ctx: ContestoVerifica) -> Contesto:
+    return Contesto(
+        bando_id=ctx.bando_id, stato_bando=ctx.stato, data_apertura=ctx.data_apertura,
+        data_scadenza=ctx.data_scadenza, data_pubblicazione=ctx.data_pubblicazione,
+        pagine=(Pagina(ctx.url_finale, ctx.testo_pagina),), eventi_recenti=ctx.eventi_recenti,
+        prove=ctx.prove, seconda_opinione=ctx.seconda_opinione,
+        tabella_domini=ctx.tabella_domini, oggi=ctx.giorno,
+    )
+
+
+def gv1_citazione(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G1: la citazione sta nel testo della pagina letta."""
+    if not norm_cit(proposta.citazione):
+        return False, "citazione vuota"
+    if citazione_in(proposta.citazione, ctx.testo_pagina):
+        return True, ""
+    return False, "citazione non presente nella pagina letta"
+
+
+def gv2_pagina(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G2v: pagina (i), (ii), (ii-c) o (iii), su un dominio verificabile e non aggregatore."""
+    if ctx.pagina_tipo not in PAGINE_CON_EVENTI:
+        return False, f"pagina di tipo {ctx.pagina_tipo!r}: non ammette eventi"
+    tabella = ctx.tabella_domini if ctx.tabella_domini is not None else TABELLA_SEED
+    host = dominio_di(ctx.url_finale)
+    if not host or e_aggregatore(host, tabella):
+        return False, f"host {host!r} aggregatore o illeggibile"
+    if not verificabile(host, tabella):
+        return False, f"host {host!r} non verificabile"
+    return True, ""
+
+
+def gv3_titolo(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G3v: il titolo della pagina somiglia al bando almeno al livello «medio»."""
+    if ctx.livello_titolo in LIVELLI_TITOLO_AMMESSI:
+        return True, ""
+    return False, f"titolo {ctx.livello_titolo or 'non misurato'}: serve almeno medio"
+
+
+def gv5_direzione(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G5: direzione con la logica del monitor, piu' le regole di `data_verificata`."""
+    if proposta.tipo not in TIPI_VERIFICA:
+        return False, f"tipo {proposta.tipo!r} non previsto dal percorso verifica"
+    oggi = ctx.giorno
+    if proposta.tipo == "data_verificata":
+        if proposta.campo not in CAMPI_DATA_VERIFICATA:
+            return False, f"data_verificata su un campo non ammesso: {proposta.campo!r}"
+        gia = (ctx.apertura_verificata if proposta.campo in ("data_apertura", "ora_apertura")
+               else ctx.scadenza_verificata)
+        if gia:
+            return False, f"{proposta.campo} gia' verificata: non si sovrascrive"
+        # G5-dv: un'apertura passata vale solo insieme a una scadenza verificata.
+        if (proposta.campo == "data_apertura" and proposta.data is not None and proposta.data < oggi
+                and not ctx.scadenza_verificata
+                and not any(p.tipo == "data_verificata" and p.campo == "data_scadenza"
+                            for p in ctx.proposte_insieme)):
+            return False, "apertura passata senza una scadenza verificata"
+    if proposta.tipo == "chiusura" and proposta.data_evento is not None and proposta.data_evento > oggi:
+        return False, f"chiusura datata nel futuro ({proposta.data_evento} > {oggi})"
+    if proposta.tipo == "rettifica" and proposta.campo in ("data_apertura", "data_scadenza"):
+        return g5_direzione(_evento_equivalente(proposta), _contesto_monitor(ctx))
+    if proposta.tipo == "data_verificata" and proposta.campo in ("data_apertura", "data_scadenza"):
+        # Una data verificata non e' un differimento: niente regole di
+        # direzione del monitor, solo la coerenza delle date risultanti.
+        apertura, scadenza = _date_risultanti(_evento_equivalente(proposta), _contesto_monitor(ctx))
+        altre = {p.campo: p.data for p in ctx.proposte_insieme if p.tipo == "data_verificata"}
+        apertura = altre.get("data_apertura") or apertura
+        scadenza = altre.get("data_scadenza") or scadenza
+        if not check_dates_coherence(ctx.data_pubblicazione, apertura, scadenza):
+            return False, "le date risultanti violano pubblicazione <= apertura <= scadenza"
+    return True, ""
+
+
+def gv6_parola(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G6: la parola che il tipo richiede, nella citazione."""
+    citazione = norm_cit(proposta.citazione)
+    if proposta.tipo == "chiusura":
+        modello = PAROLE_G6_CHIUSURA_VERIFICA
+    elif proposta.tipo == "apertura":
+        modello = PAROLE_G6["apertura"]
+    elif proposta.campo in ("data_apertura", "ora_apertura"):
+        modello = PAROLE_G6["rettifica:data_apertura"]
+    else:
+        modello = PAROLE_G6["rettifica:data_scadenza"]
+        if proposta.estrattore and PAROLE_G6_SCADENZA_ESTRATTORE.search(citazione):
+            return True, ""
+    if modello.search(citazione):
+        return True, ""
+    return False, f"citazione senza parola chiave per {proposta.tipo}:{proposta.campo or ''}"
+
+
+def _stessa_etichetta(a: str, b: str) -> bool:
+    return norm_cit(a) == norm_cit(b)
+
+
+def gv7_seconda_prova(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G7e: doppia lettura strutturata; per il modello, G7 doppio invariato."""
+    if proposta.da_modello:
+        if proposta.tipo in TIPI_MAI_DAL_MODELLO:
+            return False, f"il modello non produce mai {proposta.tipo}"
+        return g7_seconda_prova(_evento_equivalente(proposta), _contesto_monitor(ctx), doppia=True)
+    estrattore = proposta.estrattore
+    if not estrattore:
+        return False, f"metodo sconosciuto: {proposta.metodo!r}"
+    if estrattore == ESTRATTORE_GENERICO:
+        return False, "il lettore generico non produce eventi"
+    attuale = ctx.lettura
+    if attuale is None or attuale.estrattore != estrattore:
+        return False, "manca la lettura attuale dello stesso estrattore"
+    url_attuale = impronte.normalizza_url(attuale.url)
+    data = proposta.data if proposta.campo in ("data_apertura", "data_scadenza") else None
+    stesso_estrattore = [l for l in ctx.storia if l.estrattore == estrattore and l.at < attuale.at]
+    precedenti = sorted((l for l in stesso_estrattore if impronte.normalizza_url(l.url) == url_attuale),
+                        key=lambda l: l.at, reverse=True)
+    if not precedenti:
+        if stesso_estrattore:
+            return False, "nessuna lettura precedente concorde (url diverso)"
+        return False, "una sola lettura strutturata: serve la seconda"
+    # Si risale dall'ULTIMA lettura (revisione del #74): la prima discordante
+    # interrompe la catena. Con Chiuso, Aperto, Chiuso la chiusura non passa
+    # finche' due letture concordi di fila non distano almeno 60 ore.
+    for precedente in precedenti:
+        if not _stessa_etichetta(precedente.etichetta, attuale.etichetta):
+            return False, "nessuna lettura precedente concorde (etichetta diversa)"
+        if data is not None and data not in {d for _, d in precedente.date}:
+            return False, "nessuna lettura precedente concorde (data diversa)"
+        if attuale.at - precedente.at >= timedelta(hours=ORE_DOPPIA_LETTURA):
+            return True, ""
+    return False, f"nessuna lettura precedente concorde (letture a meno di {ORE_DOPPIA_LETTURA} h)"
+
+
+def gv8_dedup(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G8: nessun evento uguale (stesso TIPO vero, campo e valore) negli ultimi 30 giorni.
+
+    Col tipo vero, non con quello equivalente: una `data_verificata` gia'
+    registrata non e' una `rettifica`, e il confronto per tipo la mancherebbe.
+    """
+    equivalente = _evento_equivalente(proposta)
+    evento = Evento(proposta.tipo, proposta.citazione, proposta.url_prova,
+                    campo=equivalente.campo, valore=equivalente.valore)
+    # La finestra si misura su quando l'evento e' stato registrato, non sulla
+    # sua data_evento (decisione del lead, nota di #76).
+    return g8_dedup(evento, _contesto_monitor(ctx), giorno_di=_giorno_registrato)
+
+
+def gv9_transizione(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G9: la transizione e' nella lista bianca, dallo stato riletto dal DB."""
+    nuovo = transizione_evento(ctx.stato, _evento_equivalente(proposta), percorso=PERCORSO_VERIFICA)
+    if nuovo is None or nuovo == ctx.stato:
+        return True, ""
+    if transizione_ammessa(ctx.stato, nuovo, "worker"):
+        return True, ""
+    return False, f"transizione {ctx.stato!r} -> {nuovo!r} non prevista dalla lista bianca"
+
+
+def gv10_presunta(proposta: Proposta, ctx: ContestoVerifica) -> tuple[bool, str]:
+    """G10: nessuna data presunta."""
+    from .date_validation import e_presunta
+    if e_presunta(proposta.citazione):
+        return False, "data presunta nella citazione"
+    return True, ""
+
+
+def valuta_verifica(proposta: Proposta, ctx: ContestoVerifica) -> Giudizio:
+    """I gate del percorso verifica_stato (§5.5). Non scrive niente.
+
+    Una proposta e' ammessa solo se passa TUTTI i gate. `gate` del giudizio
+    vale «G2v»; il formato da registrare in `p_gate` lo da' `gate_verifica`.
+    """
+    controlli: list[tuple[str, Callable[[], tuple[bool, str]]]] = [
+        ("G1", lambda: gv1_citazione(proposta, ctx)),
+        ("G2v", lambda: gv2_pagina(proposta, ctx)),
+        ("G3v", lambda: gv3_titolo(proposta, ctx)),
+        ("G5", lambda: gv5_direzione(proposta, ctx)),
+        ("G6", lambda: gv6_parola(proposta, ctx)),
+        ("G7e", lambda: gv7_seconda_prova(proposta, ctx)),
+        ("G8", lambda: gv8_dedup(proposta, ctx)),
+        ("G9", lambda: gv9_transizione(proposta, ctx)),
+        ("G10", lambda: gv10_presunta(proposta, ctx)),
+    ]
+    superati: list[str] = []
+    falliti: list[tuple[str, str]] = []
+    for nome, prova in controlli:
+        ok, motivo = prova()
+        if ok:
+            superati.append(nome)
+        else:
+            falliti.append((nome, motivo))
+    ammesso = not falliti
+    nuovo = (transizione_evento(ctx.stato, _evento_equivalente(proposta), percorso=PERCORSO_VERIFICA)
+             if ammesso else None)
+    return Giudizio(
+        ammesso=ammesso, gate="G2v", superati=tuple(superati), falliti=tuple(falliti),
+        confidenza=round(min(1.0, sum(_PESI_VERIFICA.get(n, 0.0) for n in superati)), 4),
+        leggibile=ammesso, nuovo_stato=nuovo if nuovo != ctx.stato else None,
+    )
+
+
+def gate_verifica(giudizio: Giudizio, proposta: Proposta) -> dict[str, Any]:
+    """L'esito dei gate nel formato di `p_gate` (§5.5)."""
+    return {
+        "percorso": PERCORSO_VERIFICA,
+        "superati": list(giudizio.superati),
+        "falliti": [{"gate": g, "motivo": m} for g, m in giudizio.falliti],
+        "g7": G7_DOPPIO_MODELLO if proposta.da_modello else G7_DOPPIA_LETTURA,
+    }
+
+
+# --- proposte (§5.6) -----------------------------------------------------------
+
+_FINE_FRASE_VERIFICA_RE = re.compile(r"(?<=[.;!?])\s+(?=[A-ZÀ-ÖØ-Þ«\"“(])|\n+")
+
+
+_CONTESTO_CITAZIONE = 200
+
+
+def _citazione_della_data(testo: str, data: date_cls) -> str:
+    """Il pezzo di frase che finisce con `data`, per il G1 (o "").
+
+    Al massimo 200 caratteri prima della data, da un inizio di parola: una
+    frase di pagina puo' essere lunghissima, e tagliarla da capo lascerebbe
+    fuori proprio la data. Vince la citazione piu' corta; e' sempre una
+    sottostringa del testo.
+    """
+    migliore = ""
+    for frase in _FINE_FRASE_VERIFICA_RE.split(testo or ""):
+        frase = frase.strip()
+        for trovata in estrai_date_con_ruolo(frase):
+            if trovata.data != data:
+                continue
+            inizio = max(0, trovata.inizio - _CONTESTO_CITAZIONE)
+            if inizio > 0:
+                spazio = frase.find(" ", inizio)
+                inizio = spazio + 1 if 0 <= spazio < trovata.inizio else inizio
+            pezzo = frase[inizio:trovata.fine].strip()
+            if pezzo and (not migliore or len(pezzo) < len(migliore)):
+                migliore = pezzo
+    return migliore
+
+
+def _e_notizia(ctx: ContestoVerifica, estrattore: str | None, data: date_cls | None) -> bool:
+    """`in_aggiornamenti`: vero solo per una notizia nuova (§5.6).
+
+    Servono entrambe: una lettura strutturata «aperto» (o «in apertura») dello
+    stesso estrattore al massimo 30 giorni prima della PRIMA lettura di
+    chiusura, e una data (se c'e') non piu' vecchia di 14 giorni. Il resto e'
+    una correzione: leggibile per lo stato, fuori dal box Aggiornamenti.
+    """
+    oggi = ctx.giorno
+    if data is not None and data < oggi - timedelta(days=GIORNI_RETROATTIVITA):
+        return False
+    tutte = [*ctx.storia, ctx.lettura] if ctx.lettura is not None else list(ctx.storia)
+    letture = sorted((l for l in tutte if l.estrattore == estrattore), key=lambda l: l.at)
+    if not letture or letture[-1].stato != "chiuso":
+        return False
+    prima_chiusura = letture[-1]
+    for lettura in reversed(letture[:-1]):
+        if lettura.stato != "chiuso":
+            break
+        prima_chiusura = lettura
+    for lettura in letture:
+        if (lettura.stato in ("aperto", "in_apertura")
+                and lettura.at < prima_chiusura.at
+                and prima_chiusura.at - lettura.at <= timedelta(days=GIORNI_NOTIZIA)):
+            return True
+    return False
+
+
+def _valore_data(campo: str, data: date_cls, ora: Any) -> dict[str, Any]:
+    valore: dict[str, Any] = {campo: data.isoformat()}
+    if ora is not None:
+        valore["ora_" + campo.split("_", 1)[1]] = ora.strftime("%H:%M") if hasattr(ora, "strftime") else str(ora)
+    return valore
+
+
+def proposte_verifica(ramo: str, lettura: Any, ctx: ContestoVerifica) -> list[Proposta]:
+    """Le proposte di §5.6 da una `etichette_stato.Lettura` (letta per attributi).
+
+    Ramo I («in apertura»): (a) date certe → `data_verificata`; (b) «aperto»
+    con una scadenza futura certa → `data_verificata` della scadenza e poi
+    `apertura`; (c) etichetta che puo' chiudere, senza termine futuro e senza
+    una scadenza da verificare → `chiusura` (riga 24). Ramo A («aperto» senza
+    scadenza): (e) etichetta che puo' chiudere senza termine futuro →
+    `chiusura` con la data letta se <= oggi; altrimenti (d) un termine certo →
+    `rettifica` di data_scadenza. Il generico, le letture solo segnale senza
+    date, «uscito» e «non decisiva» non propongono niente.
+    """
+    if lettura is None or getattr(lettura, "estrattore", None) in (None, ESTRATTORE_GENERICO):
+        return []
+    oggi = ctx.giorno
+    metodo = f"estrattore:{lettura.estrattore}"
+    stato = getattr(lettura, "stato", "")
+    etichetta = getattr(lettura, "etichetta", "") or ""
+    citazione_stato = getattr(lettura, "citazione_stato", "") or etichetta
+    termine = getattr(lettura, "termine_finale", None)
+    comune = {"url_prova": ctx.url_finale, "metodo": metodo, "etichetta": etichetta, "ramo": ramo}
+
+    def citazione_di(data: date_cls, citazione: str) -> str:
+        return citazione if citazione_in(citazione, ctx.testo_pagina) else _citazione_della_data(ctx.testo_pagina, data)
+
+    # Le date certe della lettura: il termine finale come scadenza, le altre dal ruolo.
+    certe: dict[str, tuple[date_cls, Any, str]] = {}
+    if termine is not None:
+        certe["data_scadenza"] = (termine.data, termine.ora, citazione_di(termine.data, termine.citazione))
+    for voce in getattr(lettura, "date", ()) or ():
+        if getattr(voce, "presunta", False):
+            continue
+        campo = {"scadenza": "data_scadenza", "apertura": "data_apertura"}.get(getattr(voce, "ruolo", ""))
+        if campo and campo not in certe:
+            certe[campo] = (voce.data, voce.ora, citazione_di(voce.data, voce.citazione))
+    scadenza = certe.get("data_scadenza")
+    termine_futuro = scadenza is not None and scadenza[0] >= oggi
+    puo_chiudere = bool(getattr(lettura, "puo_chiudere", False))
+    proposte: list[Proposta] = []
+
+    if ramo == "I":
+        for campo in ("data_scadenza", "data_apertura"):
+            if campo not in certe:
+                continue
+            gia = ctx.scadenza_verificata if campo == "data_scadenza" else ctx.apertura_verificata
+            if gia:
+                continue
+            data, ora, citazione = certe[campo]
+            proposte.append(Proposta("data_verificata", campo=campo, valore_dopo=_valore_data(campo, data, ora),
+                                     citazione=citazione, in_aggiornamenti=False, **comune))
+        if stato == "aperto" and termine_futuro:
+            proposte.append(Proposta("apertura", citazione=citazione_stato, in_aggiornamenti=True,
+                                     valore_dopo={"stato_bando": "aperto"}, **comune))
+        elif (stato == "chiuso" and puo_chiudere and not termine_futuro
+              and not any(p.campo == "data_scadenza" for p in proposte)):
+            data = termine.data if termine is not None and termine.data <= oggi else None
+            proposte.append(Proposta("chiusura", citazione=citazione_stato, data_evento=data,
+                                     valore_dopo={"stato_bando": "chiuso"},
+                                     in_aggiornamenti=_e_notizia(ctx, lettura.estrattore, data), **comune))
+        return proposte
+
+    if ramo == "A":
+        if stato == "chiuso" and puo_chiudere and not termine_futuro:
+            data = termine.data if termine is not None and termine.data <= oggi else None
+            return [Proposta("chiusura", citazione=citazione_stato, data_evento=data,
+                             valore_dopo={"stato_bando": "chiuso"},
+                             in_aggiornamenti=_e_notizia(ctx, lettura.estrattore, data), **comune)]
+        if scadenza is not None:
+            data, ora, citazione = scadenza
+            return [Proposta("rettifica", campo="data_scadenza", valore_dopo=_valore_data("data_scadenza", data, ora),
+                             citazione=citazione, in_aggiornamenti=_e_notizia(ctx, lettura.estrattore, data),
+                             **comune)]
+    return []
+
+
+def riga_verifica(
+    proposta: Proposta, ctx: ContestoVerifica, giudizio: Giudizio, *, modalita: str = MODALITA_OMBRA,
+) -> dict[str, Any]:
+    """La riga di `bando_evento` per una proposta del percorso verifica.
+
+    Stessa forma di `riga_evento`: `registra_via_rpc` la accetta cosi'. In
+    ombra nessun evento e' leggibile; `applicato` resta falso, perche' l'evento
+    si applica dopo, con `bando_applica_evento` (§5.6).
+    """
+    attivo = modalita == MODALITA_ATTIVO
+    leggibile = giudizio.ammesso and attivo
+    valore_prima: dict[str, Any] = {}
+    if proposta.campo in ("data_apertura", "ora_apertura"):
+        valore_prima["data_apertura"] = ctx.data_apertura.isoformat() if ctx.data_apertura else None
+    elif proposta.campo in ("data_scadenza", "ora_scadenza"):
+        valore_prima["data_scadenza"] = ctx.data_scadenza.isoformat() if ctx.data_scadenza else None
+    if proposta.tipo in ("chiusura", "apertura"):
+        valore_prima["stato_bando"] = ctx.stato
+    if proposta.tipo == "chiusura":
+        data_evento = proposta.data_evento.isoformat() if proposta.data_evento else None
+    else:
+        data_evento = (proposta.data_evento or ctx.giorno).isoformat()
+    return {
+        "bando_id": ctx.bando_id,
+        "tipo": proposta.tipo,
+        "origine": "worker",
+        "campo": proposta.campo,
+        "valore_prima": valore_prima,
+        "valore_dopo": dict(proposta.valore_dopo),
+        "data_evento": data_evento,
+        "citazione": proposta.citazione[:300],
+        "url_prova": proposta.url_prova,
+        "verificato": giudizio.ammesso,
+        "leggibile": leggibile,
+        "in_aggiornamenti": leggibile and proposta.in_aggiornamenti,
+        "applicato": False,
+        "confidenza": int(round(max(0.0, min(1.0, giudizio.confidenza)) * 100)),
+        "gate": gate_verifica(giudizio, proposta),
+        "metodo": proposta.metodo,
+    }
+
+
 __all__ = [
     "Allineamento", "Applicazione", "CAMPI_RETTIFICA", "Contesto", "Evento",
     "FINESTRA_DEDUP_GIORNI", "Giudizio", "ISTRUZIONI_CLASSIFICATORE",
@@ -1473,4 +2066,8 @@ __all__ = [
     "prompt_utente", "riga_evento", "sorgente_candidatura",
     "stato_solo_proposto", "tabella_transizioni", "transizione_evento",
     "usa_g2_primo", "valuta",
+    # percorso verifica_stato
+    "CAMPI_DATA_VERIFICATA", "ContestoVerifica", "LetturaStato", "ORE_DOPPIA_LETTURA",
+    "PAGINE_CON_EVENTI", "PERCORSO_MONITOR", "PERCORSO_VERIFICA", "Proposta", "TIPI_VERIFICA",
+    "gate_verifica", "proposte_verifica", "riga_verifica", "valuta_verifica",
 ]

@@ -348,7 +348,15 @@ class MisureSalute(unittest.TestCase):
         client = self._Client({"pipeline_lock": [{"nome": "pipeline"}]})
         misure = db.misure_salute(adesso=ADESSO, client=client, strumento=self._Strumento())
         self.assertEqual(set(misure), {"monitor", "pipeline", "mese", "nuovi", "vivi", "falliti",
-                                       "lock", "scraped_fermi"})
+                                       "lock", "scraped_fermi", "ultime_pipeline",
+                                       "ultimi_monitor", "fermi_in_lavorazione",
+                                       "ultimo_bando_nuovo_at", "proposte_7g",
+                                       "ammessi_non_applicati", "in_attesa_pubblicazione",
+                                       "arretrato_in_lavorazione", "vista_ms",
+                                       "vista_ms_ruolo", "ultimi_import_indicepa",
+                                       "da_verificare", "letture_scadute", "verifica_7g",
+                                       "ultime_verifiche", "ultimi_ingressi",
+                                       "aperti_senza_scadenza"})
         # I bandi fermi in `scraped`: una lettura su `bando` filtrata per stato.
         letture_bando = [c for tabella, c in client.registro if tabella == "bando"]
         self.assertTrue(any(("eq", ("stato_processing", "scraped"), {}) in c for c in letture_bando))

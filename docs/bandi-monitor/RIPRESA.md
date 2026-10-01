@@ -10,7 +10,11 @@ giro «ripresa bandi, ottobre 2026»:
 - il 30/09: il committente ha eseguito le correzioni del 28-29/09 e riavviato il sender alle 12:33
   (giro di avvio finito bene). **Sul server gira il rilascio 2**: lo conferma il monitor delle 18
   (56 righe con `__link__`). Il giro di ottobre ha preparato codice, misure e file SQL, **ma il suo
-  deploy non è ancora fatto** (§1, «Giro di ottobre»).
+  deploy non è ancora fatto** (§1, «Giro di ottobre»);
+- il 30/09 sera e notte: il **giro 2** (branch `claude/bandi-giro-2`) ha preparato la sorveglianza
+  (percorso B) e lo stato da verificare (percorso A): codice, migrazioni **12 e 13 scritte e mai
+  eseguite**, provate sulla catena vera su Postgres 17, e il messaggio per il pannello di BandoFit.
+  **Deploy da fare**: i passi sono in §1, nelle due sottosezioni «Giro 2».
 
 Il controllo sul DB (query di §3.2 e numeri qui sotto) è del 30/09 alle 13:29, più il monitor delle
 18 misurato alle 18:30, in `misure-2026-09-30.md`. Il sito pubblico non è stato riletto dopo il
@@ -106,6 +110,183 @@ scheda (commit `4c48e1a..5203602`); la lettura passa dalla vista `bando_pubblico
 API v1.1). Per i bandi chiusi, sospesi e revocati la scheda non mostra la CTA ma un messaggio.
 Le verifiche visive le ha fatte il committente.
 
+### Giro 2 dei bandi: sorveglianza e stato da verificare (passi una tantum)
+
+Branch `claude/bandi-giro-2`, contratto interno `docs/contracts/bandi-giro-2.md`. Due percorsi, un solo
+deploy.
+
+**Sorveglianza (percorso B).** **Niente notifiche** (confermato il 30/09): al loro posto `sorveglia`
+scrive ogni 15 minuti un riepilogo di salute che il pannello di BandoFit legge con una chiave
+(contratto DB §14). Cosa c'è di nuovo:
+- `python -m app sorveglia` e il timer `edunews-bandi-sorveglianza` (unit di esempio in
+  `scraper_bandi/deploy/`);
+- `salute` con i **codici stabili**, gli stessi del pannello (§3.1);
+- il sender esce con 1 su un errore fatale e systemd lo riavvia dopo 20 minuti (drop-in
+  `edunews-bandi-sender-riavvio.conf`); se il processo precedente è morto a metà giro, il giro di boot
+  non si rifà: resta una riga `riavvio_dopo_crash` in `pipeline_run`.
+
+**Stato da verificare (percorso A).** Cosa c'è di nuovo:
+- la vista dice **perché lo stato di un bando non è certo** (`stato_da_verificare`, migrazione 13,
+  contratto DB §4.1); il sito mostra «Aperto · da verificare» e «In apertura · da verificare». Il
+  bando resta fra gli aperti: nessuna chiusura a tempo;
+- il passo `verifica_stato` rilegge la pagina ufficiale (alle 06 e alle 18) e, in attivo, registra
+  chiusure, rettifiche e date verificate con la doppia lettura a 60 ore;
+- all'ingresso il preprocess legge la pagina a 8 000 caratteri, con ore, finestra, lettore per ente
+  ed etichetta dell'aggregatore; un «aperto» senza scadenza né prova sosta al massimo 4 giri;
+- ogni mese l'import completo di IndicePA; ogni mattina al massimo 10 fusioni dei doppioni certi fra
+  pubblicati (una riga nuova gemella di un pubblicato si fonde invece a ogni giro, senza tetto).
+
+**Cosa cambia in pubblico subito dal deploy** (con `VERIFICA_STATO_MODALITA` assente, cioè in ombra):
+- il motivo `data_apertura_passata`: «In apertura · da verificare» sui bandi con la data di apertura
+  passata e non verificata (3 il 30/09). È l'unico motivo possibile in ombra;
+- sui bandi nuovi, il preprocess a 8 000 caratteri: ore di apertura e scadenza, scadenza dalla
+  finestra di presentazione, dal lettore per ente o dall'etichetta dell'aggregatore, date presunte
+  respinte. Date e stati dei bandi nuovi possono quindi differire da come sarebbero stati prima.
+
+**Cosa cambia solo in attivo** (`VERIFICA_STATO_MODALITA=attivo`, passo 9): lo stato letto sulla
+pagina ufficiale, gli altri motivi (`smentito_dalla_fonte`, `previsione_scaduta`, `termine_passato`,
+`senza_conferma`), il sottotesto del termine indicato con la sua fonte («Il calendario ufficiale
+indica come termine…»), gli eventi del passo (chiusure, rettifiche, date verificate), le fusioni
+automatiche, la scrittura dell'import di IndicePA e la sosta all'ingresso (in ombra conta e basta).
+Il passo scrive `termine_indicato` anche in ombra, ma la vista lo espone solo per i bandi già
+esaminati in attivo (`esaminato_attivo_at`): compare man mano che il controllo attivo li rilegge.
+
+I passi, **una volta sola e in quest'ordine**:
+1. **Migrazione 12** (`backend/sql/bando_v11_12_monitoraggio.sql`), dopo la 11, nel SQL Editor. Il
+   blocco di verifica in fondo deve passare senza eccezioni.
+2. **La chiave del pannello.** Si genera sul server dove gira il backend del pannello, nel suo file
+   protetto, e **non si stampa mai**: nel terminale esce solo l'impronta. `<file protetto>` e `NOME`
+   sono il file e la variabile che il pannello legge; se la riga c'è già (rotazione), viene
+   sostituita, mai duplicata. La riga è `NOME=<valore>`: **senza `export` e senza spazi attorno a
+   `=`**, altrimenti il file d'ambiente non la legge. Da lanciare come l'utente che possiede il
+   file: `cat >` lo riscrive tenendo proprietario e permessi. Il file temporaneo contiene la chiave:
+   si cancella con `shred -u` (se manca, `rm -f`).
+
+   ```bash
+   umask 077
+   F='<file protetto>'
+   CHIAVE=$(openssl rand -hex 32)
+   { grep -v '^NOME=' "$F" 2>/dev/null
+     printf 'NOME=%s\n' "$CHIAVE"
+   } > "$F.nuovo" && cat "$F.nuovo" > "$F"
+   shred -u "$F.nuovo" 2>/dev/null \
+     || rm -f "$F.nuovo"
+   printf %s "$CHIAVE" \
+     | sha256sum | cut -c1-64
+   unset CHIAVE
+   ```
+
+   Poi, nel SQL Editor, con i 64 caratteri esadecimali dell'impronta:
+
+   ```sql
+   INSERT INTO
+     public.monitoraggio_chiave
+     (nome, impronta)
+   VALUES ('pannello', decode(
+     '<impronta>', 'hex'));
+   ```
+
+   **Rotazione**: una riga nuova con un altro `nome` e la variabile del pannello sostituita come
+   sopra; quando il pannello usa la nuova, si chiude la vecchia:
+
+   ```sql
+   UPDATE public.monitoraggio_chiave
+      SET valida_fino = now()
+    WHERE nome = '<vecchia>';
+   ```
+3. **Migrazione 13** (`backend/sql/bando_v11_13_stato_da_verificare.sql`), dopo la 12 e **prima**
+   del deploy: SQL Editor, l'intero file. In fondo deve comparire
+   `migrazione 13: verifica superata`. La 07 resta non applicata (ora richiede la 13).
+   **Dopo la 13 non rieseguire la 02**: il suo `REVOKE ALL` su `bando_controllo` toglie i 9 grant
+   di colonna e la vista risponde 42501 a ogni select che nomina una colonna della 13 (il sito le
+   chiede, quindi scheda e liste si fermano). Se è successo, rieseguire la 13, che li rimette.
+   **Perché prima del restart**: `db.controllo` legge lo schema una volta per processo (§5,
+   trappola 5). Se il sender riparte prima della 13, il passo resta `saltato` per
+   `migrazione_assente` fino al riavvio successivo, e lo dice solo la riga `verifica_stato` di
+   `pipeline_run` (passo 5). **Se il sito va online prima della 13**, lista, scheda e corpus rispondono 42703
+   (chiedono colonne che la vista non ha ancora). Due vie d'uscita: applicare subito la 13, oppure,
+   nell'unit del frontend, `BANDI_FONTE_LETTURA=bando` e un riavvio del frontend (il sito legge la
+   tabella e non chiede le colonne nuove); dopo la 13 si rimette `bando_pubblico` e si riavvia.
+4. **Deploy unico**, in una finestra sicura (12:30-16:30 o 19:00-22:30), sul server:
+
+   ```bash
+   cd ~/projects/news1 && git pull
+   cd scraper_bandi/deploy
+   # <UTENTE> e percorsi: controllarli nei file
+   sudo cp edunews-bandi-sorveglianza.service \
+     edunews-bandi-sorveglianza.timer \
+     /etc/systemd/system/
+   sudo mkdir -p \
+     /etc/systemd/system/edunews-bandi-sender.service.d
+   sudo cp edunews-bandi-sender-riavvio.conf \
+     /etc/systemd/system/edunews-bandi-sender.service.d/riavvio.conf
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now \
+     edunews-bandi-sorveglianza.timer
+   cd ~/projects/news1 && npm run build
+   sudo systemctl restart <unit del frontend>
+   sudo systemctl restart edunews-bandi-sender
+   ```
+
+   **Un solo** restart del sender, poi l'attesa di «Pipeline iniziale completata» nel journal (§5,
+   trappola 6). `VERIFICA_STATO_MODALITA` non si scrive: resta in ombra.
+5. **Verifiche**, subito dopo:
+   - `sorveglia --dry-run` (§3.1, «Come si legge») deve uscire con 0 e stampare `stato`;
+   - `systemctl list-timers edunews-bandi-sorveglianza.timer` mostra il prossimo giro ai minuti 05,
+     20, 35 o 50;
+   - dopo il primo giro del timer, `journalctl -u edunews-bandi-sorveglianza --since -1h` dice
+     «riepilogo scritto»;
+   - `systemctl show edunews-bandi-sender -p Restart,RestartUSec,StartLimitIntervalUSec` dice
+     `on-failure`, `20min`, `0`;
+   - **la 13 è vista**: dopo il primo giro delle 06 o delle 18, la prima riga `verifica_stato` di
+     `pipeline_run` non ha `migrazione_assente`. Nel SQL Editor:
+
+     ```sql
+     SELECT avviato_at, esito,
+            contatori->>'motivo_saltato'
+              AS motivo_saltato
+       FROM pipeline_run
+      WHERE step = 'verifica_stato'
+      ORDER BY avviato_at DESC
+      LIMIT 1;
+     ```
+
+     Atteso: `motivo_saltato` NULL. Con `migrazione_assente` il sender è ripartito prima della 13:
+     un altro restart. In ombra, finché la verifica non è attiva, `salute` dà l'avviso «non
+     misurato da salute: … stato da verificare (verifica non attiva o migrazione 13 assente)», e
+     nel riepilogo (`sorveglia --dry-run`) `da_verificare` è null e compare in `non_misurati`: è
+     normale anche con la 13 applicata, e non dice niente sulla 13.
+
+   **Avvisi attesi subito dopo il deploy**, che si spengono da soli: `verifica_stato_ferma` fino al
+   primo giro delle 06 o delle 18 (nessun passo dei controlli ancora registrato) e
+   `indicepa_non_aggiornato` fino al primo giro delle 06 (nessun import ancora registrato).
+6. **7 giorni d'ombra**, senza fare niente.
+7. **La verità nota**, alla fine dei 7 giorni, sul server:
+
+   ```bash
+   cd ~/projects/news1/scraper_bandi
+   PYTHONDONTWRITEBYTECODE=1 \
+     .venv/bin/python -m app \
+     report-verifica-stato --verita
+   ```
+
+   L'ultima riga deve essere `difformi: 0`. Con anche una sola riga `DIFFORME` **non** si attiva: si
+   scrive allo sviluppatore (§3.1, «Come si legge `report-verifica-stato --verita`»).
+8. **Il messaggio a BandoFit** (`docs/bandi-monitor/richiesta-bandofit-giro-2.md`) ha due parti:
+   - la **prima** (il pannello) si inoltra appena fatti i passi 1 e 2: la 12 e l'impronta della chiave
+     ci sono già, e il pannello funziona appena BandoFit lo rilascia;
+   - la **seconda** (stato da verificare, eventi, fusioni) si inoltra subito dopo il deploy (passo 4).
+     L'attivazione deve venire **almeno 7 giorni dopo** questo invio, perché le fusioni automatiche
+     cominciano lì: inviata subito, i 7 giorni d'ombra bastano.
+9. **Attivazione**: in `scraper_bandi/.env` la riga `VERIFICA_STATO_MODALITA=attivo` (senza spazi),
+   poi un solo restart del sender, verificato dall'esterno (§3.5).
+10. **La Verifica 7 della 05**, una volta sola, dopo il primo import di IndicePA in attivo (il giro
+    delle 06 del giorno dopo l'attivazione: gli import d'ombra non contano più; riga `domini` di
+    `pipeline_run` con `indicepa_esito` `ok`). Nel SQL Editor, come anon; la query è in fondo alla 13
+    («Verifica a mano», punto 2). Criteri: meno di 3 s e **nessun Seq Scan su `dominio_ufficiale`**
+    nel piano. Da lì in poi la rete è automatica: il codice `vista_lenta` misura una lettura della
+    vista a ogni giro della sorveglianza.
+
 ### Migrazioni applicate
 
 `01, 02, seed, 03, 04, 05, 08, 09, 10`, più **11 e 06 applicate il 28/09/2026**, in quest'ordine.
@@ -125,6 +306,11 @@ Le verifiche visive le ha fatte il committente.
     `bando`; tiene i ripieghi deprecati di §5.1 del contratto e rimappa i fusi ogni ora.
   - La 07 è **rimandata**: si propone solo dopo il c2 di BandoFit (niente ripieghi), che parte dopo una nuova misura
     di §5.1 annunciata con almeno 7 giorni di preavviso.
+  - **Anche news1 blocca la 07**: la scheda chiede ancora `link_candidatura`, `link_candidatura_source` e `allegati`
+    (`COLONNE_DETTAGLIO_COMUNI` in `src/lib/supabase-bandi.ts`), che la 07 toglie dalla vista. Applicata oggi, ogni
+    scheda risponderebbe 42703 (503). Prima va migrato il sito, e leggere da `bando_link` non basta ancora: 151 bandi
+    perderebbero tutti gli allegati e 145 non hanno una riga `candidatura` (`misure-colonne-07.md`). È scritto anche
+    nella testa della 07.
   - Prima di un lotto di fusioni (L4) o di una separazione, e prima della prima applicazione attiva di sospensioni o
     revoche, **avvisare BandoFit** (va in modalità `prova`).
   - Le verifiche di §11 in versione (c) del 30/09 passano tutte; le 13 risposte a BandoFit sono nel contratto
@@ -258,6 +444,212 @@ L'ondata arriva l'**08/10/2026**: 1 252 righe di `bando_controllo` con il prossi
 giorno (pubblicati e no; per i pubblicati `in_verifica` è il primo dei tre tentativi a 14 giorni),
 al ritmo di 60 per giro solo alle 06 e alle 18 (120 al giorno): una decina di giorni. In quei giorni guardare
 `interrotto_per_tetto` sulle righe `resolver` e il consumo (§3.7).
+
+#### Codici di salute (giro 2)
+
+`salute` stampa in fondo «salute: codici: …» (con `--json` sono in `voci`), e sono gli stessi codici che
+il pannello di BandoFit mostra. Un codice è **stabile**: il testo può cambiare, il codice no. Qui sotto,
+per ognuno, cosa significa e cosa fare. I codici del percorso A («stato da verificare», per esempio
+`vista_lenta` e `indicepa_non_aggiornato`) sono nel paragrafo del percorso A.
+
+**Il produttore (giro 2).**
+- `produttore_fermo` (allarme): nessun giro delle 00, 06, 12 o 18 completato da 7 ore (da 11 se un
+  giro è ancora in corso). Fare: `systemctl status edunews-bandi-sender` e il journal di oggi; se il
+  servizio è su ma non gira, cercare un lock del giro orfano (§3.2 punto 10).
+- `riavvii_ripetuti` (allarme): almeno 3 giri di avvio in 6 ore, oppure systemd lo ha riavviato 2 volte.
+  Un deploy con più restart lo accende da solo per 6 ore; altrimenti è un crash ripetuto. Fare: nel
+  journal cercare «Errore fatale» e «morto a metà giro».
+- `servizio_non_attivo` (allarme): systemd dice `failed`, `inactive`, o in attesa del riavvio
+  (`activating/auto-restart`, fino a 20 minuti dopo un errore). Fare: `journalctl -u
+  edunews-bandi-sender -n 200`, capire l'errore, poi un solo restart.
+- `passo_degradato:estrazione` (allarme): nell'ultimo giro il preprocess ha sbagliato tutti i bandi.
+  Quasi sempre è il credito Anthropic. Fare: controllare il credito; i bandi restano in `scraped` e
+  ripartono da soli al giro dopo.
+- `passo_degradato:arricchimento` (allarme): l'enrich ha lavorato bandi e non ne ha salvato nessuno.
+  Fare: journal «STEP enrich».
+- `passo_degradato:redazione` (allarme): almeno 3 bandi da redigere e nessuna scheda prodotta. Fare:
+  journal «STEP seo» e `payload_failed_motivi` nella riga del giro (§3.7).
+- `ingresso_guasto` (allarme): tutte le fonti tentate in errore nell'ultimo giro: rete o DNS del
+  server, non le fonti. Fare: dal server una `curl -I` verso una fonte qualunque.
+- `fermi_in_lavorazione` (avviso): bandi entrati negli ultimi 7 giorni e fermi in `processed` o
+  `enriched` da più di 13 ore. L'arretrato più vecchio (569 righe `processed` da giugno al 30/09) non
+  conta. Fare: di solito si sblocca al giro dopo; se il numero cresce, journal di enrich e seo.
+- `passi_ripetuti_non_ok` (allarme): lo stesso step non è andato in due giri di fila (nomi in
+  `passi_non_ok` della riga `pipeline`). Fare: journal «STEP <nome> FAILED» o «NON PARTITO».
+- `eventi_non_applicati` (allarme): l'ultimo monitor ha eventi ammessi ma non applicati. Fare: il
+  journal del monitor stampa il comando di ripresa `applica-eventi --ids …` (§6), prima con
+  `--dry-run`.
+- `eventi_non_scritti` (allarme): il monitor o il passo della verifica dello stato non sono riusciti a
+  registrare degli eventi (RPC o vincoli): somma l'ultima riga del monitor e l'ultima della fase
+  controlli. Non c'è ripiego, l'evento non esiste e si ripropone al giro dopo. Fare: journal del
+  monitor o di «STEP verifica_stato», la riga col codice d'errore di Postgres.
+- `eventi_non_leggibili` (avviso): eventi applicati ma non resi leggibili, quindi il box
+  «Aggiornamenti» non li mostra (somma degli `eventi_invisibili` del monitor e degli
+  `eventi_non_leggibili` del passo). Fare: `applica-eventi --ids … --attivo` con gli id del journal
+  (§6).
+- `job_orario` (allarme): il job orario delle transizioni (pg_cron `bandi-transizioni-orarie`) non ha
+  un esito riuscito da 3 ore, o è fallito almeno 2 volte in 24 ore. Fare, nel SQL Editor:
+  `select status, return_message, start_time from cron.job_run_details order by start_time desc
+  limit 5;`.
+- `riepilogo_non_valido` (allarme): lo scrive solo `sorveglia`, quando il riepilogo non passa la
+  validazione: il pannello riceve solo questo codice. Fare: `journalctl -u edunews-bandi-sorveglianza
+  -n 50` mostra l'errore; è un difetto del codice, da correggere.
+
+**La verifica dello stato (giro 2, percorso A).** Senza la 13 il passo non gira; `da_verificare`
+resta fra i non misurati finché la verifica non è attiva (quindi anche in ombra con la 13). Alcuni
+codici si misurano comunque (`configurazione:verifica_stato`,
+`vista_lenta`, `indicepa_*`, `ingresso_trattenuti`). Subito dopo il deploy sono **attesi**
+`verifica_stato_ferma` (fino al primo giro delle 06 o delle 18) e `indicepa_non_aggiornato` (fino al
+primo giro delle 06): si spengono da soli.
+- `verifica_stato_ferma` (allarme): nessun passo della fase controlli riuscito da 26 ore (gira alle 06
+  e alle 18, quindi due giri persi); un giro fermato dal tetto di tempo conta come riuscito. È invece
+  un **avviso** se il passo non ha mai girato (dopo il deploy, fino al primo giro delle 06 o delle 18).
+  Fare: journal «STEP verifica_stato» del sender; se il passo è
+  `saltato` per `migrazione_assente` il codice non scatta e manca la 13.
+- `leggibile_non_letto` (avviso): bandi con una pagina leggibile non riletti da oltre 16 giorni (la
+  cadenza è 14). Fare: di solito è il tetto di 40 letture per giro troppo basso per la coda; guardare
+  `candidati` e `letti` nella riga `verifica_stato` di `pipeline_run`, poi eventualmente alzare
+  `VERIFICA_STATO_TETTO_LETTURE`.
+- `lettura_non_verificante` (avviso): nell'ultimo passo un link accorciato (rpu.gl, bit.ly…) ha
+  portato su un host non verificante, e la pagina è stata trattata come illeggibile. Fare: niente
+  d'urgente; se si ripete sullo stesso host, e l'host è davvero l'ente, va aggiunto a
+  `dominio_ufficiale`.
+- `estrattore_muto:<chiave>` (allarme): un lettore per ente ha letto almeno 5 pagine in 7 giorni senza
+  un solo esito. Quasi sempre l'ente ha cambiato il sito: il lettore non trova più l'etichetta. Fare:
+  aprire una pagina di quell'host, confrontarla con la fixture in
+  `scraper_bandi/tests/fixtures/etichette_stato/` e correggere il lettore in `etichette_stato.py`.
+- `freno_chiusure:<chiave>` (avviso): nell'ultimo passo il freno per ente ha trattenuto chiusure di
+  quel lettore (troppi «aperto» diventati «chiuso» in 7 giorni). Le chiusure restano in coda e si
+  sbloccano da sole. Fare: con `report-verifica-stato --json` guardare 2 o 3 di quei bandi sulla
+  pagina: se sono chiusi davvero non serve niente, se non lo sono il lettore è rotto.
+- `prosa_non_riscritta` (avviso): schede con date applicate (monitor o verifica) la cui prosa non è
+  stata riscritta. Fare: `rigenera --dry-run` e poi `--attivo`, nella finestra sicura (§6).
+- `aperti_senza_conferma` (avviso): più del 60% degli aperti senza scadenza ha `senza_conferma`. Dopo
+  l'attivazione è atteso per 2-3 settimane (circa 220-260 schede); se resta, servono lettori per ente
+  per gli host più frequenti. Fare: `report-verifica-stato --ramo aperto --motivo senza_conferma`,
+  contare gli host.
+- `ingresso_trattenuti` (avviso): più di 10 righe nuove senza nessun appiglio (né link né date)
+  ferme all'ingresso, oppure più della metà dei trattenuti in 7 giorni pubblicata a tempo scaduto
+  invece che con una scadenza trovata. Fare: guardare le righe `enriched` ferme; le senza appiglio
+  sono di solito PDF di programma, da rifiutare a mano o da lasciare.
+- `indicepa_non_aggiornato` (avviso): nessun import di IndicePA riuscito da oltre 40 giorni. Fare:
+  journal del giro delle 06 del primo del mese, riga `domini` di `pipeline_run` (contatori
+  `indicepa_*`); se la risorsa è stata spostata, `INDICEPA_URL` in `scraper_bandi/.env`.
+- `indicepa_import_anomalo` (avviso): l'ultimo import ha trovato meno di 15 000 righe utili o ne ha
+  escluse più del 20%, e non ha scritto niente. Fare: scaricare `enti.xlsx` a mano e controllare le
+  colonne (`Codice_IPA`, `Denominazione_ente`, `Sito_istituzionale`).
+- `vista_lenta` (allarme se misurata come anon, avviso con la chiave di servizio): la lettura di prova
+  di `bando_pubblico` supera i 2 000 ms. È la rete dopo l'import completo. Fare: la Verifica 7 della 05
+  (passi una tantum del percorso A, §1) e, se il piano cambia, scrivere allo sviluppatore prima che
+  il sito vada in timeout (3 s per anon).
+- `configurazione:verifica_stato` (allarme): una delle variabili del percorso A
+  (`VERIFICA_STATO_*`, `INGRESSO_SOSTA_GIRI`, `GEMELLI_FUSIONI_PER_GIRO`, `INDICEPA_URL`) ha un valore
+  non valido ed è tornata al default. Fare: correggere `scraper_bandi/.env` e un restart.
+
+**Rami di prima del giro 2.**
+- `monitor_fermo` (allarme): nessun monitor di regime riuscito da 24 ore. Fare: journal «STEP
+  monitor» alle 06 e alle 18; tetti, lock `monitor`, credito.
+- `misure_non_disponibili` (allarme): il DB non ha risposto alle letture. Una volta sola è rete;
+  se dura, lo stato del progetto Supabase.
+- `ingresso_fermo` (allarme): bandi in `scraped` da oltre 13 ore: il preprocess non gira. Fare:
+  credito Anthropic, journal «STEP preprocess».
+- `classificazione_non_disponibile` (allarme se le fallite sono almeno quante le riuscite, altrimenti
+  avviso): classificazioni del monitor fallite. Fare: credito Anthropic.
+- `accesso_fonte_riservata` (allarme): login di ObiettivoEuropa fallito, oppure una sua fonte in
+  errore in due giri di fila. Fare: journal «SessioneOEError»; le credenziali stanno in
+  `scraper_bandi/.env`.
+- `limite_di_spesa` (allarme): tetto raggiunto in due giri di fila. Fare: §3.7; alzare un tetto è
+  una decisione.
+- `consumo_mensile_alto` (allarme): consumo del mese oltre l'80% del tetto. Fare: §3.7.
+- `credito_ricerca_basso` (allarme): crediti di ricerca sotto il 15% (oggi non misurato dal DB).
+- `scorta_piano_bassa` (allarme): il residuo del piano non basta per il resto del mese. Fare: §3.7.
+- `fonti_da_verificare` (allarme): oltre il 30% dei pubblicati degli ultimi 7 giorni ha la fonte
+  `in_verifica`. **Acceso da settimane** (48% il 30/09): resta finché non si decide §4.1 c.
+- `controlli_non_riusciti` (allarme): più del 2% dei bandi vivi ha 5 controlli falliti di fila. Fare:
+  host morti o bloccati (§5).
+- `schede_senza_sezione` (avviso): poche schede OE con la sezione «Link e Documenti» (oggi non
+  misurato dal DB).
+- `modello_fuori_listino` (avviso): un modello configurato non ha un prezzo nel listino: i costi non
+  si stimano. Fare: aggiornare il listino in `bilancio.py`.
+- `non_misurato` (avviso): qualcosa non si è potuto misurare. Sul Mac `servizio` (niente systemd) è
+  normale; login OE, crediti di ricerca e schede OE non si misurano mai dal DB.
+- `configurazione:modalita`, `configurazione:indicizzazione`, `configurazione:tipi_attivi`,
+  `configurazione:giri` (allarme): un valore di `scraper_bandi/.env` incoerente (monitor attivo o
+  tipi attivi senza chiave IndexNow, un tipo sconosciuto in `MONITOR_TIPI_ATTIVI`, `MONITOR_GIRI`
+  non valido). Fare: correggere il file, poi un restart del sender (§5, trappola 5).
+- `lavorazione_lunga:<giro|controllo_pagine|ricerca_fonti|altro>` (avviso): un lock tenuto oltre un
+  terzo del suo TTL. Di solito è un giro lento.
+- `lavorazione_orfana:<…>` (allarme): un lock tenuto oltre due terzi del TTL: probabilmente il
+  processo è morto. Fare: §3.2 punto 10 (il rilascio), e dal giro 2 il sender li rilascia da solo
+  all'avvio.
+
+#### Come si legge `sorveglia --dry-run`
+
+```bash
+cd ~/projects/news1/scraper_bandi
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app sorveglia --dry-run
+```
+
+Si può lanciare anche dal Mac (fa solo letture). Stampa il riepilogo **validato**, esattamente quello
+che il timer scriverebbe, e tre righe:
+- `sorveglia: stato ok|attenzione|guasto`: guasto con almeno un allarme, attenzione con almeno un
+  avviso;
+- `sorveglia: codici: …`: livello e codice di ogni segnale (i paragrafi qui sopra);
+- `sorveglia: --dry-run, niente scritto`.
+
+Nel JSON:
+- `segnali` ha `dal`, da quando il codice è acceso. Resta fermo finché il codice non si spegne; il
+  primo `dal` di un codice nuovo è l'ora del giro;
+- `non_misurati` dice cosa non si è potuto guardare; sul Mac `servizio` c'è sempre;
+- `produttore` ha l'ultimo giro, le ore passate e i riavvii in 24 ore;
+- `giri` sono gli ultimi 20 giri, con `passi_non_ok` in nomi neutri (`estrazione`, `redazione`…);
+- `job_orario` è il cron delle transizioni (`non_misurato` finché la 12 non c'è);
+- `da_verificare` resta `null` finché la verifica non è attiva, anche con la 13 applicata (contratto
+  DB §14.4); dall'attivazione è l'oggetto con i motivi per ramo e i numeri del passo.
+
+Nessun numero di spesa, host, URL o nome di processo: è quello che BandoFit riceve. Il pannello
+calcola da solo `in_ritardo` (nessuna riga nuova da 45 minuti) e `orologio_disallineato`.
+
+#### Come si legge `report-verifica-stato --verita`
+
+Sola lettura, si può lanciare dal Mac e dal server (§6). Stampa:
+- una riga di intestazione e una riga per bando candidato: `ID`, `STATO_EFFETTIVO`, `MOTIVO`,
+  `PAGINA` (i, ii, ii-c, iii, iv, illeggibile), `METODO`, `ESTRATTORE`, `ETICHETTA`,
+  `TERMINE_INDICATO` e la sua `FONTE`, `PROPOSTA` (l'evento che il passo farebbe), `TRATTENUTA`
+  (tetto, freno o ombra), `FORSE_NON_UN_BANDO` ed `ESITO` della lettura;
+- `report-verifica-stato: N righe`;
+- con `--verita`, una riga `DIFFORME <id> atteso=<…> trovato=<…>` per ogni bando della verità nota
+  che il passo legge diversamente, e in fondo `difformi: N`. Exit 1 se N è sopra zero.
+
+**Si attiva solo con `difformi: 0`** (passi una tantum del percorso A, §1). Una riga `DIFFORME` vuol
+dire che un lettore o una regola non fanno quello che il 30/09 si è verificato a mano: si scrive allo
+sviluppatore con l'id e la riga, e si resta in ombra. Se un bando della verità nota nel frattempo è
+cambiato davvero (chiuso dall'ente, scadenza aggiunta), la tabella va aggiornata, non il codice.
+
+**La verità nota** (`verifica_stato.VERITA_NOTA`, contratto interno §5.9 e §19.4), esiti attesi senza
+modello, verificati a mano il 30/09:
+- ramo «aperto», chiusi con proposta `chiusura`: 2387, 18344, 18444, 2919, 18400; smentiti senza
+  proposta: 18337, 18357 («Valutazione»); confermati: 17903, 18454; rettifica della scadenza: 2339 e
+  256211; non decisivi: 18315, 18387, 18423, 3042, 110821; non decisivi e forse non bandi: 2448,
+  2449, 2621, 2622;
+- ramo «in apertura»: 2971 uscito; i «concluso» del Piemonte, rimisurati l'01/10 sulle pagine
+  pubbliche: 2892, 2893 e 661135 chiusi, 150489 solo smentito («Esito» sulla pagina collegata);
+  106753, 2375 e 270806 con la data della scadenza verificata; 1072674 e 1072686 aperti; 17978
+  chiuso; 577475 dalla pagina sorella; 1261858 e 327381 confermati; 10258 non decisivo;
+- aggiunti con il percorso A: 2475 e 2520 chiusi via pagina (ii-c); 5699 e 5700 smentiti dal lettore
+  generico («sospeso»); termine indicato per 5698 (31/12/2026), 803614 (15/07/2029), 803615
+  (31/12/2026), 803623 (30/10/2026) e 562317 (08/09/2026, dall'aggregatore, quindi passato);
+  17773 e 18178 segnalati «in uscita»; 17883, 18186 e 18312 segnalati assenti dal listing; 18231,
+  18276 e 18262 smentiti; 18407 non decisivo, cioè **non** confermato (nessun lettore per ente).
+
+La tabella vera è `VERITA_NOTA` in `scraper_bandi/app/verifica_stato.py`: se cambia, vale quella. Il
+30/09 tutti questi bandi erano ancora nel ramo atteso (`misure-giro-2-percorso-a.md`, M9).
+
+**Contatori del passo** (riga `step='verifica_stato'` di `pipeline_run`): `eventi_non_scritti` ed
+`eventi_non_leggibili` hanno i codici di salute con lo stesso nome (qui sopra, «Il produttore»), che
+sommano monitor e passo. `da_riprovare` non ha un codice: è una risposta non 2xx. La pagina si
+rilegge dopo 1, 1 e 3 giorni, poi ogni 14; diventa «rimossa» solo con un 404 o un 410 ripetuto sullo
+stesso URL (gli altri codici non la rimuovono mai). Non è un errore.
 
 ### 3.2 Verifica dell'integrità del contratto (dopo ogni intervento sui bandi)
 
@@ -580,12 +972,20 @@ previste per il segnale «contenuto», due non hanno mai prodotto niente (`numer
 E **116 bandi non hanno a database né l'una né l'altro**: per loro è irraggiungibile qualunque
 pagina si scarichi. Sbloccarli richiede di decidere se due prove di contenuto indipendenti
 (scadenza esatta *e* importo coerente) valgano quanto la terna dominio+titolo+contenuto. È anche
-l'unico allarme di `salute` al 26/09 (34% di `in_verifica` sui nuovi).
+l'unico allarme di `salute` al 26/09 (34% di `in_verifica` sui nuovi). **Resta aperta dopo il giro 2**:
+lo studio del 30/09 ha scartato la provenienza come terzo segnale; la verifica dello stato legge
+comunque le pagine (ii) e (iv) anche con la fonte `in_verifica`.
 
-**d) IndicePA non è importato.** `domini --import` ha caricato i 109 host delle fonti; il foglio
-`enti.xlsx` di IndicePA aggiungerebbe ~23 000 enti (comuni, scuole, università) e si passa con
-`--enti PATH`. Utile soprattutto per i bandi di comuni e GAL. Dopo l'import va rifatta la Verifica
-7 della 05 (prestazioni della vista come anon).
+**d) IndicePA non è importato.** **Risolta dal giro 2 (percorso A), decisione D3 del 30/09**: import
+**completo e automatico**, ogni mese: il giro delle 06 lo fa se nel mese di calendario non ce
+n'è ancora uno fatto (in ombra vale anche un import d'ombra, in attivo solo uno riuscito; se fallisce
+si ritenta alle 06 del giorno dopo). Scrive solo host assenti, mai UPDATE
+né DELETE; esclude piattaforme condivise, host con 3 o più `codice_ipa` e aggregatori; sotto le
+15 000 righe utili non scrive niente. Misurato il 30/09 (`misure-giro-2-percorso-a.md`, M10):
+22 353 host da inserire, 51 host dei nostri link diventano verificanti, gli aperti senza scadenza
+illeggibili scendono da 89 a 50. In ombra conta e basta; scrive da `VERIFICA_STATO_MODALITA=attivo`.
+Dopo il primo import in attivo va rifatta **una volta** la Verifica 7 della 05 (passi una tantum del
+percorso A, §1); la rete automatica è il codice `vista_lenta`.
 
 **e) Lotto L8 (chiusi mai pubblicati): con il criterio del piano oggi non c'è niente da
 lavorare.** I 561 `processed` sono tutti chiusi. Il piano ammette solo i chiusi da ≤ 90 giorni
@@ -617,6 +1017,14 @@ sia un backup recente o il PITR.
 - due audiovisivi FESR Liguria.
 
 Il dry-run elenca le coppie; le fusioni solo con il criterio esatto e dopo l'ok.
+
+**Risolta dal giro 2 (percorso A), decisione D2 del 30/09**: fusione **automatica** dei doppioni
+certi (stesso URL normalizzato, oppure stessa riga di calendario della stessa fonte), con le guardie
+di prudenza del contratto interno §19.9, al massimo 10 per giorno nel giro delle 06, via
+`bando_fondi` (nessuna riga cancellata, 301 verso il master). Una riga nuova gemella esatta di un
+pubblicato non viene più pubblicata. In ombra `gemelli --dry-run` elenca e conta; l'01/10, con le
+guardie su lotti e numerazioni, erano 52 (43 per URL, 9 di calendario). Si attiva con `VERIFICA_STATO_MODALITA=attivo`, almeno 7 giorni dopo
+il messaggio a BandoFit (che si mette in modalità `prova`).
 
 **h) IndexNow è rotto in produzione per tutto il sito.** `https://edunews24.it/api/indexnow-key`
 risponde 404 «IndexNow key not configured», quindi anche il file chiave `/<chiave>.txt` dà 404 e
@@ -981,11 +1389,15 @@ ne è uscito e cosa è stato deciso.
     della (c) lascia su BandoFit una seconda scheda. Da decidere col committente: L4 dopo la
     (c), oppure accettare il doppione su BandoFit per quel periodo.
 - **Ingresso.** `ora_scadenza` e `ora_apertura` non sono mai valorizzate, e la finestra d'invio
-  non viene letta: 3 «aperti» su 14 in realtà aprivano giorni dopo.
+  non viene letta: 3 «aperti» su 14 in realtà aprivano giorni dopo. **Risolto dal giro 2**: il
+  preprocess scrive le ore dalla citazione e la scadenza dalla finestra di presentazione, dal
+  lettore per ente e, per ultima, dall'etichetta dell'aggregatore citata sulla scheda.
 - **Ricontrolli.** I lotti del 23-24/09 hanno già consumato i «tre tentativi a 14 giorni»: dopo
   l'08/10 i pubblicati `in_verifica` passano a 60 giorni. Seconda ondata il 23/11, con 854 righe.
 - **Resolver e monitor non leggono la tabella `dominio_ufficiale`.** Un import di IndicePA
-  (§4.1 d) cambierebbe solo le funzioni SQL.
+  (§4.1 d) cambierebbe solo le funzioni SQL. **Chiuso dal giro 2 per il resolver e per la verifica
+  dello stato**: `_tabella_corrente()` mette in testa le righe del DB (vincono sul seed). Il monitor
+  resta com'era.
 - **L8.** 35 dei 43 `processed` nella finestra dei 90 giorni ne escono il 29/09. `destinazione()`
   archivierebbe il 2773, che ha la scadenza nel 2027.
 - **Le 10 classificazioni perse col credito a zero.** Non esiste oggi un modo sicuro di
@@ -1116,6 +1528,40 @@ lettura; le correzioni sono file SQL che lancia il committente.
 - **Verifiche che solo il committente può fare**: `verifiche-michele-2026-10.md` (crediti, backup,
   rotazione della password OE, 57014, unit, DNS della Basilicata).
 
+### 4.6 Giro 2 dei bandi, percorso A «stato da verificare» (30/09/2026, notte)
+
+Il punto di partenza è lo studio `docs/contracts/studio-aperti-senza-prova-2026-09-30.md`: 426
+«aperto» senza scadenza né prova, di cui il 16% chiuso nel campione controllato a mano. Le misure del
+giro sono in `misure-giro-2-percorso-a.md` (solo letture).
+
+- **Decisioni del committente (30/09 notte)**:
+  - D1: bollino «Aperto · da verificare» (`senza_conferma`) dal 7° giorno e solo dopo una lettura in
+    attivo; nessun timer, nessuna chiusura senza un evento;
+  - D2: fusione automatica dei doppioni certi, al massimo 10 al giorno;
+  - D3: import completo e mensile di IndicePA.
+- **Decisioni del lead**:
+  - ordine definitivo della regola: in ombra l'unico motivo pubblico è `data_apertura_passata`;
+  - la vista mostra `stato_letto` solo per le letture di un lettore strutturato;
+  - esclusi dall'import gli host con 3 o più codici IPA.
+- **Le pagine dei 426** con le regole nuove: 53 fonti ufficiali (i), 107 pagine d'origine (ii), 13
+  candidati (ii-c), 164 pagine di solo segnale (iv), 89 illeggibili (tutti di ObiettivoEuropa).
+  Con l'import di IndicePA gli illeggibili scendono a 50.
+- **Migrazione 13**: provata sulla catena vera 01-12 (schema legacy ricostruito dall'OpenAPI):
+  - 127 casi della regola, 0 discordanti;
+  - la sequenza 13 → 07 → rollback della 07 → rollback della 13 → 13 passa;
+  - il rollback riporta la vista identica alla 05;
+  - con 25 000 domini sintetici la pagina dell'elenco resta sui 2 ms, senza scansioni complete di
+    `dominio_ufficiale`.
+- **Ingresso**: il testo delle pagine httpx era una riga sola (§5, trappola 15). Con i paragrafi
+  ricostruiti le 5 pagine LazioEuropa delle fixture portano etichetta e scadenza nel prompt; col
+  vecchio taglio a 4 000 caratteri 3 scadenze restavano fuori.
+- **Cosa aspettarsi dopo l'attivazione**:
+  - circa 220-260 schede «da verificare» nelle 2-3 settimane dopo;
+  - circa 50 chiusure nella prima settimana, al massimo 20 per giro, quasi tutte correzioni fuori dal
+    box «Aggiornamenti»;
+  - 52 fusioni in circa 6 giorni (al massimo 10 al giorno).
+- **Resta aperta** la §4.1 c (terzo segnale del resolver).
+
 ---
 
 ## 5. Trappole imparate (leggere prima di lavorarci)
@@ -1188,6 +1634,17 @@ lettura; le correzioni sono file SQL che lancia il committente.
     ammesso per il worker). Al 30/09 ce ne sono due (9749 e 11299): `MONITOR_TIPI_ATTIVI` non li
     tocca, il rischio è un `applica-eventi` lanciato a mano sull'arretrato.
 
+15. **Il testo di una pagina httpx è una riga sola.** `scarico.testo_da_html` appiattisce la pagina,
+    menu compresi, in un'unica riga; il markdown di Firecrawl invece ha i suoi a capo. Chi divide
+    quel testo in sezioni (`impronte.seleziona_sezioni`) ne trova una sola e la taglia dall'inizio:
+    con il budget portato a 8 000 caratteri (giro 2) la scadenza di LazioEuropa 1072674
+    restava comunque fuori dal prompt. Il preprocess ora ricostruisce i paragrafi dall'HTML della
+    stessa risposta in cache (`preprocessor.testo_strutturato`: `impronte.pulisci`, un paragrafo
+    per elemento di blocco). **Non** con `impronte.sezioni`: il suo testo perde lo spazio intorno ai
+    tag in linea («ore<strong>17:00</strong>» diventa «ore17:00») e le ore non si leggono più.
+    Chiunque dia a un modello o a una regex «il testo della pagina» deve sapere da quale dei due
+    percorsi arriva.
+
 ---
 
 ## 6. Comandi utili, in ordine di frequenza
@@ -1195,8 +1652,15 @@ lettura; le correzioni sono file SQL che lancia il committente.
 ```bash
 cd ~/projects/news1/scraper_bandi
 
-# stato di salute
+# stato di salute (in fondo i codici stabili, §3.1)
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app salute --json
+
+# il riepilogo per il pannello, senza scriverlo (si può anche dal Mac)
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app sorveglia --dry-run
+
+# il timer della sorveglianza e il suo journal (sul server)
+systemctl list-timers edunews-bandi-sorveglianza.timer
+journalctl -u edunews-bandi-sorveglianza --since -1h
 
 # fonte ufficiale dei bandi nuovi (lo fa già la pipeline)
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app risolvi-fonte --dry-run --limit 20
@@ -1222,8 +1686,25 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app applica-eventi --dal <data> --
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app applica-eventi --ids 1,2 --dry-run
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app applica-eventi --ids 1,2 --attivo
 
-# whitelist dei domini (mensile, o dopo aver aggiunto fonti)
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app domini --import --attivo [--enti enti.xlsx]
+# stato da verificare (giro 2, percorso A): il report e la verità nota.
+# --verita chiude con «difformi: N» (exit 1 se N > 0): 0 prima di attivare
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app report-verifica-stato --verita
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app report-verifica-stato \
+  --ramo aperto --motivo senza_conferma
+
+# prova del passo, senza scrivere e senza lock; dal Mac solo con --senza-modello
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app verifica-stato \
+  --dry-run --senza-modello --limit 20
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app verifica-stato \
+  --dry-run --senza-modello --fase ingresso --ids 1,2
+
+# le fusioni automatiche che il giro delle 06 farebbe (solo --dry-run)
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app gemelli --dry-run
+
+# whitelist dei domini: `domini --import --attivo [--enti PATH]` aggiunge solo
+# host nuovi e non modifica righe esistenti; l'import completo lo fa da solo il
+# giro delle 06, a mano serve solo per provarlo (dal Mac solo --dry-run)
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app domini --import --scarica-enti --dry-run
 
 # testi già pubblicati da riscrivere col prompt nuovo (dal giro di ottobre)
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m app seo-rigenera --solo-controllo

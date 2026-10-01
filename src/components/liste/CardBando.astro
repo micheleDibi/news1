@@ -14,8 +14,8 @@
  * non quelli della card precedente. L'unico link e' il titolo; il suo `::after`
  * copre la card, che resta cliccabile per intero.
  */
-import { statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
-import { BARRA_SCONOSCIUTO, PALETTE_SCADENZA } from '../../lib/bandi/aspetto';
+import { motivoDellaRiga, statoEffettivo, todayRomeISO } from '../../lib/stato-bando';
+import { aspettoConVerifica, BARRA_SCONOSCIUTO, PALETTE_SCADENZA } from '../../lib/bandi/aspetto';
 import { modelloCard } from '../../lib/bandi/elenco';
 import type { Bando } from '../../lib/supabase-bandi';
 
@@ -39,10 +39,15 @@ const { bando, vista = 'elenco' } = Astro.props;
 // dalla scadenza, perche' `stato_bando` non viene piu' aggiornata dopo il
 // preprocess. La card e il filtro della lista devono usare la STESSA sorgente,
 // altrimenti un bando puo' comparire fra gli aperti con il badge «Chiuso».
-const calcolato = (bando as unknown as Record<string, unknown>).stato_effettivo;
+const riga = bando as unknown as Record<string, unknown>;
+const calcolato = riga.stato_effettivo;
 const stato = typeof calcolato === 'string' && calcolato !== ''
   ? calcolato
   : statoEffettivo({ stato: bando.stato_bando, data_scadenza: bando.data_scadenza });
+
+// «In apertura · da verificare» / «Aperto · da verificare»: il motivo lo da' la
+// vista, sulla tabella si ricalcola; conta solo se compatibile con lo stato.
+const aspetto = aspettoConVerifica(stato, motivoDellaRiga(riga, stato));
 
 // «Oggi» di Roma, come nella scheda: mai l'ora locale del server.
 const m = modelloCard({ stato, data_scadenza: bando.data_scadenza, importo_totale_eur: bando.importo_totale_eur }, todayRomeISO());
@@ -76,12 +81,12 @@ const pilloleEtichetta = 'max-w-full flex-none overflow-hidden text-ellipsis whi
       </div>
     </div>
     {/* Barra e badge vengono dopo nel DOM ma prima a schermo (order-first, in quest'ordine). */}
-    <div aria-hidden="true" class={`order-first h-1 ${m.urgente ? palette.barra : (m.aspetto?.barra ?? BARRA_SCONOSCIUTO)}`}></div>
-    {(m.aspetto || m.giorniTesto) && (
+    <div aria-hidden="true" class={`order-first h-1 ${m.urgente ? palette.barra : (aspetto?.barra ?? BARRA_SCONOSCIUTO)}`}></div>
+    {(aspetto || m.giorniTesto) && (
       <div class="order-first flex flex-wrap items-center gap-2 px-5 pt-[18px]">
-        {m.aspetto && (
-          <span class={`inline-flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full py-[3px] pl-2 pr-[9px] text-[12px] font-semibold ${m.aspetto.pillola}`}>
-            <span class={`h-[7px] w-[7px] rounded-full ${m.aspetto.punto}`}></span><span class={m.aspetto.extraEtichetta}>{m.aspetto.etichetta}</span>
+        {aspetto && (
+          <span class={`inline-flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full py-[3px] pl-2 pr-[9px] text-[12px] font-semibold ${aspetto.pillola}`}>
+            <span class={`h-[7px] w-[7px] rounded-full ${aspetto.punto}`}></span><span class={aspetto.extraEtichetta}>{aspetto.etichetta}</span>
           </span>
         )}
         {m.giorniTesto && (
@@ -100,11 +105,11 @@ const pilloleEtichetta = 'max-w-full flex-none overflow-hidden text-ellipsis whi
       {bando.descrizione_breve && (
         <p class="mt-2 line-clamp-2 text-[14px] leading-[1.6] text-[#3d4657]">{bando.descrizione_breve}</p>
       )}
-      {(m.aspetto || tipologia || programma) && (
+      {(aspetto || tipologia || programma) && (
         <div class="order-first flex flex-wrap items-center gap-2">
-          {m.aspetto && (
-            <span class={`inline-flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full py-[3px] pl-2 pr-[9px] text-[12px] font-semibold ${m.aspetto.pillola}`}>
-              <span class={`h-[7px] w-[7px] rounded-full ${m.aspetto.punto}`}></span><span class={m.aspetto.extraEtichetta}>{m.aspetto.etichetta}</span>
+          {aspetto && (
+            <span class={`inline-flex flex-none items-center gap-1.5 whitespace-nowrap rounded-full py-[3px] pl-2 pr-[9px] text-[12px] font-semibold ${aspetto.pillola}`}>
+              <span class={`h-[7px] w-[7px] rounded-full ${aspetto.punto}`}></span><span class={aspetto.extraEtichetta}>{aspetto.etichetta}</span>
             </span>
           )}
           {tipologia && <span class={pilloleEtichetta}>{tipologia}</span>}

@@ -303,13 +303,38 @@ const COLONNE_DETTAGLIO_VISTA = [
   'fonte_ufficiale_url', 'fonte_ufficiale_host', 'fonte_ufficiale_tipo',
   'fonte_ufficiale_stato', 'fonte_ufficiale_e_atto', 'fonte_ufficiale_verificata_at',
   'ultimo_controllo_at',
+  // Migrazione 13: il motivo per cui lo stato va verificato, l'ultima lettura
+  // della pagina ufficiale (solo se fatta sullo stato di oggi) e il termine
+  // trovato per un aperto senza scadenza, con la sua provenienza.
+  'stato_da_verificare', 'stato_letto', 'stato_letto_at',
+  'termine_indicato', 'termine_indicato_fonte',
 ];
 
-export const BANDO_SELECT_DETTAGLIO = [
+/**
+ * Colonne che servono al motivo «da verificare» (`motivoDellaRiga` di
+ * stato-bando.ts). Dalla vista basta `stato_da_verificare`, calcolato dal DB;
+ * sulla tabella la regola si ricostruisce con la data di apertura e il suo
+ * flag di verifica (colonna della 01, gia' applicata), che decidono I1, I2 e
+ * l'apertura raggiunta. `pubblicato_at` non serve: la tabella non ha
+ * `esaminato_attivo_at`, quindi I6-bis e A4 rispondono prima delle grazie
+ * (I6, A7) che lo userebbero.
+ */
+export const COLONNE_MOTIVO: readonly string[] = FONTE_BANDI.tabella === 'bando_pubblico'
+  ? ['stato_da_verificare']
+  : ['data_apertura', 'data_apertura_verificata'];
+
+/** Una select con in coda le `COLONNE_MOTIVO` che non contiene gia'. */
+export function selectConMotivo(select: string): string {
+  const presenti = new Set(select.split(',').map((colonna) => colonna.trim()));
+  const mancanti = COLONNE_MOTIVO.filter((colonna) => !presenti.has(colonna));
+  return mancanti.length === 0 ? select : `${select}, ${mancanti.join(', ')}`;
+}
+
+export const BANDO_SELECT_DETTAGLIO = selectConMotivo([
   ...COLONNE_DETTAGLIO_COMUNI,
   FONTE_BANDI.selectFreschezza,
   ...(FONTE_BANDI.tabella === 'bando_pubblico' ? COLONNE_DETTAGLIO_VISTA : []),
-].join(', ');
+].join(', '));
 
 // =========================================================================
 // Letture di F2: i link, gli eventi e la mappa degli slug

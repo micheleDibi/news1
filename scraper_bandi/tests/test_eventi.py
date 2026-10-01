@@ -741,6 +741,16 @@ class TestG9ETransizioni(unittest.TestCase):
     def test_g9_ammette_le_transizioni_della_tabella(self):
         self.assertTrue(eventi.g9_transizione(_proroga(), _ctx())[0])
 
+    def test_il_monitor_non_chiude_da_in_apertura(self):
+        # Riga 24 (contratto `bandi-giro-2` §4): da «in apertura» chiude solo
+        # il percorso verifica_stato. Il monitor, senza percorso, resta com'era.
+        chiusura = eventi.Evento(tipo="chiusura", citazione="bando chiuso", url_prova=URL)
+        self.assertIsNone(eventi.transizione_evento("in apertura prossimamente", chiusura))
+        self.assertEqual(eventi.transizione_evento("in apertura prossimamente", chiusura,
+                                                   percorso=eventi.PERCORSO_VERIFICA), "chiuso")
+        self.assertIn({"da": "in apertura prossimamente", "a": "chiuso", "evento": "chiusura"},
+                      eventi.tabella_transizioni())
+
 
 class TestValuta(unittest.TestCase):
     def _ctx_completo(self, **extra):

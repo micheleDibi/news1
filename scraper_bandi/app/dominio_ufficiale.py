@@ -581,23 +581,157 @@ def _campo(riga: Mapping[str, object], nome: str) -> str:
     return ""
 
 
-def importa_indicepa(righe: Iterable[Mapping[str, object]]) -> tuple[Dominio, ...]:
-    """Righe di `enti.xlsx` → domini `ente` con confidenza 1,0 (§5).
+# --- host che non identificano un ente (contratto `bandi-giro-2` §19.4, §19.8) --
 
-    Puro: il download e la lettura del foglio stanno in `python -m app
-    domini --import`. Qui si scartano le righe senza sito, quelle il cui host
-    non e' un host ASCII e — la blocklist prevale — quelle che cadono su un
-    aggregatore. La prima riga di un host vince: IndicePA elenca piu' uffici
-    sullo stesso dominio e la denominazione della prima e' arbitraria quanto
-    quella delle altre, ma almeno e' deterministica.
+#: Gli accorciatori di URL: un link che passa da qui non dice niente del suo
+#: dominio finche' non lo si segue fino in fondo.
+ACCORCIATORI: frozenset[str] = frozenset({
+    "rpu.gl", "bit.ly", "tinyurl.com", "goo.gl", "t.ly",
+})
+#: Piattaforme su cui chiunque apre un sito: IndicePA registra anche siti
+#: istituzionali ospitati qui, ma l'host e' di tutti, non dell'ente.
+PIATTAFORME_CONDIVISE: frozenset[str] = frozenset({
+    "sites.google.com", "wixsite.com", "wordpress.com", "blogspot.com",
+    "altervista.org", "jimdo.com", "weebly.com", "github.io", "facebook.com",
+    "linktr.ee",
+}) | ACCORCIATORI
+#: Da quanti `codice_ipa` diversi in su un host e' condiviso: un gestionale
+#: comunale, un ordine con sedi provinciali, un'azienda sanitaria con piu'
+#: uffici (59 host al 30/09/2026, fra cui halleyweb.com e asl.bari.it).
+CODICI_HOST_CONDIVISO = 3
+
+#: I motivi per cui una riga di IndicePA non entra nella lista bianca.
+ESCLUSO_SENZA_SITO = "senza_sito"
+ESCLUSO_HOST_NON_VALIDO = "host_non_valido"
+ESCLUSO_PIATTAFORMA = "piattaforma_condivisa"
+ESCLUSO_HOST_CONDIVISO = "host_condiviso"
+ESCLUSO_BLOCKLIST = "blocklist"
+
+
+def piattaforma_condivisa(host: str | None) -> bool:
+    """Vero per un host di `PIATTAFORME_CONDIVISE` e per ogni suo sottodominio."""
+    normalizzato = dominio_di(host)
+    if not normalizzato:
+        return False
+    return any(normalizzato == p or normalizzato.endswith("." + p) for p in PIATTAFORME_CONDIVISE)
+
+
+def da_righe_db(righe: Iterable[Mapping[str, object]]) -> tuple[Dominio, ...]:
+    """Le righe di `dominio_ufficiale` lette da PostgREST come `Dominio`.
+
+    Una riga senza host si scarta; `confidenza` e `attivo` arrivano come
+    numero e booleano JSON e si normalizzano qui, perche' `verificabile`
+    confronta la confidenza con la soglia.
     """
-    viste: set[str] = set()
     prodotte: list[Dominio] = []
     for riga in righe:
-        host = dominio_di(_campo(riga, "sito_istituzionale"))
-        if not host or host in viste:
+        host = str(riga.get("host") or "").strip().lower()
+        tipo = str(riga.get("tipo") or "").strip()
+        if not host or not tipo:
             continue
-        if e_aggregatore(host):
+        try:
+            fiducia = float(riga.get("confidenza"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            fiducia = CONFIDENZA_DEDOTTO
+        try:
+            fonte_id = int(riga["fonte_id"]) if riga.get("fonte_id") is not None else None  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            fonte_id = None
+        prodotte.append(Dominio(
+            host=host,
+            tipo=tipo,
+            confidenza=fiducia,
+            ente=(str(riga.get("ente")) if riga.get("ente") else None),
+            codice_ipa=(str(riga.get("codice_ipa")) if riga.get("codice_ipa") else None),
+            fonte_id=fonte_id,
+            origine=str(riga.get("origine") or "db"),
+            note=(str(riga.get("note")) if riga.get("note") else None),
+            attivo=riga.get("attivo") is not False,
+        ))
+    return tuple(prodotte)
+
+
+@dataclass(frozen=True)
+class ImportIndicePA:
+    """L'esito di `analizza_indicepa`: i domini ammessi e il perche' degli altri."""
+    domini: tuple[Dominio, ...]
+    righe_lette: int
+    #: Righe con un sito il cui host e' valido: la soglia di sanita' e' su queste.
+    righe_utili: int
+    #: Righe escluse, per motivo (una riga conta una volta, col primo motivo).
+    esclusi: Mapping[str, int]
+    #: Colonne attese (sito, denominazione, codice IPA) che il foglio non ha.
+    colonne_mancanti: tuple[str, ...] = ()
+
+
+def _colonne_mancanti(righe: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
+    intestazioni = {
+        str(chiave).strip().lower().replace(" ", "_")
+        for riga in righe[:1] for chiave in riga
+    }
+    return tuple(
+        nome for nome, alias in _CAMPI_INDICEPA.items()
+        if not any(a in intestazioni for a in alias)
+    )
+
+
+def analizza_indicepa(
+    righe: Iterable[Mapping[str, object]],
+    *,
+    tabella: "Tabella | Iterable[Dominio] | None" = None,
+) -> ImportIndicePA:
+    """Righe di `enti.xlsx` → domini `ente` con confidenza 1,0, e il report.
+
+    Puro: il download e la lettura del foglio stanno in `fonte_ufficiale`.
+    Non entrano (§19.8, regole prudenti perche' l'import e' completo e
+    automatico):
+      - le righe senza sito e quelle il cui host non e' un host valido;
+      - gli host su una piattaforma condivisa (`PIATTAFORME_CONDIVISE`);
+      - gli host che IndicePA associa a `CODICI_HOST_CONDIVISO` o piu'
+        `codice_ipa` diversi;
+      - gli host che cadono sulla blocklist di `tabella` (quella del DB piu' il
+        seed; senza, il seed): la blocklist prevale, come sempre.
+    La prima riga di un host vince: IndicePA elenca piu' uffici sullo stesso
+    dominio e la denominazione della prima e' arbitraria quanto quella delle
+    altre, ma almeno e' deterministica.
+    """
+    elenco = list(righe)
+    lista_nera = TABELLA_SEED if tabella is None else Tabella.da(tabella)
+    esclusi: dict[str, int] = {}
+
+    def escludi(motivo: str) -> None:
+        esclusi[motivo] = esclusi.get(motivo, 0) + 1
+
+    host_per_riga: list[str | None] = []
+    codici: dict[str, set[str]] = {}
+    for riga in elenco:
+        sito = _campo(riga, "sito_istituzionale")
+        host = dominio_di(sito) if sito else None
+        if not sito:
+            escludi(ESCLUSO_SENZA_SITO)
+        elif not host:
+            escludi(ESCLUSO_HOST_NON_VALIDO)
+        else:
+            codice = _campo(riga, "codice_ipa")
+            if codice:
+                codici.setdefault(host, set()).add(codice)
+        host_per_riga.append(host)
+
+    viste: set[str] = set()
+    prodotte: list[Dominio] = []
+    for riga, host in zip(elenco, host_per_riga):
+        if host is None:
+            continue
+        if piattaforma_condivisa(host):
+            escludi(ESCLUSO_PIATTAFORMA)
+            continue
+        if len(codici.get(host, ())) >= CODICI_HOST_CONDIVISO:
+            escludi(ESCLUSO_HOST_CONDIVISO)
+            continue
+        if lista_nera.migliore(host, blocco=True) is not None:
+            escludi(ESCLUSO_BLOCKLIST)
+            continue
+        if host in viste:
             continue
         viste.add(host)
         prodotte.append(Dominio(
@@ -608,7 +742,18 @@ def importa_indicepa(righe: Iterable[Mapping[str, object]]) -> tuple[Dominio, ..
             codice_ipa=_campo(riga, "codice_ipa") or None,
             origine="indicepa",
         ))
-    return tuple(prodotte)
+    return ImportIndicePA(
+        domini=tuple(prodotte),
+        righe_lette=len(elenco),
+        righe_utili=sum(1 for host in host_per_riga if host),
+        esclusi=esclusi,
+        colonne_mancanti=_colonne_mancanti(elenco),
+    )
+
+
+def importa_indicepa(righe: Iterable[Mapping[str, object]]) -> tuple[Dominio, ...]:
+    """I soli domini ammessi di `analizza_indicepa` (blocklist del seed)."""
+    return analizza_indicepa(righe).domini
 
 
 def costruisci(

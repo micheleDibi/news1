@@ -60,12 +60,33 @@ Comandi:
                  --solo-controllo ne' l'attivo li fermano, conta la lettura
                  della prova. L'attivo salta anche le proposte fuori forma
                  (`contenuto` senza `sections`).
-  salute         Diagnosi: allarmi di configurazione e di consumo.
+  salute         Diagnosi: allarmi di configurazione e di consumo, con i
+                 codici stabili del giro 2.
                  Opzioni: --json. Exit 1 se c'e' almeno un allarme.
+  sorveglia      Riepilogo di salute per il pannello (giro 2, §10): lo
+                 scrive nella riga unica della migrazione 12. Lo lancia il
+                 timer ogni 15 minuti; dal Mac solo --dry-run (stampa il
+                 JSON validato e i codici, non scrive). Exit 0 anche con
+                 allarmi, 1 su un errore interno o un upsert fallito.
   domini         Whitelist/blocklist dei domini ufficiali. `--import` compone
                  la tabella dagli host di `fonte`, dal seed e (con
                  `--enti PATH`) dal foglio IndicePA. Opzioni: --dry-run,
                  --limit N, --enti PATH, --ombra/--attivo.
+                 `--import --scarica-enti` (giro 2): import COMPLETO di
+                 IndicePA scaricato, solo host assenti, mai UPDATE o DELETE;
+                 senza --ombra/--attivo segue VERIFICA_STATO_MODALITA. Dal
+                 Mac solo con --dry-run.
+  verifica-stato Prova del passo «stato da verificare» (giro 2): SOLO con
+                 --dry-run (senza, exit 2). Opzioni: --fase controlli|ingresso,
+                 --ids 1,2, --senza-modello (dal Mac sempre), --limit N.
+                 Non scrive, non prende lock; stampa contatori e proposte.
+  report-verifica-stato
+                 Sola lettura: per bando stato effettivo, motivo, pagina,
+                 metodo, estrattore, etichetta, termine, proposta. Opzioni:
+                 --json, --ramo aperto|apertura, --motivo M, --verita (stampa
+                 DIFFORME e «difformi: N»; exit 1 se N > 0).
+  gemelli        `--dry-run` (obbligatorio): le fusioni dei gemelli certi che
+                 il passo del giro delle 06 farebbe. --limit N = tetto.
   risolvi-fonte  Step 5 — fonte ufficiale del bando (`app/fonte_ufficiale.py`).
                  Opzioni: --dry-run, --limit N, --nuovi|--backlog,
                  --solo-oe, --solo-in-verifica, --id X, --ombra|--attivo,
@@ -1067,18 +1088,27 @@ def _cmd_domini(argv: list[str]) -> int:
 
     `--import` resta obbligatorio (e' l'unica modalita' prevista) e la scrittura
     resta dietro `--attivo`: in ombra il comando compone la tabella, dice quante
-    righe sarebbero scritte e non tocca niente. Se `dominio_ufficiale` non
-    esiste ancora, `db.upsert_domini` degrada con un log.
+    righe sarebbero scritte e non tocca niente. In attivo si scrivono solo gli
+    host nuovi (`db.inserisci_domini_nuovi`): una riga esistente non cambia mai.
+    Se `dominio_ufficiale` non esiste ancora, la scrittura degrada con un log.
     """
     def parametri(opzioni: Opzioni) -> dict:
         enti, _ = _valore_opzione(opzioni.resto, "--enti")
         if "--import" not in opzioni.resto:
             raise ErroreOpzioni("domini: specificare --import (unica modalita' prevista)")
-        return {"enti": enti}
+        if "--scarica-enti" not in opzioni.resto:
+            return {"enti": enti}
+        # Giro 2, §19.8: l'import COMPLETO di IndicePA, scaricato. Solo host
+        # assenti, mai UPDATE o DELETE; la modalita' segue
+        # VERIFICA_STATO_MODALITA se non si scrive --ombra/--attivo.
+        if enti is not None:
+            raise ErroreOpzioni("domini: --enti e --scarica-enti insieme non hanno senso: "
+                                "o il foglio locale o quello scaricato")
+        return {"enti": None, "scarica_enti": True}
 
     return _esegui_v11(
         "domini", "run_domini_import", argv,
-        ammessi=FLAG_MODALITA | frozenset({"--import"}),
+        ammessi=FLAG_MODALITA | frozenset({"--import", "--scarica-enti"}),
         con_valore=frozenset({"--enti"}), extra=parametri,
     )
 
@@ -1089,32 +1119,12 @@ def _stato_salute():
     Fino al 26/09/2026 conteneva solo la configurazione, e un exit 0 non
     diceva niente del monitor, dei tetti o dei lock. Le misure sono sole
     letture (`db.misure_salute`); se il DB non risponde non si solleva: diventa
-    un allarme, con il messaggio passato da `redigi`.
+    un allarme, con il messaggio passato da `redigi`. Il corpo sta in
+    `sorveglianza.fotografa` (giro 2, §10), che aggiunge il servizio del sender,
+    la memoria e il job orario; il nome resta perche' i test lo sostituiscono.
     """
-    from datetime import datetime, timezone
-    from .logger import redigi
-    from .settings import get_settings
-    from .telemetria import Stato, stato_da_misure
-    impostazioni = get_settings()
-    try:
-        from .db import misure_salute
-        adesso = datetime.now(tz=timezone.utc)
-        campi = stato_da_misure(
-            misure_salute(adesso=adesso),
-            adesso=adesso,
-            tetto_crediti_mese=impostazioni.tetto_crediti_mese,
-            tetto_usd_mese=impostazioni.tetto_usd_mese,
-        )
-    except Exception as e:
-        campi = {"misure_db_errore": redigi(f"{type(e).__name__}: {e}")[:240]}
-    return Stato(
-        modalita_monitor=impostazioni.monitor_modalita,
-        indexnow_configurata=bool(impostazioni.indexnow_api_key),
-        monitor_giri_validi=impostazioni.monitor_giri_validi,
-        tipi_attivi=impostazioni.monitor_tipi_attivi,
-        tipi_attivi_ignorati=impostazioni.monitor_tipi_attivi_ignorati,
-        **campi,
-    )
+    from .sorveglianza import fotografa
+    return fotografa().stato
 
 
 def _cmd_salute(argv: list[str]) -> int:
@@ -1134,9 +1144,226 @@ def _cmd_salute(argv: list[str]) -> int:
         # sempre, perche' dicono cosa aspettarsi nel box «Aggiornamenti».
         print("salute: tipi attivi del monitor: "
               + (", ".join(esito.tipi_attivi) or "nessuno"))
+        # I codici stabili (giro 2, §8): gli stessi del riepilogo del pannello
+        # e dei paragrafi di RIPRESA §3.1.
+        print("salute: codici: "
+              + (", ".join(f"{v.codice} ({v.livello})" for v in esito.voci) or "nessuno"))
         if not esito.allarmi and not esito.avvisi:
             print("salute: nessun allarme")
     return esito.exit_code
+
+
+def _cmd_sorveglia(argv: list[str]) -> int:
+    """`sorveglia [--dry-run]`: il riepilogo per il pannello (giro 2, §10).
+
+    Lo lancia il timer di systemd ogni 15 minuti. Dal Mac solo `--dry-run`:
+    legge (anche la memoria), stampa il JSON validato e i codici, non scrive.
+    Exit 0 anche con allarmi, 1 su un errore interno o un upsert fallito.
+    """
+    opzioni = _leggi_opzioni(argv)
+    _avvisa_ignorati("sorveglia", opzioni)
+    if opzioni.limit is not None:
+        logger.warning("[main] sorveglia: --limit non ha senso qui, ignorato")
+    from .sorveglianza import esegui
+    return esegui(dry_run=opzioni.dry_run)
+
+
+# --- percorso A del giro 2 (contratto `bandi-giro-2` §13 e §19.12) ---------
+#
+# Tre comandi che non passano da `_esegui_v11`: nessuno scrive (l'unica
+# scrittura del percorso A la fa il passo del giro), quindi niente
+# `--attivo`/`--ombra`. Le opzioni con valore si leggono qui, una alla volta,
+# e un token che resta e' un errore come nei comandi v11.
+
+FASI_VERIFICA_STATO: tuple[str, ...] = ("controlli", "ingresso")
+RAMI_REPORT: tuple[str, ...] = ("aperto", "apertura")
+#: Le colonne del report (§13), nell'ordine in cui si stampano.
+COLONNE_REPORT: tuple[str, ...] = (
+    "id", "stato_effettivo", "motivo", "pagina", "metodo", "estrattore", "etichetta",
+    "termine_indicato", "termine_indicato_fonte", "proposta", "trattenuta",
+    "forse_non_un_bando", "esito",
+)
+#: I contatori di `verifica-stato --dry-run` che si stampano uno per riga.
+CONTATORI_VERIFICA_A_VIDEO: tuple[str, ...] = (
+    "modalita", "fase", "candidati", "letti", "illeggibili", "confermati", "smentiti",
+    "smentiti_generico", "non_decisivi", "senza_conferma", "segnalati", "pagine_rimosse",
+    "errori_rete", "termini_calcolati", "ingresso_letti", "ingresso_date_scritte",
+    "ingresso_chiusi", "trattenuti", "rilasciati_a_tempo", "trattenuti_senza_appiglio",
+    # Un primo 404 o un HTTP non 2xx: rilettura domani, non un errore di rete.
+    "da_riprovare", "eventi_non_leggibili",
+    "motivo_saltato",
+)
+
+
+def _opzioni_con_valore(
+    nome: str, opzioni: Opzioni, flag: frozenset[str], con_valore: tuple[str, ...],
+) -> dict[str, str | None]:
+    """Legge le opzioni con valore del comando e rifiuta ogni token che resta."""
+    resto = opzioni.resto
+    valori: dict[str, str | None] = {}
+    for opzione in con_valore:
+        valori[opzione], resto = _valore_opzione(resto, opzione)
+    ignorati = [t for t in resto if t not in flag]
+    if ignorati:
+        raise ErroreOpzioni(f"{nome}: opzioni non riconosciute: {ignorati}")
+    return valori
+
+
+def _cmd_verifica_stato(argv: list[str]) -> int:
+    """`verifica-stato --dry-run [--fase ingresso] [--ids 1,2] [--senza-modello] [--limit N]`.
+
+    Solo la prova: non scrive, non prende lock, non scrive `pipeline_run`
+    (§13). Le scritture le fa il passo del giro. Stampa i contatori e le
+    proposte con i gate falliti. Dal Mac solo con `--senza-modello` (§1, §19.1).
+    """
+    opzioni = _leggi_opzioni(argv)
+    valori = _opzioni_con_valore("verifica-stato", opzioni,
+                                 frozenset({"--senza-modello"}), ("--fase", "--ids"))
+    if not opzioni.dry_run:
+        raise ErroreOpzioni(
+            "verifica-stato: solo con --dry-run; le letture e gli eventi li scrive il passo "
+            "del giro")
+    fase = valori["--fase"] or "controlli"
+    if fase not in FASI_VERIFICA_STATO:
+        raise ErroreOpzioni(f"verifica-stato: --fase vale {' o '.join(FASI_VERIFICA_STATO)}")
+    ids = _ids_opzione(valori["--ids"])
+    senza_modello = "--senza-modello" in opzioni.resto
+    if not senza_modello:
+        print("verifica-stato: senza --senza-modello la prova usa il modello e costa; "
+              "dal Mac si lancia solo con --senza-modello", file=sys.stderr)
+    esecuzione, motivo = _modulo_opzionale("verifica_stato", "esegui_passo")
+    if esecuzione is None:
+        return _riporta_modulo_assente("verifica-stato", "verifica_stato", motivo, "esegui_passo")
+    esito = asyncio.run(esecuzione(
+        None, fase=fase, dry_run=True, senza_modello=senza_modello, ids=ids,
+        limit=opzioni.limit,
+    ))
+    esito = esito if isinstance(esito, dict) else {}
+    status = esito.get("status")
+    contatori = esito.get("counters") if isinstance(esito.get("counters"), dict) else {}
+    print(f"verifica-stato: fase {fase}, status {status}")
+    if status == "saltato" and contatori.get("motivo_saltato") == "migrazione_assente":
+        print("verifica-stato: migrazione 13 assente, niente da verificare")
+    for chiave in CONTATORI_VERIFICA_A_VIDEO:
+        if contatori.get(chiave) not in (None, "", {}, []):
+            print(f"  {chiave}: {contatori[chiave]}")
+    proposte = esito.get("proposte") if isinstance(esito.get("proposte"), list) else []
+    for proposta in proposte:
+        if not isinstance(proposta, dict):
+            continue
+        gate = proposta.get("gate") if isinstance(proposta.get("gate"), dict) else {}
+        falliti = ", ".join(str(g) for g in gate.get("falliti") or ()) or "nessuno"
+        pezzi = [str(proposta.get("bando_id", proposta.get("id"))), str(proposta.get("tipo") or "?")]
+        if proposta.get("campo"):
+            pezzi.append(str(proposta["campo"]))
+        esito_proposta = proposta.get("esito") or proposta.get("trattenuta") or "?"
+        print(f"  proposta {' '.join(pezzi)} -> {esito_proposta} | gate falliti: {falliti}")
+    print("verifica-stato: --dry-run, niente scritto")
+    return EXIT_ERRORE if status == "errore" else EXIT_OK
+
+
+def _cella(valore: Any, larghezza: int = 28) -> str:
+    """Un valore del report in una cella di tabella: una riga, tagliata."""
+    if isinstance(valore, dict):
+        valore = valore.get("tipo") or valore.get("esito") or "si"
+    testo = "" if valore is None else str(valore)
+    testo = " ".join(testo.split())
+    return testo if len(testo) <= larghezza else testo[:larghezza - 1] + "…"
+
+
+def _cmd_report_verifica_stato(argv: list[str]) -> int:
+    """`report-verifica-stato [--json] [--ramo aperto|apertura] [--motivo M] [--verita]`.
+
+    Sola lettura (§13, §19.12): candidati e letture dal DB, righe del report da
+    `verifica_stato.righe_report`. `--verita` confronta il report INTERO (senza
+    i filtri di ramo e motivo) con `VERITA_NOTA`, stampa `DIFFORME …` per ogni
+    id diverso dall'atteso e chiude con `difformi: N`; exit 1 se N > 0 (passo 7
+    di §17: non si attiva con anche una sola difformita').
+    """
+    opzioni = _leggi_opzioni(argv)
+    valori = _opzioni_con_valore("report-verifica-stato", opzioni,
+                                 frozenset({"--json", "--verita"}), ("--ramo", "--motivo"))
+    ramo, motivo = valori["--ramo"], valori["--motivo"]
+    if ramo is not None and ramo not in RAMI_REPORT:
+        raise ErroreOpzioni(f"report-verifica-stato: --ramo vale {' o '.join(RAMI_REPORT)}")
+    if motivo is not None:
+        from .stato_bando import MOTIVI_DA_VERIFICARE
+        if motivo not in MOTIVI_DA_VERIFICARE:
+            raise ErroreOpzioni("report-verifica-stato: --motivo vale uno di "
+                                + ", ".join(MOTIVI_DA_VERIFICARE))
+    if opzioni.dry_run or opzioni.limit is not None:
+        logger.warning("[main] report-verifica-stato: --dry-run e --limit non servono, ignorati")
+    righe_report, _ = _modulo_opzionale("verifica_stato", "righe_report")
+    confronta, motivo_assente = _modulo_opzionale("verifica_stato", "confronta_verita")
+    if righe_report is None or confronta is None:
+        return _riporta_modulo_assente("report-verifica-stato", "verifica_stato",
+                                       motivo_assente or MODULO_ASSENTE, "righe_report")
+    from . import db
+    righe = db.select_da_verificare()
+    letture = db.select_letture_stato(ids=[r.get("id") for r in righe if r.get("id") is not None])
+    if not letture:
+        print("report-verifica-stato: nessuna lettura in bando_controllo "
+              "(migrazione 13 assente o passo mai girato)", file=sys.stderr)
+    report = righe_report(righe, letture, ramo=ramo, motivo=motivo)
+    difformi = None
+    if "--verita" in opzioni.resto:
+        intero = report if ramo is None and motivo is None else righe_report(righe, letture)
+        difformi = list(confronta(intero))
+
+    if "--json" in opzioni.resto:
+        import json
+        uscita: Any = report if difformi is None else {"report": report, "difformi": difformi}
+        print(json.dumps(uscita, ensure_ascii=False, sort_keys=True, default=str))
+    else:
+        print("  ".join(c.upper() for c in COLONNE_REPORT))
+        for riga in report:
+            print("  ".join(_cella(riga.get(c)) for c in COLONNE_REPORT))
+        print(f"report-verifica-stato: {len(report)} righe")
+        for voce in difformi or ():
+            print(f"DIFFORME {voce.get('id')} atteso={voce.get('atteso')} "
+                  f"trovato={voce.get('trovato')}")
+    if difformi is not None:
+        if "--json" not in opzioni.resto:
+            print(f"difformi: {len(difformi)}")
+        return EXIT_ERRORE if difformi else EXIT_OK
+    return EXIT_OK
+
+
+def _cmd_gemelli(argv: list[str]) -> int:
+    """`gemelli --dry-run [--limit N]`: le fusioni che il passo del giro delle 06 farebbe.
+
+    Solo in ombra: le fusioni automatiche le fa il passo del giro (§19.9),
+    quelle a mano `fondi-doppioni`. `--limit` e' il tetto delle fusioni
+    elencate; senza, quello del giro (`GEMELLI_FUSIONI_PER_GIRO`).
+    """
+    opzioni = _leggi_opzioni(argv)
+    _opzioni_con_valore("gemelli", opzioni, frozenset(), ())
+    if not opzioni.dry_run:
+        raise ErroreOpzioni(
+            "gemelli: solo con --dry-run; le fusioni automatiche le fa il passo del giro "
+            "delle 06, quelle a mano fondi-doppioni")
+    from . import gemelli
+    tetto = opzioni.limit
+    if tetto is None:
+        tetto = int(gemelli._impostazione("gemelli_fusioni_per_giro", gemelli.FUSIONI_PER_GIRO))
+        if tetto <= 0:
+            print("gemelli: il passo del giro e' spento (GEMELLI_FUSIONI_PER_GIRO=0); "
+                  f"elenco con il tetto predefinito ({gemelli.FUSIONI_PER_GIRO})")
+            tetto = gemelli.FUSIONI_PER_GIRO
+    esito = gemelli.esegui_passo(None, modalita=gemelli.MODALITA_OMBRA, tetto=tetto)
+    print(f"gemelli: status {esito.get('status')}")
+    if esito.get("status") == "errore":
+        print(f"gemelli: errore ({esito.get('motivo')})", file=sys.stderr)
+        return EXIT_ERRORE
+    for chiave in ("esaminati", "coppie_per_criterio", "coppie_scartate_per_prudenza",
+                   "hub_esclusi", "gruppi", "gruppi_oltre_due", "fusioni_previste",
+                   "oltre_tetto", "saltato"):
+        if chiave in esito:
+            print(f"  {chiave}: {esito[chiave]}")
+    for doppione, master, criterio in esito.get("fusioni") or ():
+        print(f"  {doppione} -> {master} ({criterio})")
+    print("gemelli: --dry-run, niente fuso")
+    return EXIT_OK
 
 
 # Ogni comando riceve l'argv residuo (senza il nome del comando) e passa da
@@ -1161,6 +1388,10 @@ _COMMANDS: dict[str, Callable[[list[str]], int | None]] = {
     "archivia-processed": _cmd_archivia_processed,
     "domini": _cmd_domini,
     "salute": _cmd_salute,
+    "sorveglia": _cmd_sorveglia,
+    "verifica-stato": _cmd_verifica_stato,
+    "report-verifica-stato": _cmd_report_verifica_stato,
+    "gemelli": _cmd_gemelli,
 }
 
 

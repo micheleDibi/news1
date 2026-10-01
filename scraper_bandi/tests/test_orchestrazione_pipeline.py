@@ -170,8 +170,9 @@ class _ConPipeline(unittest.TestCase):
         self.addCleanup(self.pila.close)
 
     def esegui(self, *, giro: str | None = "06:00", monitor=None, resolver=None,
-               modalita: str = "ombra", chiave: str = "") -> dict:
-        extra = {}
+               modalita: str = "ombra", chiave: str = "", verifica: str | None = None,
+               **moduli) -> dict:
+        extra = dict(moduli)
         if monitor is not None:
             extra["monitoraggio"] = monitor
         if resolver is not None:
@@ -181,6 +182,8 @@ class _ConPipeline(unittest.TestCase):
         finte = types.SimpleNamespace(
             monitor_modalita=modalita, monitor_giri=("06:00", "18:00"),
             anthropic_api_key=chiave)
+        if verifica is not None:
+            finte.verifica_stato_modalita = verifica
         with _ambiente(**extra), patch.object(pipeline, "_get_settings", return_value=finte):
             return asyncio.run(pipeline.run_bandi_pipeline(giro))
 
@@ -190,8 +193,9 @@ class TestOrdineDegliStep(_ConPipeline):
         stato = self.esegui(monitor=_monitoraggio(), resolver=_fonte_ufficiale())
         self.assertEqual(
             list(stato["steps"]),
-            ["discover", "scrape", "preprocess", "enrich", "resolver",
-             "ricontrolli", "seo", "monitor"],
+            ["discover", "scrape", "preprocess", "enrich", "domini", "resolver",
+             "ricontrolli", "verifica_stato_ingresso", "seo", "monitor",
+             "verifica_stato", "gemelli"],
         )
         self.assertEqual(stato["status"], "completed")
 
@@ -575,6 +579,178 @@ class TestFunzioniPure(unittest.TestCase):
         self.assertFalse(pipeline._interrotto_per_tetto({"steps": {"a": {"counters": {}}}}))
         self.assertTrue(pipeline._interrotto_per_tetto(
             {"steps": {"a": {"counters": {}}, "b": {"counters": {"interrotto_per_tetto": True}}}}))
+
+
+
+# --- giro 2 (contratto `bandi-giro-2` §11 e §19.10) ---------------------------
+
+def _verifica_stato(risposta: dict | None = None):
+    modulo = types.ModuleType("app.verifica_stato")
+    modulo.run = AsyncMock(return_value=risposta if risposta is not None else {
+        "status": "ok", "counters": {}, "slug_modificati": [], "ids_da_rigenerare": []})
+    return modulo
+
+
+def _gemelli(risposta: dict | None = None):
+    modulo = types.ModuleType("app.gemelli")
+    # Sincrona, come quella vera: `_safe_run` deve saperla chiamare.
+    modulo.esegui_passo = MagicMock(return_value=risposta if risposta is not None else {
+        "status": "ok", "fusioni": []})
+    return modulo
+
+
+class TestPassiDelGiro2(_ConPipeline):
+    def _fasi(self, verifica):
+        return [c.kwargs.get("fase") for c in verifica.run.await_args_list]
+
+    def test_verifica_stato_nei_giri_del_monitor_e_ingresso_in_ogni_giro(self):
+        for giro, fasi in (("06:00", ["ingresso", "controlli"]), ("18:00", ["ingresso", "controlli"]),
+                           ("12:00", ["ingresso"]), ("boot", ["ingresso"]), (None, ["ingresso", "controlli"])):
+            with self.subTest(giro=giro):
+                verifica = _verifica_stato()
+                stato = self.esegui(giro=giro, verifica_stato=verifica, monitor=_monitoraggio())
+                self.assertEqual(self._fasi(verifica), fasi)
+                if "controlli" not in fasi:
+                    self.assertEqual(stato["steps"]["verifica_stato"]["saltato"], "giro_non_previsto")
+
+    def test_ordine_ingresso_prima_della_seo_controlli_dopo_il_monitor(self):
+        ordine: list[str] = []
+        verifica, monitor = _verifica_stato(), _monitoraggio()
+
+        async def passo(**kwargs):
+            ordine.append(f"verifica:{kwargs['fase']}")
+            return {"status": "ok", "counters": {}}
+
+        async def segna_monitor(**_kwargs):
+            ordine.append("monitor")
+            return {"status": "ok"}
+
+        async def segna_seo(**_kwargs):
+            ordine.append("seo")
+            return {}
+
+        verifica.run = AsyncMock(side_effect=passo)
+        monitor.run = AsyncMock(side_effect=segna_monitor)
+        with patch.object(pipeline, "_seo_run", AsyncMock(side_effect=segna_seo)):
+            self.esegui(verifica_stato=verifica, monitor=monitor)
+        self.assertEqual(ordine, ["verifica:ingresso", "seo", "monitor", "verifica:controlli"])
+
+    def test_la_fase_controlli_riceve_l_adattatore_della_prosa(self):
+        verifica = _verifica_stato()
+        adattatore = object()
+        with patch.object(pipeline, "_rigenerazione_di_produzione", return_value=adattatore):
+            self.esegui(verifica_stato=verifica)
+        controlli = next(c for c in verifica.run.await_args_list if c.kwargs["fase"] == "controlli")
+        self.assertIs(controlli.kwargs["rigenerazione"], adattatore)
+        ingresso = next(c for c in verifica.run.await_args_list if c.kwargs["fase"] == "ingresso")
+        self.assertNotIn("rigenerazione", ingresso.kwargs)
+
+    def test_con_la_verifica_attiva_l_adattatore_c_e_anche_a_monitor_in_ombra(self):
+        # Revisione del 01/10: prima arrivava solo con il monitor attivo.
+        verifica, monitor = _verifica_stato(), _monitoraggio()
+        self.esegui(verifica_stato=verifica, monitor=monitor, modalita="ombra", verifica="attivo")
+        controlli = next(c for c in verifica.run.await_args_list if c.kwargs["fase"] == "controlli")
+        adattatore = controlli.kwargs["rigenerazione"]
+        self.assertIs(adattatore.func, rigenera_vero.rigenera)
+        self.assertEqual(adattatore.keywords, {"attivo": True, "scrivi": rigenera_vero.scrivi_su_db})
+        # Al monitor in ombra senza tipi attivi no: lui non scrive.
+        self.assertIsNone(monitor.run.await_args.kwargs["rigenerazione"])
+
+    def test_verifica_in_ombra_e_monitor_in_ombra_nessun_adattatore(self):
+        verifica = _verifica_stato()
+        self.esegui(verifica_stato=verifica, modalita="ombra", verifica="ombra")
+        controlli = next(c for c in verifica.run.await_args_list if c.kwargs["fase"] == "controlli")
+        self.assertIsNone(controlli.kwargs["rigenerazione"])
+
+    def test_la_riga_pipeline_porta_solo_esito_e_contatori_della_verifica(self):
+        verifica = _verifica_stato({
+            "status": "ok", "counters": {"esaminati": 4, "slug_modificati": ["bando-chiuso"]},
+            "slug_modificati": ["bando-chiuso"], "ids_da_rigenerare": [7, 8],
+            "proposte": [{"bando_id": 7, "stato_proposto": "chiuso"}]})
+        self.esegui(verifica_stato=verifica)
+        riga = self.righe[-1]
+        attesi = {"status": "ok", "counters": {"esaminati": 4, "slug_modificati": ["bando-chiuso"]}}
+        self.assertEqual(riga.contatori["verifica_stato"], attesi)
+        self.assertEqual(riga.contatori["verifica_stato_ingresso"], attesi)
+        # Gli slug restano quelli del giro: IndexNow e la colonna della riga.
+        self.assertEqual(riga.slug_modificati, ("bando-chiuso",))
+        self.assertEqual(self.invii, [["https://edunews24.it/bandi/bando-chiuso"]])
+
+    def test_gli_slug_della_verifica_vanno_a_indexnow(self):
+        verifica = _verifica_stato({"status": "ok", "counters": {},
+                                    "slug_modificati": ["bando-chiuso"], "ids_da_rigenerare": [7]})
+        self.esegui(verifica_stato=verifica)
+        self.assertEqual(self.invii, [["https://edunews24.it/bandi/bando-chiuso"]])
+
+    def test_un_errore_interno_del_passo_e_un_passo_non_ok(self):
+        verifica = _verifica_stato({"status": "errore", "counters": {}})
+        stato = self.esegui(verifica_stato=verifica)
+        self.assertEqual(stato["steps"]["verifica_stato"]["status"], "error")
+        self.assertEqual(stato["status"], "partial")
+        riga = self.righe[-1]
+        self.assertIn("verifica_stato", riga.contatori["passi_non_ok"])
+
+    def test_gemelli_solo_alle_06_e_funzione_sincrona(self):
+        gemelli = _gemelli()
+        stato = self.esegui(giro="06:00", gemelli=gemelli)
+        gemelli.esegui_passo.assert_called_once_with(giro="06:00")
+        self.assertEqual(stato["steps"]["gemelli"]["status"], "ok")
+        gemelli = _gemelli()
+        stato = self.esegui(giro="18:00", gemelli=gemelli)
+        gemelli.esegui_passo.assert_not_called()
+        self.assertNotIn("gemelli", stato["steps"])
+
+    def test_domini_alle_06_se_dovuto(self):
+        fonte = _fonte_ufficiale()
+        fonte.run_domini_import = AsyncMock(return_value={"status": "ok", "indicepa_esito": "ombra"})
+        with patch.object(pipeline, "_import_domini_dovuto", return_value=True):
+            stato = self.esegui(giro="06:00", resolver=fonte)
+        fonte.run_domini_import.assert_awaited_once_with(giro="06:00", scarica_enti=True)
+        self.assertEqual(stato["steps"]["domini"]["status"], "ok")
+        fonte.run_domini_import.reset_mock()
+        with patch.object(pipeline, "_import_domini_dovuto", return_value=False):
+            stato = self.esegui(giro="06:00", resolver=fonte)
+        fonte.run_domini_import.assert_not_awaited()
+        self.assertEqual(stato["steps"]["domini"]["saltato"], "gia_fatto_nel_mese")
+        with patch.object(pipeline, "_import_domini_dovuto", return_value=True):
+            stato = self.esegui(giro="12:00", resolver=fonte)
+        fonte.run_domini_import.assert_not_awaited()
+        self.assertNotIn("domini", stato["steps"])
+
+    def test_la_tabella_dei_domini_si_azzera_a_inizio_giro(self):
+        ordine: list[str] = []
+        fonte = _fonte_ufficiale()
+        fonte.azzera_tabella_corrente = MagicMock(side_effect=lambda: ordine.append("azzera"))
+
+        async def discover(**_kwargs):
+            ordine.append("discover")
+            return {}
+
+        with patch.object(pipeline, "_discover_run", AsyncMock(side_effect=discover)):
+            self.esegui(resolver=fonte)
+        self.assertEqual(ordine[:2], ["azzera", "discover"])
+
+    def test_domini_dovuto(self):
+        from datetime import datetime, timedelta, timezone
+        roma = timezone(timedelta(hours=2))
+        adesso = datetime(2026, 10, 1, 6, 0, tzinfo=roma)
+        del_mese = {"avviato_at": "2026-10-01T04:00:30Z", "esito": "ombra"}
+        del_mese_prima = {"avviato_at": "2026-09-30T21:00:00Z", "esito": "ok"}
+        self.assertTrue(pipeline.domini_dovuto(adesso, [], False))
+        # Ombra: 'ombra' conta come fatto; attivo: solo 'ok'.
+        self.assertFalse(pipeline.domini_dovuto(adesso, [del_mese], False))
+        self.assertTrue(pipeline.domini_dovuto(adesso, [del_mese], True))
+        # 23:00 del 30/09 a Roma e' ancora settembre: il mese di ottobre e' da fare.
+        self.assertTrue(pipeline.domini_dovuto(adesso, [del_mese_prima], True))
+        # Un import fallito si ritenta.
+        self.assertTrue(pipeline.domini_dovuto(
+            adesso, [{"avviato_at": "2026-10-01T04:00:00Z", "esito": "download_fallito"}], False))
+        self.assertTrue(pipeline.domini_dovuto(adesso, [{"avviato_at": "boh", "esito": "ok"}], True))
+
+    def test_import_dovuto_senza_db_non_importa(self):
+        # Nel package finto non c'e' `app.db`: la lettura fallisce e non si importa.
+        with _ambiente():
+            self.assertFalse(pipeline._import_domini_dovuto())
 
 
 if __name__ == "__main__":

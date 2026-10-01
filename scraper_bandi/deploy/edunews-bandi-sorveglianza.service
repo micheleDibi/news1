@@ -1,0 +1,32 @@
+# Sorveglianza dei bandi: il riepilogo di salute per il pannello di BandoFit
+# (contratto `bandi-giro-2` §10). `python -m app sorveglia` legge il DB (solo
+# GET) e lo stato del sender da systemd, poi scrive la riga unica di
+# `monitoraggio_riepilogo` (migrazione 12). Non manda notifiche.
+# La avvia il timer `edunews-bandi-sorveglianza.timer` ogni 15 minuti.
+# Nessun file di stato: la memoria sta nella riga del riepilogo.
+#
+# Esempio: sostituire <UTENTE> con l'utente che fa girare il sender e
+# controllare il percorso del repo (sul server e' ~/projects/news1).
+#
+# Installazione, una volta sola (RIPRESA §1, «Giro 2»):
+#   sudo cp edunews-bandi-sorveglianza.service \
+#     edunews-bandi-sorveglianza.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now edunews-bandi-sorveglianza.timer
+# Verifica:
+#   systemctl list-timers edunews-bandi-sorveglianza.timer
+#   journalctl -u edunews-bandi-sorveglianza --since -1h
+
+[Unit]
+Description=Sorveglianza bandi: riepilogo di salute per il pannello
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=<UTENTE>
+WorkingDirectory=/home/<UTENTE>/projects/news1/scraper_bandi
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/home/<UTENTE>/projects/news1/scraper_bandi/.venv/bin/python -m app sorveglia
+TimeoutStartSec=300
+Nice=10

@@ -3,6 +3,8 @@
  * Le tre tessere dell'hero (aperti, in scadenza, in apertura). Sono link veri:
  * senza JavaScript portano alla lista filtrata, con JavaScript lo script le
  * intercetta (`data-naviga`). Regione del frammento: i link cambiano con i filtri.
+ * La tessera degli «in apertura» puo' portare una nota («di cui N da
+ * verificare»): sta dentro il link, cosi' si legge insieme al numero.
  */
 import type { Tessera } from '../../lib/bandi/elenco';
 
@@ -22,7 +24,7 @@ const { tessere } = Astro.props;
       class={`flex cursor-pointer items-baseline gap-3 rounded-xl border px-[18px] py-3.5 text-left text-white no-underline hover:border-white/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${t.attiva ? 'border-white bg-white/[.14]' : 'border-white/[.18] bg-white/[.05]'}`}
     >
       <span class="font-heading text-[30px] font-bold leading-none tabular-nums text-white">{t.numero}</span>
-      <span class="text-[14px] leading-[1.35] text-white/[.85]">{t.etichetta}</span>
+      <span class="text-[14px] leading-[1.35] text-white/[.85]">{t.etichetta}{t.nota && <span class="block text-[12.5px] text-white/[.75]">{t.nota}</span>}</span>
     </a>
   ))}
 </div>

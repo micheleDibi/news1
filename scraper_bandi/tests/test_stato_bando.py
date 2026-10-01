@@ -9,10 +9,13 @@ solo linguaggio, uno dei due runner fallisce.
 """
 import ast
 import hashlib
+import inspect
 import json
+import re
 import unittest
 from datetime import date, datetime, time, timezone
 from pathlib import Path
+from unittest import mock
 
 from tests.supporto import APP, REPO, carica_modulo, carica_per_percorso
 
@@ -48,6 +51,31 @@ def _canonico(valore):
 
 def _chiave(caso):
     return "\u0000".join(_canonico(caso[campo]) for campo in _CAMPI_IMPRONTA)
+
+
+# Gli ingressi della regola `stato_da_verificare` nell'ordine della firma
+# (contratto interno del giro 2, §3 con §19.3). L'impronta di un caso della
+# sezione `certezza` e' gemella di `chiaveCertezza()` nel test TypeScript: id,
+# i sedici ingressi e l'atteso; `regola` e `nota` non entrano.
+_INGRESSI_CERTEZZA = (
+    "stato", "data_apertura", "apertura_verificata", "ora_apertura", "data_scadenza",
+    "ora_scadenza", "pubblicato_at", "previsto_entro", "termine_indicato", "stato_letto",
+    "stato_letto_su", "stato_letto_at", "stato_letto_metodo", "esaminato_attivo_at",
+    "segnale_aggregatore_at", "adesso",
+)
+
+
+def _chiave_certezza(caso):
+    campi = ("id",) + _INGRESSI_CERTEZZA + ("atteso",)
+    return "\u0000".join(_canonico(caso[campo]) for campo in campi)
+
+
+def _da_verificare(caso, modulo=stato_bando):
+    """I timestamp restano testo, come arrivano da PostgREST; `adesso` e' un datetime."""
+    return modulo.stato_da_verificare(
+        *[caso[campo] for campo in _INGRESSI_CERTEZZA[:-1]],
+        datetime.fromisoformat(caso["adesso"]),
+    )
 
 
 def _stato(caso, modulo=stato_bando):
@@ -147,6 +175,26 @@ class TestTransizioni(unittest.TestCase):
         self.assertTrue(riaperture)
         for t in riaperture:
             self.assertEqual(t["attore"], "worker", t["evento"])
+        # il worker porta un «in apertura» a chiuso SOLO con 'chiusura'
+        # (contratto interno del giro 2, §4: etichetta strutturata, doppia lettura)
+        chiusure = [
+            t for t in righe
+            if t["attore"] == "worker" and t["da"] == "in apertura prossimamente" and t["a"] == "chiuso"
+        ]
+        self.assertTrue(chiusure)
+        for t in chiusure:
+            self.assertEqual(t["evento"], "chiusura")
+
+    def test_riga_24_entra_con_la_13(self):
+        """23 righe dalla 04, una dalla 13: il seed della 04 non cambia."""
+        righe = self.dati["transizioni"]
+        self.assertEqual(len(stato_bando.TRANSIZIONI), 24)
+        self.assertEqual(len([t for t in righe if "migrazione" not in t]), 23)
+        self.assertEqual(
+            [(t["da"], t["a"], t["attore"], t["evento"], t["migrazione"])
+             for t in stato_bando.TRANSIZIONI if "migrazione" in t],
+            [("in apertura prossimamente", "chiuso", "worker", "chiusura", 13)],
+        )
 
 
 class TestStatoEffettivo(unittest.TestCase):
@@ -220,6 +268,200 @@ class TestStatoEffettivo(unittest.TestCase):
         )
 
 
+class TestCertezza(unittest.TestCase):
+    """Regola `stato_da_verificare` v2, sezione `certezza` di casi.json."""
+
+    dati = _carica()["certezza"]
+    REGOLE = (
+        ("R0",) + tuple(f"I{n}" for n in range(1, 7)) + ("I6bis", "I7")
+        + tuple(f"A{n}" for n in range(1, 9))
+    )
+
+    def test_fixture_protetto(self):
+        self.assertEqual(self.dati["versione"], 2)
+        casi = self.dati["casi"]
+        self.assertGreaterEqual(len(casi), 80)
+        self.assertGreaterEqual(len(casi), self.dati["conteggio_minimo"])
+        for caso in casi:
+            with self.subTest(caso["id"]):
+                self.assertEqual(
+                    hashlib.sha256(_chiave_certezza(caso).encode("utf-8")).hexdigest(),
+                    caso["sha256"],
+                    "il fixture e' stato modificato senza rigenerare lo sha256",
+                )
+        self.assertEqual(len({c["sha256"] for c in casi}), len(casi))
+        self.assertEqual(len({c["id"] for c in casi}), len(casi))
+
+    def test_vocabolario_e_parametri_allineati(self):
+        self.assertEqual(list(stato_bando.MOTIVI_DA_VERIFICARE), self.dati["motivi"])
+        self.assertEqual(list(stato_bando.STATI_LETTI), self.dati["stati_letti"])
+        self.assertEqual(list(stato_bando.METODI_LETTURA), self.dati["metodi"])
+        self.assertEqual(
+            {
+                "giorni_grazia_pubblicazione": stato_bando.GIORNI_GRAZIA_PUBBLICAZIONE,
+                "giorni_validita_conferma": stato_bando.GIORNI_VALIDITA_CONFERMA,
+                "giorni_grazia_ramo_a": stato_bando.GIORNI_GRAZIA_RAMO_A,
+            },
+            self.dati["parametri"],
+        )
+
+    def test_ogni_regola_e_ogni_motivo_coperti(self):
+        casi = self.dati["casi"]
+        for regola in self.REGOLE:
+            self.assertTrue([c for c in casi if c["regola"] == regola], regola)
+        for motivo in self.dati["motivi"]:
+            self.assertTrue([c for c in casi if c["atteso"] == motivo], motivo)
+        for caso in casi:
+            self.assertIn(caso["regola"], self.REGOLE, caso["id"])
+
+    def test_tabella_dei_casi_condivisa(self):
+        for caso in self.dati["casi"]:
+            with self.subTest(caso["id"]):
+                self.assertEqual(_da_verificare(caso), caso["atteso"], f"{caso['regola']}: {caso['nota']}")
+
+    def test_accetta_date_e_datetime_oltre_alle_stringhe(self):
+        adesso = datetime(2026, 9, 30, 12, 0, tzinfo=stato_bando.ROMA)
+        conferma = datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc)
+        esame = datetime(2026, 9, 29, 8, 0, tzinfo=timezone.utc)
+        pubblicato = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+        # conferma dell'estrattore di 5 giorni fa: nessun motivo
+        self.assertIsNone(stato_bando.stato_da_verificare(
+            "aperto", None, None, None, None, None, pubblicato, None, None,
+            "aperto", "aperto", conferma, "estrattore", esame, None, adesso,
+        ))
+        # termine come date: ieri e' passato, oggi no
+        self.assertEqual(stato_bando.stato_da_verificare(
+            "aperto", None, None, None, None, None, pubblicato, None, date(2026, 9, 29),
+            None, None, None, None, esame, None, adesso,
+        ), "termine_passato")
+        self.assertIsNone(stato_bando.stato_da_verificare(
+            "aperto", None, None, None, None, None, pubblicato, None, date(2026, 9, 30),
+            None, None, None, None, esame, None, adesso,
+        ))
+        # data_apertura come date nel ramo I
+        self.assertEqual(stato_bando.stato_da_verificare(
+            "in apertura prossimamente", date(2026, 9, 29), False, None, None, None,
+            pubblicato, None, None, None, None, None, None, None, None, adesso,
+        ), "data_apertura_passata")
+
+    def _conferma(self, stato_letto_at, adesso=None):
+        return stato_bando.stato_da_verificare(
+            "aperto", None, None, None, None, None, "2026-09-01T10:00:00+00:00", None, None,
+            "aperto", "aperto", stato_letto_at, "estrattore", "2026-09-29T08:00:00+00:00", None,
+            adesso or datetime(2026, 9, 30, 12, 0, tzinfo=stato_bando.ROMA),
+        )
+
+    def test_timestamp_come_li_restituisce_postgrest(self):
+        for testo in (
+            "2026-09-25T08:00:00.12345+00:00",
+            "2026-09-25T08:00:00Z",
+            "2026-09-25 08:00:00+00",
+            "2026-09-25T08:00:00+0000",
+            "2026-09-25",
+        ):
+            with self.subTest(testo):
+                self.assertIsNone(self._conferma(testo))
+        # malformato = None: la conferma non vale e resta senza_conferma
+        for testo in ("boh", "25/09/2026", "2026-09-25T25:00:00Z", 20260925):
+            with self.subTest(testo):
+                self.assertEqual(self._conferma(testo), "senza_conferma")
+
+    def test_naive_interpretato_come_utc(self):
+        # 30/08 23:50 UTC e' gia' il 31/08 a Roma: 30 giorni prima del 30/09.
+        self.assertIsNone(self._conferma("2026-08-30T23:50:00"))
+        self.assertIsNone(self._conferma(datetime(2026, 8, 30, 23, 50)))
+        # 30/08 21:50 UTC e' ancora il 30/08 a Roma: 31 giorni, scaduta.
+        self.assertEqual(self._conferma(datetime(2026, 8, 30, 21, 50)), "senza_conferma")
+        # anche `adesso` naive vale UTC: 30/09 22:30 UTC e' il 1/10 a Roma
+        self.assertEqual(
+            self._conferma("2026-08-31T08:00:00+00:00", adesso=datetime(2026, 9, 30, 22, 30)),
+            "senza_conferma",
+        )
+
+    def test_senza_adesso_usa_orologio(self):
+        self.assertEqual(
+            stato_bando.stato_da_verificare(
+                "aperto", None, None, None, None, None, None, None, "2000-01-01",
+                None, None, None, None, "2000-01-02T00:00:00+00:00", None,
+            ),
+            "termine_passato",
+        )
+        self.assertIsNone(stato_bando.stato_da_verificare(
+            "aperto", None, None, None, "2999-01-01", None, None, None, None,
+            None, None, None, None, None, None,
+        ))
+
+    def test_firma_nell_ordine_del_contratto(self):
+        """Stesso ordine della funzione SQL (§2.2 punto 4 con §19.2)."""
+        parametri = list(inspect.signature(stato_bando.stato_da_verificare).parameters)
+        self.assertEqual(tuple(parametri), _INGRESSI_CERTEZZA)
+        self.assertIsNone(
+            inspect.signature(stato_bando.stato_da_verificare).parameters["adesso"].default,
+        )
+
+
+# `fromisoformat` di Python 3.10: niente «Z», fusi solo ±HH:MM, frazioni di
+# secondo di 3 o 6 cifre. In produzione il venv puo' essere un 3.10, mentre qui
+# i test girano sul 3.12, che accetta tutto: senza questa simulazione una
+# frazione a 5 cifre di PostgREST passerebbe qui e fallirebbe la' in silenzio
+# (la conferma diventerebbe None e il bando «senza_conferma»).
+_FORMA_310 = re.compile(
+    r"\d{4}-\d{2}-\d{2}(.\d{2}(:\d{2}(:\d{2}(\.(\d{3}|\d{6}))?)?)?([+-]\d{2}:\d{2})?)?"
+)
+
+
+class _Datetime310(datetime):
+    @classmethod
+    def fromisoformat(cls, testo):
+        if not _FORMA_310.fullmatch(testo):
+            raise ValueError(f"Invalid isoformat string: {testo!r}")
+        return datetime.fromisoformat(testo)
+
+
+class TestParserPython310(unittest.TestCase):
+    def test_la_simulazione_e_severa_come_il_310(self):
+        for testo in (
+            "2026-09-25T08:00:00.87927+00:00", "2026-09-25T08:00:00Z", "2026-09-25T08:00:00+00",
+            "2026-09-25T08:00:00.9+00:00",
+        ):
+            with self.subTest(testo), self.assertRaises(ValueError):
+                _Datetime310.fromisoformat(testo)
+        self.assertEqual(
+            _Datetime310.fromisoformat("2026-09-25T08:00:00.879270+00:00"),
+            datetime(2026, 9, 25, 8, 0, 0, 879270, tzinfo=timezone.utc),
+        )
+
+    def test_forma_normalizzata(self):
+        normalizza = stato_bando._iso_per_fromisoformat
+        self.assertEqual(normalizza("2026-09-25T08:00:00.87927+00:00"), "2026-09-25T08:00:00.879270+00:00")
+        self.assertEqual(normalizza("2026-09-25T08:00:00.9Z"), "2026-09-25T08:00:00.900000+00:00")
+        self.assertEqual(normalizza("2026-09-25 08:00:00+00"), "2026-09-25T08:00:00+00:00")
+        self.assertEqual(normalizza("2026-09-25T08:00:00-0130"), "2026-09-25T08:00:00-01:30")
+        self.assertEqual(normalizza("2026-09-25T08:00:00.1234567+02:00"), "2026-09-25T08:00:00.123456+02:00")
+        self.assertEqual(normalizza("2026-09-25T08:00:00"), "2026-09-25T08:00:00")
+        self.assertEqual(normalizza("2026-09-25"), "2026-09-25")
+
+    def test_istanti_di_postgrest_sul_310(self):
+        attesi = {
+            "2026-09-25T08:00:00.87927+00:00": datetime(2026, 9, 25, 8, 0, 0, 879270, tzinfo=timezone.utc),
+            "2026-09-25T08:00:00.9Z": datetime(2026, 9, 25, 8, 0, 0, 900000, tzinfo=timezone.utc),
+            "2026-09-25 10:00:00+02": datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc),
+            "2026-09-25T08:00:00": datetime(2026, 9, 25, 8, 0, tzinfo=timezone.utc),
+        }
+        with mock.patch.object(stato_bando, "datetime", _Datetime310):
+            for testo, atteso in attesi.items():
+                with self.subTest(testo):
+                    self.assertEqual(stato_bando._istante(testo), atteso)
+            self.assertIsNone(stato_bando._istante("2026-09-25T08:00:00."))
+
+    def test_tabella_dei_casi_sul_310(self):
+        """Tutti i casi, compresi quelli con frazioni di 5 e 1 cifra, col parser del 3.10."""
+        with mock.patch.object(stato_bando, "datetime", _Datetime310):
+            for caso in _carica()["certezza"]["casi"]:
+                with self.subTest(caso["id"]):
+                    self.assertEqual(_da_verificare(caso), caso["atteso"], caso["nota"])
+
+
 class TestModuloCaricabilePerPercorso(unittest.TestCase):
     """Il test TypeScript lo esegue con `runpy.run_path`: nessun import interno."""
 
@@ -240,6 +482,9 @@ class TestModuloCaricabilePerPercorso(unittest.TestCase):
         for caso in dati["casi"]:
             with self.subTest(caso["id"]):
                 self.assertEqual(_stato(caso, isolato), caso["atteso"])
+        for caso in dati["certezza"]["casi"]:
+            with self.subTest(caso["id"]):
+                self.assertEqual(_da_verificare(caso, isolato), caso["atteso"])
 
 
 class TestReconcileEUnWrapper(unittest.TestCase):

@@ -1,0 +1,19 @@
+# Timer della sorveglianza dei bandi (contratto `bandi-giro-2` §10): ogni 15
+# minuti, ai minuti 05, 20, 35 e 50, lontano dai giri del sender (00, 06, 12
+# e 18 in punto). Se il pannello non vede una riga nuova da 45 minuti mostra
+# «in ritardo» da solo: un timer fermo si vede senza notifiche.
+# `Persistent=true`: dopo un riavvio della macchina parte subito il giro perso.
+#
+# Installazione: vedi `edunews-bandi-sorveglianza.service`.
+
+[Unit]
+Description=Sorveglianza bandi ogni 15 minuti
+
+[Timer]
+OnCalendar=*:05,20,35,50
+Persistent=true
+AccuracySec=30s
+Unit=edunews-bandi-sorveglianza.service
+
+[Install]
+WantedBy=timers.target

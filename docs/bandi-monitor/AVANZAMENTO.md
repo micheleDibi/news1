@@ -787,3 +787,57 @@ Il 30/09 alle 12:33 il sender è stato riavviato (giro di avvio finito bene). Il
 conferma che sul server gira il rilascio 2: 56 righe con `__link__` e la chiave `eventi_non_applicati`
 nella riga del giro (`misure-2026-09-30.md` §5).
 
+
+## Giro 2 dei bandi (30/09/2026, sera e notte)
+
+Un secondo giro a più operatori (lead, tre sul codice, uno sui dati, un revisore), con il contratto
+interno `docs/contracts/bandi-giro-2.md`, sul branch `claude/bandi-giro-2`. **Codice pronto,
+migrazioni 12 e 13 scritte e mai eseguite, deploy a carico del committente**: i passi una tantum
+sono in RIPRESA §1, nelle due sottosezioni «Giro 2».
+
+- **Percorso B, sorveglianza** (niente notifiche, confermato il 30/09):
+  - `salute` con codici stabili;
+  - `sorveglia` ogni 15 minuti con il suo timer;
+  - riavvio automatico del sender e giro di avvio saltato dopo un crash;
+  - migrazione 12: riepilogo riservato e funzione a chiave `monitoraggio_catalogo`, che il
+    pannello di BandoFit chiama in POST dal backend (contratto DB §14);
+  - la richiesta per il pannello è in `richiesta-bandofit-giro-2.md`.
+- **Percorso A, stato da verificare** (RIPRESA §4.6):
+  - migrazione 13, con `stato_da_verificare` e altre quattro colonne in coda alla vista;
+  - passo `verifica_stato` alle 06 e alle 18, e la sua fase d'ingresso a ogni giro;
+  - preprocess a 8 000 caratteri, con i paragrafi ricostruiti per le pagine httpx;
+  - lettori per ente e lettore generico;
+  - import mensile completo di IndicePA;
+  - fusioni automatiche dei doppioni certi: 52 previste all'attivazione (43 per URL, 9 di
+    calendario, misurate in ombra l'01/10 con le guardie su lotti e numerazioni), al massimo 10 al
+    giorno, quindi circa 6 giorni.
+
+  Tutto parte in ombra e si attiva dopo 7 giorni, con `report-verifica-stato --verita` a 0
+  difformi.
+- **Contratto verso BandoFit** (`docs/contratto-db-bandi.md`): §1.6 con le due eccezioni per anon
+  (`monitoraggio_catalogo`, `bando_stato_da_verificare`), §3 con le cinque colonne, §4.1 «Certezza
+  dello stato», §6.1 con gli eventi del worker, §6.2 con le fusioni automatiche, §10.2 con la 12 e la
+  13, §11 con i controlli, §14 con l'interfaccia di monitoraggio.
+- **Misure** (solo letture): `misure-giro-2-2026-10.md` (chiavi dei contatori, lock, righe di
+  boot) e `misure-giro-2-percorso-a.md` (verificabilità, pagine, IndicePA, verità nota).
+- **Test all'01/10, dopo le correzioni della revisione avversaria finale**: 2 514 `test:py:bandi`,
+  473 `npm test` (`# skipped 0`), 71 `test:py`, tutti verdi; `tsc` con i 51 errori preesistenti e
+  nessuno nuovo. Le migrazioni 12 e 13 sono provate su Postgres 17 effimero, sopra la catena vera
+  01-11 (schema legacy ricostruito dall'OpenAPI).
+- **Correzioni della revisione avversaria finale** (parte DB):
+  - nella vista della 13, della 07 e del rollback della 07, `termine_indicato` e la sua fonte
+    compaiono solo con `esaminato_attivo_at` presente. Il passo li scrive anche in ombra, e prima
+    sarebbero stati pubblici dal giorno della 13. Provato su Postgres 17, come anon: in ombra NULL
+    (anche con il termine passato, motivo NULL); in attivo il valore, con A6 → NULL e A3 →
+    `termine_passato`. La prova passa due volte di fila su 13, 07 e rollback della 07, e un mutante
+    senza la condizione fallisce;
+  - la 07 dichiara in testa che non si applica finché il sito chiede `link_candidatura`,
+    `link_candidatura_source` e `allegati`;
+  - il rollback della 13 chiede prima `BANDI_FONTE_LETTURA=bando` e il riavvio del frontend;
+  - la 13 e RIPRESA avvisano di non rieseguire la 02 dopo la 13. Provato: la 02 rieseguita dà 42501
+    sulle colonne nuove, e la 13 rieseguita rimette i grant;
+  - nel contratto e nel messaggio a BandoFit:
+    - `senza_conferma` prima del 7° giorno se c'è il segnale dell'aggregatore;
+    - fusioni prima della pubblicazione senza tetto, con `slug_originale` NULL;
+    - lettore generico in `stato_letto`;
+    - termine indicato NULL in prova.

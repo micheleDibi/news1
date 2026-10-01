@@ -520,5 +520,161 @@ class TestConteggiPrecedenti(unittest.TestCase):
         self.assertEqual(confronto.spariti, ())
 
 
+
+class TestSegnaleAggregatoreNelRunner(unittest.TestCase):
+    """Passo 6-bis del giro 2 (§19.7): si scrivono solo le righe che cambiano."""
+
+    FONTE_OE = {"id": 449, "link": "https://www.obiettivoeuropa.com/api/bandi"}
+    MOMENTO = datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)
+
+    class _Strumento:
+        def __init__(self, colonne=True):
+            self._colonne = colonne
+
+        def ha(self, _tabella, _colonna):
+            return self._colonne
+
+    @staticmethod
+    def _riga(bando_id, **extra):
+        riga = {"id": bando_id, "pubblicato": True, "stato_bando": "aperto",
+                "segnale_aggregatore": None, "segnale_aggregatore_at": None,
+                "ultimo_visto_in_fonte_at": "2026-10-01T00:00:00+00:00"}
+        riga.update(extra)
+        return riga
+
+    def _passo(self, records, esistenti, *, piena=True, assenti=None, fonte=None, colonne=True):
+        scritte: list = []
+        lette: list = []
+
+        def leggi_assenti(fonte_id, esclusi):
+            lette.append((fonte_id, set(esclusi)))
+            return assenti or {}
+
+        def scrivi(righe):
+            scritte.append(list(righe))
+            return len(righe)
+
+        esito = bando_runner.aggiorna_segnali_aggregatore(
+            fonte or self.FONTE_OE, records, esistenti, SimpleNamespace(copertura_piena=piena),
+            adesso=self.MOMENTO, leggi_assenti=leggi_assenti, scrivi=scrivi,
+            strumento=self._Strumento(colonne))
+        return esito, scritte, lette
+
+    def test_solo_le_righe_che_cambiano_e_at_non_rinfrescato(self):
+        records = [{"hash_bando": "a", "raw_data": {"status": "2"}},
+                   {"hash_bando": "b", "raw_data": {"status": "2"}},
+                   {"hash_bando": "c", "raw_data": {"status": "1"}}]
+        esistenti = {
+            "a": self._riga(1),                                             # nuovo segnale
+            "b": self._riga(2, segnale_aggregatore="in_uscita",              # gia' acceso
+                            segnale_aggregatore_at="2026-09-28T06:00:00+00:00"),
+            "c": self._riga(3, segnale_aggregatore="in_uscita",              # ricomparsa pulita
+                            segnale_aggregatore_at="2026-09-28T06:00:00+00:00"),
+        }
+        # Altre righe vive e pulite nel listing: un assente su nove vivi sta sotto
+        # la quota del listing sospetto (20%).
+        for i, chiave in enumerate("efghi", start=10):
+            records.append({"hash_bando": chiave, "raw_data": {"status": "1"}})
+            esistenti[chiave] = self._riga(i)
+        assenti = {"d": self._riga(4, ultimo_visto_in_fonte_at=None)}
+        esito, scritte, lette = self._passo(records, esistenti, assenti=assenti)
+        self.assertEqual(lette, [(449, {"a", "b", "c", "e", "f", "g", "h", "i"})])
+        (righe,) = scritte
+        self.assertEqual(righe, [
+            {"bando_id": 1, "segnale_aggregatore": "in_uscita",
+             "segnale_aggregatore_at": self.MOMENTO.isoformat()},
+            {"bando_id": 3, "segnale_aggregatore": None, "segnale_aggregatore_at": None},
+            {"bando_id": 4, "segnale_aggregatore": "assente_dal_listing",
+             "segnale_aggregatore_at": self.MOMENTO.isoformat()},
+        ])
+        self.assertEqual(esito, {"segnali_aggregatore": {"in_uscita": 1, "assente_dal_listing": 1},
+                                 "segnali_aggregatore_azzerati": 1,
+                                 "segnali_aggregatore_bloccati": 0})
+
+    def test_listing_vuoto_non_guarda_gli_assenti(self):
+        """Quattro giri di fila con il listing vuoto (copertura dichiarata piena): nessun assente."""
+        vecchio = {"z": self._riga(9, ultimo_visto_in_fonte_at="2026-09-20T00:00:00+00:00")}
+        for giro in range(4):
+            with self.subTest(giro=giro):
+                esito, scritte, lette = self._passo([], {}, assenti=vecchio)
+                self.assertEqual((lette, scritte), ([], []))
+                self.assertEqual(esito["segnali_aggregatore"], {})
+
+    def test_troppi_assenti_listing_sospetto(self):
+        records = [{"hash_bando": f"p{i}", "raw_data": {"status": "1"}} for i in range(8)]
+        esistenti = {f"p{i}": self._riga(100 + i) for i in range(8)}
+        # 3 assenti nuovi su 11 vivi (27%): oltre il 20%, nessuno si scrive.
+        assenti = {f"a{i}": self._riga(200 + i, ultimo_visto_in_fonte_at=None) for i in range(3)}
+        registro = MagicMock()
+        with patch.object(bando_runner, "logger", registro):
+            esito, scritte, _ = self._passo(records, esistenti, assenti=assenti)
+        self.assertEqual(scritte, [])
+        self.assertEqual(esito["segnali_aggregatore_bloccati"], 3)
+        self.assertIn("[ALLARME] [segnali] listing sospetto", registro.warning.call_args.args[0])
+        # 2 su 10 vivi (20%) non supera la quota: si scrivono.
+        assenti = {f"a{i}": self._riga(200 + i, ultimo_visto_in_fonte_at=None) for i in range(2)}
+        esito, scritte, _ = self._passo(records, esistenti, assenti=assenti)
+        self.assertEqual([r["segnale_aggregatore"] for r in scritte[0]],
+                         ["assente_dal_listing", "assente_dal_listing"])
+        self.assertEqual(esito["segnali_aggregatore_bloccati"], 0)
+
+    def test_il_blocco_non_ferma_gli_altri_segnali(self):
+        records = [{"hash_bando": "a", "raw_data": {"status": "2"}}]
+        esistenti = {"a": self._riga(1)}
+        assenti = {"z": self._riga(9, ultimo_visto_in_fonte_at=None)}
+        with patch.object(bando_runner, "logger", MagicMock()):
+            esito, scritte, _ = self._passo(records, esistenti, assenti=assenti)
+        self.assertEqual([r["segnale_aggregatore"] for r in scritte[0]], ["in_uscita"])
+        self.assertEqual(esito["segnali_aggregatore_bloccati"], 1)
+
+    def test_copertura_parziale_non_legge_gli_assenti(self):
+        esito, scritte, lette = self._passo(
+            [{"hash_bando": "a", "raw_data": {"status": "1"}}], {"a": self._riga(1)}, piena=False)
+        self.assertEqual((lette, scritte), ([], []))
+        self.assertEqual(esito["segnali_aggregatore"], {})
+
+    def test_fonte_non_oe_nessuna_lettura_ne_scrittura(self):
+        esito, scritte, lette = self._passo(
+            [{"hash_bando": "a", "raw_data": {"status": "2"}}], {"a": self._riga(1)},
+            fonte={"id": 12, "link": "https://a.example.it"})
+        self.assertEqual((lette, scritte), ([], []))
+
+    def test_senza_la_13_niente(self):
+        esito, scritte, lette = self._passo(
+            [{"hash_bando": "a", "raw_data": {"status": "2"}}], {"a": self._riga(1)}, colonne=False)
+        self.assertEqual((lette, scritte), ([], []))
+
+
+class TestSegnaleAggregatoreInnesto(unittest.IsolatedAsyncioTestCase):
+    """`run()` chiama il passo 6-bis per ogni fonte, mai in dry_run."""
+
+    # Stesso ambiente finto dei segnali, senza rieseguirne i test.
+    setUp = TestSegnaliNelRunner.setUp
+
+    async def test_chiamato_fuori_dal_dry_run(self):
+        segnala = MagicMock(return_value={"segnali_aggregatore": {"in_uscita": 2},
+                                          "segnali_aggregatore_azzerati": 1,
+                                          "segnali_aggregatore_bloccati": 4})
+        contatori = await bando_runner.run(
+            leggi=lambda hashes: {}, scrivi=lambda c, f: 0, marca=lambda c, e: 0,
+            segnala=segnala)
+        segnala.assert_called_once()
+        self.assertEqual(contatori["segnali_aggregatore"], {"in_uscita": 2})
+        self.assertEqual(contatori["segnali_aggregatore_azzerati"], 1)
+        self.assertEqual(contatori["segnali_aggregatore_bloccati"], 4)
+
+    async def test_mai_in_dry_run(self):
+        segnala = MagicMock()
+        await bando_runner.run(dry_run=True, leggi=lambda hashes: {}, scrivi=lambda c, f: 0,
+                               marca=lambda c, e: 0, segnala=segnala)
+        segnala.assert_not_called()
+
+    async def test_un_errore_non_ferma_il_giro(self):
+        segnala = MagicMock(side_effect=RuntimeError("PostgREST giu'"))
+        contatori = await bando_runner.run(
+            leggi=lambda hashes: {}, scrivi=lambda c, f: 0, marca=lambda c, e: 0, segnala=segnala)
+        self.assertEqual(contatori["fonti_processate"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

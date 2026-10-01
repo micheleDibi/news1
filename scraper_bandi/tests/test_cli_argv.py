@@ -47,6 +47,14 @@ _COMANDI_V11 = {
 # `tests/test_seo_rigenera.py`.
 _COMANDI_SEO = {"seo-rigenera"}
 
+# Giro 2, §10: il riepilogo per il pannello. Ha un parser suo, fuori dalla
+# matrice delle opzioni v11: i suoi test stanno in `tests/test_sorveglianza.py`.
+_COMANDI_GIRO_2 = {"sorveglia"}
+
+# Giro 2, percorso A (§13, §19.12): non scrivono e non passano da `_esegui_v11`.
+# I loro test stanno in `tests/test_cli_verifica_stato.py`.
+_COMANDI_A = {"verifica-stato", "report-verifica-stato", "gemelli"}
+
 # Sottocomandi che scriveranno sul DB: per ognuno `--dry-run` e `--limit N`
 # devono essere gia' accettati oggi (vincolo 3, M20). `report-ombra` non scrive
 # — stampa il CSV della misura — ma sta nell'elenco lo stesso: M20 non ammette
@@ -169,7 +177,9 @@ class TestLeggiOpzioni(unittest.TestCase):
 
 class TestComandi(_ConRunnerFinti):
     def test_tutti_i_comandi_sono_registrati_e_accettano_argv(self):
-        self.assertEqual(set(cli._COMMANDS), set(_RUNNER_DI) | _COMANDI_V11 | _COMANDI_SEO)
+        self.assertEqual(set(cli._COMMANDS),
+                         set(_RUNNER_DI) | _COMANDI_V11 | _COMANDI_SEO | _COMANDI_GIRO_2
+                         | _COMANDI_A)
         for cmd, fn in cli._COMMANDS.items():
             self.assertTrue(callable(fn), cmd)
 

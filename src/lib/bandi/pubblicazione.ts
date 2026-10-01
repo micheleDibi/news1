@@ -65,9 +65,10 @@ export interface FonteBandi {
    * controllo. Sulla tabella `bando` alcune esistono e altre no
    * (`ultimo_controllo_at` vive in `bando_controllo`, `stato_effettivo` e' un
    * calcolo della vista), e una sola colonna assente fa rispondere 42703 a
-   * PostgREST, cioe' fa fallire l'intera richiesta. Per questo l'elenco e'
-   * vuoto sulla tabella: meglio campi `null` in un contratto additivo che una
-   * risorsa che risponde 500.
+   * PostgREST, cioe' fa fallire l'intera richiesta. Per questo sulla tabella
+   * l'elenco ha solo colonne che esistono di sicuro (quelle della 01, gia'
+   * applicata): meglio campi `null` in un contratto additivo che una risorsa
+   * che risponde 500.
    */
   readonly colonneV11: readonly string[];
   /**
@@ -95,7 +96,11 @@ export const FONTI_BANDI = {
     ],
     selectFreschezza: 'updated_at',
     colonnaFreschezza: 'updated_at',
-    colonneV11: [],
+    // La colonna della 01 che serve a ricalcolare il motivo «da verificare»
+    // quando la vista non c'e' (`motivoDellaRiga`: I1 e l'apertura raggiunta).
+    // `pubblicato_at` no: senza `esaminato_attivo_at` I6-bis e A4 rispondono
+    // prima delle grazie. Di riflesso `opens_on_verified` esce col valore vero.
+    colonneV11: ['data_apertura_verificata'],
     colonnaStato: null,
   },
   bando_pubblico: {
@@ -108,6 +113,8 @@ export const FONTI_BANDI = {
       'fonte_ufficiale_stato', 'fonte_ufficiale_e_atto', 'fonte_ufficiale_verificata_at',
       'data_apertura_verificata', 'data_scadenza_verificata',
       'ora_scadenza', 'ultimo_controllo_at',
+      // Migrazione 13: il motivo per cui lo stato va verificato.
+      'stato_da_verificare',
     ],
     colonnaStato: 'stato_effettivo',
   },

@@ -12,7 +12,7 @@
  *   null: il chiamante la scarta e la registra nel log.
  */
 import { REGIONI, regionePerValore } from '../regioni';
-import { STATI_BANDO, effectiveStatoBando } from '../stato-bando';
+import { STATI_BANDO, effectiveStatoBando, motivoDellaRiga } from '../stato-bando';
 import { slugInterpello } from '../liste/slug-interpello';
 import { interoPositivo } from './mappa-articoli';
 import { percorsoSezione, sezioneDto } from './sezioni';
@@ -25,7 +25,7 @@ import { urlScheda } from './url';
 // moduli puri dei bandi: sono le stesse che usano la scheda e le liste, e
 // riscriverle qui vorrebbe dire avere due denylist da tenere allineate.
 import { eAggregatore, hostDi, urlPubblicabile } from '../bandi/domini';
-import type { StatoBando } from '../stato-bando';
+import type { MotivoDaVerificare, StatoBando } from '../stato-bando';
 import type {
   BandoDto, CodiceAtecoDto, FonteUfficialeDto, InterpelloDto, RegioneDto, RigaBando, RigaInterpello,
   RigaSelezione, SelezioneDto, SezioneOpportunita, StatoOpportunita,
@@ -380,6 +380,21 @@ function booleanoONull(valore: unknown): boolean | null {
   return typeof valore === 'boolean' ? valore : null;
 }
 
+/**
+ * `details.stato_da_verificare`: dalla vista il motivo calcolato dal DB (la
+ * colonna c'e' anche quando vale null), dalla tabella la regola ricalcolata con
+ * lettura, termine ed esame NULL. In entrambi i casi passa da `motivoVisibile`
+ * con lo stato che l'API dichiara: mai `upcoming` con un motivo da aperto, mai
+ * un motivo accanto a `closed`, `suspended` o `revoked`.
+ *
+ * `adesso` e' mezzogiorno UTC di `oggi`: sui campi che la select chiede la
+ * regola guarda solo date civili di Roma, e cosi' l'uscita dipende da `oggi` e
+ * non dall'orologio, come il resto del DTO.
+ */
+function motivoBando(riga: RigaBando, stato: StatoBando | null, oggi: string): MotivoDaVerificare | null {
+  return motivoDellaRiga(riga as unknown as Record<string, unknown>, stato, new Date(`${oggi}T12:00:00Z`));
+}
+
 export function mappaBando(riga: RigaBando, oggi: string): BandoDto | null {
   const id = idValido(riga.id);
   if (id === null) return null;
@@ -446,6 +461,7 @@ export function mappaBando(riga: RigaBando, oggi: string): BandoDto | null {
       opens_on_verified: booleanoONull(riga.data_apertura_verificata),
       deadline_verified: booleanoONull(riga.data_scadenza_verificata),
       last_checked_at: istanteOppureNull(istanteTimestamptz(riga.ultimo_controllo_at)),
+      stato_da_verificare: motivoBando(riga, stato, oggi),
     },
   };
 }

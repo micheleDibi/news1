@@ -393,7 +393,7 @@ test('selezione e bandi: status calcolato su oggi, chiave di cache con la data',
   assert.equal(amb.fonte.piani.at(-1)!.select, 'bando-con-regione');
   // v1.1: i quattro campi nuovi escono sempre (null finche' non ci sono le
   // colonne), e la versione dichiarata nei meta e' quella nuova.
-  assert.equal(bandi.meta.api_version, '1.1');
+  assert.equal(bandi.meta.api_version, '1.2');
   assert.deepEqual(
     [bandi.data[0].details.official_source, bandi.data[0].details.opens_on_verified,
       bandi.data[0].details.deadline_verified, bandi.data[0].details.last_checked_at],

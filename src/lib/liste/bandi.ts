@@ -1,5 +1,5 @@
 import {
-  supabaseBandi, loadCatalogo, lookupNome, todayRomeISO, BANDO_SELECT_LIST,
+  supabaseBandi, loadCatalogo, lookupNome, todayRomeISO, BANDO_SELECT_LIST, selectConMotivo,
   BANDI_STATI_ESTESI, FONTE_BANDI, type Bando, type CatalogoRow,
 } from '../supabase-bandi';
 import { corpus, type Corpus, type VoceFaccetta } from '../corpus';
@@ -129,10 +129,11 @@ export async function caricaBandi(valori: Valori, pagina: number): Promise<Pagin
 
   // Lo stato calcolato entra nella select solo se la fonte ce l'ha: la card lo
   // preferisce alla colonna, e chiederlo alla tabella darebbe 42703 su tutta la
-  // lista.
-  const colonne = FONTE_BANDI.colonnaStato === null
+  // lista. Lo stesso vale per il motivo «da verificare»: dalla vista la sua
+  // colonna, dalla tabella i campi per ricalcolarlo (`selectConMotivo`).
+  const colonne = selectConMotivo(FONTE_BANDI.colonnaStato === null
     ? BANDO_SELECT_LIST
-    : `${BANDO_SELECT_LIST},${FONTE_BANDI.colonnaStato}`;
+    : `${BANDO_SELECT_LIST},${FONTE_BANDI.colonnaStato}`);
   const select = embeds.length ? `${colonne},${embeds.join(',')}` : colonne;
 
   /** Query sulla fonte con i filtri comuni piu' le condizioni del segmento. */
@@ -276,6 +277,8 @@ export function conteggiStatoBandi(c: Corpus | null, voce?: VoceFaccetta): Conte
     inApertura: perStato?.['in apertura prossimamente'] ?? 0,
     chiusi: perStato?.['chiuso'] ?? 0,
     inScadenza: (voce ? voce.inScadenza : c?.bandi?.inScadenza) ?? 0,
+    // Solo per l'intera sezione: le pagine filtro restano com'erano (§15).
+    ...(voce ? {} : { inAperturaDaVerificare: c?.bandi?.daVerificare?.['in apertura prossimamente'] ?? 0 }),
   };
 }
 

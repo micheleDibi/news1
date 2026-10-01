@@ -48,6 +48,14 @@ _DEFAULT_USER_AGENT = (
 _DEFAULT_OPENCOESIONE_URL = "https://opencoesione.gov.it/it/opportunita_2021_2027/"
 
 
+#: La risorsa pubblica CKAN di IndicePA (`enti.xlsx`), misurata il 30/09/2026
+#: (misure-giro-2-percorso-a.md, M10). `INDICEPA_URL` serve solo a cambiarla.
+INDICEPA_URL_PREDEFINITO = (
+    "https://indicepa.gov.it/ipa-dati/dataset/5baa3eb8-266e-455a-8de8-b1f434c279b2/"
+    "resource/d09adf99-dc10-4349-8c53-27b1e5aa97b6/download/enti.xlsx"
+)
+
+
 @dataclass(frozen=True)
 class Settings:
     supabase_url: str
@@ -121,6 +129,25 @@ class Settings:
     # alimentano l'allarme del giro e di `salute`.
     monitor_tipi_attivi: tuple[str, ...] = ()
     monitor_tipi_attivi_ignorati: tuple[str, ...] = ()
+    # Percorso A del giro 2 (contratto `bandi-giro-2` §12 e §19.11): il passo
+    # verifica-stato, la sosta all'ingresso, i gemelli e IndicePA. Tutti con un
+    # default, cosi' chi costruisce `Settings` a mano non deve conoscerli.
+    verifica_stato_modalita: str = "ombra"         # ombra | attivo
+    verifica_stato_tetto_letture: int = 40
+    verifica_stato_tetto_s: int = 900
+    verifica_stato_max_chiusure: int = 20
+    verifica_stato_usa_modello: bool = True
+    ingresso_sosta_giri: int = 4
+    verifica_stato_tetto_ingresso: int = 30
+    gemelli_fusioni_per_giro: int = 10             # 0 = spento
+    indicepa_url: str = INDICEPA_URL_PREDEFINITO
+    #: Le variabili di questo gruppo scartate perche' fuori enum o fuori
+    #: intervallo (tornano al default): alimentano configurazione:verifica_stato.
+    verifica_stato_scartate: tuple[str, ...] = ()
+
+    @property
+    def verifica_stato_config_valida(self) -> bool:
+        return not self.verifica_stato_scartate
 
     def __repr__(self) -> str:
         """Repr mascherante: un `Settings` non deve poter finire in un log.
@@ -164,6 +191,45 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _intero_in_intervallo(name: str, scartate: list[str]) -> int:
+    """Un intero di `INTERVALLI_VERIFICA`: non numerico o fuori intervallo →
+    default, e il nome finisce in `scartate` (mai un'eccezione all'avvio)."""
+    default, minimo, massimo = INTERVALLI_VERIFICA[name]
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        valore = int(raw.strip())
+    except ValueError:
+        scartate.append(name)
+        return default
+    if not minimo <= valore <= massimo:
+        scartate.append(name)
+        return default
+    return valore
+
+
+def _modalita_verifica(scartate: list[str]) -> str:
+    """`VERIFICA_STATO_MODALITA`: ombra | attivo; un valore sconosciuto vale ombra."""
+    raw = os.getenv("VERIFICA_STATO_MODALITA", "").strip().lower()
+    if not raw:
+        return "ombra"
+    if raw in MODALITA:
+        return raw
+    scartate.append("VERIFICA_STATO_MODALITA")
+    return "ombra"
+
+
+def _indicepa_url(scartate: list[str]) -> str:
+    raw = os.getenv("INDICEPA_URL", "").strip()
+    if not raw:
+        return INDICEPA_URL_PREDEFINITO
+    if not raw.startswith("https://"):
+        scartate.append("INDICEPA_URL")
+        return INDICEPA_URL_PREDEFINITO
+    return raw
+
+
 def _float_env(name: str, default: float) -> float:
     raw = os.getenv(name)
     if not raw:
@@ -185,6 +251,18 @@ _TETTI_SCENARIO: dict[str, dict[str, float]] = {
 }
 SCENARI = tuple(_TETTI_SCENARIO)
 MODALITA = ("ombra", "attivo")
+
+#: Intervalli ammessi delle variabili del percorso A (§12, §19.11): fuori
+#: intervallo si torna al default e si dice (configurazione:verifica_stato).
+INTERVALLI_VERIFICA: dict[str, tuple[int, int, int]] = {
+    # nome: (default, minimo, massimo)
+    "VERIFICA_STATO_TETTO_LETTURE": (40, 1, 200),
+    "VERIFICA_STATO_TETTO_S": (900, 60, 1800),
+    "VERIFICA_STATO_MAX_CHIUSURE": (20, 0, 50),
+    "INGRESSO_SOSTA_GIRI": (4, 0, 12),
+    "VERIFICA_STATO_TETTO_INGRESSO": (30, 0, 200),
+    "GEMELLI_FUSIONI_PER_GIRO": (10, 0, 100),
+}
 
 # Tetti giornalieri di regime, uguali in tutti gli scenari: sono una cintura
 # contro il consumo anomalo, non la stima del consumo atteso.
@@ -340,6 +418,11 @@ def get_settings() -> Settings:
     tetti = _TETTI_SCENARIO[scenario]
     giri, giri_validi = _giri_env("MONITOR_GIRI", _GIRI_DEFAULT)
     tipi_attivi, tipi_ignorati = _tipi_attivi_env("MONITOR_TIPI_ATTIVI")
+    scartate_verifica: list[str] = []
+    modalita_verifica = _modalita_verifica(scartate_verifica)
+    interi_verifica = {nome: _intero_in_intervallo(nome, scartate_verifica)
+                       for nome in INTERVALLI_VERIFICA}
+    indicepa = _indicepa_url(scartate_verifica)
 
     return Settings(
         supabase_url=supabase_url,
@@ -396,4 +479,14 @@ def get_settings() -> Settings:
         monitor_stati_estesi=bool_env("MONITOR_STATI_ESTESI", False),
         monitor_tipi_attivi=tipi_attivi,
         monitor_tipi_attivi_ignorati=tipi_ignorati,
+        verifica_stato_modalita=modalita_verifica,
+        verifica_stato_tetto_letture=interi_verifica["VERIFICA_STATO_TETTO_LETTURE"],
+        verifica_stato_tetto_s=interi_verifica["VERIFICA_STATO_TETTO_S"],
+        verifica_stato_max_chiusure=interi_verifica["VERIFICA_STATO_MAX_CHIUSURE"],
+        verifica_stato_usa_modello=bool_env("VERIFICA_STATO_USA_MODELLO", True),
+        ingresso_sosta_giri=interi_verifica["INGRESSO_SOSTA_GIRI"],
+        verifica_stato_tetto_ingresso=interi_verifica["VERIFICA_STATO_TETTO_INGRESSO"],
+        gemelli_fusioni_per_giro=interi_verifica["GEMELLI_FUSIONI_PER_GIRO"],
+        indicepa_url=indicepa,
+        verifica_stato_scartate=tuple(scartate_verifica),
     )

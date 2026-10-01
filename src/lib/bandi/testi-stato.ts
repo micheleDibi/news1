@@ -17,8 +17,8 @@
  * (`oggi` lo passa il chiamante) e nessun `toLocaleDateString`, che dipende dal
  * fuso e dalla locale del processo.
  */
-import { STATI_BANDO } from '../stato-bando';
-import type { StatoBando } from '../stato-bando';
+import { GIORNI_VALIDITA_CONFERMA, giornoRoma, STATI_BANDO } from '../stato-bando';
+import type { MotivoDaVerificare, StatoBando } from '../stato-bando';
 import type { FonteUfficiale } from './tipi';
 
 export interface BadgeStato {
@@ -111,8 +111,70 @@ export interface CampiTestoStato {
   readonly data_scadenza?: string | null;
   readonly ora_scadenza?: string | null;
   readonly data_scadenza_verificata?: boolean | null;
+  /**
+   * Perché lo stato va verificato, già passato da `motivoVisibile` (null =
+   * nessuna prova contraria). Le colonne sotto le dà solo la vista.
+   */
+  readonly motivo_da_verificare?: MotivoDaVerificare | null;
+  /** Ultima lettura della pagina ufficiale, solo se fatta sullo stato di oggi. */
+  readonly stato_letto?: string | null;
+  readonly stato_letto_at?: string | null;
+  /** Termine trovato per un aperto senza scadenza, e da dove viene. */
+  readonly termine_indicato?: string | null;
+  readonly termine_indicato_fonte?: string | null;
   /** YYYY-MM-DD nel calendario di Roma, fissato una volta dal chiamante. */
   readonly oggi: string;
+}
+
+// Sottotesti per coppia (stato, motivo): contratto interno del giro 2, §15 con
+// §19.14. `data_apertura_passata` tiene il testo di sempre, costruito sulla data.
+const SOTTOTESTO_IN_APERTURA: Readonly<Partial<Record<MotivoDaVerificare, string>>> = {
+  smentito_dalla_fonte: 'La pagina ufficiale non lo indica più come in arrivo: lo stato è in verifica.',
+  previsione_scaduta: 'Il periodo di apertura previsto dal calendario è passato senza un avviso pubblicato.',
+  senza_conferma: 'L\'apertura è annunciata ma non è confermata sulla fonte ufficiale: verifica sul sito dell\'ente.',
+};
+
+const SOTTOTESTO_APERTO: Readonly<Partial<Record<MotivoDaVerificare, string>>> = {
+  smentito_dalla_fonte: 'La pagina ufficiale dell\'ente non lo indica più come aperto: verifica prima di presentare domanda.',
+  senza_conferma: 'Non abbiamo una conferma recente dalla pagina ufficiale dell\'ente: verifica prima di presentare domanda.',
+};
+
+// `termine_passato` dice da dove viene il termine; senza fonte vale «testo».
+// Il calendario ufficiale è la fonte: niente «non confermato dalla fonte».
+const TERMINE_PASSATO: Readonly<Record<string, string>> = {
+  calendario_ufficiale: 'Il calendario ufficiale indica un termine di presentazione che sembra già passato: verifica sul sito dell\'ente.',
+  pagina: 'La pagina dell\'ente indica un termine di presentazione che sembra già passato: verifica sul sito dell\'ente prima di presentare domanda.',
+  testo: 'Il testo del bando indica un termine di presentazione che sembra già passato, non confermato dalla fonte: verifica sul sito dell\'ente.',
+  aggregatore: 'Un portale aggregatore indica un termine di presentazione che sembra già passato, non verificato: verifica sul sito dell\'ente.',
+};
+
+/** Termine indicato da oggi in poi, secondo la fonte; senza fonte vale «testo». */
+function termineFuturo(fonte: string | null | undefined, giorno: string): string {
+  switch (fonte) {
+    case 'calendario_ufficiale': return `Il calendario ufficiale indica come termine il ${giorno}.`;
+    case 'pagina': return `La pagina dell'ente indica come termine il ${giorno}.`;
+    case 'aggregatore': return `Un portale aggregatore indica come termine il ${giorno}, non verificato.`;
+    default: return `Il testo del bando indica come termine il ${giorno}, non ancora verificato sulla pagina ufficiale.`;
+  }
+}
+
+/**
+ * Aperto senza scadenza e senza motivo: prima una lettura «aperto» della
+ * pagina ufficiale di al massimo 30 giorni fa, poi un termine indicato da oggi
+ * in poi, altrimenti null (resta il testo di sempre).
+ */
+function sportelloSenzaScadenza(campi: CampiTestoStato): string | null {
+  const giornoLettura = campi.stato_letto === 'aperto' ? giornoRoma(campi.stato_letto_at) : null;
+  // giorni dalla lettura a oggi (negativi per una lettura nel futuro, come nella regola)
+  const giorniFa = giornoLettura === null ? null : giorniAllaScadenza(campi.oggi, giornoLettura);
+  if (giornoLettura !== null && giorniFa !== null && giorniFa <= GIORNI_VALIDITA_CONFERMA) {
+    return `Sportello aperto: la pagina ufficiale lo indicava ancora aperto il ${giornoItaliano(giornoLettura)}.`;
+  }
+  const termine = soloGiorno(campi.termine_indicato);
+  if (termine !== null && termine >= campi.oggi) {
+    return termineFuturo(campi.termine_indicato_fonte, giornoItaliano(termine) ?? termine);
+  }
+  return null;
 }
 
 function codaScadenza(verificata: boolean | null | undefined): string {
@@ -148,7 +210,11 @@ export function sottotestoStato(campi: CampiTestoStato): string | null {
     return `I termini sono scaduti il ${giorno}${codaScadenza(campi.data_scadenza_verificata)}.`;
   }
 
+  const motivo = campi.motivo_da_verificare ?? null;
+
   if (stato === 'in apertura prossimamente') {
+    const daVerificare = motivo === null ? undefined : SOTTOTESTO_IN_APERTURA[motivo];
+    if (daVerificare !== undefined) return daVerificare;
     if (apertura === null) return 'La data di apertura non è stata comunicata dalla fonte.';
     const giorno = giornoItaliano(apertura);
     if (apertura > campi.oggi) {
@@ -162,7 +228,14 @@ export function sottotestoStato(campi: CampiTestoStato): string | null {
   }
 
   if (stato === 'aperto') {
-    if (scadenza === null) return 'Sportello aperto: la fonte non indica una data di scadenza.';
+    if (motivo === 'termine_passato') {
+      return TERMINE_PASSATO[campi.termine_indicato_fonte ?? 'testo'] ?? TERMINE_PASSATO.testo;
+    }
+    const daVerificare = motivo === null ? undefined : SOTTOTESTO_APERTO[motivo];
+    if (daVerificare !== undefined) return daVerificare;
+    if (scadenza === null) {
+      return sportelloSenzaScadenza(campi) ?? 'Sportello aperto: la fonte non indica una data di scadenza.';
+    }
     const ora = oraItaliana(campi.ora_scadenza);
     const quando = ora === null ? `${giornoItaliano(scadenza)}` : `${giornoItaliano(scadenza)} alle ${ora}`;
     return `Si può presentare domanda fino al ${quando}${codaScadenza(campi.data_scadenza_verificata)}.`;

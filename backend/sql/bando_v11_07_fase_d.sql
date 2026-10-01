@@ -29,9 +29,26 @@
 --   BandoFit lo vede come 502.
 --   Anche news1 deve essere già su `PUBLIC_BANDI_FONTE_LETTURA=bando_pubblico`.
 --
+-- PRECONDIZIONE BLOCCANTE — news1 non
+--   chiede più `link_candidatura`,
+--   `link_candidatura_source` e `allegati`
+--   (src/lib/supabase-bandi.ts,
+--   COLONNE_DETTAGLIO_COMUNI). Al 01/10/2026
+--   li chiede ancora: la 07 NON si applica
+--   finché il sito non è migrato, perché
+--   ogni scheda risponderebbe 42703 (503).
+--   Leggere da `bando_link` oggi non basta:
+--   151 bandi perderebbero tutti gli
+--   allegati e 145 non hanno una riga
+--   `candidatura` (misure-colonne-07.md
+--   in docs/bandi-monitor).
+--
 -- Altre precondizioni
 --   migrazioni 01, 02, 03, 05 applicate (04 e 06 consigliate ma non
 --   necessarie a questo file).
+--   Dal giro 2: anche la 13, perché la
+--   vista ne porta le cinque colonne in
+--   coda (la guardia lo controlla).
 --
 -- Rompe BandoFit? SÌ se la fase (c) non è davvero in produzione. NO dopo.
 --
@@ -45,6 +62,25 @@
 BEGIN;
 
 SET LOCAL lock_timeout = '5s';
+
+DO $$
+BEGIN
+  -- La vista chiama la funzione della 13.
+  IF to_regprocedure(
+       'public.bando_stato_da_verificare('
+       || 'text, date, boolean, time, '
+       || 'date, time, timestamptz, date, '
+       || 'date, text, text, timestamptz, '
+       || 'text, timestamptz, timestamptz, '
+       || 'timestamptz)') IS NULL
+  THEN
+    RAISE EXCEPTION
+      'applicare prima la 13 '
+      '(bando_v11_13_stato_da_verificare'
+      '.sql)';
+  END IF;
+END
+$$;
 
 DO $$
 BEGIN
@@ -113,7 +149,73 @@ SELECT
   b.ricerca,
   b.pubblicato_at,
   b.created_at,
-  b.ultimo_cambiamento_at
+  b.ultimo_cambiamento_at,
+  -- 13: le cinque colonne in coda. Senza
+  -- la 13 questo file si ferma prima.
+  (SELECT
+     public.bando_stato_da_verificare(
+       b.stato_bando,
+       b.data_apertura,
+       b.data_apertura_verificata,
+       b.ora_apertura,
+       b.data_scadenza,
+       b.ora_scadenza,
+       b.pubblicato_at,
+       c.previsto_entro,
+       c.termine_indicato,
+       c.stato_letto,
+       c.stato_letto_su,
+       c.stato_letto_at,
+       c.stato_letto_metodo,
+       c.esaminato_attivo_at,
+       c.segnale_aggregatore_at,
+       now())
+     FROM (SELECT 1) AS uno
+     LEFT JOIN public.bando_controllo c
+       ON c.bando_id = b.id)
+    AS stato_da_verificare,
+  (SELECT CASE
+            WHEN c.stato_letto_su
+                 = b.stato_bando
+             AND c.stato_letto_metodo
+                 = 'estrattore'
+              THEN c.stato_letto
+          END
+     FROM public.bando_controllo c
+    WHERE c.bando_id = b.id)
+    AS stato_letto,
+  (SELECT CASE
+            WHEN c.stato_letto_su
+                 = b.stato_bando
+             AND c.stato_letto_metodo
+                 = 'estrattore'
+              THEN c.stato_letto_at
+          END
+     FROM public.bando_controllo c
+    WHERE c.bando_id = b.id)
+    AS stato_letto_at,
+  -- Il termine indicato si scrive anche in
+  -- ombra: si espone solo dopo il primo
+  -- esame in attivo. Il motivo qui sopra
+  -- lo legge comunque (A3, A6).
+  (SELECT CASE
+            WHEN c.esaminato_attivo_at
+                 IS NOT NULL
+              THEN c.termine_indicato
+          END
+     FROM public.bando_controllo c
+    WHERE c.bando_id = b.id)
+    AS termine_indicato,
+  (SELECT CASE
+            WHEN c.termine_indicato
+                 IS NOT NULL
+             AND c.esaminato_attivo_at
+                 IS NOT NULL
+              THEN c.termine_indicato_fonte
+          END
+     FROM public.bando_controllo c
+    WHERE c.bando_id = b.id)
+    AS termine_indicato_fonte
 FROM public.bando b
 WHERE b.pubblicato;
 

@@ -9,6 +9,8 @@
  * - URL sempre assoluti.
  */
 
+import type { MotivoDaVerificare } from '../stato-bando';
+
 /** Risorse con elenco paginato. */
 export type Risorsa = 'articles' | 'interpelli' | 'selezione-personale' | 'bandi';
 
@@ -180,6 +182,12 @@ export interface DettagliBando {
   deadline_verified: boolean | null;
   /** v1.1. Istante dell'ultimo controllo sulla fonte, o null. */
   last_checked_at: string | null;
+  /**
+   * v1.2, additivo. Perché lo stato va verificato (uno dei cinque motivi di
+   * `MOTIVI_DA_VERIFICARE`), o null = nessuna prova contraria. Mai compatibile
+   * con uno stato diverso da `open`/`upcoming` (`motivoVisibile`).
+   */
+  stato_da_verificare: MotivoDaVerificare | null;
 }
 
 export interface InterpelloDto extends OpportunitaBaseDto {
@@ -290,6 +298,8 @@ export interface RigaBando {
   data_scadenza_verificata?: unknown;
   ora_scadenza?: unknown;
   ultimo_controllo_at?: unknown;
+  /** Migrazione 13, solo dalla vista: il motivo calcolato dal DB. */
+  stato_da_verificare?: unknown;
   /** Embed PostgREST: oggetto, array o null a seconda della cardinalita'. */
   tipologia: unknown;
   programma: unknown;

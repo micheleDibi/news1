@@ -349,6 +349,301 @@ def ruolo_compatibile(ruolo: str, label: str) -> bool:
     return True if ammessi is None else ruolo in ammessi
 
 
+# ---------------------------------------------------------------------------
+# Date presunte, ore e finestre (contratto `bandi-giro-2` §6.2)
+# ---------------------------------------------------------------------------
+
+#: Le parole di una data che non e' certa. A inizio parola: «imprevisto» non
+#: e' una previsione.
+_PRESUNTA_RE = re.compile(
+    r"\b(?:presunt|indicativ|orientativ)\w*|\bsi\s+prevede\b",
+    re.IGNORECASE)
+_MESI_RE = (r"gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre"
+            r"|novembre|dicembre")
+#: «stimata», «trimestre», «semestre» valgono solo legate a una data: «data
+#: stimata», «scadenza stimata», «stimata per il 30/10», «primo trimestre
+#: 2026», «II semestre». «Importo stimato: 100.000 euro» non dice niente della
+#: data che segue (revisione avversaria, ciclo 2).
+_STIMA_DATA_RE = re.compile(
+    r"\b(?:data|date|scadenz[ae]|apertur[ae]|termin[ei]|chiusur[ae]|pubblicazion[ei]|avvio)"
+    r"\s+(?:\S+\s+){0,2}?stimat[oaie]\b"
+    r"|\bstimat[oaie]\s+(?:per\s+(?:il\s+|l['’]\s*)?|al\s+|entro\s+(?:il\s+)?|nel\s+(?:mese\s+di\s+)?|a\s+)"
+    r"(?:\d|" + _MESI_RE + r"|mese|prim|second|fine|met[aà])"
+    r"|\b(?:prim[oa]|second[oa]|terz[oa]|quart[oa]|I{1,3}|IV|[1-4]\s*[°º^])\s+(?:trimestr|semestr)[ei]\b"
+    r"|\b(?:trimestr|semestr)[ei]\s+(?:del(?:l['’])?\s+)?(?:anno\s+)?(?:20\d{2})\b",
+    re.IGNORECASE)
+#: Il soggetto di «previsto» nell'inciso: un termine (data certa) o
+#: un'apertura (previsione). Conta il PRIMO dei due nell'inciso, cioe' il
+#: soggetto della frase: in «L'apertura dei termini è prevista per…» i
+#: termini sono un complemento (revisione #120).
+_SOGGETTO_CERTO_RE = re.compile(r"\b(?:termin[ei]|scadenz[ae]|chiusur[ae])\b", re.IGNORECASE)
+_SOGGETTO_PREVISTO_RE = re.compile(
+    r"\b(?:(?:ri)?apertur[ae]|avvio|pubblicazion[ei]|uscit[ae])\b", re.IGNORECASE)
+#: La fine di una frase per G10: l'inciso di «previsto» e il contesto di una
+#: data non vanno oltre. Mai l'a capo: nel testo delle pagine l'etichetta
+#: («Data presunta di apertura») sta spesso sulla riga sopra la data. Nome
+#: proprio: `_FINE_FRASE_RE` piu' sotto e' quella di `termine_nel_testo`,
+#: che chiude all'a capo (revisione #120).
+_FINE_FRASE_G10_RE = re.compile(r"[.;!?](?=\s)")
+#: Quanto indietro si cerca l'inizio della frase di una data.
+_FINESTRA_FRASE = 200
+#: «Previsto» in italiano vuol dire anche «stabilito»: vale come previsione
+#: solo nelle forme di una previsione vera (decisione del lead, 30/09).
+_PREVISTO_RE = re.compile(r"\bprevist[oaie]\b", re.IGNORECASE)
+#: … e non lo e' mai dopo termine, scadenza, chiusura («Scadenza prevista dal
+#: bando: 30/10/2026», «Termine ultimo previsto: …») ne' in «modalita'
+#: previste» o «termini previsti».
+_PREVISTO_STABILITO_RE = re.compile(
+    r"(?:\b(?:termin[ei]|scadenz[ae]|chiusur[ae])(?:\s+ultim[oaie])?|\bmodalit[aà]"
+    # formule di rinvio: «come previsto», «secondo quanto previsto» (revisione #91)
+    r"|\bcome|\bsecondo\s+quanto)"
+    r"\s+(?:(?:è|e['’])\s+)?$",
+    re.IGNORECASE)
+#: «previsto nel/dal/dalla/dall' bando|avviso|decreto|regolamento|disciplinare»:
+#: il rinvio a un atto, non una previsione (revisione #91).
+_PREVISTO_DALL_ATTO_RE = re.compile(
+    r"\s+(?:nel|dal|dalla|dall['’])\s*(?:bando|avviso|decreto|regolamento|disciplinare)\b",
+    re.IGNORECASE)
+#: «apertura (è) prevista»: la data di un'apertura annunciata.
+_APERTURA_PREVISTA_RE = re.compile(r"\bapertur[ae]\s+(?:(?:è|e['’])\s+)?$", re.IGNORECASE)
+#: «prevista per / nel / nei / a partire / entro il mese | primo | secondo | fine».
+_PREVISIONE_DOPO_RE = re.compile(
+    r"\s+(?:per|nel|nei|a\s+partire|entro\s+(?:il\s+)?(?:mese|primo|secondo|fine))\b",
+    re.IGNORECASE)
+
+
+def e_presunta(citazione: str | None) -> bool:
+    """Vero se la citazione dice che la data e' presunta, indicativa o prevista.
+
+    «Previsto» e' ambiguo: «l'apertura e' prevista per il 15 novembre» e' una
+    previsione, «Scadenza prevista dal bando: 30/10/2026» e' una data certa.
+    Conta come previsione solo dopo «apertura» o prima di per, nel, nei, a
+    partire, entro il mese/primo/secondo/fine; mai dopo termine, scadenza,
+    chiusura, modalita'. Nel dubbio restante la data non si prende (G10).
+    """
+    if not citazione:
+        return False
+    if _PRESUNTA_RE.search(citazione) or _STIMA_DATA_RE.search(citazione):
+        return True
+    for m in _PREVISTO_RE.finditer(citazione):
+        prima = citazione[max(0, m.start() - 30):m.start()]
+        if _APERTURA_PREVISTA_RE.search(prima):
+            return True
+        if _PREVISTO_DALL_ATTO_RE.match(citazione, m.end()):
+            continue
+        soggetto = _soggetto_dell_inciso(citazione, m.start())
+        if soggetto == "previsione":
+            # Un'apertura, una pubblicazione, un avvio «previsti»: una
+            # previsione anche con «termini» nel mezzo (revisione #120).
+            return True
+        if soggetto == "certo" or _PREVISTO_STABILITO_RE.search(prima):
+            continue
+        if _PREVISIONE_DOPO_RE.match(citazione, m.end()):
+            return True
+    return False
+
+
+def _soggetto_dell_inciso(citazione: str, pos: int) -> str | None:
+    """'certo', 'previsione' o None: il PRIMO soggetto dell'inciso prima di
+    «previsto», dall'inizio della frase. «Il termine per la presentazione
+    delle domande è previsto per il 30/10/2026» e' certo; «L'apertura dei
+    termini è prevista per il 15/11/2026» e' una previsione."""
+    inizio = 0
+    for fine in _FINE_FRASE_G10_RE.finditer(citazione, 0, pos):
+        inizio = fine.end()
+    inciso = citazione[inizio:pos]
+    certo = _SOGGETTO_CERTO_RE.search(inciso)
+    previsione = _SOGGETTO_PREVISTO_RE.search(inciso)
+    if certo is None and previsione is None:
+        return None
+    if previsione is None or (certo is not None and certo.start() < previsione.start()):
+        return "certo"
+    return "previsione"
+
+
+def _intorno(testo: str, data: DataConRuolo) -> str:
+    """Il contesto di una data per G10, fino alla data compresa. Parte dal
+    punto piu' a destra fra: l'inizio della sua frase, la fine della data
+    precedente nel testo e 200 caratteri prima (della data, o del costrutto
+    «dal X al Y» che la contiene).
+
+    Non i soli 40 caratteri di prima: «Il termine per la presentazione delle
+    domande è previsto per il …» ha il soggetto lontano. Non la frase
+    precedente («Importo stimato: … Scadenza: …») ne' la data precedente
+    («Data indicativa di apertura: 15/11/2026 Data di scadenza: 30/11/2026»:
+    l'«indicativa» e' dell'apertura). L'a capo non chiude: «Data presunta di
+    apertura⏎15/11/2026» resta presunta (revisioni del ciclo 2 e #120).
+    """
+    inizio = data.inizio
+    if data.citazione and _COSTRUTTO_RE.match(data.citazione):
+        pos = testo.rfind(data.citazione, 0, data.fine)
+        if pos >= 0:
+            inizio = pos
+    da = max(0, inizio - _FINESTRA_FRASE)
+    for fine in _FINE_FRASE_G10_RE.finditer(testo, da, inizio):
+        da = fine.end()
+    for precedente in _DATA_RE.finditer(testo, da, inizio):
+        if precedente.end() <= inizio:
+            da = max(da, precedente.end())
+    return testo[da:data.fine]
+
+
+#: L'ora prima della data: «ore 12 del», «ore 12:00 del giorno», «le 17.00 del».
+_ORA_PRIMA_RE = re.compile(
+    r"(?:\bore\s+(?P<h>\d{1,2})(?:[:.,](?P<m>\d{2}))?|\ble\s+(?P<h2>\d{1,2})[:.](?P<m2>\d{2}))"
+    r"\s+(?:del(?:l[a'’])?\s+)?(?:giorno\s+)?$",
+    re.IGNORECASE,
+)
+#: Tutte le ore di un segmento, per la prima di «dalle ore 9 alle ore 18 del X».
+_ORE_RE = re.compile(
+    r"\bore\s+(?P<h>\d{1,2})(?:[:.,](?P<m>\d{2}))?|\ble\s+(?P<h2>\d{1,2})[:.](?P<m2>\d{2})",
+    re.IGNORECASE,
+)
+#: L'ora dopo la data: «30/10/2026, ore 18:00», «30/10/2026 alle ore 12», «20 ottobre 2026 12:00».
+#: Senza `^`: si usa con `match(testo, pos)`, che ancora gia' in `pos` (e `^` li' non vale).
+_ORA_DOPO_RE = re.compile(
+    r"\s*,?\s*(?:(?:(?:alle|entro\s+le|fino\s+alle)\s+)?ore\s+(?P<h>\d{1,2})(?:[:.,](?P<m>\d{2}))?\b"
+    r"|(?P<h2>\d{1,2}):(?P<m2>\d{2})\b)",
+    re.IGNORECASE,
+)
+
+
+def _ora(m: re.Match[str] | None) -> time_cls | None:
+    """L'ora di un match di `_ORA_*`. «24:00» e' la fine del giorno: 23:59."""
+    if m is None:
+        return None
+    ore = m.group("h") or m.group("h2")
+    minuti = m.group("m") or m.group("m2") or "0"
+    if ore is None:
+        return None
+    h, mi = int(ore), int(minuti)
+    if h == 0 and mi == 0 and m.group("h") is None:
+        # «00:00» senza «ore»: e' l'orario vuoto dei CMS, non un'ora scritta.
+        # Solo «ore 00:00» per esteso vale (revisione avversaria, ciclo 2).
+        return None
+    if h == 24 and mi == 0:
+        return time_cls(23, 59)
+    if h > 23 or mi > 59:
+        return None
+    return time_cls(h, mi)
+
+
+def _ora_prima(segmento: str, *, prima_del_segmento: bool = False) -> time_cls | None:
+    """L'ora che precede la data. Con `prima_del_segmento` e piu' ore nel
+    segmento («dalle ore 9 alle ore 18 del X»), vale la prima."""
+    ultima = _ora(_ORA_PRIMA_RE.search(segmento))
+    if ultima is None:
+        return None
+    if prima_del_segmento:
+        tutte = list(_ORE_RE.finditer(segmento))
+        if len(tutte) >= 2:
+            return _ora(tutte[0])
+    return ultima
+
+
+def ora_nella_citazione(citazione: str | None, data: date_cls, ruolo: str = "scadenza") -> time_cls | None:
+    """L'ora legata a `data` nella citazione, o None.
+
+    Cerca la data nella citazione e guarda subito prima («entro le ore 12:00
+    del 30/10/2026», «le 17.00 del 30 giugno 2026») e subito dopo («30/10/2026,
+    ore 18:00»). In una finestra dello stesso giorno («dalle ore 9 alle ore 18
+    del 30/10/2026») l'apertura prende la prima ora e la scadenza l'ultima.
+    """
+    if not citazione:
+        return None
+    precedente = 0
+    for m in _DATA_RE.finditer(citazione):
+        comp = _componenti(m, "")
+        trovata = (_componi(comp[2], comp[1], comp[0])
+                   if comp and comp[1] is not None and comp[2] is not None else None)
+        if trovata != data:
+            precedente = m.end()
+            continue
+        segmento = citazione[max(precedente, m.start() - 2 * _FINESTRA_PAROLE):m.start()]
+        ora = _ora_prima(segmento, prima_del_segmento=(ruolo == "apertura"))
+        if ora is None:
+            ora = _ora(_ORA_DOPO_RE.match(citazione, m.end()))
+        if ora is not None:
+            return ora
+        precedente = m.end()
+    return None
+
+
+@dataclass(frozen=True)
+class Finestra:
+    """Un periodo di presentazione con le ore, se il testo le dice.
+
+    `presunta` e' vero se il contesto vicino dice che le date sono presunte o
+    previste; `per_presentare` e' vero se la frase che la contiene parla di
+    domande da presentare e non di fiere, eventi, spese o lavori (le regole
+    del termine). Chi scrive una scadenza da una finestra (§6.3) vuole
+    `per_presentare` e non `presunta`.
+    """
+    inizio: date_cls | None
+    ora_inizio: time_cls | None
+    fine: date_cls | None
+    ora_fine: time_cls | None
+    citazione: str
+    presunta: bool = False
+    per_presentare: bool = False
+
+
+#: «a partire dalle ore 12:00 del 15/09/2026 ed entro le ore 18:00 del
+#: 30/10/2026» (LazioEuropa): non e' un costrutto «dal X al Y», e resta fuori
+#: da `_COSTRUTTO_RE`, che non cambia.
+_A_PARTIRE_RE = re.compile(
+    r"\ba\s+partire\s+dal(?:le|l['’])?\b" + _ORA_DEL + r"\s+(?:giorno\s+)?"
+    r"(?P<x>" + _pattern_data("x") + r")"
+    r"(?P<mezzo>[^.;\n]{0,160}?)"
+    r"\b(?:entro|fino\s+al(?:le)?|sino\s+al(?:le)?)\b(?:\s+le)?" + _ORA_DEL
+    + r"\s+(?:(?:il|giorno)\s+)?(?P<y>" + _pattern_data("y") + r")",
+    re.IGNORECASE,
+)
+
+
+def estrai_finestra(testo: str | None) -> list[Finestra]:
+    """Le finestre di presentazione del testo, in ordine di posizione.
+
+    Due forme: il costrutto «dal X al Y» di sempre (anche «dalle ore … del X
+    alle ore … del Y») e «a partire dal X … entro il Y» nella stessa frase. Le
+    ore si catturano qui, senza toccare `_COSTRUTTO_RE`.
+    """
+    if not testo:
+        return []
+    trovate: list[tuple[int, Finestra]] = []
+    occupati: list[tuple[int, int]] = []
+    for m in _COSTRUTTO_RE.finditer(testo):
+        coppia = _date_del_costrutto(m)
+        if coppia is None:
+            continue
+        x, y = coppia
+        ora_x = _ora_prima(testo[m.start():m.start("x")])
+        ora_y = (_ora_prima(testo[m.end("x"):m.start("y")])
+                 or _ora(_ORA_DOPO_RE.match(testo, m.end("y"))))
+        contesto = testo[max(0, m.start() - _FINESTRA_PAROLE):m.end()]
+        trovate.append((m.start(), Finestra(
+            x, ora_x, y, ora_y, m.group(0), e_presunta(contesto),
+            _per_presentare(_frase_intorno(testo, m.start(), m.end())))))
+        occupati.append((m.start(), m.end()))
+    for m in _A_PARTIRE_RE.finditer(testo):
+        if any(m.start() < fine and m.end() > inizio for inizio, fine in occupati):
+            continue
+        cx, cy = _componenti(m, "x"), _componenti(m, "y")
+        x = _componi(cx[2], cx[1], cx[0]) if cx and None not in cx else None
+        y = _componi(cy[2], cy[1], cy[0]) if cy and None not in cy else None
+        if x is None or y is None:
+            continue
+        ora_x = _ora_prima(testo[m.start():m.start("x")])
+        ora_y = (_ora_prima(testo[m.end("mezzo"):m.start("y")])
+                 or _ora(_ORA_DOPO_RE.match(testo, m.end("y"))))
+        contesto = testo[max(0, m.start() - _FINESTRA_PAROLE):m.end()]
+        trovate.append((m.start(), Finestra(
+            x, ora_x, y, ora_y, m.group(0), e_presunta(contesto),
+            _per_presentare(_frase_intorno(testo, m.start(), m.end())))))
+    trovate.sort(key=lambda coppia: coppia[0])
+    return [finestra for _, finestra in trovate]
+
+
 def validate_date_candidate(
     candidate: dict[str, Any] | None,
     html_text: str,
@@ -401,6 +696,13 @@ def validate_date_candidate(
             log_prefix, bando_id, label, parsed,
             [(d.data.isoformat(), d.ruolo) for d in date_quote],
         )
+        return None
+    # G10 (contratto `bandi-giro-2` §6.2): una data presunta non e' una data.
+    # Si guarda il contesto vicino a ogni data, non l'intera quote: un
+    # «secondo le modalita' previste» lontano non deve far cadere il termine.
+    if all(e_presunta(_intorno(quote, d)) for d in compatibili):
+        logger.debug("[{}] bando_id={} {} data presunta nella quote: {}",
+                     log_prefix, bando_id, label, parsed)
         return None
     if provenienza == "aggregatore":
         logger.info(
@@ -472,3 +774,236 @@ def reconcile_stato_bando(
         ora_scadenza=None,
         adesso=adesso,
     )
+
+
+# ---------------------------------------------------------------------------
+# Termini indicati (contratto `bandi-giro-2` §6.2 e §19.5)
+# ---------------------------------------------------------------------------
+#
+# Un termine indicato e' un indizio, mai una prova: non produce eventi, dice
+# solo «da qualche parte c'e' scritto che le domande chiudono il …». Ogni
+# funzione restituisce (data, fonte), e la precedenza fra le fonti e' fissa.
+
+#: Le fonti di un termine, dalla piu' affidabile (`termine_indicato_fonte`).
+FONTI_TERMINE: tuple[str, ...] = ("calendario_ufficiale", "pagina", "testo", "aggregatore")
+
+#: Un termine vale solo nella frase di una domanda da presentare.
+_PRESENTAZIONE_RE = re.compile(r"domand|candidatur|presentaz|invi|istanz|iscrizion", re.IGNORECASE)
+#: Le frasi che parlano d'altro: eventi e fiere (la data e' quella della
+#: manifestazione), spese, progetti da concludere, rendiconti, lavori, avvio
+#: delle attivita'. «Manifestazione di interesse» e' il nome di un avviso, non
+#: un evento; «eventuale» non e' un evento.
+_ESCLUSIONI_TERMINE_RE = re.compile(
+    r"\bfier|\bevent[oi]\b|\bmanifestazion[ei]\b(?!\s+(?:di\s+|d['’]\s*)interess)"
+    r"|spes[ae]\s+ammissibil|realizzazion|conclusion|ultimazion|rendicontaz|\blavori\b"
+    r"|\bavvi(?:o|at[aeio])\b",
+    re.IGNORECASE,
+)
+#: Senza verbo di presentazione un termine vale solo in due forme strette
+#: (decisione del lead, 30/09): l'etichetta «Scadenza[ domande|presentazione|
+#: candidature]» a inizio frase o dopo una punteggiatura, con la data subito
+#: dopo (al massimo 20 caratteri, solo separatori, «il», «del», «entro» e
+#: l'ora), e lo sportello «(aperto) fino al <data>» o «chiude il <data>».
+_ETICHETTA_SCADENZA_RE = re.compile(
+    r"(?:^|[.;:!?(\-–—,]\s*)scadenz[ae]"
+    r"(?:\s+(?:domand[ae]|presentazion[ei]|candidatur[ae]))?"
+    r"(?P<tra>[\s:\-–]*(?:(?:il|del|entro(?:\s+il)?|alle|ore\s+\d{1,2}(?:[:.]\d{2})?)\s+)*)$",
+    re.IGNORECASE,
+)
+_MAX_TRA_ETICHETTA = 20
+_SPORTELLO_RE = re.compile(
+    r"\bsportello\s+(?:aperto\s+)?(?:dal(?:le|l['’])?\s+[^.;]{1,40}?\s+)?fino\s+al(?:le)?\s+$",
+    re.IGNORECASE,
+)
+#: «lo sportello chiude il <data>»: la chiusura la dice la forma stessa, e
+#: «chiude» non e' fra le parole di scadenza, quindi qui vale anche il ruolo
+#: «ignoto».
+_SPORTELLO_CHIUDE_RE = re.compile(r"\blo\s+sportello\s+chiude\s+il\s+$", re.IGNORECASE)
+#: Una frase finisce a un punto, punto e virgola, punto esclamativo o
+#: interrogativo seguito da una maiuscola, o a un a capo: «D.P.R. 445» e
+#: «entro le 17.00» non spezzano niente.
+_FINE_FRASE_RE = re.compile(r"(?<=[.;!?])\s+(?=[A-ZÀ-ÖØ-Þ«\"“(])|\n+")
+
+
+def _frasi(testo: str) -> list[str]:
+    return [f for f in (p.strip() for p in _FINE_FRASE_RE.split(testo)) if f]
+
+
+def _frase_intorno(testo: str, inizio: int, fine: int) -> str:
+    """La frase di `testo` che contiene l'intervallo [inizio, fine)."""
+    da, a = 0, len(testo)
+    for confine in _FINE_FRASE_RE.finditer(testo):
+        if confine.end() <= inizio:
+            da = confine.end()
+        elif confine.start() >= fine:
+            a = confine.start()
+            break
+    return testo[da:a]
+
+
+def _per_presentare(frase: str) -> bool:
+    """La frase parla di domande da presentare e non d'altro."""
+    return (_PRESENTAZIONE_RE.search(frase) is not None
+            and _ESCLUSIONI_TERMINE_RE.search(frase) is None)
+
+
+def _forma_stretta(frase: str, data: DataConRuolo) -> bool:
+    """La data di una frase senza verbo e' in una delle due forme strette."""
+    prima = frase[:data.inizio]
+    if data.ruolo == "ignoto":
+        return _SPORTELLO_CHIUDE_RE.search(prima[-80:]) is not None
+    etichetta = _ETICHETTA_SCADENZA_RE.search(prima)
+    if etichetta is not None and len(etichetta.group("tra")) <= _MAX_TRA_ETICHETTA:
+        return True
+    return _SPORTELLO_RE.search(prima[-80:]) is not None
+
+
+def _termini_della_frase(frase: str) -> list[date_cls]:
+    """Le date di scadenza certe di una frase, con le regole del termine."""
+    if _ESCLUSIONI_TERMINE_RE.search(frase):
+        return []
+    con_verbo = _PRESENTAZIONE_RE.search(frase) is not None
+    termini = []
+    for data in estrai_date_con_ruolo(frase):
+        if data.ruolo not in ("scadenza", "ignoto"):
+            continue
+        # Con il verbo vale ogni scadenza; il resto (e il ruolo «ignoto», che
+        # vale solo per «lo sportello chiude il») passa dalle forme strette.
+        if not (con_verbo and data.ruolo == "scadenza") and not _forma_stretta(frase, data):
+            continue
+        # Un solo percorso di validazione: substring, ruolo e G10 (date presunte).
+        candidata = {"date": data.data.isoformat(), "source": "official_page", "quote": frase}
+        if validate_date_candidate(candidata, frase, None, "scadenza", log_prefix="termine"):
+            termini.append(data.data)
+    return termini
+
+
+def _termine_dei_testi(*testi: str | None) -> date_cls | None:
+    """La data di scadenza piu' tarda fra le frasi dei testi, o None."""
+    termini = [d for testo in testi if testo for frase in _frasi(testo)
+               for d in _termini_della_frase(frase)]
+    return max(termini, default=None)
+
+
+def termine_nel_testo(titolo: str | None, descrizione_breve: str | None) -> date_cls | None:
+    """Il termine che titolo e descrizione breve indicano, o None (§6.2).
+
+    Regole: solo il ruolo «scadenza» di `estrai_date_con_ruolo`; nella stessa
+    frase un verbo di presentazione (oppure una delle due forme strette); via le
+    frasi di fiere, eventi, spese, progetti, rendiconti, lavori e avvio
+    attivita'; niente date presunte; con piu' date, la piu' tarda. Non e' MAI
+    una prova e non produce eventi. I due testi si leggono separati: il titolo
+    non ha il punto finale e si incollerebbe alla prima frase.
+    """
+    return _termine_dei_testi(titolo, descrizione_breve)
+
+
+def termine_nella_pagina(testo: str | None) -> tuple[date_cls, str] | None:
+    """Le regole di `termine_nel_testo` sul testo della pagina: (data, 'pagina')."""
+    data = _termine_dei_testi(testo)
+    return (data, "pagina") if data is not None else None
+
+
+#: Le fonti di scraping che sono calendari ufficiali degli inviti: Valle
+#: d'Aosta FSE+ (280) e JTF (296). Un altro raw_data non e' un calendario.
+FONTI_CALENDARIO: frozenset[int] = frozenset({280, 296})
+#: La colonna di chiusura del calendario JTF, a spazi tolti: nel DB la
+#: chiave e' «DATA_CHIUSUR A», spezzata dall'intestazione dell'xlsx.
+_COLONNA_CHIUSURA = "DATA_CHIUSURA"
+#: Le frasi di chiusura del calendario VdA: «chiusura domande: 15 luglio
+#: 2029», «chiusura: 30 ottobre 2026», «in corso fino a 31 dicembre 2026»,
+#: «aperta fino al 31 dicembre 2025». La data deve seguire subito ed essere
+#: completa: «chiusura domande: 2029» e «chiusura a marzo 2030» non valgono.
+_FRASE_CHIUSURA_RE = re.compile(
+    r"(?:\bchiusura(?:\s+(?:delle\s+)?domande)?\s*:?|\bin\s+corso\s+fino\s+al?|\baperta\s+fino\s+al)"
+    r"\s+(?:il\s+)?",
+    re.IGNORECASE,
+)
+_ISO_INIZIO_RE = re.compile(r"^\s*(\d{4}-\d{2}-\d{2})(?:[T\s]|$)")
+
+
+def _data_completa_in(valore: str, pos: int) -> tuple[date_cls, int] | None:
+    """La data completa che comincia in `pos`, con la sua fine."""
+    m = _DATA_RE.match(valore, pos)
+    if m is None:
+        return None
+    comp = _componenti(m, "")
+    if not comp or comp[1] is None or comp[2] is None:
+        return None
+    data = _componi(comp[2], comp[1], comp[0])
+    return (data, m.end()) if data is not None else None
+
+
+def _data_di_colonna(valore: Any) -> date_cls | None:
+    """«2026-12-31 00:00:00» o «31/12/2026»; «da definire» e il resto: None."""
+    if not isinstance(valore, str) or e_presunta(valore):
+        return None
+    iso = _ISO_INIZIO_RE.match(valore)
+    if iso:
+        return parse_iso(iso.group(1))
+    trovata = _data_completa_in(valore.strip(), 0)
+    return trovata[0] if trovata else None
+
+
+def termine_da_calendario(
+    raw_data: Any, fonte_id: Any, host_verificante: bool,
+) -> tuple[date_cls, str] | None:
+    """Il termine di una riga di calendario ufficiale: (data, 'calendario_ufficiale').
+
+    Solo per le fonti di `FONTI_CALENDARIO` e solo se l'host della fonte e'
+    verificante: un calendario letto da un aggregatore non e' ufficiale. Con
+    piu' date di chiusura nella riga, vale la piu' tarda.
+    """
+    try:
+        fonte = int(str(fonte_id).strip())
+    except (TypeError, ValueError):
+        return None
+    if not host_verificante or fonte not in FONTI_CALENDARIO or not isinstance(raw_data, dict):
+        return None
+    date: list[date_cls] = []
+    for chiave, valore in raw_data.items():
+        if re.sub(r"\s+", "", str(chiave)).upper() == _COLONNA_CHIUSURA:
+            data = _data_di_colonna(valore)
+            if data is not None:
+                date.append(data)
+            continue
+        if not isinstance(valore, str):
+            continue
+        for frase in _FRASE_CHIUSURA_RE.finditer(valore):
+            trovata = _data_completa_in(valore, frase.end())
+            if trovata is None:
+                continue
+            data, fine = trovata
+            if not e_presunta(valore[max(0, frase.start() - _FINESTRA_PAROLE):fine]):
+                date.append(data)
+    return (max(date), "calendario_ufficiale") if date else None
+
+
+def termine_da_etichetta_oe(raw_data: Any) -> tuple[date_cls, str] | None:
+    """La data del `deadline_label` di OE: (data, 'aggregatore'), o None.
+
+    Riusa `segnali.scadenza_da_label` senza modificarlo (import tardivo:
+    `segnali` importa gia' questo modulo).
+    """
+    if not isinstance(raw_data, dict):
+        return None
+    etichetta = raw_data.get("deadline_label")
+    if not isinstance(etichetta, str) or e_presunta(etichetta):
+        return None
+    from .segnali import scadenza_da_label
+    data = scadenza_da_label(etichetta)
+    return (data, "aggregatore") if data is not None else None
+
+
+def termine_per_precedenza(
+    *candidati: tuple[date_cls, str] | None,
+) -> tuple[date_cls, str] | None:
+    """Il termine della fonte piu' affidabile fra i candidati (`FONTI_TERMINE`).
+
+    calendario_ufficiale > pagina > testo > aggregatore; un candidato None o
+    con una fonte sconosciuta non conta.
+    """
+    validi = [c for c in candidati if c is not None and c[1] in FONTI_TERMINE and c[0] is not None]
+    if not validi:
+        return None
+    return min(validi, key=lambda c: FONTI_TERMINE.index(c[1]))

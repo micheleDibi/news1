@@ -54,6 +54,12 @@ export interface Transizione {
   readonly evento: string;
   /** Condizione in chiaro: è la prova che la transizione richiede. */
   readonly condizione: string;
+  /**
+   * Migrazione che porta la riga in `bando_transizione`; assente = seed della
+   * 04. Le righe con la migrazione le semina il blocco «delta» di quel file,
+   * così il blocco della 04 resta identico byte per byte.
+   */
+  readonly migrazione?: number;
 }
 
 /**
@@ -259,6 +265,15 @@ export const TRANSIZIONI: readonly Transizione[] = [
     condizione:
       "pubblicazione degli esiti: link nuovo scaricato con esito 2xx; in_aggiornamenti=true, lo stato non cambia",
   },
+  {
+    da: "in apertura prossimamente",
+    a: "chiuso",
+    attore: "worker",
+    evento: "chiusura",
+    condizione:
+      "la pagina ufficiale dichiara chiuso, scaduto o concluso con etichetta strutturata; gate G1-G9, G7 per doppia lettura strutturata (contratto 6.1)",
+    migrazione: 13,
+  },
 ];
 
 /**
@@ -409,6 +424,237 @@ export function statoEffettivo(
   }
 
   return stato;
+}
+
+// ---------------------------------------------------------------------------
+// Stato da verificare
+// ---------------------------------------------------------------------------
+
+/**
+ * Perché lo stato mostrato non è certo (contratto interno del giro 2, §3 con
+ * §19.3). Elenco chiuso, lo stesso della sezione `certezza` di
+ * `tests/stato-bando/casi.json`, del gemello Python, della funzione SQL
+ * `bando_stato_da_verificare` e dell'enum dell'API v1. `null` vuol dire
+ * «nessuna prova contraria».
+ */
+export const MOTIVI_DA_VERIFICARE = [
+  'data_apertura_passata',
+  'smentito_dalla_fonte',
+  'previsione_scaduta',
+  'senza_conferma',
+  'termine_passato',
+] as const;
+export type MotivoDaVerificare = typeof MOTIVI_DA_VERIFICARE[number];
+
+/** Gli stati che la verifica sa leggere sulla pagina ufficiale. */
+export const STATI_LETTI = ['in apertura prossimamente', 'aperto', 'chiuso', 'uscito'] as const;
+export type StatoLetto = typeof STATI_LETTI[number];
+
+/** Chi ha letto la pagina: un lettore strutturato o il modello. */
+export const METODI_LETTURA = ['estrattore', 'modello'] as const;
+export type MetodoLettura = typeof METODI_LETTURA[number];
+
+/** Ramo I: giorni di grazia dopo la pubblicazione (I6). */
+export const GIORNI_GRAZIA_PUBBLICAZIONE = 3;
+/** Età massima di una conferma letta sulla pagina ufficiale (I5, A2). */
+export const GIORNI_VALIDITA_CONFERMA = 30;
+/** Ramo A: giorni di grazia dopo la pubblicazione (A7). */
+export const GIORNI_GRAZIA_RAMO_A = 7;
+
+/**
+ * Le colonne di `bando_controllo` (e `pubblicato_at`) che servono alla regola,
+ * oltre a quelle dello stato effettivo. Assente vale NULL: chi legge dalla
+ * tabella e non dalla vista passa solo quello che ha.
+ */
+export interface CampiDaVerificare extends CampiStatoBando {
+  readonly pubblicato_at?: string | null;
+  readonly previsto_entro?: string | null;
+  readonly termine_indicato?: string | null;
+  readonly stato_letto?: string | null;
+  readonly stato_letto_su?: string | null;
+  readonly stato_letto_at?: string | null;
+  readonly stato_letto_metodo?: string | null;
+  readonly esaminato_attivo_at?: string | null;
+  readonly segnale_aggregatore_at?: string | null;
+}
+
+// ISO 8601 come lo restituisce PostgREST: giorno, poi ora e fuso facoltativi.
+const FORMA_ISTANTE = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}(?::?\d{2})?)?)?$/;
+
+/**
+ * Millisecondi di un timestamp, o null se manca o è malformato. Senza fuso
+ * vale UTC, come il naive del gemello Python: `Date` lo leggerebbe nell'ora
+ * locale del processo.
+ */
+function istante(valore: string | null | undefined): number | null {
+  if (typeof valore !== 'string') return null;
+  const parti = FORMA_ISTANTE.exec(valore.trim());
+  if (parti === null) return null;
+  const [, giorno, ora, fuso] = parti;
+  let offset = fuso ?? 'Z';
+  if (/^[+-]\d{2}$/.test(offset)) offset = `${offset}:00`;
+  else if (/^[+-]\d{4}$/.test(offset)) offset = `${offset.slice(0, 3)}:${offset.slice(3)}`;
+  const ms = Date.parse(`${giorno}T${ora ?? '00:00'}${offset}`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** Giorni civili di Roma fra l'istante e `oggi`; negativi se nel futuro. */
+function giorniFa(ms: number, oggi: string): number {
+  const giorno = FORMATO_GIORNO_ROMA.format(new Date(ms));
+  return (Date.parse(`${oggi}T00:00:00Z`) - Date.parse(`${giorno}T00:00:00Z`)) / 86_400_000;
+}
+
+function valoreIn<T extends string>(elenco: readonly T[], valore: string | null | undefined): T | null {
+  for (const voce of elenco) if (valore === voce) return voce;
+  return null;
+}
+
+/**
+ * Motivo per cui lo stato mostrato va verificato, o null (contratto interno
+ * del giro 2, §3 con §19.3; casi in `tests/stato-bando/casi.json`, sezione
+ * `certezza`). Vince la prima regola che si applica, nell'ordine definitivo
+ * di §19.3: in ombra (mai esaminato in attivo) conta solo ciò che il bando dice
+ * di sé, quindi l'unico motivo pubblico è `data_apertura_passata`.
+ *
+ * R0: stato effettivo «in apertura» → ramo I; «aperto» senza `data_scadenza`
+ * → ramo A; altrimenti null.
+ *
+ * Ramo I, nell'ordine I1, I2, I3, I6-bis, I4, I5, I6, I7: I1 apertura
+ * verificata con data → null; I2 `data_apertura` < oggi →
+ * `data_apertura_passata`; I3 lettura valida aperto/chiuso/uscito →
+ * `smentito_dalla_fonte`; I6-bis mai esaminato in attivo → null; I4
+ * `previsto_entro` < oggi → `previsione_scaduta`; I5 lettura valida «in
+ * apertura» di al massimo 30 giorni fa → null; I6 pubblicato da al massimo 3
+ * giorni → null; I7 → `senza_conferma`.
+ *
+ * Ramo A, nell'ordine A1, A2, A4, A3, A5, A6, A7, A8: A1 lettura valida
+ * chiuso/uscito/in apertura → `smentito_dalla_fonte`; A2 lettura valida
+ * «aperto» dell'estrattore di al massimo 30 giorni fa e successiva al segnale
+ * dell'aggregatore → null; A4 mai esaminato in attivo → null; A3
+ * `termine_indicato` < oggi → `termine_passato`; A5 segnale dell'aggregatore →
+ * `senza_conferma`; A6 termine indicato da oggi in poi → null; A7 pubblicato
+ * da al massimo 7 giorni → null; A8 → `senza_conferma`.
+ *
+ * Lettura valida: `stato_letto` fra `STATI_LETTI`, `stato_letto_su` uguale
+ * allo stato salvato e `stato_letto_at` presente. «Giorni fa» è la differenza
+ * fra date civili di Roma, non fra ore.
+ */
+export function statoDaVerificare(
+  campi: CampiDaVerificare,
+  adesso: Date = new Date(),
+): MotivoDaVerificare | null {
+  const effettivo = statoEffettivo(campi, adesso);
+  const ramoA = effettivo === 'aperto' && soloGiorno(campi.data_scadenza) === null;
+  if (effettivo !== 'in apertura prossimamente' && !ramoA) return null;
+
+  const oggi = todayRomeISO(adesso);
+  const entro = (ms: number | null, giorni: number): boolean =>
+    ms !== null && giorniFa(ms, oggi) <= giorni;
+
+  const letto = valoreIn(STATI_LETTI, campi.stato_letto);
+  const lettoAt = istante(campi.stato_letto_at);
+  const lettura = letto !== null && lettoAt !== null && campi.stato_letto_su === campi.stato
+    ? letto
+    : null;
+  const pubblicato = istante(campi.pubblicato_at);
+
+  if (!ramoA) {
+    const verificata = campi.data_apertura_verificata ?? campi.apertura_verificata;
+    const apertura = soloGiorno(campi.data_apertura);
+    if (verificata === true && apertura !== null) return null;
+    if (apertura !== null && apertura < oggi) return 'data_apertura_passata';
+    if (lettura !== null && lettura !== 'in apertura prossimamente') return 'smentito_dalla_fonte';
+    if (istante(campi.esaminato_attivo_at) === null) return null;
+    const previsto = soloGiorno(campi.previsto_entro);
+    if (previsto !== null && previsto < oggi) return 'previsione_scaduta';
+    if (lettura === 'in apertura prossimamente' && entro(lettoAt, GIORNI_VALIDITA_CONFERMA)) return null;
+    if (entro(pubblicato, GIORNI_GRAZIA_PUBBLICAZIONE)) return null;
+    return 'senza_conferma';
+  }
+
+  if (lettura !== null && lettura !== 'aperto') return 'smentito_dalla_fonte';
+  const segnale = istante(campi.segnale_aggregatore_at);
+  if (
+    lettura === 'aperto'
+    && lettoAt !== null
+    && valoreIn(METODI_LETTURA, campi.stato_letto_metodo) === 'estrattore'
+    && entro(lettoAt, GIORNI_VALIDITA_CONFERMA)
+    && (segnale === null || lettoAt > segnale)
+  ) return null;
+  if (istante(campi.esaminato_attivo_at) === null) return null;
+  const termine = soloGiorno(campi.termine_indicato);
+  if (termine !== null && termine < oggi) return 'termine_passato';
+  if (segnale !== null) return 'senza_conferma';
+  if (termine !== null) return null;
+  if (entro(pubblicato, GIORNI_GRAZIA_RAMO_A)) return null;
+  return 'senza_conferma';
+}
+
+// Motivi che hanno senso accanto allo stato mostrato: quelli del ramo I per un
+// «in apertura», quelli del ramo A per un «aperto».
+const MOTIVI_PER_STATO: Readonly<Partial<Record<StatoBando, readonly MotivoDaVerificare[]>>> = {
+  'in apertura prossimamente': [
+    'data_apertura_passata', 'smentito_dalla_fonte', 'previsione_scaduta', 'senza_conferma',
+  ],
+  'aperto': ['smentito_dalla_fonte', 'termine_passato', 'senza_conferma'],
+};
+
+/**
+ * Il motivo da mostrare accanto allo stato, o null. Il motivo arriva dalla
+ * vista (calcolato sullo stato effettivo del DB), lo stato da chi mostra: la
+ * scheda può sostituirlo con quello di un evento (una sospensione), l'API usa
+ * la sua regola storica. Una coppia che la regola non può produrre (un
+ * «sospeso» con un motivo, un «in apertura» con `termine_passato`) non si
+ * mostra: meglio nessun bollino che un bollino che contraddice lo stato.
+ */
+export function motivoVisibile(
+  stato: string | null | undefined,
+  motivo: string | null | undefined,
+): MotivoDaVerificare | null {
+  const valido = valoreIn(MOTIVI_DA_VERIFICARE, motivo);
+  const statoValidato = statoValido(stato);
+  if (valido === null || statoValidato === null) return null;
+  return MOTIVI_PER_STATO[statoValidato]?.includes(valido) ? valido : null;
+}
+
+/**
+ * Il motivo di una riga letta dal DB, già passato da `motivoVisibile`.
+ *
+ * Dalla vista arriva la colonna `stato_da_verificare`, presente anche quando
+ * vale null: è il DB che conosce lettura, termine ed esame in attivo. La
+ * tabella non ha la colonna, e allora si calcola con i campi della riga
+ * (`stato_bando`, date, `data_apertura_verificata`, `pubblicato_at`): lettura,
+ * termine ed esame restano NULL, perché solo la vista li espone.
+ */
+export function motivoDellaRiga(
+  riga: Readonly<Record<string, unknown>>,
+  statoMostrato: string | null | undefined,
+  adesso: Date = new Date(),
+): MotivoDaVerificare | null {
+  if ('stato_da_verificare' in riga) {
+    const dallaVista = riga.stato_da_verificare;
+    return motivoVisibile(statoMostrato, typeof dallaVista === 'string' ? dallaVista : null);
+  }
+  const testo = (chiave: string): string | null => {
+    const valore = riga[chiave];
+    return typeof valore === 'string' ? valore : null;
+  };
+  const calcolato = statoDaVerificare({
+    stato: testo('stato_bando'),
+    data_apertura: testo('data_apertura'),
+    data_apertura_verificata: riga.data_apertura_verificata === true,
+    ora_apertura: testo('ora_apertura'),
+    data_scadenza: testo('data_scadenza'),
+    ora_scadenza: testo('ora_scadenza'),
+    pubblicato_at: testo('pubblicato_at'),
+  }, adesso);
+  return motivoVisibile(statoMostrato, calcolato);
+}
+
+/** Data civile di Roma (YYYY-MM-DD) di un timestamp, o null se manca o è malformato. */
+export function giornoRoma(valore: string | null | undefined): string | null {
+  const ms = istante(valore);
+  return ms === null ? null : FORMATO_GIORNO_ROMA.format(new Date(ms));
 }
 
 /**

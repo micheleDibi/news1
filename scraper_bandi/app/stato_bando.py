@@ -91,7 +91,7 @@ ATTORI_TRANSIZIONE: tuple[str, ...] = ("cron", "worker", "pipeline", "redazione"
 #     §13.3 dichiarano l'unico modo.
 # Le righe di §4 che non cambiano `stato_bando` (rettifica/FAQ/allegato,
 # fusione, ritiro) non stanno qui: agiscono su altre colonne.
-TRANSIZIONI: tuple[dict[str, str | None], ...] = (
+TRANSIZIONI: tuple[dict[str, str | int | None], ...] = (
     {
         "da": None,
         "a": "aperto",
@@ -299,6 +299,18 @@ TRANSIZIONI: tuple[dict[str, str | None], ...] = (
             "pubblicazione degli esiti: link nuovo scaricato con esito 2xx; in_aggiornamenti=true, lo stato non cambia"
         ),
     },
+    # `migrazione`: la riga entra in `bando_transizione` con quella migrazione
+    # (blocco «delta»), non con il seed della 04, che resta identico.
+    {
+        "da": "in apertura prossimamente",
+        "a": "chiuso",
+        "attore": "worker",
+        "evento": "chiusura",
+        "condizione": (
+            "la pagina ufficiale dichiara chiuso, scaduto o concluso con etichetta strutturata; gate G1-G9, G7 per doppia lettura strutturata (contratto 6.1)"
+        ),
+        "migrazione": 13,
+    },
 )
 
 
@@ -424,3 +436,196 @@ def stato_effettivo(
             return "aperto"
 
     return stato_salvato
+
+
+# ---------------------------------------------------------------------------
+# Stato da verificare (contratto interno del giro 2, §3 con §19.3)
+# ---------------------------------------------------------------------------
+
+# Perche' lo stato mostrato non e' certo. Elenco chiuso, lo stesso della sezione
+# `certezza` di `tests/stato-bando/casi.json`, di `statoDaVerificare` in
+# `src/lib/stato-bando.ts`, della funzione SQL `bando_stato_da_verificare` e
+# dell'enum dell'API v1. None vuol dire «nessuna prova contraria».
+MOTIVI_DA_VERIFICARE: tuple[str, ...] = (
+    "data_apertura_passata",
+    "smentito_dalla_fonte",
+    "previsione_scaduta",
+    "senza_conferma",
+    "termine_passato",
+)
+
+# Gli stati che la verifica sa leggere sulla pagina ufficiale e chi li legge.
+STATI_LETTI: tuple[str, ...] = ("in apertura prossimamente", "aperto", "chiuso", "uscito")
+METODI_LETTURA: tuple[str, ...] = ("estrattore", "modello")
+
+GIORNI_GRAZIA_PUBBLICAZIONE = 3  # ramo I, I6
+GIORNI_VALIDITA_CONFERMA = 30  # I5 e A2
+GIORNI_GRAZIA_RAMO_A = 7  # ramo A, A7
+
+
+def _istante(valore: object) -> datetime | None:
+    """Istante AWARE da un datetime, una date o un testo ISO 8601 (come lo
+    restituisce PostgREST), o None se manca o e' malformato. Un naive vale UTC,
+    come in `adesso_roma`: mai l'ora locale della macchina."""
+    if isinstance(valore, datetime):
+        momento = valore
+    elif isinstance(valore, date):
+        momento = datetime(valore.year, valore.month, valore.day)
+    elif isinstance(valore, str):
+        testo = valore.strip()
+        if _solo_giorno(testo) is None:
+            return None
+        try:
+            momento = datetime.fromisoformat(_iso_per_fromisoformat(testo))
+        except ValueError:
+            return None
+    else:
+        return None
+    if momento.tzinfo is None:
+        momento = momento.replace(tzinfo=timezone.utc)
+    return momento
+
+
+def _iso_per_fromisoformat(testo: str) -> str:
+    """Il testo ISO nella forma che anche `fromisoformat` di Python 3.10 legge.
+
+    Il 3.10 non accetta la «Z», i fusi senza i due punti (`+00`, `+0000`) ne'
+    le frazioni di secondo diverse da 3 o 6 cifre, che PostgREST restituisce
+    (`08:00:00.87927+00:00`: PostgreSQL toglie gli zeri in coda). La frazione
+    si porta a 6 cifre come in `backend/app/lock_orfani.istante`; senza `re`,
+    perche' il modulo resta solo stdlib di data e ora.
+    """
+    testo = testo.replace("Z", "+00:00")
+    if len(testo) > 10 and testo[10] == " ":
+        testo = testo[:10] + "T" + testo[11:]
+    corpo, fuso = testo, ""
+    # Il fuso sta in coda, dopo l'ora: i trattini della data sono prima del decimo carattere.
+    for indice in range(len(testo) - 1, 10, -1):
+        if testo[indice] in "+-":
+            corpo, fuso = testo[:indice], testo[indice:]
+            break
+    if len(fuso) == 3 and _cifre(fuso[1:]):
+        fuso += ":00"
+    elif len(fuso) == 5 and _cifre(fuso[1:]):
+        fuso = f"{fuso[:3]}:{fuso[3:]}"
+    punto = corpo.find(".", 10)
+    if punto != -1 and _cifre(corpo[punto + 1:]):
+        corpo = corpo[:punto + 1] + (corpo[punto + 1:] + "000000")[:6]
+    return corpo + fuso
+
+
+def _giorni_fa(momento: datetime, oggi: date) -> int:
+    """Giorni civili di Roma fra l'istante e `oggi`; negativi se nel futuro."""
+    return (oggi - momento.astimezone(ROMA).date()).days
+
+
+def stato_da_verificare(
+    stato: str | None,
+    data_apertura: object,
+    apertura_verificata: object,
+    ora_apertura: object,
+    data_scadenza: object,
+    ora_scadenza: object,
+    pubblicato_at: object,
+    previsto_entro: object,
+    termine_indicato: object,
+    stato_letto: object,
+    stato_letto_su: object,
+    stato_letto_at: object,
+    stato_letto_metodo: object,
+    esaminato_attivo_at: object,
+    segnale_aggregatore_at: object,
+    adesso: datetime | None = None,
+) -> str | None:
+    """Motivo per cui lo stato mostrato va verificato, o None (gemello di
+    `statoDaVerificare`; casi nella sezione `certezza` di casi.json). Vince la
+    prima regola che si applica, nell'ordine definitivo di §19.3: in ombra (mai
+    esaminato in attivo) conta solo cio' che il bando dice di se', quindi
+    l'unico motivo pubblico e' data_apertura_passata.
+
+    R0: stato effettivo «in apertura» -> ramo I; «aperto» senza
+    `data_scadenza` -> ramo A; altrimenti None.
+
+    Ramo I, nell'ordine I1, I2, I3, I6-bis, I4, I5, I6, I7: I1 apertura
+    verificata con data -> None; I2 `data_apertura` < oggi ->
+    data_apertura_passata; I3 lettura valida aperto/chiuso/uscito ->
+    smentito_dalla_fonte; I6-bis mai esaminato in attivo -> None; I4
+    `previsto_entro` < oggi -> previsione_scaduta; I5 lettura valida «in
+    apertura» di al massimo 30 giorni fa -> None; I6 pubblicato da al massimo 3
+    giorni -> None; I7 -> senza_conferma.
+
+    Ramo A, nell'ordine A1, A2, A4, A3, A5, A6, A7, A8: A1 lettura valida
+    chiuso/uscito/in apertura -> smentito_dalla_fonte; A2 lettura valida
+    «aperto» dell'estrattore di al massimo 30 giorni fa e successiva al segnale
+    dell'aggregatore -> None; A4 mai esaminato in attivo -> None; A3
+    `termine_indicato` < oggi -> termine_passato; A5 segnale dell'aggregatore ->
+    senza_conferma; A6 termine indicato da oggi in poi -> None; A7 pubblicato da
+    al massimo 7 giorni -> None; A8 -> senza_conferma.
+
+    Lettura valida: `stato_letto` fra STATI_LETTI, `stato_letto_su` uguale allo
+    stato salvato e `stato_letto_at` presente. «Giorni fa» e' la differenza fra
+    date civili di Roma, non fra ore.
+    """
+    momento = adesso_roma(adesso)
+    effettivo = stato_effettivo(
+        stato, data_apertura, apertura_verificata, ora_apertura, data_scadenza, ora_scadenza,
+        momento,
+    )
+    ramo_a = effettivo == "aperto" and _solo_giorno(data_scadenza) is None
+    if effettivo != "in apertura prossimamente" and not ramo_a:
+        return None
+
+    oggi = momento.date()
+    oggi_iso = oggi.isoformat()
+
+    def entro(istante: datetime | None, giorni: int) -> bool:
+        return istante is not None and _giorni_fa(istante, oggi) <= giorni
+
+    letto = stato_letto if stato_letto in STATI_LETTI else None
+    letto_at = _istante(stato_letto_at)
+    lettura = letto if letto is not None and letto_at is not None and stato_letto_su == stato else None
+    pubblicato = _istante(pubblicato_at)
+
+    if not ramo_a:
+        apertura = _solo_giorno(data_apertura)
+        if apertura_verificata is True and apertura is not None:
+            return None
+        if apertura is not None and apertura < oggi_iso:
+            return "data_apertura_passata"
+        if lettura is not None and lettura != "in apertura prossimamente":
+            return "smentito_dalla_fonte"
+        if _istante(esaminato_attivo_at) is None:
+            return None
+        previsto = _solo_giorno(previsto_entro)
+        if previsto is not None and previsto < oggi_iso:
+            return "previsione_scaduta"
+        if lettura == "in apertura prossimamente" and entro(letto_at, GIORNI_VALIDITA_CONFERMA):
+            return None
+        if entro(pubblicato, GIORNI_GRAZIA_PUBBLICAZIONE):
+            return None
+        return "senza_conferma"
+
+    if lettura is not None and lettura != "aperto":
+        return "smentito_dalla_fonte"
+    segnale = _istante(segnale_aggregatore_at)
+    metodo = stato_letto_metodo if stato_letto_metodo in METODI_LETTURA else None
+    if (
+        lettura == "aperto"
+        and letto_at is not None
+        and metodo == "estrattore"
+        and entro(letto_at, GIORNI_VALIDITA_CONFERMA)
+        and (segnale is None or letto_at > segnale)
+    ):
+        return None
+    if _istante(esaminato_attivo_at) is None:
+        return None
+    termine = _solo_giorno(termine_indicato)
+    if termine is not None and termine < oggi_iso:
+        return "termine_passato"
+    if segnale is not None:
+        return "senza_conferma"
+    if termine is not None:
+        return None
+    if entro(pubblicato, GIORNI_GRAZIA_RAMO_A):
+        return None
+    return "senza_conferma"

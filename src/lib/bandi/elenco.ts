@@ -319,6 +319,12 @@ export interface ConteggiStato {
   inApertura: number;
   chiusi: number;
   inScadenza: number;
+  /**
+   * Quanti degli «in apertura» hanno un motivo per essere verificati (regola
+   * `stato_da_verificare`). Solo per l'intera sezione: le pagine filtro non lo
+   * passano e la loro tessera resta com'era.
+   */
+  inAperturaDaVerificare?: number;
 }
 
 export interface Tessera {
@@ -328,6 +334,8 @@ export interface Tessera {
   attiva: boolean;
   /** Chiave stabile per ritrovare il focus dopo la sostituzione della regione. */
   chiave: string;
+  /** Riga piccola sotto l'etichetta: «di cui N da verificare». */
+  nota?: string;
 }
 
 /** Le tre tessere dell'hero: cliccarne una imposta stato e «in scadenza» come nel mock. */
@@ -355,6 +363,9 @@ export function tessere(valori: Valori, c: ConteggiStato, url: UrlDa): Tessera[]
       etichetta: 'in apertura prossimamente',
       href: url(conValori(valori, { stato: ['in apertura prossimamente'], in_scadenza: [] })),
       attiva: stato === 'in apertura prossimamente',
+      ...((c.inAperturaDaVerificare ?? 0) > 0
+        ? { nota: `di cui ${numeroGrande(c.inAperturaDaVerificare ?? 0)} da verificare` }
+        : {}),
     },
   ];
 }

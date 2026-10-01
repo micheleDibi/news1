@@ -369,5 +369,274 @@ class TestUrlAmmessi(unittest.TestCase):
         self.assertIsNone(runner.allegati_ammessi({}, link_leggibili=False))
 
 
+
+# --- sosta d'ingresso e gemelli esatti (contratto `bandi-giro-2` §19.4, §19.9) ---
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+ADESSO_SOSTA = datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)
+
+
+class _Finti:
+    """L'I/O di `trattieni_e_fondi`, registrato."""
+
+    def __init__(self, controlli=None, link=(), pubblicati=(), fondi="master", errore=None):
+        self.controlli = controlli or {}
+        self.link = list(link)
+        self.pubblicati = list(pubblicati)
+        self._fondi = fondi
+        self.errore = errore
+        self.fusioni: list = []
+        self.rifiutati: list = []
+        self.segnati: list = []
+        self.letture_pubblicati = 0
+
+    def leggi_controlli(self, ids):
+        if self.errore:
+            raise self.errore
+        return {i: c for i, c in self.controlli.items() if i in ids}
+
+    def leggi_link(self, ids):
+        return [r for r in self.link if r["bando_id"] in ids]
+
+    def leggi_pubblicati(self):
+        self.letture_pubblicati += 1
+        return list(self.pubblicati)
+
+    def fondi(self, master, dup, motivo):
+        self.fusioni.append((master, dup, motivo))
+        return master if self._fondi == "master" else self._fondi
+
+    def rifiuta(self, bando_id, motivo):
+        self.rifiutati.append((bando_id, motivo))
+        return True
+
+    def segna(self, bando_id, colonne):
+        self.segnati.append((bando_id, dict(colonne)))
+        return True
+
+    def lancia(self, bandi, **opzioni):
+        opzioni.setdefault("attivo", True)
+        opzioni.setdefault("colonna_sosta", True)
+        return asyncio.run(runner.trattieni_e_fondi(
+            bandi, adesso=ADESSO_SOSTA, sosta_giri=4,
+            leggi_controlli=self.leggi_controlli, leggi_link=self.leggi_link,
+            leggi_pubblicati=self.leggi_pubblicati, fondi=self.fondi, rifiuta=self.rifiuta,
+            segna_trattenuto=self.segna, **opzioni))
+
+
+def _bando(bando_id, **extra):
+    riga = {"id": bando_id, "fonte_id": 237, "stato_bando": "aperto", "data_scadenza": None,
+            "link_bando": f"https://www.lazioeuropa.it/bandi/avviso-{bando_id}",
+            "titolo_raw": f"Avviso {bando_id}"}
+    riga.update(extra)
+    return riga
+
+
+class TestSostaDIngresso(unittest.TestCase):
+    def test_in_attivo_l_aperto_senza_scadenza_sosta_e_trattenuto_dal_si_scrive(self):
+        finti = _Finti()
+        rimasti, contatori = finti.lancia([_bando(1), _bando(2, data_scadenza="2026-12-31")])
+        self.assertEqual([b["id"] for b in rimasti], [2])
+        self.assertEqual(contatori["trattenuti"], 1)
+        self.assertEqual(finti.segnati, [(1, {"trattenuto_dal": ADESSO_SOSTA.isoformat()})])
+
+    def test_trattenuto_dal_non_si_riscrive(self):
+        dal = (ADESSO_SOSTA - timedelta(hours=7)).isoformat()
+        finti = _Finti(controlli={1: {"trattenuto_dal": dal}})
+        rimasti, _ = finti.lancia([_bando(1)])
+        self.assertEqual((rimasti, finti.segnati), ([], []))
+
+    def test_passati_quattro_giri_si_pubblica(self):
+        dal = (ADESSO_SOSTA - timedelta(hours=25)).isoformat()
+        finti = _Finti(controlli={1: {"trattenuto_dal": dal}})
+        rimasti, contatori = finti.lancia([_bando(1)])
+        self.assertEqual([b["id"] for b in rimasti], [1])
+        self.assertEqual(contatori["rilasciati_a_tempo"], 1)
+
+    def test_senza_appiglio_resta_fermo(self):
+        finti = _Finti()
+        rimasti, contatori = finti.lancia([_bando(1, link_bando=None, stato_bando="aperto")])
+        self.assertEqual(rimasti, [])
+        self.assertEqual(contatori["trattenuti_senza_appiglio"], 1)
+        # Una riga di bando_link basta come appiglio.
+        finti = _Finti(link=[{"bando_id": 1}])
+        rimasti, _ = finti.lancia([_bando(1, link_bando=None, data_scadenza="2026-12-31")])
+        self.assertEqual([b["id"] for b in rimasti], [1])
+
+    def test_in_ombra_passa_tutto_e_conta(self):
+        finti = _Finti()
+        rimasti, contatori = finti.lancia([_bando(1), _bando(2, link_bando=None)], attivo=False)
+        self.assertEqual([b["id"] for b in rimasti], [1, 2])
+        self.assertEqual((contatori["trattenuti"], contatori["trattenuti_senza_appiglio"]), (1, 1))
+        self.assertEqual(finti.segnati, [])
+        self.assertEqual(contatori["modalita_ingresso"], "ombra")
+
+    def test_dry_run_non_scrive_anche_in_attivo(self):
+        finti = _Finti()
+        rimasti, _ = finti.lancia([_bando(1)], dry_run=True)
+        self.assertEqual(([b["id"] for b in rimasti], finti.segnati), ([1], []))
+
+    def test_lettura_fallita_passa_tutto(self):
+        finti = _Finti(errore=ConnectionError("giu'"))
+        with patch.object(runner, "logger"):
+            rimasti, contatori = finti.lancia([_bando(1)])
+        self.assertEqual([b["id"] for b in rimasti], [1])
+        self.assertTrue(contatori["controllo_ingresso_saltato"])
+
+    def test_senza_la_colonna_la_sosta_si_pubblica_e_si_conta_solo_li(self):
+        # Senza bando_controllo.trattenuto_dal la sosta non finirebbe mai. Non
+        # va in `trattenuti`: in attivo la telemetria la sottrarrebbe.
+        finti = _Finti()
+        rimasti, contatori = finti.lancia([_bando(1)], colonna_sosta=False)
+        self.assertEqual([b["id"] for b in rimasti], [1])
+        self.assertEqual((contatori["sosta_senza_colonna"], contatori["trattenuti"]), (1, 0))
+        self.assertEqual(finti.segnati, [])
+
+    def test_senza_la_colonna_il_senza_appiglio_resta_fermo(self):
+        # A lui `trattenuto_dal` non serve: si ferma come con la colonna.
+        finti = _Finti()
+        rimasti, contatori = finti.lancia(
+            [_bando(1), _bando(2, link_bando=None, stato_bando="aperto")], colonna_sosta=False)
+        self.assertEqual([b["id"] for b in rimasti], [1])
+        self.assertEqual(contatori["trattenuti_senza_appiglio"], 1)
+        self.assertEqual((contatori["sosta_senza_colonna"], contatori["trattenuti"]), (1, 0))
+        self.assertEqual(finti.segnati, [])
+
+    def test_senza_la_colonna_in_ombra_si_conta_come_prima(self):
+        finti = _Finti()
+        rimasti, contatori = finti.lancia(
+            [_bando(1), _bando(2, link_bando=None)], attivo=False, colonna_sosta=False)
+        self.assertEqual([b["id"] for b in rimasti], [1, 2])
+        self.assertEqual((contatori["trattenuti"], contatori["trattenuti_senza_appiglio"],
+                          contatori["sosta_senza_colonna"]), (1, 1, 0))
+
+    def test_la_colonna_si_legge_dallo_schema(self):
+        db_vero = carica_modulo("db")
+
+        class _Schema:
+            def __init__(self, colonne):
+                self.colonne = colonne
+                self.chieste: list = []
+
+            def ha(self, tabella, colonna):
+                self.chieste.append((tabella, colonna))
+                return colonna in self.colonne
+
+        for colonne, attese in ((set(), [1]), ({"trattenuto_dal"}, [])):
+            schema = _Schema(colonne)
+            finti = _Finti()
+            with patch.object(db_vero, "controllo", schema):
+                rimasti, _ = finti.lancia([_bando(1)], colonna_sosta=None)
+            self.assertEqual([b["id"] for b in rimasti], attese)
+            self.assertEqual(schema.chieste, [("bando_controllo", "trattenuto_dal")])
+
+    def test_schema_illeggibile_vale_come_colonna_assente(self):
+        db_vero = carica_modulo("db")
+
+        class _Rotto:
+            def ha(self, *_a):
+                raise ConnectionError("giu'")
+
+        finti = _Finti()
+        with patch.object(db_vero, "controllo", _Rotto()):
+            rimasti, contatori = finti.lancia([_bando(1)], colonna_sosta=None)
+        self.assertEqual(([b["id"] for b in rimasti], contatori["sosta_senza_colonna"]), ([1], 1))
+
+
+class TestGemelliPrimaDellaPubblicazione(unittest.TestCase):
+    PUBBLICATO = {"id": 905315, "fonte_id": 237, "bando_master_id": None,
+                  "link_bando": "https://www.lazioeuropa.it/bandi/psicologia-scolastica",
+                  "titolo_raw": "Psicologia scolastica nelle scuole del Lazio",
+                  "titolo": "Psicologia scolastica nelle scuole del Lazio",
+                  "data_scadenza": "2026-12-31"}
+    NUOVO = {"id": 942936, "fonte_id": 449, "stato_bando": "aperto", "data_scadenza": "2026-12-31",
+             "link_bando": "https://obiettivoeuropa.com/bandi/942936",
+             "fonte_ufficiale_url": "https://www.lazioeuropa.it/bandi/psicologia-scolastica/",
+             "titolo_raw": "Lazio - Psicologia scolastica nelle scuole"}
+
+    def test_in_attivo_si_fonde_e_non_si_pubblica(self):
+        finti = _Finti(pubblicati=[self.PUBBLICATO])
+        rimasti, contatori = finti.lancia([dict(self.NUOVO)])
+        self.assertEqual(rimasti, [])
+        self.assertEqual(finti.fusioni, [(905315, 942936, "gemello esatto: url")])
+        self.assertEqual(finti.rifiutati, [(942936, "gemello esatto di 905315: fuso")])
+        self.assertEqual(contatori["fusi_prima_della_pubblicazione"], 1)
+
+    def test_in_ombra_si_conta_e_si_pubblica(self):
+        finti = _Finti(pubblicati=[self.PUBBLICATO])
+        rimasti, contatori = finti.lancia([dict(self.NUOVO)], attivo=False)
+        self.assertEqual([b["id"] for b in rimasti], [942936])
+        self.assertEqual((finti.fusioni, contatori["gemelli_trovati"]), ([], 1))
+
+    def test_pagina_condivisa_non_si_fonde(self):
+        altro = dict(self.PUBBLICATO, id=905316,
+                     link_bando="https://www.lazioeuropa.it/bandi/altro",
+                     fonte_ufficiale_url=self.PUBBLICATO["link_bando"])
+        finti = _Finti(pubblicati=[self.PUBBLICATO, altro])
+        rimasti, _ = finti.lancia([dict(self.NUOVO)])
+        self.assertEqual([b["id"] for b in rimasti], [942936])
+        self.assertEqual(finti.fusioni, [])
+
+    def test_fusione_non_riuscita_non_si_pubblica_e_si_ritenta(self):
+        finti = _Finti(pubblicati=[self.PUBBLICATO], fondi=None)
+        with patch.object(runner, "logger"):
+            rimasti, contatori = finti.lancia([dict(self.NUOVO)])
+        self.assertEqual(rimasti, [])
+        self.assertEqual((contatori["fusioni_non_riuscite"], finti.rifiutati), (1, []))
+
+    def test_i_gia_fusi_non_sono_master(self):
+        finti = _Finti(pubblicati=[dict(self.PUBBLICATO, bando_master_id=1)])
+        rimasti, _ = finti.lancia([dict(self.NUOVO)])
+        self.assertEqual([b["id"] for b in rimasti], [942936])
+
+    def test_chiave_esterna_e_atto_non_si_fondono_in_automatico(self):
+        # Revisione del 01/10: in automatico solo 'url' e 'riga_calendario'.
+        gemelli = carica_modulo("gemelli")
+        pubblicato = dict(self.PUBBLICATO, link_bando="https://www.lazioeuropa.it/bandi/a")
+        for criterio, fuso in (("chiave_esterna", False), ("atto", False),
+                               ("riga_calendario", True)):
+            trovata = (gemelli.Corrispondenza(905315, criterio, "x"),)
+            finti = _Finti(pubblicati=[pubblicato])
+            with patch.object(gemelli, "criteri_esatti", lambda *_a, t=trovata: t):
+                rimasti, contatori = finti.lancia([dict(self.NUOVO)])
+            self.assertEqual(rimasti == [], fuso, criterio)
+            self.assertEqual(contatori["fusi_prima_della_pubblicazione"], int(fuso), criterio)
+            self.assertEqual(contatori["gemelli_trovati"], int(fuso), criterio)
+            if not fuso:
+                self.assertEqual((finti.fusioni, finti.rifiutati), ([], []), criterio)
+
+    def test_corpus_troncato_niente_fusioni(self):
+        finti = _Finti(pubblicati=[self.PUBBLICATO, dict(self.PUBBLICATO, id=1, link_bando="x")])
+        with patch.object(runner, "logger"):
+            rimasti, contatori = finti.lancia([dict(self.NUOVO)], limite_lettura=2)
+        self.assertEqual([b["id"] for b in rimasti], [942936])
+        self.assertEqual(finti.fusioni, [])
+        self.assertTrue(contatori["controllo_gemelli_troncato"])
+        self.assertEqual(contatori["gemelli_trovati"], 0)
+        # Sotto il limite la stessa coppia si fonde.
+        finti = _Finti(pubblicati=[self.PUBBLICATO])
+        rimasti, contatori = finti.lancia([dict(self.NUOVO)], limite_lettura=2)
+        self.assertEqual((rimasti, contatori["controllo_gemelli_troncato"]), ([], False))
+
+    def test_la_lettura_dei_pubblicati_porta_il_limite(self):
+        db_vero = carica_modulo("db")
+        chiamate: list = []
+
+        def leggi(**opzioni):
+            chiamate.append(opzioni)
+            return []
+
+        finti = _Finti()
+        with patch.object(db_vero, "select_pubblicati_per_gemelli", leggi):
+            asyncio.run(runner.trattieni_e_fondi(
+                [dict(self.NUOVO)], attivo=True, adesso=ADESSO_SOSTA, sosta_giri=4,
+                colonna_sosta=True, leggi_controlli=finti.leggi_controlli,
+                leggi_link=finti.leggi_link, fondi=finti.fondi, rifiuta=finti.rifiuta,
+                segna_trattenuto=finti.segna))
+        limite = carica_modulo("gemelli").LIMITE_LETTURA_PUBBLICATI
+        self.assertEqual(chiamate, [{"limit": limite, "con_calendario": True}])
+
+
 if __name__ == "__main__":                              # pragma: no cover
     unittest.main()

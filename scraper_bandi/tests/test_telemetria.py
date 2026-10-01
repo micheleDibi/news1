@@ -121,8 +121,11 @@ class TestSalute(unittest.TestCase):
 
     def test_qualita_della_pipeline(self):
         self.assertTrue(telemetria.salute(telemetria.Stato(quota_in_verifica_nuovi=0.31)).allarmi)
-        self.assertTrue(
-            telemetria.salute(telemetria.Stato(quota_schede_oe_con_sezione=0.79)).allarmi)
+        # Schede OE senza sezione: avviso e non allarme (giro 2, decisione del
+        # lead del 30/09: oggi nessuno la misura).
+        schede = telemetria.salute(telemetria.Stato(quota_schede_oe_con_sezione=0.79))
+        self.assertEqual(schede.allarmi, ())
+        self.assertEqual(len(schede.avvisi), 1)
         self.assertTrue(telemetria.salute(telemetria.Stato(quota_controlli_falliti=0.03)).allarmi)
 
     def test_login_oe_fallito(self):

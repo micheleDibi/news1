@@ -29,6 +29,13 @@ Versione del contratto: **v11**. Ogni modifica incompatibile è preceduta da un 
    richiede (`bando_stato_effettivo`, `dominio_di`, `bando_host_aggregatore`) e quelle di
    `pg_trgm`. Ogni RPC del dominio bandi ha `REVOKE EXECUTE` da `PUBLIC`, `anon` e
    `authenticated` più una guardia sul ruolo: i consumatori **leggono e basta**.
+   **Eccezione, dalla migrazione 12:** `monitoraggio_catalogo(p_chiave)` (§14). È eseguibile con
+   la anon key, ma risponde solo a una `POST` con una chiave di monitoraggio valida, non scrive
+   niente e restituisce solo il riepilogo di salute. Le tabelle del monitoraggio restano
+   illeggibili con la anon key.
+   **Eccezione, dalla migrazione 13:** `bando_stato_da_verificare(...)` (§4.1). È la funzione pura che la vista
+   chiama per la colonna `stato_da_verificare`: non legge tabelle, non scrive, e come `bando_stato_effettivo` resta
+   eseguibile anche dopo la fase (d). Non serve chiamarla direttamente: la vista ne espone il risultato.
 7. **Nessun link ad aggregatori** esce dalle colonne leggibili con la anon key. Dove il valore
    grezzo puntava a un aggregatore, la colonna pubblica vale `NULL`.
 
@@ -43,6 +50,9 @@ Questi nomi sono definitivi e valgono nelle migrazioni, nel codice e in questo d
 | `bando_pubblico` | la vista di lettura (l'unico oggetto da interrogare dalla fase (c) in poi) |
 | `stato_effettivo` | lo stato calcolato alla lettura; la verità |
 | `stato_bando` | lo stato persistito, riallineato dal job orario |
+| `stato_da_verificare` | perché lo stato mostrato **non è certo** (uno dei cinque motivi di §4.1), oppure NULL: nessuna prova contraria. Dalla migrazione 13 |
+| `stato_letto` / `stato_letto_at` | l'ultimo stato letto sulla pagina ufficiale da un lettore strutturato, e quando; esposti solo se riguardano lo stato di oggi |
+| `termine_indicato` / `termine_indicato_fonte` | un termine di presentazione indicato da una fonte non verificata, con la sua provenienza: un indizio, **mai** una scadenza |
 | `pubblicato` / `pubblicato_at` | il flag di pubblicazione e il suo istante |
 | `ultimo_cambiamento_at` | avanza **solo** per modifiche pubbliche; mai per re-scrape o controlli |
 | `ultimo_controllo_at` | ultimo controllo della freschezza (da `bando_controllo`) |
@@ -52,9 +62,12 @@ Questi nomi sono definitivi e valgono nelle migrazioni, nel codice e in questo d
 | `bando_evento` | registro degli eventi (non `bando_eventi`) |
 | `bando_fusione` | mappa doppione → master (non `bando_master`) |
 | `bando_slug_storico(slug, bando_id, esito, motivo, created_at)` | storico degli slug |
-| `bando_controllo` | tabella interna di servizio; ad `anon` sono concesse **solo** le colonne `bando_id` e `ultimo_controllo_at` |
+| `bando_controllo` | tabella interna di servizio; ad `anon` sono concesse **solo** le colonne `bando_id` e `ultimo_controllo_at`, più, dalla migrazione 13, le nove che la vista usa per le colonne di §4.1 (`stato_letto`, `stato_letto_su`, `stato_letto_at`, `stato_letto_metodo`, `previsto_entro`, `termine_indicato`, `termine_indicato_fonte`, `esaminato_attivo_at`, `segnale_aggregatore_at`). Quei privilegi esistono **solo perché la vista è `security_invoker`**: le colonne di `bando_controllo` **non fanno parte del contratto** (nomi, significato e presenza possono cambiare senza avviso). Si legge solo la vista |
 | `dominio_ufficiale` | whitelist/blocklist dei domini; **tabella interna**, non leggibile con la anon key |
 | `pipeline_run`, `fonte_run`, `pipeline_lock` | tabelle interne della pipeline |
+| `monitoraggio_catalogo(p_chiave)` | la sola funzione del pannello di monitoraggio: solo `POST`, solo con una chiave valida (§14) |
+| `monitoraggio_riepilogo`, `monitoraggio_chiave` | tabelle interne del monitoraggio (riepilogo di salute e impronte delle chiavi); **non leggibili** con la anon key |
+| `monitoraggio_job_orario()` | funzione interna del monitoraggio; **non eseguibile** con la anon key |
 | `apertura_automatica` / `chiusura_automatica` | i tipi di evento del job orario (non «transizione_automatica») |
 | `bando_link.ultimo_visto_at` | ultimo 2xx **del link** |
 | `bando_controllo.ultimo_visto_in_fonte_at` | ultima presenza **nel listing della fonte** — colonna diversa dalla precedente e non leggibile con la anon key |
@@ -110,6 +123,17 @@ va risolto su `bando_fusione` / `bando_slug_storico` (§6).
 | **`link_bando`** | text | **compatibilità fino alla (d)**: il valore grezzo se l'host non è un aggregatore, altrimenti NULL. Usare `fonte_ufficiale_url` |
 | `pubblicato_at`, `created_at` | timestamptz | `created_at` è il riferimento degli alert quando `data_pubblicazione` è NULL |
 | `ultimo_cambiamento_at` | timestamptz | avanza solo per modifiche pubbliche (testi, date, stato, fonte, allegati); mai per un re-scrape o un controllo. Valore iniziale = vecchio `updated_at` |
+| **`stato_da_verificare`** | text | dalla migrazione 13. NULL oppure uno dei cinque motivi di §4.1: `data_apertura_passata`, `smentito_dalla_fonte`, `previsione_scaduta`, `senza_conferma`, `termine_passato`. **Lo stato di un bando è certo solo con `stato_da_verificare IS NULL`.** IS NULL è condizione necessaria, non una verifica: vuol dire nessuna prova contraria. Un bando mai controllato vale NULL finché le sue date non dicono altro |
+| `stato_letto` | text | dalla 13. L'ultimo stato letto sulla pagina ufficiale da un lettore strutturato: `in apertura prossimamente` \| `aperto` \| `chiuso` \| `uscito`. NULL se la lettura riguardava uno stato diverso da `stato_bando`, oppure se viene da un'interpretazione automatica del testo (modello): il sito non presenta come «letto sulla pagina ufficiale» un'interpretazione automatica. Fra le letture esposte c'è anche quella del **lettore generico**, sulle pagine senza un lettore dedicato: legge solo frasi compiute di chiusura («Bando chiuso», «Domande chiuse», «dotazione esaurita») e può dire **solo** `chiuso`. È un segnale: accende `smentito_dalla_fonte`, ma non genera eventi e non cambia lo stato. Non conferma mai un «aperto» |
+| `stato_letto_at` | timestamptz | dalla 13. Quando è stata fatta quella lettura; NULL alle stesse condizioni di `stato_letto` |
+| `termine_indicato` | date | dalla 13. Un termine di presentazione indicato da una fonte che non è la pagina ufficiale verificata. È un indizio: non cambia `stato_effettivo`, non genera eventi e non va mostrato come scadenza. NULL finché il bando non è stato esaminato dal controllo attivo del produttore: in prova (ombra) è sempre NULL |
+| `termine_indicato_fonte` | text | dalla 13. Da dove viene il termine: `calendario_ufficiale` \| `pagina` \| `testo` \| `aggregatore` (in quest'ordine di affidabilità). NULL quando `termine_indicato` è NULL |
+
+**Le cinque colonne della 13 stanno in coda** alla vista e si calcolano solo se la select le chiede: una select con
+colonne esplicite non cambia, e `count=exact` non costa di più. Un `select=*` riceve cinque colonne in più. Le
+colonne interne di `bando_controllo` da cui sono calcolate sono leggibili con la anon key solo perché la vista è
+`security_invoker`: **non fanno parte del contratto** e non vanno lette direttamente (per esempio mostrano anche le
+letture non strutturate che la vista nasconde).
 
 **Assenti per scelta**, e non torneranno: `raw_data`, `hash_bando`, `fonte_id`,
 `confidence_score`, `rejection_reason`, `canonical_key`, `fonti_aggiuntive`, `updated_at`,
@@ -168,6 +192,53 @@ minuti**.
 `stato_effettivo` non è indicizzabile (dipende da `now()`): regge sul corpus pubblicato, che è
 dell'ordine di 2 100 righe.
 
+### 4.1 Certezza dello stato (`stato_da_verificare`, dalla migrazione 13)
+
+`stato_effettivo` dice qual è lo stato; `stato_da_verificare` dice **se quello stato è certo**. È un motivo di
+dubbio, oppure NULL. **Per un consumatore uno stato è certo solo con `stato_da_verificare IS NULL`.** Un motivo non
+cambia mai lo stato: un bando «aperto · da verificare» resta fra gli aperti, nei contatori e nei filtri. Il DB non
+chiude niente a tempo: una chiusura arriva solo con un evento (§6.1).
+
+Si calcola alla lettura, come `stato_effettivo`, con la stessa regola in tutti i gemelli del produttore. `oggi` è la
+data civile di Roma; «N giorni fa» è la differenza fra date civili di Roma (non fra ore); una **lettura valida** è una
+lettura della pagina ufficiale che riguarda lo stato persistito di oggi. Vince la prima regola che si applica.
+
+- **Fuori dai due rami** (chiuso, sospeso, revocato, aperto con `data_scadenza`) → NULL.
+- **Ramo «in apertura»** (`stato_effettivo = 'in apertura prossimamente'`):
+  1. apertura con data verificata → NULL;
+  2. `data_apertura` passata → `data_apertura_passata`;
+  3. la pagina ufficiale lo indica aperto, chiuso o uscito → `smentito_dalla_fonte`;
+  4. mai esaminato dal controllo attivo del produttore → NULL;
+  5. il periodo di apertura previsto dal calendario è passato → `previsione_scaduta`;
+  6. la pagina lo conferma «in apertura» da al massimo 30 giorni → NULL;
+  7. pubblicato da al massimo 3 giorni → NULL;
+  8. altrimenti → `senza_conferma`.
+- **Ramo «aperto» senza `data_scadenza`**:
+  1. la pagina ufficiale lo indica chiuso, uscito o in apertura → `smentito_dalla_fonte`;
+  2. un lettore strutturato l'ha letto «aperto» da al massimo 30 giorni, e dopo l'ultimo segnale del portale
+     aggregatore → NULL (un'interpretazione automatica del testo **non** conferma);
+  3. mai esaminato dal controllo attivo del produttore → NULL;
+  4. `termine_indicato` passato → `termine_passato`;
+  5. il portale aggregatore segnala che il bando è uscito dal suo elenco, in uscita o scaduto → `senza_conferma`;
+  6. `termine_indicato` da oggi in poi → NULL;
+  7. pubblicato da al massimo 7 giorni → NULL;
+  8. altrimenti → `senza_conferma`.
+
+**Che cosa vuol dire per un consumatore.**
+- `senza_conferma` vale ora **anche per gli aperti senza scadenza**: nessuna prova recente dalla pagina ufficiale.
+  Compare solo dopo un controllo attivo, di regola dal 7° giorno dopo la pubblicazione. Può comparire **prima** se il
+  portale aggregatore segnala il bando come uscito dal suo elenco, in uscita o scaduto: il punto 5 viene prima della
+  grazia dei 7 giorni (punto 7). Il produttore rilegge questi bandi ogni 14 giorni e il motivo si spegne da solo con una
+  conferma, una scadenza o una chiusura.
+- Finché il controllo del produttore è in prova (ombra), nessun bando è «esaminato» (punti 4 e 3 dei due rami):
+  **l'unico motivo che può comparire è `data_apertura_passata`**, perché dipende solo dalle date del bando.
+  `previsione_scaduta`, `termine_passato`, `smentito_dalla_fonte` e `senza_conferma` compaiono solo dopo
+  l'attivazione, man mano che il controllo rilegge i bandi. Lo stesso vale per `termine_indicato`, che fino al primo
+  esame attivo del bando è NULL.
+- Diciture consigliate: «In apertura · da verificare» per il ramo «in apertura»; «Aperto · da verificare» per il
+  ramo «aperto». Un `termine_indicato` si mostra sempre con la sua provenienza (`termine_indicato_fonte`), mai come
+  scadenza.
+
 ---
 
 ## 5. Allegati e link: `bando_link`
@@ -216,6 +287,19 @@ Alla stessa blocklist appartengono i domini social, video e di messaggistica
 
 L'elenco vive nella tabella interna `dominio_ufficiale` (righe `tipo='aggregatore'`); ogni
 modifica viene annunciata con un avviso.
+
+**Domini degli enti e IndicePA (dal giro 2).** La stessa tabella interna contiene la lista dei domini ufficiali,
+cioè quelli che rendono `verificato` un evento (§6.1) e leggibile una pagina ufficiale. Dal giro 2 il produttore vi
+importa ogni mese, in automatico, **l'intero indice pubblico delle pubbliche amministrazioni** (IndicePA): righe
+`tipo='ente'`, `origine='indicepa'`. L'import è prudente:
+- inserisce **solo host assenti**; una riga esistente non si modifica mai; nessuna cancellazione, nessuna
+  disattivazione automatica;
+- non inserisce gli host di piattaforme condivise (siti gratuiti, social, accorciatori di link), gli host che
+  l'indice associa a tre o più enti diversi, e quelli che cadono sulla denylist qui sopra, **che prevale sempre**;
+- se il file scaricato è anomalo (meno di 15 000 righe utili o colonne mancanti) non scrive niente.
+
+Per un consumatore l'effetto è indiretto: più pagine ufficiali leggibili e più eventi `verificato`. La denylist non
+cambia, e la tabella resta illeggibile con la anon key.
 
 **Cintura del consumatore (30/09/2026).** Il filtro del DB ha tre limiti noti, da chiudere lato produttore:
 `dominio_di` non tratta `\` come `/`; sul jsonb un host non riconosciuto passa; lo schema dell'URL non è
@@ -321,6 +405,30 @@ Semantica delle colonne meno ovvie:
 `elaborazione_bloccata`, `fonte_ufficiale_non_trovata`, `possibile_doppione`,
 `preavviso_collegato`.
 
+**Eventi della verifica dello stato (dalla migrazione 13).** Il produttore rilegge la pagina ufficiale dei bandi
+«in apertura» e degli «aperti» senza scadenza. Gli eventi che ne nascono hanno `origine='worker'` e tipi già
+elencati sopra; nessun tipo nuovo.
+
+- **Doppia lettura (G7e).** Un evento nato da un lettore strutturato richiede due letture uguali della stessa pagina:
+  stesso lettore, stesso URL finale, stessa etichetta e, per le date, stessa data, a **almeno 60 ore** di
+  distanza. È la variante ammessa, per il worker, della seconda prova indipendente. Un'interpretazione automatica del
+  testo non produce mai `chiusura`, `sospensione`, `riapertura`, `revoca` o `proroga`.
+- **`data_verificata` del worker** su un «in apertura»: `campo` fra `data_apertura`, `ora_apertura`,
+  `data_scadenza` e `ora_scadenza`, `in_aggiornamenti=false`. Non tocca mai `stato_bando` né `data_pubblicazione` e
+  non sovrascrive una colonna già verificata. L'apertura o la chiusura che ne seguono le fa il job orario
+  (`apertura_automatica` / `chiusura_automatica`).
+- **`rettifica` con `campo='data_scadenza'`** su un «aperto» senza scadenza, quando la pagina ufficiale indica un
+  termine certo: `valore_dopo` = `{data_scadenza[, ora_scadenza]}`. Se la data è già passata chiude il job orario.
+  Sugli aperti non si usa `data_verificata`.
+- **`chiusura` del worker** da «aperto» (già ammessa) e, **dalla 13, anche da «in apertura prossimamente»**: la
+  pagina ufficiale dichiara chiuso, scaduto o concluso con un'etichetta strutturata. `data_evento` è la data di
+  chiusura letta, se c'è ed è passata o odierna, altrimenti NULL. `data_scadenza` resta intatta. Al massimo 20
+  chiusure per giro, con un freno automatico per ente.
+- **`in_aggiornamenti`** di `chiusura` e `rettifica` vale `true` solo se la notizia è nuova: lo stesso lettore aveva
+  visto il bando aperto (o in apertura) nei 30 giorni prima, e la data letta non è più vecchia di 14 giorni.
+  Altrimenti vale `false`: è una **correzione**, leggibile per lo stato ma fuori da un box «Aggiornamenti». La prima
+  passata della verifica produce soprattutto correzioni.
+
 **Sincronizzazione.** Si legge per cursore crescente:
 
 ```
@@ -370,6 +478,38 @@ continuano anche dopo la fase (c). Perciò:
 Attenzione a un vincolo di unicità lato consumatore: se una tabella ha un UNIQUE del tipo
 `(utente, azienda, bando_id)`, la riga del doppione va **eliminata**, non aggiornata al master,
 altrimenti la rimappatura viola il vincolo.
+
+**Fusioni automatiche (dal giro 2).** Il produttore fonde da solo i doppioni **certi**, con la stessa `bando_fondi`
+delle fusioni a mano: nessuna riga cancellata, id e slug congelati, il doppione in 301 verso il master, una riga in
+`bando_fusione` e un evento `fusione`. Per il consumatore non cambia niente rispetto a §6.2: la rimappatura e la
+risoluzione dei miss restano le stesse.
+
+- **Criteri esatti** (basta uno):
+  - stesso URL normalizzato;
+  - stessa riga di calendario della stessa fonte: nessun link sulla scheda di entrambe, la stessa descrizione del
+    calendario (almeno tre parole), e lo stesso URL d'origine oppure la stessa data di chiusura.
+- **Guardie di prudenza**, che valgono per ogni fusione automatica:
+  - per l'URL comune, l'URL compare in esattamente due pubblicati (tre o più vuol dire pagina indice o lotti), i
+    titoli sono simili e la scadenza è uguale o manca su una delle due;
+  - nessuna fusione se i titoli differiscono per anno, lotto, edizione, annualità, finestra o tranche;
+  - un doppione si fonde solo con una coppia diretta con il master; i gruppi di più di due righe restano a mano.
+- **Ritmo:** fra pubblicati, una volta al giorno, la mattina, al massimo **10 fusioni**. Le fusioni prima della
+  pubblicazione (sotto) non hanno questo tetto: avvengono a ogni giro, quando arriva la riga nuova.
+- **Volume atteso all'attivazione:** 52 fusioni, misurate in prova il 01/10/2026 con tutte le guardie, comprese
+  quelle su lotti e numerazioni (43 per URL e 9 di calendario). Con il ritmo di 10 al giorno servono circa 6 giorni;
+  poi poche al mese. Il numero esatto si comunica alla vigilia dell'attivazione.
+- **Prima della pubblicazione:** una riga nuova gemella esatta di un pubblicato **non viene mai pubblicata**: si
+  fonde prima, con la stessa `bando_fondi`, a ogni giro e senza il tetto giornaliero. Nella vista non compare mai, ma
+  lascia tracce leggibili:
+  - una riga in `bando_fusione` con `slug_originale` NULL: la riga non ha mai avuto uno slug pubblico e nessun
+    utente può averla salvata, quindi nella rimappatura si ignora;
+  - gli eventi `fusione`: quello del master e quello del doppione, che ha un `bando_id` mai visto nella vista e si
+    ignora anche lui;
+  - i link del doppione copiati sul master, e `ultimo_cambiamento_at` del master che avanza.
+- **Avviso.** L'avviso di §10.1 vale per l'**attivazione**: il produttore scrive almeno 7 giorni prima che le fusioni
+  automatiche passino dalla prova all'esecuzione. Da lì sono continue e il consumatore le segue con la riconciliazione
+  su `bando_fusione` o con il cursore degli eventi `fusione`. Un lotto straordinario oltre il ritmo giornaliero
+  richiede un avviso a parte, come oggi.
 
 ### 6.3 `bando_slug_storico`
 
@@ -553,6 +693,8 @@ L'ordine non è negoziabile ed è quello scritto nelle intestazioni dei file SQL
 03 va **dopo** il seed, perché il suo trigger anti-aggregatore legge la blocklist che solo il seed
 completa. Eseguirla prima la farebbe girare su una `dominio_ufficiale` incompleta.
 
+**Dal giro 2 l'ordine prosegue: 11 → 12 → 13, e la 07 solo dopo la 13** (la 07 e il suo rollback si fermano se la 13 manca; la 13 si ferma se la 07 è già applicata).
+
 **L'ordine di rientro è l'inverso: 07 → 06 → 05 → 04 → 03 → 02 → 01.** Se un blocco Verifica non
 torna il valore atteso non si prosegue con la migrazione successiva: si esegue
 `bando_v11_NN_*_rollback.sql`. Il seed non ha rollback, ed è voluto: ogni INSERT è
@@ -570,6 +712,8 @@ nelle loro intestazioni.
 | `bando_v11_08_evento_pubblicazione.sql` | (b) | il trigger che emette l'evento `pubblicazione` quando una riga diventa pubblicata, più il recupero di quelle rimaste senza. Fino alla 08 l'evento esisteva solo come riempimento iniziale della 02: i bandi pubblicati dopo quel momento non entravano nel flusso a cursore, cioè un consumatore che segue gli eventi non veniva a sapere dei bandi nuovi. Si applica prima o dopo le altre, non dipende da 03, 04 e 05 | **No**: compaiono solo righe nuove in `bando_evento`, con lo stesso tipo e gli stessi valori di quelle già seminate |
 | `bando_v11_06_stati_cinque.sql` | (b), **dopo** la (a) | CHECK di `stato_bando` a 5 valori | **Sì se applicata prima di R0-a**: badge sbagliato, filtro `stato` in 400, `sospeso`/`revocato` nei segmenti |
 | `bando_v11_07_fase_d.sql` | (d) | `DROP VIEW` + ricreazione senza le colonne deprecate; policy di `bando` su `pubblicato`; REVOKE di colonna su `bando` con GRANT solo sulle colonne del contratto | **Sì** se un consumatore legge ancora `bando` con `link_bando`, `stato_processing`, `allegati`, `link_candidatura` o `descrizione_raw` |
+| `bando_v11_12_monitoraggio.sql` | fuori dalle fasi: si applica dopo la 11 e non dipende dalla 07 | l'interfaccia di monitoraggio di §14: le tabelle interne `monitoraggio_riepilogo` e `monitoraggio_chiave` (RLS, nessun privilegio ad `anon` né ad `authenticated`; su `monitoraggio_riepilogo` il ruolo di servizio ha solo `SELECT`, `INSERT` e `UPDATE`, senza `DELETE` né `TRUNCATE`; su `monitoraggio_chiave` nessun privilegio nemmeno al ruolo di servizio), la funzione interna `monitoraggio_job_orario()` e la funzione a chiave `monitoraggio_catalogo(p_chiave)`, eseguibile da `anon`. Il blocco di verifica controlla che l'insieme delle funzioni eseguibili da `anon` cresca solo di `monitoraggio_catalogo` | **No**: solo oggetti nuovi; nessuna tabella, colonna, vista o funzione esistente cambia |
+| `bando_v11_13_stato_da_verificare.sql` | (b), dopo la 12 e prima della 07 | 17 colonne interne di `bando_controllo` per la verifica dello stato, di cui 9 leggibili da `anon` (quelle che la vista usa), con i loro CHECK e un trigger che scarta le letture fatte su domini non verificanti; la funzione pura `bando_stato_da_verificare` (eseguibile da `anon`, §1.6); le cinque colonne in coda a `bando_pubblico` (§3, §4.1); la riga della lista bianca «chiusura del worker da in apertura» (§6.1). Si controlla da sola: casi della regola, funzioni di `anon`, conteggi per stato, colonne | **No**: colonne in coda, select esplicite invariate; `select=*` riceve cinque colonne in più. Dopo la 13 la 07 e il suo rollback la richiedono, perché le loro viste portano le stesse cinque colonne |
 
 Le fusioni dei doppioni **non sono una migrazione**: avvengono nel normale funzionamento e non
 rompono nulla, perché il doppione resta `completed` con il suo slug ed è presente in
@@ -597,8 +741,57 @@ risposte, colonne, embed, header `Content-Range`).
 - `bando_evento?url_prova=ilike.*obiettivoeuropa*` → **0 righe**;
 - `bando_pubblico?fonte_ufficiale_host=ilike.*obiettivoeuropa*` → **0 righe**;
 - come ruolo `anon`, `count(*)` su `bando_pubblico` = `count(*)` su `bando where pubblicato`;
-- nessuna funzione dello schema `public` eseguibile da `anon` oltre a quelle di `pg_trgm` e alle
-  tre dell'allowlist (`bando_stato_effettivo`, `dominio_di`, `bando_host_aggregatore`).
+- nessuna funzione dello schema `public` eseguibile da `anon` oltre a quelle di `pg_trgm`, alle
+  tre dell'allowlist (`bando_stato_effettivo`, `dominio_di`, `bando_host_aggregatore`), dalla
+  12 a `monitoraggio_catalogo` e, dalla 13, a `bando_stato_da_verificare`.
+
+**Dopo la 12** (con la anon key; la chiave vera si usa solo nell'ultima richiesta, dal backend, e mai in un URL):
+
+- `POST /rest/v1/rpc/monitoraggio_catalogo` con `{"p_chiave": "<una chiave inventata di 40 caratteri>"}` → **401**
+  con `code` **42501** e `message` `non autorizzato`;
+- `GET /rest/v1/rpc/monitoraggio_catalogo?p_chiave=<una chiave inventata>` → **401**, `code` **42501**. Una
+  `GET` riceve la stessa risposta anche con la chiave giusta: per questo la chiave vera non va mai provata in
+  `GET`;
+- `monitoraggio_riepilogo?select=id` e `monitoraggio_chiave?select=nome` → **401**, `code` **42501**;
+- `POST /rest/v1/rpc/monitoraggio_job_orario` → **401**, `code` **42501**;
+- `POST /rest/v1/rpc/monitoraggio_catalogo` con la chiave giusta, dal backend → **200**, `versione` = 1 e le 11
+  chiavi di `riepilogo` di §14.4, oppure `riepilogo: null` se il primo riepilogo non è ancora stato calcolato.
+
+**Dopo la 13** (con la anon key):
+
+- le otto richieste del §12 restituiscono le stesse risposte di prima (colonne, embed, `Content-Range`): le colonne
+  nuove stanno in coda e una select esplicita non le vede;
+- `bando_pubblico?select=id,stato_da_verificare,stato_letto,stato_letto_at,termine_indicato,termine_indicato_fonte&limit=1`
+  → **200**;
+- `bando_pubblico?select=id&stato_effettivo=eq.aperto` e `…=eq.in apertura prossimamente` con `count=exact` →
+  gli stessi `Content-Range` di prima della 13: nessun bando cambia stato;
+- `bando_pubblico?select=stato_da_verificare&stato_da_verificare=not.is.null&stato_da_verificare=neq.data_apertura_passata`
+  → **0 righe** finché il controllo del produttore è in prova (§4.1): in prova l'unico motivo possibile è
+  `data_apertura_passata`;
+- `bando_pubblico?select=stato_da_verificare&stato_da_verificare=not.in.(data_apertura_passata,smentito_dalla_fonte,previsione_scaduta,senza_conferma,termine_passato)`
+  → **0 righe**, sempre;
+- `bando_controllo?select=stato_letto_url` e `bando_controllo?select=lettura_stato` → **401**, `code` **42501**:
+  le colonne interne della lettura non sono concesse.
+
+**Dopo l'attivazione della verifica dello stato** (il controllo gira alle 06 e alle 18; `<oggi>` è la data di Roma):
+
+- il produttore, con la chiave di servizio: `bando_controllo?select=bando_id&esaminato_attivo_at=not.is.null` con
+  `count=exact` → più di 0 righe dopo il primo giro in esecuzione, e cresce a ogni giro. Senza questo, nessun
+  `senza_conferma` può comparire (§4.1);
+- `bando_pubblico?select=id&stato_da_verificare=eq.senza_conferma&stato_effettivo=eq.aperto&pubblicato_at=gt.<oggi − 7 giorni>`
+  → righe **solo** per bandi segnalati dal portale aggregatore (§4.1, ramo «aperto», punto 5): senza quel segnale,
+  sugli aperti `senza_conferma` compare solo dal 7° giorno dopo la pubblicazione. Il segnale non è nella vista: il
+  produttore lo controlla con la chiave di servizio su `bando_controllo.segnale_aggregatore_at`;
+- il produttore, con la chiave di servizio (anche il monitor scrive eventi `worker`, e `metodo` non è concesso ad
+  `anon`): `bando_evento?select=id&origine=eq.worker&tipo=eq.chiusura&metodo=like.estrattore:*&rilevato_at=gte.<oggi>`
+  → al massimo **20 righe per giro**, quindi al massimo 40 in un giorno;
+- stessa richiesta con `tipo=in.(chiusura,rettifica)` e `select=id,in_aggiornamenti,data_evento,rilevato_at`:
+  ogni evento del passo con `in_aggiornamenti=true` ha `data_evento` NULL oppure non più vecchia di 14 giorni
+  rispetto a `rilevato_at` (§6.1: solo così è una notizia nuova). A titolo indicativo, nella prima passata quasi
+  tutte le righe hanno `in_aggiornamenti=false` (correzioni);
+- `bando_fusione?select=bando_id&fuso_at=gte.<oggi>&slug_originale=not.is.null` → al massimo **10 righe al giorno**
+  (le fusioni fra pubblicati girano una volta, la mattina), e per ogni riga un evento `fusione` leggibile per cursore.
+  Le righe con `slug_originale` NULL sono fusioni prima della pubblicazione: non hanno tetto e si ignorano (§6.2).
 
 **Nella fase (c)**: le stesse richieste, rieseguite **sulla vista**, non danno nessun `57014` e hanno un p95 lato
 client sotto 3 s su almeno 20 ripetizioni a connessione calda (ogni picco singolo oltre 3 s si riporta a parte);
@@ -841,7 +1034,8 @@ Origine: `create_bando_event`, `services/calendar_service.py:117-130`; select
 
 Nota funzionale che il contratto rende risolvibile: l'evento di calendario **congela** la data,
 quindi oggi una proroga non si propaga. Dalla fase (c) la propagazione si ottiene leggendo per
-cursore gli eventi `proroga` e `rettifica` su `data_scadenza` (§6.1).
+cursore gli eventi `proroga`, `rettifica` e, dalla migrazione 13, `data_verificata` con `campo='data_scadenza'`
+(§6.1).
 
 **Versione (c)**: su `bando_pubblico`, aggiungendo `ora_scadenza` e `data_scadenza_verificata`.
 
@@ -908,3 +1102,174 @@ Fino alla fase (d) si può continuare a leggere `bando` come oggi. Dalla (c) si 
 fonte ufficiale, la ricerca su una colonna sola e la risoluzione dei miss. Prima che la (d)
 arrivi, vanno tolte dalle select le sette colonne deprecate (`stato_processing`, `link_bando`,
 `link_candidatura`, `link_candidatura_source`, `allegati`, `titolo_raw`, `descrizione_raw`).
+
+---
+
+## 14. Interfaccia di monitoraggio
+
+Dalla migrazione 12. Serve a un pannello di amministrazione che mostra se la raccolta dei bandi sta funzionando.
+Espone **un solo riepilogo neutro**: niente dati di spesa, niente indirizzi, nomi di processi, testi d'errore, titoli
+o slug. Questa sezione è autosufficiente e si può copiare così com'è nella documentazione del consumatore.
+
+### 14.1 Firma e chiamata
+
+- Funzione: `public.monitoraggio_catalogo(p_chiave text) RETURNS jsonb`. Legge e basta, non scrive niente.
+- Chiamata, **solo dal backend** del consumatore:
+
+  ```
+  POST /rest/v1/rpc/monitoraggio_catalogo
+  apikey: <anon key>
+  Authorization: Bearer <anon key>
+  Content-Type: application/json
+
+  {"p_chiave": "<chiave di monitoraggio>"}
+  ```
+
+- **Solo `POST`.** Una `GET` riceve **42501** anche con la chiave giusta, e metterebbe la chiave in un URL.
+- **La chiave di monitoraggio** è una stringa di 32-256 caratteri che il produttore consegna per un canale privato.
+  Il DB ne conserva solo l'impronta (sha256). Va tenuta in una variabile d'ambiente protetta del backend e non deve
+  mai finire nel browser, nel bundle, in un URL, in un log, in un messaggio d'errore o in un report.
+- **Frequenza:** al massimo **una chiamata al minuto**. Il riepilogo si ricalcola circa ogni 15 minuti: chiamare più
+  spesso non porta dati nuovi.
+
+### 14.2 Errori
+
+`42501` e gli errori di autenticazione di PostgREST arrivano **entrambi come HTTP 401**. Si distinguono **dal
+corpo della risposta**, mai dal solo codice HTTP.
+
+| caso | HTTP | corpo | cosa mostrare |
+|---|---|---|---|
+| chiave non configurata nel backend del consumatore | — | nessuna chiamata: il backend **non chiama** | «monitoraggio non configurato»: errore di configurazione, **non** «non raggiungibile» |
+| `p_chiave` presente ma `null`, vuota, corta, lunga, errata o chiusa; metodo diverso da `POST` | 401 | `"code": "42501"`, `"message": "non autorizzato"`, sempre uguale | «chiave di monitoraggio non valida»: da correggere nella configurazione del consumatore |
+| corpo **senza** il campo `p_chiave` (per esempio `{}`) | 404 | `"code": "PGRST202"`: PostgREST cerca una funzione senza parametri e non la trova | non deve succedere se il backend non chiama senza chiave; se succede, è un errore del consumatore |
+| anon key non valida o scaduta | 401 | `"code"` che inizia con `PGRST3` (per esempio `PGRST301`), oppure un corpo **senza** `code` restituito dal gateway prima di PostgREST | «accesso al DB non valido» |
+| funzione assente (migrazione 12 non applicata o tolta), con un corpo che contiene `p_chiave` | 404 | `"code": "PGRST202"` | «interfaccia non ancora disponibile» |
+| rete, timeout, HTTP 5xx | — | — | «monitoraggio non raggiungibile» |
+
+Il messaggio `non autorizzato` è identico in tutti i casi di rifiuto: il DB non dice se il problema è la chiave o il
+metodo.
+
+### 14.3 Busta, versione 1
+
+| campo | tipo | significato |
+|---|---|---|
+| `versione` | `1` | versione della busta e dello schema del riepilogo |
+| `generato_at` | ISO 8601 | ora del DB al momento della risposta |
+| `calcolato_at` | ISO 8601 o `null` | ora in cui il produttore ha calcolato il riepilogo, col suo orologio. Solo informativa |
+| `aggiornato_at` | ISO 8601 o `null` | ora del DB in cui il riepilogo è stato scritto: è il riferimento per il ritardo |
+| `minuti_dal_calcolo` | intero o `null` | minuti interi trascorsi da `aggiornato_at` |
+| `in_ritardo` | booleano | `true` se il riepilogo è più vecchio della soglia (oggi 45 minuti) o non esiste ancora. Il pannello mostra un banner «dati non aggiornati» sopra tutto il resto |
+| `orologio_disallineato` | booleano o `null` | `true` se `calcolato_at` e `aggiornato_at` differiscono di più di 5 minuti. Informativo |
+| `riepilogo` | oggetto o `null` | `null` finché il primo riepilogo non è stato calcolato; altrimenti le 11 chiavi di §14.4 |
+
+Senza un riepilogo la busta vale `riepilogo: null`, `in_ritardo: true` e `null` negli altri campi, tranne
+`versione` e `generato_at`.
+
+### 14.4 Riepilogo, schema v1
+
+Undici chiavi di primo livello. `stato` riassume tutto il resto:
+- `guasto` se c'è almeno un segnale di livello `allarme`;
+- `attenzione` se c'è almeno un `avviso`;
+- altrimenti `ok`.
+
+Una misura in `non_misurati` non cambia lo stato: dice solo che quella parte oggi non si può osservare.
+
+| chiave | forma |
+|---|---|
+| `stato` | `ok` \| `attenzione` \| `guasto` |
+| `segnali` | al massimo 40 oggetti `{codice, livello, testo, dal, misura}` |
+| `non_misurati` | sottoinsieme di `servizio`, `job_orario`, `accesso_fonte_riservata`, `credito_ricerca`, `schede_con_sezione`, `da_verificare` |
+| `produttore` | `{ultimo_giro_at, ore_dall_ultimo_giro, giri_24h, riavvii_24h, servizio}`, con `servizio` ∈ `attivo` \| `non_attivo` \| `non_misurato` |
+| `giri` | al massimo 20 oggetti `{id, giro, avviato_at, concluso_at, durata_min, esito, interrotto_per_tetto, passi_non_ok}`. Valori ammessi: `giro` ∈ `00` \| `06` \| `12` \| `18` \| `avvio` \| `manuale`; `esito` ∈ `ok` \| `errore` \| `saltato` \| `interrotto_per_tetto`; `passi_non_ok` è una lista di nomi neutri (`ingresso`, `lettura`, `estrazione`, `arricchimento`, `ricerca_fonti`, `redazione`, `controllo_pagine`, `ricontrolli`, `verifica_stato`, `altro`) |
+| `controlli` | al massimo 10 oggetti `{avviato_at, esito, classificazioni, classificazioni_fallite, eventi_non_applicati}` |
+| `lavorazioni` | al massimo 10 oggetti `{nome, da_min, ttl_min, stato}`, con `nome` ∈ `giro` \| `controllo_pagine` \| `ricerca_fonti` \| `altro` e `stato` ∈ `regolare` \| `lunga` \| `probabile_orfana` |
+| `ingresso` | `{fermi_in_ingresso, fermi_in_lavorazione, ultimo_bando_nuovo_at}` |
+| `eventi` | `{ammessi_non_applicati, proposte_7g, in_attesa_pubblicazione}` |
+| `da_verificare` | oggetto o `null`. Vale **`null` finché la verifica dello stato del produttore non è attiva**, anche dopo la migrazione 13 (in prova, cioè in ombra, è sempre `null`); finché è `null`, `da_verificare` compare anche in `non_misurati`. Dall'attivazione è l'oggetto `{in_apertura, aperto, proposte_in_ombra_per_tipo, chiusure_applicate_7g, host_frenati, pagine_rimosse, forse_non_bandi}` descritto qui sotto |
+
+**`da_verificare`, dall'attivazione.** Tutti i numeri sono conteggi interi non negativi; negli oggetti `{chiave: n}`
+compaiono solo le chiavi con `n` maggiore di zero, quindi un oggetto vuoto vuol dire «nessuno».
+- `in_apertura` e `aperto`: `{motivo: n}`, i pubblicati con un motivo di §4.1, divisi per ramo secondo
+  `stato_effettivo` (un «in apertura» con l'apertura già raggiunta sta in `aperto`). `motivo` ∈
+  `data_apertura_passata` \| `smentito_dalla_fonte` \| `previsione_scaduta` \| `senza_conferma` \| `termine_passato`;
+- `proposte_in_ombra_per_tipo`: `{tipo: n}`, le proposte dell'ultimo passo del controllo rimaste senza effetto (tetto
+  o freno), con `tipo` ∈ `chiusura` \| `rettifica` \| `data_verificata` \| `apertura`;
+- `chiusure_applicate_7g`: le chiusure applicate dal produttore negli ultimi 7 giorni;
+- `host_frenati`: gli host il cui lettore è stato frenato nell'ultimo passo;
+- `pagine_rimosse`: le pagine ufficiali trovate rimosse nell'ultimo passo;
+- `forse_non_bandi`: le pagine lette nell'ultimo passo che non sembrano parlare del bando.
+
+Il tipo «oggetto o `null`» vale già nella versione 1: il passaggio da `null` all'oggetto all'attivazione **non cambia
+`versione`** e non è un cambio di tipo nel senso di §14.5. L'attivazione si annuncia comunque con l'avviso di §10.1.
+| `job_orario` | `{ultimo_avvio_at, ultimo_esito, ultimo_ok_at, falliti_24h}`, con `ultimo_esito` ∈ `succeeded` \| `failed` \| `non_misurato` |
+
+**I segnali:**
+- `codice` è un identificatore stabile, nella forma `[a-z_]+` con un suffisso facoltativo `:[a-z0-9_]+`, per
+  esempio `produttore_fermo` o `passo_degradato:redazione`;
+- `livello` vale `allarme` o `avviso`;
+- `testo` è una frase italiana fissa, già pronta per essere mostrata così com'è;
+- `dal` è l'istante (ISO 8601) da cui il segnale è acceso senza interruzioni;
+- `misura` è il numero che ha fatto scattare il segnale (una quota fra 0 e 1, un conteggio, ore o minuti, a seconda
+  del codice), oppure `null`. I segnali che riguardano la spesa hanno sempre `misura: null` e un testo senza numeri.
+
+**Regole di contenuto:**
+- ogni stringa del riepilogo viene da un'enumerazione, da un istante ISO 8601 in UTC o da un testo fisso;
+- non compaiono mai URL, host, nomi di processi o di servizi, testi d'eccezione, titoli, slug o importi di spesa.
+
+Esempio, ridotto:
+
+```json
+{
+  "versione": 1,
+  "generato_at": "2026-10-02T08:21:04+00:00",
+  "calcolato_at": "2026-10-02T08:05:11+00:00",
+  "aggiornato_at": "2026-10-02T08:05:12+00:00",
+  "minuti_dal_calcolo": 15,
+  "in_ritardo": false,
+  "orologio_disallineato": false,
+  "riepilogo": {
+    "stato": "attenzione",
+    "segnali": [{"codice": "fermi_in_lavorazione", "livello": "avviso",
+                 "testo": "Alcuni bandi sono fermi in lavorazione da più di 13 ore.",
+                 "dal": "2026-10-02T06:05:10+00:00", "misura": 3}],
+    "non_misurati": [],
+    "produttore": {"ultimo_giro_at": "2026-10-02T04:09:40+00:00", "ore_dall_ultimo_giro": 4.2,
+                   "giri_24h": 4, "riavvii_24h": 0, "servizio": "attivo"},
+    "giri": [], "controlli": [], "lavorazioni": [],
+    "ingresso": {"fermi_in_ingresso": 0, "fermi_in_lavorazione": 3,
+                 "ultimo_bando_nuovo_at": "2026-10-01T16:02:00+00:00"},
+    "eventi": {"ammessi_non_applicati": 0, "proposte_7g": 12, "in_attesa_pubblicazione": 0},
+    "da_verificare": null,
+    "job_orario": {"ultimo_avvio_at": "2026-10-02T08:05:00+00:00", "ultimo_esito": "succeeded",
+                   "ultimo_ok_at": "2026-10-02T08:05:01+00:00", "falliti_24h": 0}
+  }
+}
+```
+
+Il testo del segnale dell'esempio è illustrativo: i testi veri sono quelli che arrivano nella risposta.
+
+### 14.5 Evoluzione
+
+- **Senza preavviso** possono comparire:
+  - chiavi nuove, nella busta, nel riepilogo e negli oggetti annidati;
+  - codici di segnale nuovi;
+  - valori nuovi in un'enumerazione.
+
+  Il consumatore ignora le chiavi che non conosce e mostra un segnale sconosciuto con il suo `testo` e il suo
+  `livello`.
+- **Togliere o rinominare una chiave, o cambiarne il tipo, richiede `versione: 2`**, annunciata per iscritto prima
+  del rilascio. Il consumatore che riceve una versione diversa da quella che conosce mostra «formato del
+  monitoraggio non supportato» invece di interpretare i dati.
+
+### 14.6 Chiavi e rotazione
+
+- Il DB può tenere **più chiavi valide insieme**, una riga ciascuna (se ne conserva solo l'impronta).
+- In via ordinaria una chiave **non scade**. La data di chiusura serve solo a chiudere la chiave vecchia durante una
+  rotazione.
+- **Rotazione:**
+  1. il produttore crea una seconda chiave e la consegna per un canale privato;
+  2. il consumatore la mette in produzione e lo conferma;
+  3. il produttore chiude la vecchia, che da quel momento riceve **42501**.
+
+  Fra il passo 1 e il 3 valgono entrambe, quindi non c'è un momento senza accesso.
+- **Se una chiave trapela**, il produttore la chiude subito. Il consumatore riceve 42501 finché non ha la nuova.

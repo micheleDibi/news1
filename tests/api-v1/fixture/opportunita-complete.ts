@@ -47,6 +47,15 @@ export const COLONNE_VIETATE_BANDO = {
   livello: 'nazionale-interno',
   data_visibilita: '2026-09-01',
   filtro_regione: [{ regioni: { slug: 'lazio' } }],
+  // Migrazione 13: la lettura della pagina ufficiale resta interna, all'API
+  // arriva solo il motivo (`details.stato_da_verificare`).
+  stato_letto_url: 'https://fonte-vietata.example/pagina-letta',
+  stato_letto_citazione: 'CITAZIONE-LETTURA-INTERNA',
+  stato_letto_metodo: 'METODO-LETTURA-INTERNO',
+  lettura_stato: { storia: 'STORIA-LETTURE-INTERNA' },
+  esaminato_attivo_at: 'ESAME-ATTIVO-INTERNO',
+  segnale_aggregatore: 'SEGNALE-AGGREGATORE-INTERNO',
+  trattenuto_dal: 'SOSTA-INTERNA',
 };
 
 export const INTERPELLO_COMPLETO: RigaInterpello = {

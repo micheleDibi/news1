@@ -163,8 +163,10 @@ test('le colonne che dipendono dalla fonte arrivano dal piano', () => {
   // il DTO perderebbe `updated_at` e i quattro campi della 1.1 resterebbero
   // `null` per sempre senza che nessun test lo noti.
   const tabella = pianoQuery('bandi', contesto({ modo: 'dettaglio', id: 1 }));
-  assert.equal(tabella.colonneExtra, 'updated_at',
-    'sulla tabella non si chiede nessuna colonna v11: darebbe 42703');
+  // Sulla tabella solo la colonna della 01 (applicata) che serve a ricalcolare
+  // `details.stato_da_verificare`: nessuna colonna che la tabella non ha, che
+  // darebbe 42703, e nessuna che non si usa (`pubblicato_at`).
+  assert.equal(tabella.colonneExtra, 'updated_at, data_apertura_verificata');
 
   const vista = pianoQuery('bandi', contesto({ modo: 'dettaglio', id: 1, fonteBandi: 'bando_pubblico' }));
   const chieste = (vista.colonneExtra ?? '').split(',').map((c) => c.trim());
@@ -172,7 +174,7 @@ test('le colonne che dipendono dalla fonte arrivano dal piano', () => {
     'sulla vista serve l\'alias: `updated_at` non esiste e darebbe 42703');
   for (const colonna of [
     'fonte_ufficiale_url', 'fonte_ufficiale_host', 'fonte_ufficiale_stato',
-    'data_apertura_verificata', 'data_scadenza_verificata', 'ultimo_controllo_at',
+    'data_apertura_verificata', 'data_scadenza_verificata', 'ultimo_controllo_at', 'stato_da_verificare',
   ]) {
     assert.ok(chieste.includes(colonna), `manca ${colonna}: il campo 1.1 resterebbe null`);
   }

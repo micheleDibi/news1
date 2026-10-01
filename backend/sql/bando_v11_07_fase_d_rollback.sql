@@ -13,6 +13,10 @@
 -- Fase: (d) → (c).
 --
 -- Precondizioni: nessuna. Si può eseguire in qualunque momento dopo la 07.
+--   Dal giro 2 la vista che ricrea porta
+--   le cinque colonne della 13 in coda:
+--   con la 07 applicata la 13 c'è già (la
+--   guardia lo controlla).
 --
 -- Rompe BandoFit? NO: restituisce colonne, non ne toglie. Una BandoFit già
 --   in fase (c) continua a funzionare (le colonne nuove restano tutte).
@@ -32,6 +36,25 @@
 BEGIN;
 
 SET LOCAL lock_timeout = '5s';
+
+DO $$
+BEGIN
+  -- La vista chiama la funzione della 13.
+  IF to_regprocedure(
+       'public.bando_stato_da_verificare('
+       || 'text, date, boolean, time, '
+       || 'date, time, timestamptz, date, '
+       || 'date, text, text, timestamptz, '
+       || 'text, timestamptz, timestamptz, '
+       || 'timestamptz)') IS NULL
+  THEN
+    RAISE EXCEPTION
+      'applicare prima la 13 '
+      '(bando_v11_13_stato_da_verificare'
+      '.sql)';
+  END IF;
+END
+$$;
 
 -- ---------------------------------------------------------------------------
 -- 1. Privilegi su `bando`
@@ -153,7 +176,73 @@ SELECT
   b.ricerca,
   b.pubblicato_at,
   b.created_at,
-  b.ultimo_cambiamento_at
+  b.ultimo_cambiamento_at,
+  -- 13: le cinque colonne in coda. Senza
+  -- la 13 questo file si ferma prima.
+  (SELECT
+     public.bando_stato_da_verificare(
+       b.stato_bando,
+       b.data_apertura,
+       b.data_apertura_verificata,
+       b.ora_apertura,
+       b.data_scadenza,
+       b.ora_scadenza,
+       b.pubblicato_at,
+       c.previsto_entro,
+       c.termine_indicato,
+       c.stato_letto,
+       c.stato_letto_su,
+       c.stato_letto_at,
+       c.stato_letto_metodo,
+       c.esaminato_attivo_at,
+       c.segnale_aggregatore_at,
+       now())
+     FROM (SELECT 1) AS uno
+     LEFT JOIN public.bando_controllo c
+       ON c.bando_id = b.id)
+    AS stato_da_verificare,
+  (SELECT CASE
+            WHEN c.stato_letto_su
+                 = b.stato_bando
+             AND c.stato_letto_metodo
+                 = 'estrattore'
+              THEN c.stato_letto
+          END
+     FROM public.bando_controllo c
+    WHERE c.bando_id = b.id)
+    AS stato_letto,
+  (SELECT CASE
+            WHEN c.stato_letto_su
+                 = b.stato_bando
+             AND c.stato_letto_metodo
+                 = 'estrattore'
+              THEN c.stato_letto_at
+          END
+     FROM public.bando_controllo c
+    WHERE c.bando_id = b.id)
+    AS stato_letto_at,
+  -- Il termine indicato si scrive anche in
+  -- ombra: si espone solo dopo il primo
+  -- esame in attivo. Il motivo qui sopra
+  -- lo legge comunque (A3, A6).
+  (SELECT CASE
+            WHEN c.esaminato_attivo_at
+                 IS NOT NULL
+              THEN c.termine_indicato
+          END
+     FROM public.bando_controllo c
+    WHERE c.bando_id = b.id)
+    AS termine_indicato,
+  (SELECT CASE
+            WHEN c.termine_indicato
+                 IS NOT NULL
+             AND c.esaminato_attivo_at
+                 IS NOT NULL
+              THEN c.termine_indicato_fonte
+          END
+     FROM public.bando_controllo c
+    WHERE c.bando_id = b.id)
+    AS termine_indicato_fonte
 FROM public.bando b
 WHERE b.pubblicato;
 

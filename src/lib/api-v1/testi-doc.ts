@@ -28,6 +28,11 @@ export const DATA_RILASCIO = '2026-09-21';
 export const DATA_RILASCIO_ESTESA = '21 settembre 2026';
 /** Data della 1.1: additiva, stesso rilascio delle superfici bandi. */
 export const DATA_RILASCIO_1_1 = '2026-09-23';
+/**
+ * Data della 1.2: additiva, `details.stato_da_verificare`. Va in produzione
+ * solo dopo la migrazione 13: se il deploy slitta, la data si corregge qui.
+ */
+export const DATA_RILASCIO_1_2 = '2026-10-01';
 
 export const DESCRIZIONE_BREVE =
   'API pubblica in sola lettura di EduNews24: articoli, categorie, interpelli, concorsi e selezioni ' +
@@ -248,6 +253,20 @@ export const PARAGRAFO_STATUS =
   'indicato dalla fonte. Quando deadline_on è null lo stato non si può ricalcolare: usare status così com\'è. ' +
   'Attenzione alla cache: una risposta può riportare open fino a 15 minuti dopo l\'ora di scadenza.';
 
+export const PARAGRAFO_STATO_DA_VERIFICARE =
+  'Dalla 1.2 i bandi hanno details.stato_da_verificare: il motivo per cui lo stato mostrato va verificato, ' +
+  'oppure null, che vuol dire \u00abnessuna prova contraria\u00bb e non \u00abverificato\u00bb. Con upcoming: ' +
+  'data_apertura_passata, smentito_dalla_fonte (la pagina ufficiale non lo indica pi\u00f9 in arrivo), ' +
+  'previsione_scaduta, senza_conferma (apertura annunciata ma non confermata dalla fonte ufficiale). Con open, ' +
+  'solo per i bandi senza scadenza: smentito_dalla_fonte, termine_passato (un termine indicato, non ' +
+  'verificato, sembra gi\u00e0 passato) e senza_conferma (nessuna conferma recente dalla pagina ufficiale ' +
+  'dell\'ente). Finch\u00e9 la verifica non \u00e8 attiva l\'unico motivo che pu\u00f2 comparire \u00e8 ' +
+  'data_apertura_passata: previsione_scaduta, termine_passato, smentito_dalla_fonte e senza_conferma ' +
+  'compaiono solo dopo un controllo della verifica automatica attiva. ' +
+  'Con closed, suspended e revoked \u00e8 sempre null. Il motivo non cambia status: un bando da ' +
+  'verificare resta open o upcoming finch\u00e9 la fonte non dice altro. Prima di presentare domanda conviene ' +
+  'controllare il sito dell\'ente.';
+
 // ---------------------------------------------------------------------------
 // Cache, limiti, CORS
 // ---------------------------------------------------------------------------
@@ -444,6 +463,17 @@ export interface VoceChangelog {
 export const CHANGELOG: readonly VoceChangelog[] = [
   {
     versione: VERSIONE_API,
+    data: DATA_RILASCIO_1_2,
+    note: [
+      'Aggiunta compatibile: nessun campo rimosso o rinominato.',
+      'Bandi: nuovo details.stato_da_verificare, il motivo per cui lo stato va verificato (data_apertura_passata, ' +
+        'smentito_dalla_fonte, previsione_scaduta, senza_conferma, termine_passato) oppure null. null vuol dire ' +
+        '\u00abnessuna prova contraria\u00bb, non \u00abverificato\u00bb; il bando resta open o upcoming.',
+    ],
+  },
+  {
+    // Letterale, non VERSIONE_API: dalla 1.2 la costante e' avanzata.
+    versione: '1.1',
     data: DATA_RILASCIO_1_1,
     note: [
       'Aggiunta compatibile: nessun campo rimosso o rinominato.',
@@ -497,7 +527,7 @@ export function descrizioneOpenApi(): string {
       '\n\n' + PARAGRAFO_DEDUPLICA,
     '## Parametri\n\n' + paragrafi(PARAGRAFI_REGOLE_FILTRI),
     '## Filtri region e national\n\n' + paragrafi(PARAGRAFI_REGIONI),
-    '## Testo e URL\n\n' + paragrafi(PARAGRAFI_TESTO) + '\n\n' + PARAGRAFO_STATUS,
+    '## Testo e URL\n\n' + paragrafi(PARAGRAFI_TESTO) + '\n\n' + PARAGRAFO_STATUS + '\n\n' + PARAGRAFO_STATO_DA_VERIFICARE,
     '## Cache\n\n' + paragrafi(PARAGRAFI_CACHE),
     '## Limiti\n\n' + paragrafi(PARAGRAFI_LIMITI),
     '## CORS\n\n' + paragrafi(PARAGRAFI_CORS),
@@ -657,6 +687,8 @@ export function esempioBando(): BandoDto {
       opens_on_verified: true,
       deadline_verified: true,
       last_checked_at: '2026-09-20T03:12:55+02:00',
+      // aperto con scadenza: la regola non lo verifica, nessun motivo
+      stato_da_verificare: null,
     },
   };
 }

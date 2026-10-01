@@ -1272,8 +1272,12 @@ class TestRunnerAusiliari(unittest.TestCase):
         # `if limit:` faceva scrivere l'intera whitelist con `--limit 0`.
         fonti = [{"id": 10, "link": "https://regione.marche.it/bandi", "discoverable": True}]
         scritte: list[Any] = []
-        with unittest.mock.patch.object(
-                fu.db, "upsert_domini", lambda righe: scritte.extend(righe) or len(righe)):
+
+        def inserisci(righe, lotto=500):
+            scritte.extend(righe)
+            return {"inserite": len(righe), "gia_presenti": 0}
+
+        with unittest.mock.patch.object(fu.db, "inserisci_domini_nuovi", inserisci):
             esito = esegui(fu.run_domini_import(
                 attivo=True, limit=0, fonti=fonti, indicepa=[]))
         self.assertEqual(scritte, [])
@@ -1290,6 +1294,117 @@ class TestRunnerAusiliari(unittest.TestCase):
         esito = esegui(fu.run_domini_import(fonti=fonti, indicepa=[]))
         self.assertEqual(esito["fonti"], 1)
         self.assertGreater(esito["domini"], 1)          # il seed c'e' sempre
+        self.assertEqual(esito["scritte"], 0)
+
+
+class _DominiFinti:
+    """`dominio_ufficiale` finta per `db.inserisci_domini_nuovi` vero: host esistenti e scritture."""
+
+    class _Query:
+        def __init__(self, padre):
+            self.padre = padre
+            self.scrittura = None
+
+        def select(self, *_a, **_k):
+            return self
+
+        def order(self, *_a, **_k):
+            return self
+
+        def limit(self, *_a, **_k):
+            return self
+
+        def range(self, *_a, **_k):
+            return self
+
+        def upsert(self, righe, **opzioni):
+            self.scrittura = ("upsert", list(righe), opzioni)
+            return self
+
+        def __getattr__(self, nome):
+            raise AssertionError(f"scrittura vietata su dominio_ufficiale: {nome}")
+
+        def execute(self):
+            if self.scrittura is not None:
+                self.padre.scritture.append(self.scrittura)
+                return type("R", (), {"data": self.scrittura[1]})()
+            return type("R", (), {"data": list(self.padre.esistenti)})()
+
+    class _Strumento:
+        def tabella_esiste(self, _nome):
+            return True
+
+        def colonne(self, _nome):
+            return frozenset()
+
+    def __init__(self, esistenti):
+        self.esistenti = esistenti
+        self.scritture: list = []
+
+    def table(self, _nome):
+        return self._Query(self)
+
+
+class TestImportDominiSoloInserimenti(unittest.TestCase):
+    """La strada di sempre (`--import`, con o senza `--enti`) non aggiorna mai una riga (§19.8)."""
+
+    FONTI = [{"id": 10, "link": "https://regione.marche.it/bandi", "discoverable": True}]
+
+    def setUp(self):
+        fu.azzera_tabella_corrente()
+        self.addCleanup(fu.azzera_tabella_corrente)
+
+    def _lancia(self, esistenti, **opzioni):
+        import functools
+        finti = _DominiFinti(esistenti)
+        inserisci = functools.partial(db.inserisci_domini_nuovi, client=finti,
+                                      strumento=_DominiFinti._Strumento())
+
+        def vietato(*_a, **_k):
+            raise AssertionError("upsert_domini aggiornerebbe le righe esistenti")
+
+        with unittest.mock.patch.object(fu.db, "inserisci_domini_nuovi", inserisci), \
+                unittest.mock.patch.object(fu.db, "upsert_domini", vietato), \
+                unittest.mock.patch.object(fu, "_tabella_corrente",
+                                           return_value=opzioni.pop("tabella", fu.TABELLA_SEED)):
+            esito = esegui(fu.run_domini_import(attivo=True, fonti=self.FONTI, **opzioni))
+        return esito, finti
+
+    def test_una_riga_esistente_non_cambia(self):
+        # regione.marche.it corretta a mano a 0,60: l'import non la tocca.
+        esistenti = [{"id": 1, "host": "regione.marche.it", "tipo": "ente", "confidenza": 0.6}]
+        esito, finti = self._lancia(esistenti, indicepa=[])
+        scritti = [r["host"] for _n, lotto, _o in finti.scritture for r in lotto]
+        self.assertNotIn("regione.marche.it", scritti)
+        for nome, _lotto, opzioni in finti.scritture:
+            self.assertEqual((nome, opzioni), ("upsert", {"on_conflict": "host",
+                                                         "ignore_duplicates": True}))
+        self.assertEqual(esito["gia_presenti"], 1)
+        self.assertEqual(esito["scritte"], len(scritti))
+
+    def test_le_righe_indicepa_passano_dalle_esclusioni(self):
+        tabella = dominio_ufficiale.costruisci(
+            [dominio_ufficiale.Dominio("gestionale.example", "aggregatore", 1.0, origine="db")])
+        indicepa = [
+            {"Codice_IPA": "c_a1", "Denominazione_ente": "Comune A", "Sito_istituzionale": "comune-a.it"},
+            {"Codice_IPA": "c_b1", "Denominazione_ente": "Comune B",
+             "Sito_istituzionale": "https://comuneb.altervista.org"},
+            {"Codice_IPA": "c_c1", "Denominazione_ente": "Ente C",
+             "Sito_istituzionale": "portale.gestionale.example"},
+        ]
+        esito, finti = self._lancia([], indicepa=indicepa, tabella=tabella)
+        scritti = {r["host"] for _n, lotto, _o in finti.scritture for r in lotto}
+        self.assertIn("comune-a.it", scritti)
+        self.assertNotIn("comuneb.altervista.org", scritti)
+        self.assertNotIn("portale.gestionale.example", scritti)
+        self.assertEqual(esito["indicepa_esclusi"],
+                         {"piattaforma_condivisa": 1, "blocklist": 1})
+
+    def test_in_ombra_nessuna_scrittura(self):
+        inserisci = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(fu.db, "inserisci_domini_nuovi", inserisci):
+            esito = esegui(fu.run_domini_import(attivo=False, fonti=self.FONTI, indicepa=[]))
+        inserisci.assert_not_called()
         self.assertEqual(esito["scritte"], 0)
 
 
@@ -2779,3 +2894,210 @@ class TestSoloFonti(unittest.TestCase):
                 contatori=contatori, solo={3, 7, 9},
             )
         self.assertEqual([r["id"] for r in raccolte], [3, 7])
+
+
+# --- lista bianca dal DB e import completo di IndicePA (contratto `bandi-giro-2` §19.8) ---
+
+def _xlsx(righe, intestazioni=("Codice_IPA", "Denominazione_ente", "Sito_istituzionale")):
+    """Un `enti.xlsx` piccolo, generato qui: nessuna fixture binaria nel repo."""
+    from io import BytesIO
+    from openpyxl import Workbook
+    libro = Workbook()
+    foglio = libro.active
+    foglio.append(list(intestazioni))
+    for riga in righe:
+        foglio.append(list(riga))
+    uscita = BytesIO()
+    libro.save(uscita)
+    return uscita.getvalue()
+
+
+ENTI = [
+    ("c_a001", "Comune di Esempio", "www.comune.esempio.it"),
+    ("c_g001", "Comune gia' a DB", "comune.giaadb.it"),
+    ("asl_1", "ASL uno", "asl.esempio.it"),
+    ("asl_2", "ASL due", "asl.esempio.it"),
+    ("asl_3", "ASL tre", "asl.esempio.it"),
+    ("c_b001", "Comune su piattaforma", "https://comunebeta.altervista.org"),
+    ("c_c001", "Aggregatore", "https://bandi.it"),
+    ("c_d001", "Senza sito", None),
+]
+
+
+class ImportIndicePACompleto(unittest.TestCase):
+    """`run_domini_import(scarica_enti=True)`: solo host assenti, mai UPDATE o DELETE."""
+
+    def setUp(self):
+        import httpx
+        self.httpx = httpx
+        fu.azzera_tabella_corrente()
+        self.addCleanup(fu.azzera_tabella_corrente)
+        self.inserite: list[Any] = []
+        self.righe_run: list[Any] = []
+        self.richieste: list[str] = []
+        patch = unittest.mock.patch.object
+        for bersaglio, nome, valore in (
+            (fu.db, "select_domini_ufficiali",
+             lambda: [{"id": 1, "host": "comune.giaadb.it", "tipo": "ente", "confidenza": 1.0,
+                       "origine": "seed"}]),
+            (fu.db, "select_fonti_per_domini", lambda: []),
+            (fu.db, "inserisci_domini_nuovi", self._inserisci),
+            (fu.db, "upsert_domini", self._vietato),
+            (fu.telemetria, "scrivi_pipeline_run", self.righe_run.append),
+        ):
+            gestore = patch(bersaglio, nome, valore)
+            gestore.start()
+            self.addCleanup(gestore.stop)
+
+    def _vietato(self, *args, **kwargs):
+        raise AssertionError("l'import completo non passa mai da upsert_domini (UPDATE)")
+
+    def _inserisci(self, righe, lotto=500):
+        self.inserite.append((list(righe), lotto))
+        gia = sum(1 for r in righe if r["host"] == "comune.giaadb.it")
+        return {"lette": len(righe), "gia_presenti": gia, "scartate": 0,
+                "inserite": len(righe) - gia, "lotti_falliti": 0, "errore": None}
+
+    def _scarica(self, risposta):
+        def gestore(richiesta):
+            self.richieste.append(str(richiesta.url))
+            return risposta(richiesta) if callable(risposta) else risposta
+        transport = self.httpx.MockTransport(gestore)
+        return lambda url: fu.scarica_indicepa(url, transport=transport)
+
+    def _import(self, contenuto=None, **opzioni):
+        risposta = opzioni.pop("risposta", None) or self.httpx.Response(
+            200, content=_xlsx(ENTI) if contenuto is None else contenuto)
+        opzioni.setdefault("soglia_righe", 1)
+        return esegui(fu.run_domini_import(
+            scarica_enti=True, scarica=self._scarica(risposta), **opzioni))
+
+    def test_attivo_inserisce_solo_con_la_funzione_prudente(self):
+        esito = self._import(attivo=True)
+        self.assertEqual(esito["indicepa_esito"], "ok")
+        self.assertEqual(self.richieste, [fu.INDICEPA_URL_PREDEFINITO])
+        (payload, lotto), = self.inserite
+        self.assertEqual(lotto, 500)
+        self.assertEqual(sorted(r["host"] for r in payload),
+                         ["comune.esempio.it", "comune.giaadb.it"])
+        for riga in payload:
+            self.assertEqual((riga["tipo"], riga["origine"], riga["confidenza"]),
+                             ("ente", "indicepa", 1.0))
+        # Tutte le righe con le stesse chiavi, anche con `ente` o `codice_ipa`
+        # vuoti: PostgREST metterebbe NULL, non il default, in una chiave mancante.
+        self.assertEqual({tuple(sorted(r)) for r in payload}, {(
+            "attivo", "codice_ipa", "confidenza", "ente", "host", "origine", "tipo")})
+        self.assertEqual((esito["indicepa_inseriti"], esito["indicepa_gia_presenti"]), (1, 1))
+        self.assertEqual(esito["indicepa_esclusi"], {
+            "host_condiviso": 3, "piattaforma_condivisa": 1, "blocklist": 1, "senza_sito": 1})
+        self.assertEqual((esito["indicepa_righe_lette"], esito["indicepa_righe_utili"]), (8, 7))
+        # La riga di `pipeline_run` dell'import, dove la salute la cerca.
+        (riga,) = self.righe_run
+        self.assertEqual((riga.step, riga.esito), ("domini", "ok"))
+        self.assertEqual(riga.contatori["indicepa_esito"], "ok")
+        # La tabella in memoria si rilegge: il resto del giro vede l'import.
+        self.assertEqual(fu._CACHE_TABELLA, {})
+
+    def test_foglio_corto_nessuna_scrittura(self):
+        esito = self._import(attivo=True, soglia_righe=fu.SOGLIA_RIGHE_INDICEPA)
+        self.assertEqual(esito["indicepa_esito"], "anomalo")
+        self.assertEqual(self.inserite, [])
+        self.assertEqual(self.righe_run[0].esito, "errore")
+
+    def test_colonna_mancante_nessuna_scrittura(self):
+        contenuto = _xlsx([("c_a001", "www.comune.esempio.it")],
+                          intestazioni=("Codice_IPA", "Sito_istituzionale"))
+        esito = self._import(contenuto, attivo=True)
+        self.assertEqual((esito["indicepa_esito"], esito["indicepa_colonne_mancanti"]),
+                         ("anomalo", ["denominazione"]))
+        self.assertEqual(self.inserite, [])
+
+    def test_download_fallito_tabella_invariata_ed_esito_registrato(self):
+        for risposta in (self.httpx.Response(500),
+                         lambda richiesta: (_ for _ in ()).throw(self.httpx.ConnectError("giu'")),
+                         self.httpx.Response(200, content=b"non e' un xlsx")):
+            with self.subTest(risposta=risposta):
+                self.righe_run.clear()
+                esito = self._import(risposta=risposta, attivo=True)
+                self.assertEqual(esito["indicepa_esito"], "download_fallito")
+                self.assertEqual(self.inserite, [])
+                self.assertEqual(self.righe_run[0].contatori["indicepa_esito"], "download_fallito")
+
+    def test_foglio_oltre_il_tetto(self):
+        transport = self.httpx.MockTransport(lambda r: self.httpx.Response(200, content=b"x" * 100))
+        with self.assertRaises(ValueError):
+            fu.scarica_indicepa("https://indicepa.invalid/enti.xlsx", transport=transport,
+                                tetto_byte=10)
+
+    def test_ombra_compone_conta_e_non_scrive(self):
+        esito = self._import(attivo=False)
+        self.assertEqual(esito["indicepa_esito"], "ombra")
+        self.assertEqual(self.inserite, [])
+        self.assertEqual((esito["indicepa_ammessi"], esito["indicepa_gia_presenti"]), (2, 1))
+        self.assertEqual(self.righe_run[0].esito, "ok")
+
+    def test_dry_run_non_scrive_niente(self):
+        esito = self._import(attivo=True, dry_run=True)
+        self.assertEqual(esito["indicepa_esito"], "ombra")
+        self.assertEqual((self.inserite, self.righe_run), ([], []))
+
+    def test_la_modalita_segue_verifica_stato(self):
+        from types import SimpleNamespace
+        with unittest.mock.patch("scraper_app.settings.get_settings",
+                                 return_value=SimpleNamespace(verifica_stato_modalita="attivo")):
+            self.assertTrue(fu._modalita_indicepa(None))
+        with unittest.mock.patch("scraper_app.settings.get_settings",
+                                 return_value=SimpleNamespace(verifica_stato_modalita="ombra")):
+            self.assertFalse(fu._modalita_indicepa(None))
+        self.assertFalse(fu._modalita_indicepa(False))
+
+    def test_url_da_settings(self):
+        from types import SimpleNamespace
+        with unittest.mock.patch("scraper_app.settings.get_settings", return_value=SimpleNamespace(
+                indicepa_url="https://altro.invalid/enti.xlsx", verifica_stato_modalita="ombra")):
+            self._import()
+        self.assertEqual(self.richieste, ["https://altro.invalid/enti.xlsx"])
+
+
+class TabellaCorrente(unittest.TestCase):
+    def setUp(self):
+        fu.azzera_tabella_corrente()
+        self.addCleanup(fu.azzera_tabella_corrente)
+        self.letture = 0
+
+    def _righe_db(self, righe):
+        def leggi():
+            self.letture += 1
+            return righe
+        return leggi
+
+    def test_le_righe_del_db_vincono_e_si_leggono_una_volta(self):
+        righe = [{"id": 1, "host": "lazioeuropa.it", "tipo": "ente", "confidenza": 0.6,
+                  "origine": "manuale"}]
+        with unittest.mock.patch.object(fu.db, "select_domini_ufficiali", self._righe_db(righe)), \
+                unittest.mock.patch.object(fu.db, "select_fonti_per_domini", lambda: [
+                    {"id": 237, "link": "https://www.lazioeuropa.it/bandi/"}]):
+            prima = fu._tabella_corrente()
+            seconda = fu._tabella_corrente()
+        self.assertIs(prima, seconda)
+        self.assertEqual(self.letture, 1)
+        riga = dominio_ufficiale.corrispondenza("lazioeuropa.it", prima)
+        self.assertEqual((riga.origine, riga.confidenza), ("manuale", 0.6))
+
+    def test_lettura_vuota_non_va_in_memoria(self):
+        with unittest.mock.patch.object(fu.db, "select_domini_ufficiali", self._righe_db([])), \
+                unittest.mock.patch.object(fu.db, "select_fonti_per_domini", lambda: []):
+            tabella = fu._tabella_corrente()
+            fu._tabella_corrente()
+        self.assertEqual(self.letture, 2)
+        # Senza DB resta il seed: gli aggregatori restano fuori comunque.
+        self.assertTrue(dominio_ufficiale.e_aggregatore("obiettivoeuropa.com", tabella))
+
+    def test_scade(self):
+        righe = [{"id": 1, "host": "ente.it", "tipo": "ente", "confidenza": 1.0}]
+        with unittest.mock.patch.object(fu.db, "select_domini_ufficiali", self._righe_db(righe)), \
+                unittest.mock.patch.object(fu.db, "select_fonti_per_domini", lambda: []), \
+                unittest.mock.patch.object(fu.time, "monotonic", side_effect=[0.0, fu.TTL_TABELLA_S + 1]):
+            fu._tabella_corrente()
+            fu._tabella_corrente()
+        self.assertEqual(self.letture, 2)

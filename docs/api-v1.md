@@ -1,9 +1,10 @@
 # API pubblica `/api/v1`: guida di implementazione
 
-> Versione del contratto: **1.1** (additiva; `VERSIONE_API` in `costanti.ts`, OpenAPI `1.1.0`).
+> Versione del contratto: **1.2** (additiva; `VERSIONE_API` in `costanti.ts`, OpenAPI `1.2.0`).
 > La 1.1 aggiunge ai bandi `details.official_source`, `details.opens_on_verified`,
 > `details.deadline_verified`, `details.last_checked_at` e due valori di `status`
-> (`suspended`, `revoked`). Nessun campo rimosso o rinominato.
+> (`suspended`, `revoked`). La 1.2 aggiunge `details.stato_da_verificare` (migrazione 13: il deploy
+> va fatto solo dopo, altrimenti la select sulla vista dà 42703). Nessun campo rimosso o rinominato.
 
 Per chi mantiene o estende l'API (sviluppatori e sessioni AI). Chi la **usa** trova il contratto in
 `https://edunews24.it/api/v1/openapi.json` e la guida in `https://edunews24.it/sviluppatori/api`
@@ -237,6 +238,32 @@ UTC; 4-6 → Europe/Rome. **Errore noto:** ~436 articoli scritti dall'editor pre
   `deadline_on`, e la scadenza passata non li trasforma in `closed` (garanzia A3: un sospeso non si
   chiude mai d'ufficio). Chi deduceva "si può partecipare" da `status !== 'closed'` sbaglia.
   I due valori non compariranno finché il CHECK della colonna non li ammette (migrazione 06).
+- Bandi, `details.stato_da_verificare` (migrazione 13, regola `stato_da_verificare` v2 del contratto
+  interno `docs/contracts/bandi-giro-2.md` §3 con §19.3): uno dei cinque motivi di
+  `MOTIVI_DA_VERIFICARE` oppure `null`, che vuol dire «nessuna prova contraria» e **non**
+  «verificato». Con `upcoming`: `data_apertura_passata`, `smentito_dalla_fonte`,
+  `previsione_scaduta`, `senza_conferma`. Con `open` (solo senza scadenza): `smentito_dalla_fonte`,
+  `termine_passato`, `senza_conferma`, cioè nessuna conferma recente dalla pagina ufficiale
+  dell'ente: dal 7° giorno dopo la pubblicazione e solo dopo un controllo della verifica automatica
+  attiva. Il bando resta `open`: nessuna chiusura senza evento. Ordine definitivo della regola
+  (§19.3, I6-bis e A4 prima di I4 e A3): finché la verifica non è attiva l'unico motivo che può
+  comparire è `data_apertura_passata`; `previsione_scaduta`, `termine_passato`,
+  `smentito_dalla_fonte` e `senza_conferma` compaiono solo dopo un controllo della verifica
+  automatica attiva.
+  - Fonte: dalla vista la colonna `stato_da_verificare` (in `colonneV11` di `FONTI_BANDI`); dalla
+    tabella la regola ricalcolata da `motivoDellaRiga` (`stato-bando.ts`) con lettura, termine ed
+    esame in attivo NULL, e con `adesso` = mezzogiorno UTC di `oggi`, così l'uscita dipende da
+    `oggi` e non dall'orologio. Per questo sulla tabella `colonneV11` chiede
+    `data_apertura_verificata` (colonna della 01), che decide I1 e l'apertura raggiunta: di
+    riflesso, anche in modalità tabella `details.opens_on_verified` esce col valore vero
+    (`true`/`false`) e non più `null`. `pubblicato_at` non serve: la tabella non ha
+    `esaminato_attivo_at`, quindi I6-bis e A4 rispondono prima delle grazie (I6, A7).
+  - Coerenza: il motivo passa sempre da `motivoVisibile` con lo stato che l'API dichiara (quello di
+    `effectiveStatoBando`): mai `upcoming` con un motivo da aperto, mai un motivo accanto a
+    `closed`, `suspended` o `revoked`.
+  - Niente campi interni: lettura, URL e citazione della pagina letta, metodo, storia delle
+    letture, esame in attivo, segnale dell'aggregatore e sosta restano nel DB
+    (`COLONNE_VIETATE_BANDO` nei test).
 - Scadenza oltre 8 anni dalla pubblicazione → implausibile: `deadline_*` null (selezione: `status`
   `open`; bandi: lo stato della fonte). Oggi 22 righe della selezione (fino al 5026, sentinella
   2099-12-30).

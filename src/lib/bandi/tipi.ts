@@ -81,6 +81,15 @@ export interface FonteUfficiale {
   readonly verificata_il?: string | null;
 }
 
+/**
+ * Da dove viene `termine_indicato` di un aperto senza scadenza (colonna
+ * `termine_indicato_fonte`, migrazione 13), in ordine di precedenza: il
+ * calendario ufficiale dell'ente, la pagina dell'ente, il testo del bando, un
+ * portale aggregatore. È sempre e solo un indizio: non genera eventi.
+ */
+export const FONTI_TERMINE_INDICATO = ['calendario_ufficiale', 'pagina', 'testo', 'aggregatore'] as const;
+export type FonteTermineIndicato = typeof FONTI_TERMINE_INDICATO[number];
+
 // ---------------------------------------------------------------------------
 // Link di un bando (tabella `bando_link`, disponibile solo da F2)
 // ---------------------------------------------------------------------------

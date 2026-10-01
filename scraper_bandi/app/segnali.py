@@ -48,7 +48,7 @@ from .gemelli import (
     FAMIGLIA_OE,
     famiglia,
 )
-from .stato_bando import adesso_roma, stato_effettivo
+from .stato_bando import ROMA, adesso_roma, stato_effettivo
 
 # --- tipi di evento (sempre interni: §13.5) ---------------------------------
 
@@ -628,6 +628,91 @@ def spariti(
     return tuple(trovati)
 
 
+# --- segnale dell'aggregatore (contratto `bandi-giro-2` §19.7) --------------
+#
+# Cio' che il listing di Obiettivo Europa dice di un bando, scritto in
+# `bando_controllo.segnale_aggregatore(_at)` e letto dalla regola
+# `stato_da_verificare` (ramo A, A2 e A5): un aggregatore non e' una prova,
+# ma quando dice «in uscita», «scaduto» o smette di elencare un bando, il
+# bollino «da verificare» deve accendersi finche' la pagina ufficiale non
+# conferma. Non e' un evento: `spariti()` e gli eventi del monitor non cambiano.
+
+SEGNALE_ASSENTE = "assente_dal_listing"
+SEGNALE_IN_USCITA = "in_uscita"
+SEGNALE_SCADENZA_PASSATA = "scadenza_passata"
+SEGNALI_AGGREGATORE: tuple[str, ...] = (
+    SEGNALE_ASSENTE, SEGNALE_IN_USCITA, SEGNALE_SCADENZA_PASSATA,
+)
+#: Le due colonne della 13 in `bando_controllo`.
+COLONNE_SEGNALE_AGGREGATORE: tuple[str, ...] = ("segnale_aggregatore", "segnale_aggregatore_at")
+#: Il giorno in cui `ultimo_visto_in_fonte_at` e' stato seminato: una riga che
+#: non ce l'ha non e' stata piu' vista nel listing almeno da allora.
+DATA_SEMINA_VISTO = datetime(2026, 9, 23, tzinfo=ROMA)
+
+
+#: Oltre questa quota dei pubblicati vivi della fonte, gli assenti nuovi di un
+#: giro non si scrivono: e' un listing rotto, non un'ondata di bandi usciti.
+QUOTA_ASSENTI_SOSPETTA = 0.20
+
+
+def pubblicata_e_viva(riga: Mapping[str, Any], adesso: datetime | None) -> bool:
+    """Pubblicata e con uno stato effettivo vivo: il denominatore della quota."""
+    return _pubblicata(riga) and _viva(riga, adesso_roma(adesso))
+
+
+def segnale_aggregatore(
+    record_listing: Mapping[str, Any] | None,
+    riga: Mapping[str, Any] | None,
+    adesso: datetime | None,
+    *,
+    copertura_piena: bool,
+    giri_assenza: int = 3,
+    ore_per_giro: float = 6.0,
+) -> str | None:
+    """Il valore VOLUTO di `segnale_aggregatore` per una riga del DB. Pura.
+
+    `record_listing` e' il record del listing di questo giro (None se la riga
+    non c'e'), `riga` la riga di `bando` con le colonne di `bando_controllo`
+    (`segnale_aggregatore`, `ultimo_visto_in_fonte_at`). Il chiamante scrive
+    solo se il valore voluto e' diverso da quello attuale.
+
+    Riga nel listing:
+      - `status` '2' → `in_uscita`;
+      - altrimenti la data di `deadline_label` prima di oggi (Roma) →
+        `scadenza_passata`;
+      - altrimenti `status` '1' → None: la riga e' ricomparsa pulita;
+      - uno `status` illeggibile spegne solo `assente_dal_listing` (la riga
+        c'e') e lascia gli altri come sono.
+    Riga assente: `assente_dal_listing` solo con la copertura piena del listing
+    e se non la si vede da oltre `giri_assenza` giri (`ultimo_visto_in_fonte_at`
+    NULL vale `DATA_SEMINA_VISTO`); altrimenti niente cambia. Solo le righe
+    pubblicate e, per l'assenza, vive: una chiusa fuori listing e' la normalita'.
+    """
+    riga = riga or {}
+    attuale = riga.get("segnale_aggregatore")
+    attuale = attuale if attuale in SEGNALI_AGGREGATORE else None
+    if not _pubblicata(riga):
+        return attuale
+    momento = adesso_roma(adesso)
+    if record_listing is not None:
+        grezzo = record_listing.get("raw_data")
+        grezzo = grezzo if isinstance(grezzo, Mapping) else {}
+        status = str(grezzo.get("status") if grezzo.get("status") is not None else "").strip()
+        if status == "2":
+            return SEGNALE_IN_USCITA
+        scadenza = scadenza_da_label(grezzo.get("deadline_label"))
+        if scadenza is not None and scadenza < momento.date():
+            return SEGNALE_SCADENZA_PASSATA
+        if status == "1":
+            return None
+        return None if attuale == SEGNALE_ASSENTE else attuale
+    if not copertura_piena or not _viva(riga, momento):
+        return attuale
+    ultimo = _istante(riga.get("ultimo_visto_in_fonte_at")) or DATA_SEMINA_VISTO
+    soglia = momento - timedelta(hours=max(0.0, ore_per_giro) * max(1, giri_assenza))
+    return SEGNALE_ASSENTE if ultimo < soglia else attuale
+
+
 def _pubblicata(riga: Mapping[str, Any]) -> bool:
     """Pubblicata secondo la colonna nuova, o secondo il criterio storico.
 
@@ -679,5 +764,7 @@ __all__ = [
     "TIPO_SPARITO", "VOLATILI_OE", "chiavi_confrontate", "confronta",
     "copertura_piena", "differenze", "esito_da", "estratto", "impronta_raw",
     "mismatch_scadenza_oe", "priorita_di", "scadenza_da_label", "spariti",
+    "DATA_SEMINA_VISTO", "SEGNALE_ASSENTE", "SEGNALE_IN_USCITA", "SEGNALE_SCADENZA_PASSATA",
+    "SEGNALI_AGGREGATORE", "segnale_aggregatore", "QUOTA_ASSENTI_SOSPETTA", "pubblicata_e_viva",
     "volatili",
 ]
