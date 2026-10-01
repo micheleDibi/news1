@@ -17,8 +17,8 @@
  */
 
 // Cinque stati: i tre storici della colonna piu' `sospeso` e `revocato`, che la
-// migrazione 06 aggiunge al CHECK. Chi filtra sulla colonna persistita prima
-// della 06 non trovera' mai gli ultimi due.
+// migrazione 06 (applicata il 28/09/2026) ha aggiunto al CHECK. Come filtro di
+// una lista il sito li accetta solo con `BANDI_STATI_ESTESI` (vedi sotto).
 export const STATI_BANDO = [
   'aperto',
   'chiuso',
@@ -28,12 +28,12 @@ export const STATI_BANDO = [
 ] as const;
 export type StatoBando = typeof STATI_BANDO[number];
 
-// I soli valori che il CHECK della colonna ammette finche' la migrazione 06
-// non e' applicata. Per validare un input dell'utente (il filtro `?stato=` di
-// una lista, un parametro d'API) si usa QUESTA: con `STATI_BANDO` un
-// `?stato=sospeso` arriverebbe a PostgREST e tornerebbe una lista vuota invece
-// della lista intera. `STATI_BANDO` resta il vocabolario completo, per badge,
-// tipi e macchina a stati.
+// I tre valori che il CHECK della colonna ammetteva prima della migrazione 06
+// (applicata il 28/09/2026). Per validare un input dell'utente (il filtro
+// `?stato=` di una lista, un parametro d'API) senza `BANDI_STATI_ESTESI` si usa
+// QUESTA: prima della 06 un `?stato=sospeso` arrivava a PostgREST e tornava una
+// lista vuota invece della lista intera. `STATI_BANDO` resta il vocabolario
+// completo, per badge, tipi e macchina a stati.
 export const STATI_BANDO_PERSISTITI = [
   'aperto',
   'chiuso',
@@ -65,13 +65,15 @@ export interface Transizione {
 /**
  * Tabella di §4, riga per riga. È una lista bianca, e la stessa lista che la
  * migrazione 04 semina in `bando_transizione` per autorizzare gli eventi sui
- * bandi **pubblicati**: quello che non c'è non è ammesso, quindi una riga di
- * troppo qui è un varco nella guardia a DB. Quattro assenze volute:
- *  - `revocato` non ha transizioni in uscita (§4 lo dichiara terminale);
- *  - nessuna riga chiude un `sospeso` (A3: mai chiuso d'ufficio);
+ * bandi **pubblicati** (le righe con `migrazione` le aggiunge il delta di quella
+ * migrazione): quello che non c'è non è ammesso, quindi una riga di troppo qui
+ * è un varco nella guardia a DB. Assenze e limiti voluti:
+ *  - dal `revocato` si esce solo con `annullamento_revoca` del worker (14);
+ *  - un `sospeso` si chiude solo con una `chiusura` letta dal worker (14), mai
+ *    d'ufficio: il cron non tocca un sospeso (A3);
  *  - nessuna riga ha attore `redazione`, perché §4 non concede alla redazione
- *    nessuna scrittura automatica su `stato_bando`; una correzione manuale
- *    passa dal SQL Editor, che la guardia di ruolo lascia passare a parte;
+ *    nessuna scrittura automatica su `stato_bando`; la correzione a mano passa
+ *    dalla RPC `bando_correggi_stato` della migrazione 14, fuori lista;
  *  - l'attore `pipeline` compare **solo** nelle righe di creazione (`da: null`):
  *    la pipeline LLM tocca esclusivamente le righe non ancora pubblicate, che
  *    non passano dal trigger, e §4 non le concede nessun passaggio fra stati.
@@ -273,6 +275,45 @@ export const TRANSIZIONI: readonly Transizione[] = [
     condizione:
       "la pagina ufficiale dichiara chiuso, scaduto o concluso con etichetta strutturata; gate G1-G9, G7 per doppia lettura strutturata (contratto 6.1)",
     migrazione: 13,
+  },
+  // Migrazione 14 (giro 3, contratto interno §14): il sospeso si chiude con
+  // una chiusura letta dal worker, e dal revocato si esce solo con
+  // `annullamento_revoca`, verso lo stato che la RPC calcola dalle date.
+  {
+    da: "sospeso",
+    a: "chiuso",
+    attore: "worker",
+    evento: "chiusura",
+    condizione:
+      "la pagina ufficiale dichiara chiuso il bando sospeso (chiusura dell'ente o termine senza ripresa); gate G1-G9, G7; mai d'ufficio: il cron non tocca un sospeso",
+    migrazione: 14,
+  },
+  {
+    da: "revocato",
+    a: "aperto",
+    attore: "worker",
+    evento: "annullamento_revoca",
+    condizione:
+      "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: apertura raggiunta e scadenza non passata; gate G1-G9",
+    migrazione: 14,
+  },
+  {
+    da: "revocato",
+    a: "chiuso",
+    attore: "worker",
+    evento: "annullamento_revoca",
+    condizione:
+      "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: scadenza gia passata; gate G1-G9",
+    migrazione: 14,
+  },
+  {
+    da: "revocato",
+    a: "in apertura prossimamente",
+    attore: "worker",
+    evento: "annullamento_revoca",
+    condizione:
+      "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: apertura futura; gate G1-G9",
+    migrazione: 14,
   },
 ];
 

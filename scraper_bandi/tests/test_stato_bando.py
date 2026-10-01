@@ -153,10 +153,20 @@ class TestTransizioni(unittest.TestCase):
 
     def test_invarianti(self):
         righe = self.dati["transizioni"]
-        # revocato e' terminale
-        self.assertFalse([t for t in righe if t["da"] == "revocato"])
-        # nessuno chiude un sospeso d'ufficio (A3)
-        self.assertFalse([t for t in righe if t["da"] == "sospeso" and t["a"] == "chiuso"])
+        # dal revocato si esce SOLO con l'annullamento della revoca, letto dal
+        # worker (migrazione 14): nessun'altra uscita, nessun altro attore
+        uscite = [t for t in righe if t["da"] == "revocato"]
+        self.assertTrue(uscite)
+        for t in uscite:
+            self.assertEqual((t["attore"], t["evento"]), ("worker", "annullamento_revoca"), t["a"])
+            self.assertEqual(t.get("migrazione"), 14, t["a"])
+        self.assertEqual(sorted(t["a"] for t in uscite),
+                         ["aperto", "chiuso", "in apertura prossimamente"])
+        # un sospeso si chiude SOLO con una 'chiusura' del worker, mai d'ufficio (A3)
+        chiusure_sospeso = [t for t in righe if t["da"] == "sospeso" and t["a"] == "chiuso"]
+        self.assertTrue(chiusure_sospeso)
+        for t in chiusure_sospeso:
+            self.assertEqual((t["attore"], t["evento"]), ("worker", "chiusura"))
         # il cron non tocca mai sospeso ne revocato
         for t in [r for r in righe if r["attore"] == "cron"]:
             self.assertNotIn(t["da"], ("sospeso", "revocato"))
@@ -188,13 +198,30 @@ class TestTransizioni(unittest.TestCase):
     def test_riga_24_entra_con_la_13(self):
         """23 righe dalla 04, una dalla 13: il seed della 04 non cambia."""
         righe = self.dati["transizioni"]
-        self.assertEqual(len(stato_bando.TRANSIZIONI), 24)
         self.assertEqual(len([t for t in righe if "migrazione" not in t]), 23)
         self.assertEqual(
             [(t["da"], t["a"], t["attore"], t["evento"], t["migrazione"])
-             for t in stato_bando.TRANSIZIONI if "migrazione" in t],
+             for t in stato_bando.TRANSIZIONI if t.get("migrazione") == 13],
             [("in apertura prossimamente", "chiuso", "worker", "chiusura", 13)],
         )
+
+    def test_quattro_righe_entrano_con_la_14(self):
+        """28 righe in tutto: 23 dalla 04, una dalla 13, quattro dalla 14."""
+        self.assertEqual(len(stato_bando.TRANSIZIONI), 28)
+        self.assertEqual(
+            [(t["da"], t["a"], t["attore"], t["evento"], t["migrazione"])
+             for t in stato_bando.TRANSIZIONI if t.get("migrazione") == 14],
+            [
+                ("sospeso", "chiuso", "worker", "chiusura", 14),
+                ("revocato", "aperto", "worker", "annullamento_revoca", 14),
+                ("revocato", "chiuso", "worker", "annullamento_revoca", 14),
+                ("revocato", "in apertura prossimamente", "worker", "annullamento_revoca", 14),
+            ],
+        )
+        # nessuna migrazione oltre la 14, e le righe stanno in ordine di migrazione
+        migrazioni = [t.get("migrazione", 4) for t in stato_bando.TRANSIZIONI]
+        self.assertEqual(migrazioni, sorted(migrazioni))
+        self.assertLessEqual(max(migrazioni), 14)
 
 
 class TestStatoEffettivo(unittest.TestCase):

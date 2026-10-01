@@ -78,12 +78,15 @@ ATTORI_TRANSIZIONE: tuple[str, ...] = ("cron", "worker", "pipeline", "redazione"
 
 # Tabella di §4, riga per riga; `da=None` e' la creazione della riga. E' una
 # lista bianca, ed e' la stessa lista che la migrazione 04 semina in
-# `bando_transizione` per autorizzare gli eventi sui bandi PUBBLICATI: una riga
-# di troppo qui e' un varco nella guardia a DB. Quattro assenze volute:
-#   - `revocato` non ha transizioni in uscita (§4 lo dichiara terminale);
-#   - nessuna riga chiude un `sospeso` (A3: mai chiuso d'ufficio);
+# `bando_transizione` per autorizzare gli eventi sui bandi PUBBLICATI (le righe
+# con `migrazione` le aggiunge il delta di quella migrazione): una riga di
+# troppo qui e' un varco nella guardia a DB. Assenze e limiti voluti:
+#   - dal `revocato` si esce solo con `annullamento_revoca` del worker (14);
+#   - un `sospeso` si chiude solo con una `chiusura` letta dal worker (14), mai
+#     d'ufficio: il cron non tocca un sospeso (A3);
 #   - nessuna riga ha attore `redazione`, perche' §4 non concede alla redazione
-#     nessuna scrittura automatica su `stato_bando`;
+#     nessuna scrittura automatica su `stato_bando`; la correzione a mano passa
+#     dalla RPC `bando_correggi_stato` della migrazione 14, fuori lista;
 #   - l'attore `pipeline` compare SOLO nelle righe di creazione (`da=None`): la
 #     pipeline LLM tocca solo le righe non ancora pubblicate, che non passano
 #     dal trigger, e §4 non le concede nessun passaggio fra stati. Concederglielo
@@ -310,6 +313,49 @@ TRANSIZIONI: tuple[dict[str, str | int | None], ...] = (
             "la pagina ufficiale dichiara chiuso, scaduto o concluso con etichetta strutturata; gate G1-G9, G7 per doppia lettura strutturata (contratto 6.1)"
         ),
         "migrazione": 13,
+    },
+    # Migrazione 14 (giro 3, contratto interno §14): il sospeso si chiude con
+    # una chiusura letta dal worker, e dal revocato si esce solo con
+    # `annullamento_revoca`, verso lo stato che la RPC calcola dalle date.
+    {
+        "da": "sospeso",
+        "a": "chiuso",
+        "attore": "worker",
+        "evento": "chiusura",
+        "condizione": (
+            "la pagina ufficiale dichiara chiuso il bando sospeso (chiusura dell'ente o termine senza ripresa); gate G1-G9, G7; mai d'ufficio: il cron non tocca un sospeso"
+        ),
+        "migrazione": 14,
+    },
+    {
+        "da": "revocato",
+        "a": "aperto",
+        "attore": "worker",
+        "evento": "annullamento_revoca",
+        "condizione": (
+            "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: apertura raggiunta e scadenza non passata; gate G1-G9"
+        ),
+        "migrazione": 14,
+    },
+    {
+        "da": "revocato",
+        "a": "chiuso",
+        "attore": "worker",
+        "evento": "annullamento_revoca",
+        "condizione": (
+            "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: scadenza gia passata; gate G1-G9"
+        ),
+        "migrazione": 14,
+    },
+    {
+        "da": "revocato",
+        "a": "in apertura prossimamente",
+        "attore": "worker",
+        "evento": "annullamento_revoca",
+        "condizione": (
+            "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: apertura futura; gate G1-G9"
+        ),
+        "migrazione": 14,
     },
 )
 

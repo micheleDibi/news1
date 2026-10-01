@@ -184,6 +184,38 @@
    "evento": "chiusura",
    "condizione": "la pagina ufficiale dichiara chiuso, scaduto o concluso con etichetta strutturata; gate G1-G9, G7 per doppia lettura strutturata (contratto 6.1)",
    "migrazione": 13
+  },
+  {
+   "da": "sospeso",
+   "a": "chiuso",
+   "attore": "worker",
+   "evento": "chiusura",
+   "condizione": "la pagina ufficiale dichiara chiuso il bando sospeso (chiusura dell'ente o termine senza ripresa); gate G1-G9, G7; mai d'ufficio: il cron non tocca un sospeso",
+   "migrazione": 14
+  },
+  {
+   "da": "revocato",
+   "a": "aperto",
+   "attore": "worker",
+   "evento": "annullamento_revoca",
+   "condizione": "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: apertura raggiunta e scadenza non passata; gate G1-G9",
+   "migrazione": 14
+  },
+  {
+   "da": "revocato",
+   "a": "chiuso",
+   "attore": "worker",
+   "evento": "annullamento_revoca",
+   "condizione": "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: scadenza gia passata; gate G1-G9",
+   "migrazione": 14
+  },
+  {
+   "da": "revocato",
+   "a": "in apertura prossimamente",
+   "attore": "worker",
+   "evento": "annullamento_revoca",
+   "condizione": "la fonte ufficiale annulla la revoca; stato di arrivo calcolato dalle date: apertura futura; gate G1-G9",
+   "migrazione": 14
   }
  ],
  "casi": [

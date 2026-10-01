@@ -79,7 +79,12 @@ test('il rollback toglie la sola riga del delta, per (da, a, attore, evento)', (
 });
 
 test('le verifiche contano le righe della lista bianca giuste', () => {
-  const tutte = dati.transizioni.length;
+  // Le righe che la lista bianca ha DOPO la 13: il seed della 04 e il delta
+  // della 13. Quelle delle migrazioni successive (la 14) non le conta: la V2
+  // della 13 resta a 24 e, dopo la 14, la 13 non si riesegue.
+  const tutte = dati.transizioni.filter(
+    (transizione) => transizione.migrazione === undefined || transizione.migrazione <= 13,
+  ).length;
   const senzaDelta = dati.transizioni.filter((transizione) => transizione.migrazione === undefined).length;
   assert.equal(tutte, senzaDelta + delta.length);
   assert.match(MIGRAZIONE, new RegExp(`IF v_n <> ${tutte} THEN`));

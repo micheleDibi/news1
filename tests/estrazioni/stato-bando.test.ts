@@ -171,13 +171,20 @@ test('la tabella delle transizioni coincide con il fixture', () => {
     })),
     dati.transizioni,
   );
-  // 23 righe seminate dalla 04, una dalla 13 (contratto interno del giro 2, §4)
-  assert.equal(TRANSIZIONI.length, 24);
+  // 23 righe seminate dalla 04, una dalla 13 (contratto interno del giro 2, §4),
+  // quattro dalla 14 (contratto interno del giro 3, §14)
+  assert.equal(TRANSIZIONI.length, 28);
   assert.equal(TRANSIZIONI.filter((t) => t.migrazione === undefined).length, 23);
   assert.deepEqual(
     TRANSIZIONI.filter((t) => t.migrazione !== undefined)
       .map((t) => [t.da, t.a, t.attore, t.evento, t.migrazione]),
-    [['in apertura prossimamente', 'chiuso', 'worker', 'chiusura', 13]],
+    [
+      ['in apertura prossimamente', 'chiuso', 'worker', 'chiusura', 13],
+      ['sospeso', 'chiuso', 'worker', 'chiusura', 14],
+      ['revocato', 'aperto', 'worker', 'annullamento_revoca', 14],
+      ['revocato', 'chiuso', 'worker', 'annullamento_revoca', 14],
+      ['revocato', 'in apertura prossimamente', 'worker', 'annullamento_revoca', 14],
+    ],
   );
   for (const transizione of TRANSIZIONI) {
     assert.ok(dati.stati.includes(transizione.a), transizione.a);
@@ -232,10 +239,20 @@ test('transizioneAmmessa: lista bianca, e il resto e\' falso', () => {
 });
 
 test('invarianti della macchina a stati (§4)', () => {
-  // revocato e' terminale
-  assert.equal(TRANSIZIONI.some((t) => t.da === 'revocato'), false);
-  // nessuno chiude un sospeso d'ufficio (A3)
-  assert.equal(TRANSIZIONI.some((t) => t.da === 'sospeso' && t.a === 'chiuso'), false);
+  // dal revocato si esce SOLO con l'annullamento della revoca letto dal worker
+  // (migrazione 14), verso i tre stati che la RPC calcola dalle date
+  const usciteRevocato = TRANSIZIONI.filter((t) => t.da === 'revocato');
+  assert.deepEqual(
+    usciteRevocato.map((t) => t.a).sort(),
+    ['aperto', 'chiuso', 'in apertura prossimamente'],
+  );
+  for (const t of usciteRevocato) {
+    assert.deepEqual([t.attore, t.evento, t.migrazione], ['worker', 'annullamento_revoca', 14], t.a);
+  }
+  // un sospeso si chiude SOLO con una 'chiusura' del worker, mai d'ufficio (A3)
+  const chiusureSospeso = TRANSIZIONI.filter((t) => t.da === 'sospeso' && t.a === 'chiuso');
+  assert.ok(chiusureSospeso.length > 0);
+  for (const t of chiusureSospeso) assert.deepEqual([t.attore, t.evento], ['worker', 'chiusura']);
   // il cron non tocca mai sospeso ne revocato
   for (const t of TRANSIZIONI.filter((r) => r.attore === 'cron')) {
     assert.equal(t.da === 'sospeso' || t.da === 'revocato', false);
