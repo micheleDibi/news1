@@ -234,10 +234,11 @@ UTC; 4-6 → Europe/Rome. **Errore noto:** ~436 articoli scritti dall'editor pre
   già passata restano `upcoming`): è la firma con `oggi` passato dal chiamante, che l'API fissa una
   volta per richiesta.
 - Bandi, da 1.1: `status` ammette anche `suspended` (bando fermato dall'ente) e `revoked`
-  (annullato, stato definitivo). Su questi due non si può partecipare **qualunque** sia
+  (annullato dall'ente; ne esce solo con un annullamento della revoca o una correzione della
+  redazione, migrazione 14). Su questi due non si può partecipare **qualunque** sia
   `deadline_on`, e la scadenza passata non li trasforma in `closed` (garanzia A3: un sospeso non si
   chiude mai d'ufficio). Chi deduceva "si può partecipare" da `status !== 'closed'` sbaglia.
-  I due valori non compariranno finché il CHECK della colonna non li ammette (migrazione 06).
+  Il CHECK della colonna li ammette dalla migrazione 06 (applicata il 28/09/2026): possono comparire.
 - Bandi, `details.stato_da_verificare` (migrazione 13, regola `stato_da_verificare` v2 del contratto
   interno `docs/contracts/bandi-giro-2.md` §3 con §19.3): uno dei cinque motivi di
   `MOTIVI_DA_VERIFICARE` oppure `null`, che vuol dire «nessuna prova contraria» e **non**

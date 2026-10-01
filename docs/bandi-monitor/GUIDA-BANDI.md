@@ -1,6 +1,7 @@
 # Guida al sistema bandi
 
-**Data:** 01/10/2026 (dopo il deploy delle 10:10).
+**Data:** 01/10/2026 (dopo il deploy delle 10:10). Aggiornata la sera dell'01/10 con il **giro 3** (codice pronto,
+deploy da fare): §3.2, §3.2-bis, §3.3, §4.6, §4.11.
 
 **A chi serve.** Al titolare del progetto, per studiare e capire come funziona il sistema dei bandi: da dove arrivano,
 come vengono lavorati e pubblicati, che cosa vedono i lettori, che cosa è acceso oggi e che cosa resta da fare.
@@ -39,17 +40,27 @@ tecniche.
    pubblica), ma 5 tipi di evento (faq, nuovo allegato, graduatoria, esito, proroga) si pubblicano da soli.
 6. **In prova.** La verifica dello stato, le fusioni automatiche dei doppioni («gemelli»), la sosta dei bandi nuovi
    senza scadenza e l'import dei domini da IndicePA sono in ombra. **Un solo interruttore** li accende tutti insieme:
-   `VERIFICA_STATO_MODALITA=attivo`. Prime esecuzioni: verifica oggi alle 18, gemelli e IndicePA domani alle 06.
-7. **Il piano.** L'08/10 si lancia il controllo `report-verifica-stato --verita`. Si attiva solo con 0 difformi, almeno
-   7 giorni dopo l'avviso a BandoFit e con un backup. Così com'è oggi, il controllo darà almeno una difforme (il bando
-   661135, già chiuso dal job orario): la tabella di confronto va corretta prima, con un deploy.
+   `VERIFICA_STATO_MODALITA=attivo`. Prime esecuzioni: verifica oggi alle 18, gemelli e IndicePA domani alle 06. Dal
+   giro 3 gli interruttori diventano tre (§3.3.5).
+7. **Il piano.** L'08/10 si lancia il controllo `report-verifica-stato --verita`. Si attiva solo con 0 difformi e con
+   un backup. Dal giro 3 non ci sono altre attese: l'avviso a BandoFit è il messaggio mandato prima del deploy, che
+   annuncia anche la verifica. Il 661135, già chiuso dal job orario, con il codice del giro 3 non è più una difforme
+   (`confermato_da_stato`).
 8. **I punti deboli più gravi.** Nessun allarme arriva a una persona (il pannello su BandoFit è rimandato e
-   `sorveglia` non è installato). La spesa principale (SEO, preprocess, enrich) non è contata né limitata. Due fonti
+   `sorveglia` non è installato). La spesa principale (SEO, preprocess, enrich) non è contata né limitata (dal giro
+   3 sì, §3.3.6). Due fonti
    intere (Italia Domani e Incentivi.gov.it) non hanno mai prodotto un bando. 426 aperti senza scadenza e 163 «in
    apertura» senza data possono restare così per sempre. IndexNow è rotto. La migrazione 07 è bloccata e la chiave
    pubblica legge ancora la tabella `bando` intera.
 9. **Che cosa resta da fare.** L'elenco ragionato è nel capitolo 8 (correzioni, per gravità); il calendario, con chi fa
    cosa, nel capitolo 9.
+10. **Il giro 3 (codice pronto l'01/10, deploy da fare).** Ogni giro delle quattro ore farà anche la manutenzione: il
+    monitor su tutti gli aperti, i ricontrolli del resolver su tutti i bandi senza fonte, il controllo dei link, la
+    rielaborazione dei pubblicati dalla pagina ufficiale e i gemelli. La fonte ufficiale si cerca prima del preprocess,
+    che legge la pagina dell'ente. Niente più tetti di numero, solo di tempo (regola «niente lotti»), e la spesa si
+    conta tutta: 5 $ al giorno, 150 al mese. Gemelli e IndicePA hanno un interruttore proprio e si accendono; la
+    verifica dello stato resta in ombra fino all'08/10. La migrazione 14 sistema sospensione e revoca. I passi di
+    Michele sono in RIPRESA §1; il dettaglio in §3.2 e §3.2-bis.
 
 ---
 
@@ -163,6 +174,9 @@ Fonti: `backend/app/bandi_sender.py:46-103`, `backend/sql/bando_v11_04_transizio
 ```
 
 ### 1.6 Che cosa fa ogni giro
+
+Questa è la produzione dell'01/10. **Dal deploy del giro 3** l'ordine cambia e la manutenzione gira a ogni giro delle
+quattro ore: la tabella nuova è in §3.2.
 
 | Giro | Passi, in ordine |
 |---|---|
@@ -670,6 +684,48 @@ Fonti: `backend/app/bandi_sender.py`, `scraper_bandi/app/settings.py` (riga 288)
 
 Questa è la tabella da tenere a portata di mano. I passi sono **nell'ordine esatto** in cui girano dentro un giro.
 
+**Dal deploy del giro 3** (codice pronto l'01/10/2026 sul branch `claude/bandi-giro-3`, deploy a carico di Michele:
+RIPRESA §1; contratto interno `docs/contracts/bandi-giro-3.md` §2). Fino al deploy in produzione gira l'ordine di
+prima, descritto più sotto.
+
+| N. | Passo | 00:00 | 06:00 | 12:00 | 18:00 | Avvio |
+|---|---|:-:|:-:|:-:|:-:|:-:|
+| — | Azzeramento iniziale (cache e contatori degli scaricamenti, lista dei domini in memoria) | sì | sì | sì | sì | sì |
+| 1 | **discover**: elenco delle fonti da OpenCoesione | sì | sì | sì | sì | sì |
+| 2 | **scrape**: lettura delle fonti, bandi nuovi in tabella | sì | sì | sì | sì | sì |
+| 3 | **domini**: import di IndicePA (interruttore proprio, `DOMINI_MODALITA`) | — | sì, solo se nel mese non c'è già un import «ok» | — | — | — |
+| 4 | **resolver precoce**: cerca la pagina ufficiale dei bandi appena entrati, *prima* di preprocess ed enrich | sì | sì | sì | sì | sì |
+| 5 | **preprocess**: è un bando vero? Stato e tre date, letti **sulla pagina ufficiale** quando c'è | sì | sì | sì | sì | sì |
+| 6 | **enrich**: classificazione, anche lei sulla pagina ufficiale | sì | sì | sì | sì | sì |
+| 7 | **resolver** «nuovi»: seconda passata, per chi il precoce non ha risolto | sì | sì | sì | sì | sì |
+| 8 | **ricontrolli**: il resolver ripassa **tutti** i pubblicati senza fonte trovata e non chiusi | sì | sì | sì | sì | — |
+| 9 | **verifica dello stato, fase ingresso**: cerca una scadenza ai bandi nuovi | sì | sì | sì | sì | sì |
+| 10 | **SEO**: filtri, scrittura della scheda, **pubblicazione**, righe di candidatura e allegati in `bando_link` | sì | sì | sì | sì | sì |
+| 11 | **link_verifica**: controlla i link di `bando_link` e li rende pubblicabili | sì | sì | sì | sì | — |
+| 12 | **rielaborazione**: rilegge i pubblicati dalla pagina ufficiale (date e classificazione) | sì | sì | sì | sì | — |
+| 13 | **monitor**: ricontrolla le pagine ufficiali, **tutti gli aperti a ogni giro** | sì | sì | sì | sì | — |
+| 14 | **verifica dello stato, fase controlli** | sì | sì | sì | sì | — |
+| 15 | **gemelli**: fonde i doppioni certi (interruttore proprio, `GEMELLI_MODALITA`) | sì | sì | sì | sì | — |
+| dopo | **IndexNow** e **riga del diario** in `pipeline_run` | sì | sì | sì | sì | sì |
+
+In breve:
+
+- **Ogni giro delle quattro ore** fa tutto, tranne l'import dei domini, che resta alle 06 una volta al mese. I passi 8
+  e 11-15 sono la manutenzione: girano nelle ore di `MONITOR_GIRI`, che dal giro 3 vale per difetto **tutte e quattro**
+  (`00:00,06:00,12:00,18:00`). Se nel `.env` del server c'è una riga `MONITOR_GIRI`, vince lei: per questo il deploy la
+  toglie (RIPRESA §1).
+- **Il giro di avvio** fa solo la catena di ingresso (1, 2, 4-7, 9, 10): un riavvio non deve spendere fuori orario.
+- **Un giro lanciato a mano** (`python -m backend.app.bandi_pipeline` senza ora) fa anche la manutenzione, ma non i
+  domini.
+- **I passi nuovi** (4, 11, 12) si caricano «se esistono», come gli altri passi recenti (§3.3.3).
+- **Ogni passo ha un tetto di tempo, non di numero** (§3.3.7): chi resta fuori parte per primo al giro dopo.
+- **Il lucchetto del giro** dura 6 ore, cioè la distanza fra due giri (§3.3.1). Un giro con tutti i tetti di tempo
+  pieni può avvicinarsi a quel limite (RIPRESA §8.4): da `salute` si leggono durata e copertura di ogni passo.
+
+Che cosa cambia in ciascun passo è in §3.2-bis.
+
+**Fino al deploy del giro 3** (in produzione l'01/10/2026): l'ordine di prima.
+
 | N. | Passo | 00:00 | 06:00 | 12:00 | 18:00 | Avvio |
 |---|---|:-:|:-:|:-:|:-:|:-:|
 | — | Azzeramento iniziale (cache e contatori degli scaricamenti, lista dei domini in memoria) | sì | sì | sì | sì | sì |
@@ -723,14 +779,138 @@ finestre**: dieci riavvii non devono diventare dieci giri del monitor.
 
 Fonti: `backend/app/bandi_pipeline.py` (righe 318-426 e 510-512), `backend/app/bandi_sender.py`, tabella `pipeline_run`.
 
+
+### 3.2-bis Il giro 3, passo per passo
+
+Il giro 3 nasce da otto direttive del committente dell'01/10: il resolver prima di preprocess ed enrich; il monitor a
+ogni giro su tutti gli aperti; la scheda aggiornata dalle novità; niente lotti; ricontrolli senza limite; gemelli e
+IndicePA attivi; sospensione e revoca sistemate. Contratto interno: `docs/contracts/bandi-giro-3.md`. Tutto quello che
+segue vale **dal deploy** (RIPRESA §1).
+
+**Resolver precoce (passo 4).** Prende i bandi appena entrati (`scraped` e `processed` senza fonte trovata), tolti
+quelli che il preprocess scarterebbe e i `processed` già chiusi o revocati. Siccome il bando non ha ancora una scadenza
+letta dal modello, usa una **scadenza provvisoria** presa dai dati grezzi della fonte (`date_validation.
+scadenza_provvisoria`: etichetta di ObiettivoEuropa, `close_date` di Incentivi, `data_chiusura` di Italia Domani,
+colonne dei calendari); conta solo come indizio in più, mai in meno. Niente ricerche a pagamento né arbitro. Se trova la
+fonte la scrive come oggi; altrimenti **non lascia traccia**, e la passata «nuovi» (passo 7) riprova con la scadenza
+vera. Tempo: `TEMPO_PRECOCE_S` (600 s).
+
+**Preprocess ed enrich sulla fonte ufficiale (passi 5 e 6).** Leggono la pagina scelta da
+`dominio_ufficiale.scegli_fonte`: la pagina ufficiale se trovata (un PDF no: si torna a `link_bando`), altrimenti
+`link_bando`. Ripiego: prima la pagina ufficiale, poi `link_bando`, poi `resolve_bando`. Il preprocess salva anche le
+**citazioni** delle date. Tutti e due scrivono la propria riga di spesa (§3.3.6).
+
+**Ricontrolli (passo 8).** Tutti i pubblicati (e gli `enriched`) con fonte `in_verifica` o `non_trovata` e stato non
+chiuso né revocato (960 l'01/10), **a ogni giro della manutenzione**, senza data del prossimo controllo e senza limite,
+in ordine di ultimo controllo (mai controllato = primo). Fino a 5 bandi in parallelo, mai due richieste insieme allo
+stesso host, sempre 1 s fra due richieste allo stesso host. La scheda di ObiettivoEuropa di un bando si legge al
+massimo **una volta al giorno**. Tempo: `TEMPO_RICONTROLLI_S` (3600 s); il lucchetto `bandi_resolver` dura quel tempo
+più 30 minuti. Oggi il resolver non spende: sonda, ricerca a pagamento e arbitro non sono collegati (§3.9).
+
+**SEO e righe di link (passo 10).** Dopo una pubblicazione riuscita la SEO scrive in `bando_link` le righe di
+candidatura (solo con `link_candidatura_source='extracted'`) e degli allegati, con la prova calcolata sulla pagina
+letta (`fonte_ufficiale.righe_link_da_payload`). Le righe nascono **non pubblicabili**. La fusione di un bando nuovo nel
+gemello già pubblicato segue `GEMELLI_MODALITA`. Le colonne vecchie (`link_candidatura`, `allegati`) restano scritte
+fino alla migrazione 07.
+
+**link_verifica nel giro (passo 11).** Il controllo dei link, che prima partiva solo a mano, è un passo del giro, senza
+tetto di numero (tempo `TEMPO_LINK_VERIFICA_S`, 1200 s, e rotazione: prima le righe mai verificate, poi dalla
+verifica più vecchia, poi per id; una riga già verificata oggi aspetta il giorno dopo).
+Rende pubblicabile una riga che risponde 2xx, non sta su un aggregatore e ha una prova. La **quarta prova**, nuova:
+l'URL compare nell'HTML della pagina di riferimento del bando. La pagina di riferimento è quella ufficiale se trovata,
+altrimenti `link_bando` anche quando è un aggregatore (decisione del lead dell'01/10), purché risponda 2xx; quando la
+fonte diventa trovata la prova si rifà sulla pagina ufficiale, senza ritirare quella vecchia. È il passo che chiude il
+buco della 07: l'01/10 140 schede aperte avrebbero perso pulsante o allegati, perché le righe c'erano ma non erano
+pubblicabili (RIPRESA §8.5).
+
+**Rielaborazione (passo 12).** Rilegge **una volta** ogni pubblicato con fonte trovata (620 l'01/10) dalla pagina
+ufficiale, con preprocess ed enrich, **senza** toccare `stato_processing`:
+- **date**: una data di apertura o di scadenza diversa, su una colonna non verificata, diventa un evento `rettifica`
+  (origine pipeline, non verificato, fuori dagli aggiornamenti), solo se la citazione si ritrova nel testo letto e le
+  date restano coerenti. Mai `data_pubblicazione`, mai uno stato: se la data nuova chiede un cambio di stato, lo lascia
+  al monitor e mette il bando in testa alla sua coda. La prosa si aggiorna con `rigenera`, senza modello e con la
+  stessa conversione del contenuto JSON che usa il monitor (`rigenera._testo_del_contenuto` e `_scrittore_json`), così
+  il contenuto resta un oggetto JSON e non diventa una stringa;
+- **classificazione** (regioni, settori, beneficiari, ATECO e le tre FK): **due letture indipendenti** dell'enrich
+  sulla stessa pagina, perché le risposte del modello variano da una lettura all'altra. Una voce entra solo se c'è in
+  tutte e due, esce solo se manca in tutte e due; una FK cambia solo se le due letture danno lo stesso valore. Una
+  dimensione con una chiamata fallita, o vuota in una lettura, non si tocca mai. Ogni cambio resta scritto con prima e
+  dopo, così si torna indietro con SQL;
+- **marcatore**: a fine bando la riga della fonte in `bando_link` riceve `impronta_contenuto = 'rielab:v1:…'`; un
+  bando con il marcatore esce dalla coda. Una `rettifica` di contenuto o una riapertura applicate dal monitor lo
+  azzerano, e il bando si rielabora al giro dopo. Un allineamento delle junction rimasto a metà (`allinea_junction`
+  parziale) si registra nella riga del passo e **non** mette il marcatore: il bando si riprova.
+
+Spesa: step `backfill:rielaborazione`, fuori dai 5 $ al giorno, con un tetto proprio di **60 $ e 8.000 crediti sulla
+giornata di Roma** (somma delle righe del passo dalla mezzanotte, `db.consumo_passo_oggi`); se quella lettura fallisce
+il passo non parte. La prova a secco dell'01/10 su 5 bandi è costata 0,23 $ con le due letture: circa 4,6 centesimi a
+bando, quindi circa 28 $ per i 620, dentro i 60 $. Fino a 5 bandi in parallelo, mai due sullo stesso host; tempo
+`TEMPO_RIELABORAZIONE_S` (3600 s). Il comando `rielabora-fonte` fuori dal dry-run prende il lucchetto del giro
+(`bandi_pipeline`, proprietario `rielabora-fonte:cli`), quindi non si sovrappone mai a un giro; `rielabora-fonte
+--dry-run` non prende lucchetti e non scrive niente: fa solo GET e chiamate al modello.
+
+**Monitor a ogni giro (passo 13).**
+- Chi: i pubblicati non fusi con fonte trovata. Aperti, in apertura (anche «da verificare») e sospesi **a ogni giro**,
+  senza guardare il prossimo controllo (374 l'01/10). I chiusi con la cadenza di prima (3, 10, 30 giorni) fino a 12
+  mesi. Revocati e chiusi da più di 12 mesi **fuori**.
+- Ordine: priorità, poi ultimo controllo (mai controllato primo), poi id. Tempo: `TEMPO_MONITOR_S` (3600 s).
+- A tetto di spesa (§3.3.6) il monitor continua i controlli gratuiti: scarica e confronta, ma non classifica le pagine
+  cambiate (`classificazioni_rinviate`) e non aggiorna l'impronta salvata, così il cambiamento si rivede al giro dopo.
+  Le pagine che chiederebbero Firecrawl si rinviano.
+- Tipi di evento: con `MONITOR_TIPI_ATTIVI=tutti` si applicano da soli tutti i 12 tipi del monitor, con la strada a tre
+  scritture di oggi. Sospensione, revoca e annullamento della revoca solo se c'è la migrazione 14 **e**
+  `MONITOR_STATI_ESTESI=true`; altrimenti restano in ombra e `salute` lo dice.
+
+**Eventi → bando e scheda.** Le date (apertura, riapertura, proroga, rettifica) passano dalla RPC e poi dalla
+sostituzione senza modello di `rigenera`; se il controllo finale fallisce, la scheda si riscrive con Opus. Un
+`nuovo_allegato` scrive anche la riga `allegato` in `bando_link` (URL dell'allegato; la pagina dove l'abbiamo visto va in
+`url_prova`). FAQ, graduatoria, esito, rettifiche di contenuto e aperture con testo nuovo riscrivono con Opus solo
+`contenuto` e `descrizione_breve`, una volta per bando per giro (le novità si uniscono, al massimo 10 per riscrittura);
+slug e titolo restano congelati. La riscrittura conta nei 5 $ (step `rigenerazione_scheda`); a tetto resta in coda.
+
+**Verifica dello stato (passi 9 e 14).** Resta in ombra fino al controllo dell'08/10. Niente più tetti di numero
+(letture, chiusure, ingresso): solo il tempo, `VERIFICA_STATO_TETTO_S` (1800 s) con rotazione, e 300 s nella fase
+ingresso. `report-verifica-stato --verita` conta come «confermato dallo stato» un bando della tabella che è uscito dai
+candidati perché il suo stato è già quello atteso (solo chiusura → chiuso e apertura → aperto): è il caso del 661135.
+
+**Gemelli (passo 15).** Interruttore proprio, `GEMELLI_MODALITA` (non più quello della verifica). Girano a ogni giro
+della manutenzione, leggono tutti i pubblicati e non hanno tetto di fusioni. Le guardie di prudenza restano tutte: solo
+i criteri `url` e `riga_calendario`, coppie dirette, titoli senza differenze di anno, lotto o edizione, lettura
+troncata uguale errore. La prova a secco dell'01/10 elenca 52 fusioni. BandoFit si avvisa una volta sola, prima del
+deploy e senza aspettare la risposta (decisione di Michele dell'01/10, `docs/contratto-db-bandi.md` §6.2): niente
+avviso per ogni lotto e niente attesa di 7 giorni.
+
+**IndicePA (passo 3).** Interruttore proprio, `DOMINI_MODALITA`. L'01/10 Michele ha importato a mano 22.355 domini e ne
+ha spenti 16 con SQL (RIPRESA §8.1). Il codice ora scarta da solo gli host di una sola etichetta e i fornitori di posta
+e hosting di privati (`libero.it`, `gmail.com`, `register.it` e altri 15).
+
+**Sospensione e revoca (migrazione 14, §4.6).** Il sospeso ha di nuovo le sue uscite: si chiude con una `chiusura`
+letta sulla pagina ufficiale, riapre con una `riapertura` anche datata al passato. Dal revocato si esce solo con
+`annullamento_revoca`, verso lo stato calcolato dalle date. **Una proroga su un sospeso aggiorna solo la data di
+scadenza**: lo stato resta «sospeso», perché la proroga non dice che la sospensione è finita. La redazione corregge uno
+stato sbagliato con `bando_correggi_stato`; due o più correzioni verso lo stesso stato nello stesso giorno sono ammesse
+(l'indice che scarta gli eventi doppi non conta le correzioni della redazione). Un evento superato da uno più recente,
+o con una transizione non più ammessa, si marca e non torna in coda; una proroga, una riapertura o una rettifica che
+porta una scadenza non ancora passata non la supera una chiusura più recente, perché chi ha letto la chiusura non
+sapeva della proroga.
+
+Fonti di §3.2-bis: `backend/app/bandi_pipeline.py` (ordine e `_giro_previsto`), `scraper_bandi/app/fonte_ufficiale.py`
+(modi `precoce`, `nuovi`, `ricontrolli`, `run_link_verifica`, `righe_link_da_payload`, `ttl_lock_resolver`),
+`scraper_bandi/app/date_validation.py` (`scadenza_provvisoria`), `scraper_bandi/app/dominio_ufficiale.py`
+(`scegli_fonte`, `analizza_indicepa`), `scraper_bandi/app/rielabora_fonte.py`, `scraper_bandi/app/monitoraggio.py`
+(`seleziona`), `scraper_bandi/app/rigenera.py`, `scraper_bandi/app/eventi.py` (`EVENTI_INCOMPATIBILI`,
+`stato_dopo_annullamento`), `scraper_bandi/app/gemelli.py`, `scraper_bandi/app/verifica_stato.py`,
+`backend/sql/bando_v11_14_sospensioni.sql`; messaggi di chiusura dei task del giro 3 (01/10).
+
 ### 3.3 Le regole che valgono per tutti i passi
 
-Prima di vedere i passi uno per uno servono sette regole comuni. Spiegano quasi tutti i comportamenti «strani».
+Prima di vedere i passi uno per uno servono sette regole comuni (dal giro 3, la settima è «niente lotti»). Spiegano quasi tutti i comportamenti «strani».
 
 #### 3.3.1 Il lucchetto del giro (lock)
 
 Ogni giro prova a prendere un **lucchetto nel database** (una riga in `pipeline_lock`) con nome `bandi_pipeline` e
-scadenza di 4 ore. Serve a evitare che due giri lavorino sugli stessi bandi nello stesso momento, per esempio un giro
+scadenza di 4 ore (**6 ore dal giro 3**: la somma dei tetti di tempo dei passi più la catena d'ingresso supera le 5
+ore, e 6 ore sono la distanza fra due giri). Serve a evitare che due giri lavorino sugli stessi bandi nello stesso momento, per esempio un giro
 automatico e un comando lanciato a mano.
 
 | Che cosa succede | Conseguenza |
@@ -750,12 +930,19 @@ ore) e il monitor (`monitor`, 3 ore). Se è occupato, quel passo viene saltato m
 
 | Nome del lucchetto | Durata | Chi lo prende (proprietario) |
 |---|---|---|
-| `bandi_pipeline` | 4 ore | il giro (`bandi_pipeline@<pid>`); anche `seo-rigenera` lanciato a mano (`seo-rigenera:cli`, 1 ora), che così non si sovrappone mai a un giro |
-| `bandi_resolver` | 2 ore | il resolver del giro e `risolvi-fonte` lanciato a mano (tutti e due `resolver@<pid>`) |
+| `bandi_pipeline` | 4 ore (6 dal giro 3) | il giro (`bandi_pipeline@<pid>`); anche `seo-rigenera` lanciato a mano (`seo-rigenera:cli`, 1 ora) e, dal giro 3, `rielabora-fonte` fuori dal dry-run (`rielabora-fonte:cli`), che così non si sovrappongono mai a un giro |
+| `bandi_resolver` | 2 ore (dal giro 3: `TEMPO_RICONTROLLI_S` più 30 minuti, cioè 90 minuti con il default) | il resolver del giro e `risolvi-fonte` lanciato a mano (tutti e due `resolver@<pid>`) |
 | `monitor` | 3 ore | il monitor del giro (`monitor:<giro>`), il `monitor` lanciato a mano (`monitor:cli`) e `applica-eventi` (`applica-eventi:cli`): così si escludono a vicenda |
 
 `verifica-stato` e `gemelli` da riga di comando accettano **solo** `--dry-run`: le scritture le fa soltanto il passo del
-giro, che è protetto dal lucchetto del giro. `rigenera` invece **non prende nessun lucchetto**. Per questo RIPRESA chiede
+giro, che è protetto dal lucchetto del giro.
+
+**Attenzione: due prove a secco non sono a sola lettura.** `monitor --dry-run` e `risolvi-fonte --dry-run` prendono e
+rilasciano il loro lucchetto con le funzioni del database e scrivono una riga in `pipeline_run` (con costo 0). Dal Mac
+quindi **non si lanciano**: un lucchetto preso dal Mac fa saltare il passo del giro che parte in quel momento, e la riga
+finisce nel diario di produzione. È già successo: l'01/10 verso le 16:40 un `monitor --dry-run --senza-rete` lanciato
+dal Mac ha scritto una riga `monitor` con giro vuoto (NULL). `rielabora-fonte --dry-run` invece non prende lucchetti e
+non scrive niente. `rigenera` invece **non prende nessun lucchetto**. Per questo RIPRESA chiede
 di lanciarlo (come i deploy) in una **«finestra sicura»**, cioè lontano dai giri: 12:30-16:30 oppure 19:00-22:30.
 
 #### 3.3.2 All'avvio: i lucchetti rimasti appesi e la regola anti-ciclo
@@ -817,7 +1004,10 @@ L'esito vale `ok`, `errore`, `saltato` oppure `interrotto_per_tetto`, e si decid
 
 Alcuni passi scrivono anche una riga propria: resolver e ricontrolli (tutte e due con step `resolver`), monitor,
 verifica dello stato (step `verifica_stato_ingresso` e `verifica_stato`) e domini. Discover, scrape, preprocess, enrich,
-SEO e gemelli hanno solo la loro sezione dentro la riga di riepilogo.
+SEO e gemelli hanno solo la loro sezione dentro la riga di riepilogo. **Dal giro 3** ogni passo che spende scrive la
+propria riga (step `resolver_precoce`, `resolver`, `ricontrolli`, `preprocess`, `enrich`, `seo`,
+`rigenerazione_scheda`, `backfill:rielaborazione`, oltre a monitor e verifica), e ogni sezione della riga del giro
+porta la sua `copertura` (§3.3.7).
 
 **Leggere il diario a mano.** `pipeline_run` ha dieci colonne: `id, step, giro, avviato_at, concluso_at, esito,
 interrotto_per_tetto, motivo, contatori, note`. Durata, crediti, dollari, `slug_modificati`, `saltato_per_lock` e
@@ -872,12 +1062,38 @@ o sconosciuto vale «ombra».
 Il valore reale del `.env` di produzione **non è leggibile dal Mac**. Le modalità sopra sono dedotte dai contatori nel
 database.
 
+**Dal giro 3: interruttori separati e tempi per passo.** Il giro 3 separa l'interruttore unico e aggiunge un tetto di
+tempo per ogni passo nuovo (contratto `bandi-giro-3` §3). Un valore assente o sconosciuto vale il default; un tempo
+fuori intervallo torna al default e `salute` alza l'allarme `configurazione:<nome>` (solo il nome, mai il valore).
+
+| Variabile | Che cosa governa | Default | Valore dopo il deploy (RIPRESA §1) |
+|---|---|---|---|
+| `VERIFICA_STATO_MODALITA` | **Solo** la verifica dello stato (passi 9 e 14) e la sosta all'ingresso | ombra | ombra fino all'08/10 |
+| `GEMELLI_MODALITA` | Le fusioni del passo 15 e la fusione di un bando nuovo nel gemello già pubblicato (dentro la SEO) | ombra | **attivo** |
+| `DOMINI_MODALITA` | La scrittura dell'import di IndicePA (passo 3); un `--attivo` esplicito sul comando vince ancora | ombra | **attivo** |
+| `MONITOR_TIPI_ATTIVI` | I tipi di evento che si applicano da soli; `tutti` vuol dire i 12 tipi del monitor | nessuno | **`tutti`** (al posto della riga con i 5 tipi) |
+| `MONITOR_STATI_ESTESI` | Sospensione, revoca e annullamento: si applicano solo se è `true` **e** c'è la migrazione 14 (`bando_capacita_sospensioni()`); senza, restano in ombra senza allarme e `salute` scrive «sospensioni in attesa della migrazione 14» | false | deve essere `true` |
+| `MONITOR_GIRI` | Le ore della manutenzione (passi 8 e 11-15) | **le quattro ore** | riga da togliere se c'è, così valgono le quattro ore |
+| `MONITOR_MODALITA` | Resta `ombra`: l'attivazione passa da `MONITOR_TIPI_ATTIVI=tutti`, che usa la strada prudente a tre scritture | ombra | invariato |
+| `TEMPO_PRECOCE_S` | Resolver precoce (passo 4) | 600 (60-7200) | default |
+| `TEMPO_RICONTROLLI_S` | Ricontrolli (passo 8); il lucchetto `bandi_resolver` dura questo più 30 minuti | 3600 (60-7200) | default |
+| `TEMPO_LINK_VERIFICA_S` | link_verifica (passo 11) | 1200 (60-7200) | default |
+| `TEMPO_RIELABORAZIONE_S` | Rielaborazione (passo 12) | 3600 (60-7200) | default |
+| `TEMPO_MONITOR_S` | Monitor (passo 13) | 3600 (60-7200) | default |
+| `VERIFICA_STATO_TETTO_S` | Verifica dello stato, fase controlli (passo 14): è il suo unico freno | 1800 (60-3600) | riga da togliere se c'è |
+
+**Variabili dismesse** (nessun modulo le legge più): `TETTO_CLASSIFICAZIONI_GIORNO`, `TETTO_FETCH_GIRO`,
+`VERIFICA_STATO_TETTO_LETTURE`, `VERIFICA_STATO_MAX_CHIUSURE`, `VERIFICA_STATO_TETTO_INGRESSO`,
+`GEMELLI_FUSIONI_PER_GIRO`. Se una è ancora nel `.env`, `salute` ne stampa il **nome** come informazione, non come
+allarme; cancellarla non è obbligatorio.
+
 #### 3.3.6 I tetti di spesa, e che cosa **non** coprono
 
 Le valute sono due: **crediti Firecrawl** (il servizio a pagamento che scarica le pagine difficili) e **dollari di
 token Anthropic** (le chiamate ai modelli).
 
-I tetti dello scenario «bilanciato», quello predefinito (`MONITOR_SCENARIO`):
+I tetti dello scenario «bilanciato», quello predefinito (`MONITOR_SCENARIO`), **fino al deploy del giro 3** (dopo, vale
+il riquadro «Dal giro 3» più sotto):
 
 | Tipo di tetto | Valore |
 |---|---|
@@ -904,15 +1120,52 @@ Il punto importante è che **i tetti proteggono solo una parte della spesa**:
 **Spesa registrata a regime (solo il monitor):** fra 0 e 0,46 $ al giorno. I lotti di backfill fatti a mano hanno
 speso a parte 7,59 $.
 
-#### 3.3.7 Nessun tetto per giro sulla catena d'ingresso
+**Dal giro 3 la spesa si conta tutta** (contratto `bandi-giro-3` §4):
 
-Preprocess, enrich e SEO vengono chiamati dal giro senza parametri. Il preprocess prende *tutti* i bandi `scraped`
-(`batch_size=None` vuol dire nessun limite, e la lettura scorre a pagine oltre le 1.000 righe), l'enrich tutti i
-`processed` adatti, la SEO tutti gli `enriched`. Se una fonte porta migliaia di bandi nuovi in una volta, il giro li
-lavora tutti, chiama il modello su ognuno e può durare ore.
+- **Un solo meccanismo.** Ogni passo che chiama un modello conta i token con `bilancio.Contatori` e scrive la **propria
+  riga** in `pipeline_run`, con la spesa e la copertura: `preprocess` (compreso il ripiego su Sonnet di
+  `resolve_bando`, che chiama il preprocess), `enrich`, `seo`, `rigenerazione_scheda`, il monitor e la verifica. `consumo_oggi` le somma sulla giornata di
+  Roma, e da ora anche sul mese.
+- **I tetti in dollari.** Scenario `bilanciato`: **5 $ al giorno e 150 $ al mese** (economico 3 e 90, massimo 10 e 300).
+  Il tetto mensile ora si applica davvero; l'allarme `consumo_mensile_alto` scatta all'80 %. Restano come prima i crediti
+  Firecrawl (120 al giorno, 5.000 al mese nel bilanciato) e le 50 ricerche al giorno. Spariscono il tetto delle 30
+  classificazioni al giorno e quello delle 420 pagine per giro.
+- **Chi si ferma e chi no.** La catena d'ingresso (resolver precoce e «nuovi», preprocess, enrich, SEO dei bandi nuovi)
+  **non si ferma mai** per la spesa: conta e basta. La manutenzione (monitor, ricontrolli, verifica, riscritture della
+  scheda) a tetto raggiunto **smette di chiamare il modello** ma continua i controlli gratuiti, e non perde niente:
+  quello che non ha classificato lo rivede al giro dopo. Nella copertura il motivo è `spesa` (o `crediti`).
+- **La rielaborazione** (passo 12) è fuori dal regime: step `backfill:rielaborazione`, con un tetto proprio di 60 $ e
+  8.000 crediti sulla giornata di Roma; se la lettura del consumo fallisce, il passo non parte. Stima per i 620 bandi
+  da rielaborare: circa 28 $.
 
-Il lucchetto del giro scade dopo 4 ore (`LOCK_TTL_S`). Oltre quel limite un comando manuale potrebbe prendere il
-lucchetto mentre il giro lavora ancora. I giri automatici dello stesso processo invece restano in fila. Per questo il
+#### 3.3.7 Niente lotti: il tempo sì, il numero no
+
+**Regola permanente del committente (01/10/2026).** Correzioni, aggiornamenti e controlli valgono per **tutti** i bandi
+interessati, il prima possibile, anche quelli arretrati. **Nessun tetto sul numero di bandi** per giro o per lancio:
+niente «60 ricontrolli», «10 fusioni», «40 letture». Con il giro 3 spariscono tutti questi tetti (§3.3.5, variabili
+dismesse), e le letture di massa si fanno per intero, a pagine (`_scorri`), senza troncare a 1.000 o a 5.000 righe.
+
+I soli freni ammessi sono quattro:
+1. **cortesia per host**: 1 s fra due richieste allo stesso host (`HOST_THROTTLE_DELAY_S`) e mai due richieste insieme
+   allo stesso host, anche con i passi che lavorano in parallelo;
+2. **tempo** di ogni passo (`TEMPO_*_S`, `VERIFICA_STATO_TETTO_S`), con **rotazione**: chi resta fuori parte per primo
+   al giro dopo, in ordine di ultimo controllo (mai controllato = primo);
+3. **spesa**: i dollari e i crediti di §3.3.6;
+4. **guardie contro gli errori**: il freno per host della verifica, la prudenza dei gemelli, la doppia lettura a 60 ore,
+   i gate degli eventi.
+
+**La copertura.** Ogni passo scrive nella sua riga e nella riga del giro la chiave `copertura`:
+`{"candidati": N, "fatti": N, "rimasti": N, "motivo_rimasti": …}`, con `rimasti = candidati - fatti` e il motivo fra
+`tempo`, `spesa`, `crediti`, `lock`, `errore` (o vuoto). `salute` mostra la copertura dell'ultimo giro per passo e alza
+l'allarme `copertura_incompleta:<passo>` se lo stesso passo lascia fuori qualcuno per **4 giri di fila**: è il segnale
+che il tempo di quel passo non basta.
+
+**La catena d'ingresso non ha mai avuto un tetto.** Preprocess, enrich e SEO vengono chiamati dal giro senza parametri.
+Il preprocess prende *tutti* i bandi `scraped` (`batch_size=None` vuol dire nessun limite, e la lettura scorre a pagine
+oltre le 1.000 righe), l'enrich tutti i `processed` adatti, la SEO tutti gli `enriched`. Se una fonte porta migliaia di
+bandi nuovi in una volta, il giro li lavora tutti, chiama il modello su ognuno e può durare ore. Fino al deploy del giro
+3 il lucchetto del giro scade dopo 4 ore (`LOCK_TTL_S`; poi 6): oltre quel limite un comando manuale potrebbe prendere
+il lucchetto mentre il giro lavora ancora. I giri automatici dello stesso processo invece restano in fila. Per questo il
 rischio Incentivi (§8.1, A5) non riguarda solo i costi ma anche la durata del giro.
 
 Fonti di §3.3: `backend/app/bandi_pipeline.py` (righe 101-104 `LOCK_TTL_S`, 322-327 e 395 chiamate senza parametri,
@@ -925,6 +1178,10 @@ Fonti di §3.3: `backend/app/bandi_pipeline.py` (righe 101-104 `LOCK_TTL_S`, 322
 `scraper_bandi/deploy/`, `docs/bandi-monitor/RIPRESA.md:87, 98`, tabelle `pipeline_run` e `pipeline_lock`.
 
 ---
+
+> **Nota.** I paragrafi da 3.4 a 3.19 descrivono i passi come girano in produzione l'01/10 (prima del deploy del giro
+> 3), con la vecchia numerazione. Dal deploy valgono anche i cambi di §3.2-bis, che hanno la precedenza dove i due
+> testi non coincidono.
 
 ### 3.4 Passo 1: discover
 
@@ -1623,7 +1880,8 @@ Due schede uguali confondono il lettore e BandoFit.
 **Costo.** Zero.
 
 **Ombra e attivo.** Segue `VERIFICA_STATO_MODALITA`. La scelta è voluta: la prima fusione automatica deve arrivare
-almeno 7 giorni dopo l'avviso a BandoFit.
+almeno 7 giorni dopo l'avviso a BandoFit. **Dal giro 3** segue un interruttore proprio, `GEMELLI_MODALITA`, e l'avviso
+a BandoFit è un solo messaggio, mandato prima del deploy, senza i 7 giorni (§3.2-bis).
 
 **Previsione** (`gemelli --dry-run`, rifatto il 01/10, nessuna scrittura): 52 fusioni (43 per link, 9 di calendario) e
 33 coppie scartate per prudenza (20 per anni o lotti diversi, 12 per link condiviso, 1 per titoli diversi). Con 10 al
@@ -1936,6 +2194,31 @@ cosa:
 
 Assenze volute: da revocato non si esce mai, e un sospeso non si chiude mai.
 
+**Con la migrazione 14** (scritta l'01/10, la applica Michele: RIPRESA §1) le due assenze diventano uscite controllate,
+e la lista bianca passa a **28 righe**:
+- un **sospeso si chiude** con una `chiusura` letta dal worker sulla pagina ufficiale (mai d'ufficio: il job orario
+  non tocca sospesi né revocati); riapre con una `riapertura`, anche datata al passato; una proroga su un sospeso
+  aggiorna solo la data di scadenza e lo lascia sospeso;
+- dal **revocato** si esce solo con `annullamento_revoca`, verso lo stato calcolato dalle date (in apertura se
+  l'apertura è futura, chiuso se la scadenza è passata, altrimenti aperto);
+- dal sospeso e dal revocato il database esige anche l'**evento giusto** per quella riga (per esempio una proroga non
+  fa uscire un revocato);
+- la **redazione** corregge uno stato sbagliato fra i cinque con `select bando_correggi_stato(<id>, '<stato>', '<nota>')`
+  (solo pubblicati, nota obbligatoria). Nasce un evento `correzione_redazionale`, visibile nello storico con
+  l'etichetta «Correzione» e fuori dagli aggiornamenti. Nella lista bianca non c'è nessuna riga `redazione`: il trigger
+  lascia passare solo la correzione fatta da quella funzione. Se la correzione contraddice le date, il job orario la
+  ribalta entro un'ora (per riaprire si corregge prima la data). Due o più correzioni verso lo stesso stato nello
+  stesso giorno sono ammesse: la 14 toglie `correzione_redazionale` dall'indice che scarta gli eventi doppi;
+- un evento del worker **superato** da un evento di stato più recente dello stesso bando (worker o redazione; il job
+  orario non conta; la data di un evento non vale mai oltre il giorno in cui è stato rilevato; una proroga, una
+  riapertura o una rettifica che porta una scadenza non ancora passata non la supera una chiusura), oppure con una
+  transizione **non più ammessa**, non si applica: la funzione risponde «false» e lo **marca** (`scartato_per`), così non
+  torna in coda a ogni giro. Prima dava l'errore 23514 e tornava in coda per sempre. Si rimette in coda a mano azzerando
+  le tre colonne `scartato_*`.
+
+Il codice applica sospensione, revoca e annullamento solo se la funzione `bando_capacita_sospensioni()` risponde
+«true» (cioè la 14 c'è ed è intera) e `MONITOR_STATI_ESTESI=true`.
+
 **Il job orario.** È il job `bandi-transizioni-orarie` di pg_cron, che gira al minuto 5 di ogni ora (`5 * * * *`). Per
 ogni pubblicato non sospeso e non revocato confronta lo stato salvato con quello effettivo. Dove differiscono, registra
 e applica un evento `chiusura_automatica` o `apertura_automatica`. Non fa mai un UPDATE diretto.
@@ -2163,7 +2446,9 @@ pubblicati.
 - Al massimo 10 fusioni per giro (`GEMELLI_FUSIONI_PER_GIRO`). Si fondono solo coppie: una catena di tre bandi non si
   fonde in automatico.
 - La modalità segue `VERIFICA_STATO_MODALITA`. Oggi è in ombra: il passo elenca e conta, ma non fonde.
-- Il contratto promette a BandoFit un avviso scritto almeno 7 giorni prima dell'attivazione.
+- Il contratto prometteva a BandoFit un avviso scritto almeno 7 giorni prima dell'attivazione. Dal giro 3
+  (`docs/contratto-db-bandi.md` §6.2, aggiornato l'01/10) l'avviso è uno solo, mandato prima del deploy, senza i 7
+  giorni.
 - In attivo c'è anche la fusione prima della pubblicazione (§4.3): un bando nuovo gemello esatto di un pubblicato si
   fonde subito, senza tetto, e non viene mai pubblicato.
 
@@ -2240,6 +2525,7 @@ mano, nel SQL Editor di Supabase.
 | 11 | Traduzione di `stato_proposto` (sospeso o revocato) e marcatore delle capacità | applicata il 28/09 (data da CLAUDE.md; il marcatore `bando_capacita_eventi` risponde `stati_cinque=true` e `traduce_stato_proposto=true`) |
 | 12 | Tabelle e funzioni del monitoraggio per il pannello di BandoFit: `monitoraggio_riepilogo`, `monitoraggio_chiave`, un trigger e due funzioni | applicata: i suoi oggetti esistono e `monitoraggio_job_orario` risponde. La data dell'01/10 viene dal lead |
 | 13 | Verifica dello stato: 17 colonne in `bando_controllo` (9 leggibili dalla anon key), `stato_da_verificare`, 5 colonne nella vista, riga 24 della lista bianca | applicata: vista a 49 colonne, 24 transizioni, 37 colonne in `bando_controllo`. La data dell'01/10 viene dal lead |
+| **14** | Sospensione e revoca (§4.6): 4 righe di lista bianca (28 in tutto), `bando_applica_evento` e il trigger dello stato ridefiniti, colonne `scartato_per`, `scartato_at`, `scartato_dettaglio` su `bando_evento` (non concesse ad anon), funzioni `bando_correggi_stato` e `bando_capacita_sospensioni`. Si applica **dopo la 13**; dopo la 14 non si rieseguono né la 04, né la 11, né la 13; rollback in ordine inverso, prima la 14 | **scritta l'01/10, non applicata** (la applica Michele, RIPRESA §1). Provata su Postgres 17 con la catena 01-13 eseguita dai file veri |
 
 **Che cosa blocca la 07.** Servono tre cose:
 1. il passo c2 di BandoFit, cioè togliere i ripieghi sulle colonne vecchie, con conferma scritta;
@@ -2247,7 +2533,10 @@ mano, nel SQL Editor di Supabase.
 3. abbastanza righe «candidatura» in `bando_link`.
 
 Sul terzo punto oggi c'è 1 sola riga leggibile. Tutte le 92 righe candidatura sono state create dalla 02 il 23/09, e da
-allora nessun codice ne crea di nuove. La 07 richiede anche la 13.
+allora nessun codice ne crea di nuove. La 07 richiede anche la 13. Dal giro 3 la SEO scrive le righe di candidatura e di allegato dei
+bandi nuovi, `link_verifica` (passo 11) le rende pubblicabili a ogni giro, e `docs/bandi-monitor/correzioni-giro-3.sql`
+aggiunge le poche che mancano ai pubblicati (4 l'01/10). La misura delle schede che perderebbero pulsante o allegati
+(140 l'01/10) è in RIPRESA §8.5; si ripete un giorno dopo il deploy.
 
 **Due avvertenze.**
 - Rieseguire la 02 dopo la 13 toglierebbe i 9 permessi di colonna della 13. A quel punto ogni lettura della vista che
@@ -2642,7 +2931,7 @@ i bandi fusi. Il passo successivo, «c2», toglie i ripieghi sulle colonne vecch
 | job orario in ritardo al massimo di 65 minuti | la colonna salvata si allinea entro un'ora e poco più |
 | limiti di lettura: 3 secondi per richiesta (`statement_timeout` di anon), al massimo 1.000 righe | bisogna paginare |
 | avviso scritto prima di ogni cambio incompatibile | niente sorprese |
-| dal giro 2, almeno 7 giorni di preavviso prima di attivare le fusioni automatiche (10 al giorno, cioè circa 6 giorni per le 52 attese) e la verifica dello stato | BandoFit ha il tempo di prepararsi |
+| un avviso prima di attivare le fusioni automatiche, le sospensioni e le revoche e la verifica dello stato: dal giro 3 un solo messaggio, mandato prima del deploy, senza i 7 giorni di preavviso promessi dal giro 2 (decisione di Michele dell'01/10, §6.2 del contratto) | BandoFit sa che cosa arriva e lo segue con il cursore degli eventi e con `bando_fusione` |
 
 Le 52 fusioni automatiche attese sono state ricontate oggi con `gemelli --dry-run`: 43 per URL e 9 per riga di
 calendario, 52 gruppi di due righe, nessuna catena. Altre 33 coppie sono state scartate per prudenza.
@@ -2881,6 +3170,7 @@ Tutti si lanciano da `~/projects/news1/scraper_bandi` con `PYTHONDONTWRITEBYTECO
 | `report-verifica-stato --verita` | confronta il risultato con una lista di bandi controllati a mano (misure del 30/09-01/10). Finisce con «difformi: N» (exit 1 se N > 0). **Si attiva la verifica solo con 0 difformi.** È il controllo previsto per l'8 ottobre | server o Mac |
 | `report-ombra --dal AAAA-MM-GG [--campione 100] [--tipo X]` | misura il monitor in ombra: elenca gli eventi proposti e ammessi dal giorno indicato e stampa un CSV su stdout (`> file.csv`). È la misura con cui si decide se un tipo di evento può uscire dall'ombra (RIPRESA §4.1 a e b). Non scrive niente | server o Mac |
 | `verifica-stato --dry-run --senza-modello --limit 20` | prova il passo senza scrivere, senza lucchetto e senza chiamare il modello | dal Mac **solo** così |
+| `rielabora-fonte --dry-run [--ids 1,2]` | dal giro 3: stampa le proposte della rielaborazione (date, junction, FK) senza scrivere e senza lucchetti; chiama il modello due volte per bando, quindi spende (circa 4,6 centesimi a bando). Fuori dal dry-run il comando prende il lucchetto del giro (`rielabora-fonte:cli`) | server o Mac, solo `--dry-run` |
 | `gemelli --dry-run` | mostra le fusioni automatiche che il giro delle 06 farebbe (oggi 52) | server o Mac |
 | `domini --import --scarica-enti --dry-run` | prova l'import dell'elenco degli enti pubblici senza scrivere | dal Mac solo `--dry-run` |
 
@@ -2896,6 +3186,12 @@ Il risultato atteso: nessun `FAILED`, nessun `NON PARTITO`, nessun `[ALLARME]`. 
 **Da non lanciare dal Mac** senza le opzioni di prova: `monitor`, `risolvi-fonte`, `seo`, `preprocess`, `enrich`,
 `discover`, `scrape-bandi` (il comando dello scrape; «scrape» è solo il nome del passo nel giro e nel diario), e
 `fondi-doppioni`. Scrivono sul database vero o spendono (modello, Firecrawl).
+
+**E nemmeno con `--dry-run`: `monitor` e `risolvi-fonte`.** Le loro prove a secco **non** sono a sola lettura: prendono
+e rilasciano il lucchetto (`monitor`, `bandi_resolver`) con le funzioni del database e scrivono una riga in
+`pipeline_run` (costo 0). Lanciate dal Mac possono far saltare il passo di un giro e lasciano una riga nel diario di
+produzione: l'01/10 verso le 16:40 un `monitor --dry-run --senza-rete` ha scritto una riga `monitor` con giro vuoto.
+Si lanciano solo sul server, fuori dai giri (§3.3.1).
 
 Fonti: `scraper_bandi/app/__main__.py:980-992, 1156-1168, 1213-1235, 1275-1311, 1332-1366, 1370-1395`,
 `scraper_bandi/app/sorveglianza.py:226-300`, `scraper_bandi/app/riepilogo_salute.py:51`,
@@ -3006,9 +3302,9 @@ prove con curl su edunews24.it; `git diff d7f5663 HEAD`.
 
 La tabella completa, con che cosa fa ogni migrazione, è in §4.11. In sintesi:
 
-| Applicate | Non applicata |
+| Applicate | Non applicate |
 |---|---|
-| 01, 02, seed, 03, 04, 05, 06 (28/09), 08, 09, 10, 11 (28/09), 12 e 13 (oggetti presenti; la data dell'01/10 viene dal lead) | **07**, bloccata (§4.11, §9.6) |
+| 01, 02, seed, 03, 04, 05, 06 (28/09), 08, 09, 10, 11 (28/09), 12 e 13 (oggetti presenti; la data dell'01/10 viene dal lead) | **07**, bloccata (§4.11, §9.6); **14**, scritta l'01/10 per il giro 3, da applicare prima del deploy (RIPRESA §1) |
 
 Sulla 12 e sulla 13 è verificato che i loro oggetti esistono e rispondono:
 
@@ -3028,6 +3324,11 @@ Fonti: `backend/sql/bando_v11_*.sql` (intestazioni della 12 e della 13); letture
 `bando_transizione`, `monitoraggio_riepilogo`, `dominio_ufficiale`; RIPRESA §1 «Migrazioni applicate».
 
 ### 7.3 Cosa è acceso e cosa è in ombra
+
+> La tabella è la produzione dell'01/10, prima del deploy del giro 3. Dopo il deploy l'interruttore unico si divide in
+> tre (`VERIFICA_STATO_MODALITA`, `GEMELLI_MODALITA`, `DOMINI_MODALITA`), gemelli e IndicePA passano ad **attivo**, il
+> monitor applica da solo **tutti** i tipi di evento, e `link_verifica` e la rielaborazione entrano nel giro: §3.3.5 e
+> §3.2-bis.
 
 | Pezzo | Interruttore | Stato oggi | Come lo sappiamo |
 |---|---|---|---|
@@ -3721,6 +4022,8 @@ I passi sono in ordine di data. Per ciascuno si dice chi lo fa e cosa serve.
 
 | Quando | Passo | Chi | Cosa serve |
 |---|---|---|---|
+| **subito, in una finestra sicura** | **Giro 3**: migrazione 14 con la sua verifica, SQL di backfill dei link, deploy con le righe del `.env` e **un solo** riavvio del sender | Michele | RIPRESA §1, un passo alla volta |
+| **un giorno dopo il deploy del giro 3** | Misura dei link (quante schede perderebbero ancora pulsante o allegati con la 07) | Sviluppatore | RIPRESA §1 |
 | **oggi 01/10, 18:00** | Primo giro della verifica (fase «controlli»), in ombra: controllare che esista la riga e che `motivo_saltato` sia vuoto | Sviluppatore o Michele | Una lettura di `pipeline_run` (step `verifica_stato`) |
 | **subito** | Seconda parte del messaggio a BandoFit, se non è già partita | Michele | `docs/bandi-monitor/richiesta-bandofit-giro-2.md`, con i numeri di §7.6 |
 | **subito** | Scegliere come sorvegliare finché il pannello non c'è (A1) | Michele | Una decisione |
@@ -3728,18 +4031,18 @@ I passi sono in ordine di data. Per ciascuno si dice chi lo fa e cosa serve.
 | **02/10, 06:00** | Primo import di IndicePA e primo passo «gemelli», in ombra | Sviluppatore (controllo) | Righe «domini» e «pipeline» in `pipeline_run`, con i contatori dei gemelli |
 | **02/10** | Settimo giorno d'ombra del monitor: `report-ombra --dal 2026-09-24` e lettura a mano delle citazioni | Michele, sviluppatore | Comando in sola lettura sul server (§6.7) |
 | **prima del 05/10** | Leggere il residuo di Firecrawl (il 05/10 si rinnova il piano) | Michele | Console di Firecrawl |
-| **entro il 06/10** | Correggere la verità nota (A2, A3, M8) e i due difetti che si vedono in attivo (M9) | Sviluppatore | Modifica a `verifica_stato.py`, commit, deploy in finestra sicura |
-| **entro il 06/10, facoltativo** | Separare gli interruttori di fusioni e IndicePA (M5) | Sviluppatore, su decisione di Michele | Codice e deploy |
+| **entro il 06/10** | Correggere la verità nota (A2, A3, M8) e i due difetti che si vedono in attivo (M9) | Sviluppatore | Modifica a `verifica_stato.py`, commit, deploy in finestra sicura. Il 661135 (A2) è sistemato nel codice del giro 3 (`confermato_da_stato`, §3.2-bis) |
+| **entro il 06/10, facoltativo** | Separare gli interruttori di fusioni e IndicePA (M5) | Sviluppatore, su decisione di Michele | **Fatto nel codice del giro 3** (`GEMELLI_MODALITA`, `DOMINI_MODALITA`, §3.3.5): vale dal deploy |
 | **07/10** | DNS della Basilicata (vedi §9.3 per il perché): `getent hosts portalebandi.regione.basilicata.it` dal server | Michele | Accesso al server |
 | **07/10** | Controllare che i bandi 1072674, 1072686, 17883, 18186 e 18312 siano stati letti o segnalati (M7, M8) | Sviluppatore | Letture su `bando_controllo` |
 | **08/10** | **Controllo `report-verifica-stato --verita`** | Michele lancia, sviluppatore legge | Comando in sola lettura sul server |
-| **08-13/10** | Ondata dei ricontrolli del resolver: 690 bandi, 60 per giro alle 06 e alle 18 | Nessuno: è automatico | Solo guardare |
+| **08-13/10** | Ondata dei ricontrolli del resolver: 690 bandi, 60 per giro alle 06 e alle 18 | Nessuno: è automatico | Solo guardare. Vale solo senza il giro 3: dal deploy i ricontrolli passano **tutti** i 960 candidati a ogni giro, nel tempo di `TEMPO_RICONTROLLI_S` |
 | **dall'08/10, a condizioni** | **Attivazione** (`VERIFICA_STATO_MODALITA=attivo`) | Michele | §9.4 |
 | **giorno dopo l'attivazione** | Verifica 7 della 05 e rivalutazione delle fonti | Michele | SQL Editor; un comando sul server (§9.5) |
 | **09/10** | Quattordicesimo giorno d'ombra: nuovo `report-ombra`, poi decisioni RIPRESA §4.1 a e b | Michele, sviluppatore | Lettura a mano |
 | **senza data** | Migrazione del sito e poi la 07 | Sviluppatore, poi Michele | §9.6 |
 | **futuro** | Pannello su BandoFit | Michele | §9.7 |
-| **23/11** | Seconda ondata dei ricontrolli: 847 bandi | Automatico | Solo guardare |
+| **23/11** | Seconda ondata dei ricontrolli: 847 bandi | Automatico | Solo guardare (solo senza il giro 3, che toglie la cadenza) |
 
 Fonti: RIPRESA §1 (passi del giro 2), §4.3 (calendario); `docs/bandi-monitor/richiesta-bandofit-giro-2.md`;
 `bando_controllo.prossimo_controllo_at` (690 e 847 ricontati); `backend/app/bandi_pipeline.py:118-125` (60
@@ -3748,8 +4051,9 @@ ricontrolli per giro).
 ### 9.2 Da fare subito (01-02/10)
 
 1. **Il messaggio a BandoFit, seconda parte.** Riguarda stato da verificare, eventi e fusioni. Secondo RIPRESA va
-   inviato subito dopo il deploy. **Non è verificato che sia partito, né quando.** È importante perché l'attivazione può
-   venire solo **7 giorni dopo l'invio**: inviato oggi, la data minima è l'08/10. Conviene aggiungere i numeri:
+   inviato subito dopo il deploy. **Non è verificato che sia partito, né quando.** Fino al giro 3 l'attivazione poteva
+   venire solo **7 giorni dopo l'invio**. **Dal giro 3** vale un solo messaggio, mandato prima del deploy (RIPRESA §1,
+   passo 1), senza attese. Conviene aggiungere i numeri:
    - 52 fusioni, circa 6 mattine a 10 al giorno;
    - l'ondata prevista di bollini «da verificare» (M6).
 
@@ -3813,7 +4117,8 @@ L'ultima riga deve dire `difformi: 0`. Con una sola «DIFFORME» non si attiva: 
 del sender, verificato dall'esterno. Le condizioni sono tutte e quattro insieme:
 
 1. difformi 0 (dopo le correzioni di §9.3);
-2. almeno 7 giorni dall'invio della seconda parte del messaggio a BandoFit;
+2. il messaggio a BandoFit del giro 3 è partito (RIPRESA §1, passo 1, prima del deploy): nessuna attesa dopo
+   l'invio (prima del giro 3 servivano 7 giorni);
 3. un backup recente, o il PITR, nel pannello Supabase del progetto bandi, perché le fusioni sono quasi irreversibili
    (RIPRESA §4.1 f);
 4. Michele ha letto M6 e accetta l'effetto sul pubblico.

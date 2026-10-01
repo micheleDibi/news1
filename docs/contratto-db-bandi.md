@@ -154,7 +154,8 @@ oggi e la RLS attuale. Nella (d) escono dalla vista `stato_processing`, `link_ba
 ## 4. Stati e calcolo di `stato_effettivo`
 
 Gli stati sono cinque: `aperto`, `chiuso`, `in apertura prossimamente`, `sospeso` (può riaprire),
-`revocato` (terminale; si esce solo con un evento `annullamento_revoca`).
+`revocato` (terminale; si esce solo con un evento `annullamento_revoca` o, dalla migrazione 14, con una
+`correzione_redazionale` della redazione).
 
 Con `oggi` e `ora` = data e ora di Roma **all'istante della lettura**, nell'ordine:
 
@@ -392,8 +393,12 @@ Semantica delle colonne meno ovvie:
   `pattern` con confidenza ≥ 0,8. Mai per domini soltanto dedotti.
 - `url_prova`, `dominio_prova`: **mai un aggregatore**. Un trigger azzera la prova e pone
   `verificato = false` se il dominio è in denylist.
-- `applicato` / `applicato_at`: `false` = evento verificato ma **non ancora riversato nella
-  colonna**. Fra la fase (b) e il rilascio R0 questo è il caso di `sospensione` e `revoca`.
+- `applicato` / `applicato_at`: `false` = evento **non riversato nella colonna**. Dalla migrazione 14 un evento
+  rifiutato perché superato da una transizione più recente o perché la transizione non è più ammessa resta
+  `applicato=false` e viene marcato in colonne interne non concesse ad `anon`: la RPC risponde `false` invece di
+  sollevare il 23514, e l'evento non torna in coda. Un evento marcato così non è mai leggibile; in rari casi un evento
+leggibile può restare `applicato=false` (date incoerenti respinte dalla RPC): il consumatore che mostra date o stati
+dagli eventi filtri `applicato=true`.
 
 **Tipi che possono ricevere un cursore (quindi pubblici)**: `pubblicazione`,
 `apertura_automatica`, `chiusura_automatica`, `apertura`, `chiusura`, `proroga`, `riapertura`,
@@ -422,12 +427,32 @@ elencati sopra; nessun tipo nuovo.
   Sugli aperti non si usa `data_verificata`.
 - **`chiusura` del worker** da «aperto» (già ammessa) e, **dalla 13, anche da «in apertura prossimamente»**: la
   pagina ufficiale dichiara chiuso, scaduto o concluso con un'etichetta strutturata. `data_evento` è la data di
-  chiusura letta, se c'è ed è passata o odierna, altrimenti NULL. `data_scadenza` resta intatta. Al massimo 20
-  chiusure per giro, con un freno automatico per ente.
+  chiusura letta, se c'è ed è passata o odierna, altrimenti NULL. `data_scadenza` resta intatta. Nessun tetto sul
+  numero di chiusure per giro (aggiornamento dell'01/10/2026, regola «niente lotti»): resta il freno automatico per
+  ente, che ferma le chiusure di un ente quando sembrano troppe.
 - **`in_aggiornamenti`** di `chiusura` e `rettifica` vale `true` solo se la notizia è nuova: lo stesso lettore aveva
   visto il bando aperto (o in apertura) nei 30 giorni prima, e la data letta non è più vecchia di 14 giorni.
   Altrimenti vale `false`: è una **correzione**, leggibile per lo stato ma fuori da un box «Aggiornamenti». La prima
   passata della verifica produce soprattutto correzioni.
+
+**Eventi del giro 3 (dall'01/10/2026, contratto interno `docs/contracts/bandi-giro-3.md`).** Nessun tipo nuovo e
+nessuna colonna nuova; cambiano quanti eventi arrivano e da dove.
+
+- **Monitor su tutti i tipi.** Il monitor applica e rende leggibili tutti i tipi pubblici che
+  sa riconoscere (apertura, chiusura, proroga, riapertura, rettifica, graduatoria, esito, faq, nuovo_allegato), con
+  i suoi gate. `sospensione` e `revoca` si accendono solo dopo la migrazione 14 (`annullamento_revoca` oggi non ha un produttore
+  automatico: i revocati sono fuori dal monitor e un revocato sbagliato si corregge con `bando_correggi_stato`), che dà al
+  sospeso un'uscita (`sospeso → chiuso`, `sospeso → aperto`), un percorso di correzione con `origine='redazione'` e
+  il rifiuto di una sospensione più vecchia dell'ultima transizione. news1 avvisa BandoFit prima della migrazione 14.
+- **Rielaborazione dalla fonte ufficiale.** Una volta per ogni coppia (bando, pagina ufficiale) il produttore rilegge
+  la pagina e confronta date e classificazione. Le date diverse e non verificate diventano `rettifica` con
+  `origine='pipeline'`, `campo` in `data_apertura` / `data_scadenza`, `verificato=false`, `in_aggiornamenti=false`
+  (una correzione, fuori dal box «Aggiornamenti»). Mai `data_pubblicazione`, mai uno stato, mai una colonna già
+  verificata.
+- **Junction riscritte.** La rielaborazione può aggiungere e togliere righe di `bando_regioni`, `bando_settori`,
+  `bando_beneficiari`, `bando_codici_ateco` di un pubblicato: prima inserisce le nuove, poi toglie le vecchie, così il
+  bando non resta mai senza righe. Una dimensione già piena non si svuota mai. Il consumatore che tiene in cache le
+  junction le rilegge come oggi.
 
 **Sincronizzazione.** Si legge per cursore crescente:
 
@@ -438,9 +463,11 @@ GET /rest/v1/bando_evento?select=id,bando_id,tipo,campo,valore_prima,valore_dopo
 Come cintura di sicurezza il consumatore rilegge da `<ultimo> − 100` e deduplica per `id`.
 
 **Latenza massima rilevazione → leggibilità**: transizioni del job orario **≤ 65 minuti** dopo
-la mezzanotte di Roma (la vista mostra già `chiuso` da mezzanotte); eventi del monitor **≤ 12
-ore** nella configurazione in uso (≤ 24 h nella configurazione economica, ≤ 6 h in quella
-massima). Il valore corrente è pubblicato in `pipeline_run` e in questo documento, e cambia solo
+la mezzanotte di Roma (la vista mostra già `chiuso` da mezzanotte); eventi del monitor **≤ 6 ore**
+per i bandi aperti e in apertura con fonte ufficiale trovata (dal giro 3, 01/10/2026: il monitor li
+controlla tutti a ogni giro, alle 00, 06, 12 e 18), con la cadenza decrescente di §6.1 per i chiusi. La promessa
+vale quando il giro precedente ha finito la coda: se il monitor raggiunge il suo tetto di tempo, o un giro salta per
+il lucchetto, i bandi rimasti passano per primi al giro dopo e l'attesa può arrivare a 12 ore. Il valore corrente è pubblicato in `pipeline_run` e in questo documento, e cambia solo
 con avviso. Un consumatore che sincronizza una volta al giorno somma il proprio intervallo.
 Durante la messa in ombra, un evento diventa leggibile alla data di attivazione del suo tipo,
 indicata da `pubblicato_at`. **Aggiornamento del 30/09/2026:** con l'attivazione per tipo del giro di ottobre diventano
@@ -493,11 +520,12 @@ risoluzione dei miss restano le stesse.
     titoli sono simili e la scadenza è uguale o manca su una delle due;
   - nessuna fusione se i titoli differiscono per anno, lotto, edizione, annualità, finestra o tranche;
   - un doppione si fonde solo con una coppia diretta con il master; i gruppi di più di due righe restano a mano.
-- **Ritmo:** fra pubblicati, una volta al giorno, la mattina, al massimo **10 fusioni**. Le fusioni prima della
-  pubblicazione (sotto) non hanno questo tetto: avvengono a ogni giro, quando arriva la riga nuova.
+- **Ritmo (aggiornamento dell'01/10/2026, giro 3):** fra pubblicati, a **ogni giro**, **senza tetto** sul numero
+  di fusioni (regola «niente lotti»). Le guardie di prudenza qui sopra restano tutte. Le fusioni prima della
+  pubblicazione (sotto) avvengono anch'esse a ogni giro, quando arriva la riga nuova.
 - **Volume atteso all'attivazione:** 52 fusioni, misurate in prova il 01/10/2026 con tutte le guardie, comprese
-  quelle su lotti e numerazioni (43 per URL e 9 di calendario). Con il ritmo di 10 al giorno servono circa 6 giorni;
-  poi poche al mese. Il numero esatto si comunica alla vigilia dell'attivazione.
+  quelle su lotti e numerazioni (43 per URL e 9 di calendario). Arrivano **tutte nel primo giro** dopo
+  l'attivazione; poi poche al mese.
 - **Prima della pubblicazione:** una riga nuova gemella esatta di un pubblicato **non viene mai pubblicata**: si
   fonde prima, con la stessa `bando_fondi`, a ogni giro e senza il tetto giornaliero. Nella vista non compare mai, ma
   lascia tracce leggibili:
@@ -506,10 +534,10 @@ risoluzione dei miss restano le stesse.
   - gli eventi `fusione`: quello del master e quello del doppione, che ha un `bando_id` mai visto nella vista e si
     ignora anche lui;
   - i link del doppione copiati sul master, e `ultimo_cambiamento_at` del master che avanza.
-- **Avviso.** L'avviso di §10.1 vale per l'**attivazione**: il produttore scrive almeno 7 giorni prima che le fusioni
-  automatiche passino dalla prova all'esecuzione. Da lì sono continue e il consumatore le segue con la riconciliazione
-  su `bando_fusione` o con il cursore degli eventi `fusione`. Un lotto straordinario oltre il ritmo giornaliero
-  richiede un avviso a parte, come oggi.
+- **Avviso (aggiornamento dell'01/10/2026).** Il proprietario dei due progetti ha deciso di avvisare BandoFit
+  direttamente e di attivare le fusioni automatiche al deploy del giro 3, **senza i 7 giorni** di preavviso. Da lì
+  sono continue e il consumatore le segue con la riconciliazione su `bando_fusione` o con il cursore degli eventi
+  `fusione`. Non esistono più «lotti straordinari»: ogni fusione certa avviene al primo giro utile.
 
 ### 6.3 `bando_slug_storico`
 
@@ -670,8 +698,9 @@ Cose che è meglio sapere prima che succedano.
 f5e232d di BandoFit, conferma scritta del 30/09). Legge `bando_pubblico`, `bando_link`, `bando_slug_storico` e
 `bando_fusione`, mai la tabella `bando`. Mantiene i ripieghi deprecati di §5.1 e rimappa i fusi con una
 riconciliazione oraria su `bando_fusione`. Il passo **c2**, cioè togliere i ripieghi, parte dopo una nuova misura di
-§5.1 annunciata con almeno 7 giorni di preavviso; solo dopo il c2 si propone la 07. Prima di ogni lotto di fusioni
-(per esempio L4) o di una separazione, news1 avvisa BandoFit, che si mette in modalità `prova`.
+§5.1 annunciata con almeno 7 giorni di preavviso; solo dopo il c2 si propone la 07. Prima di una separazione news1
+avvisa BandoFit. Le fusioni automatiche invece sono continue dal giro 3 (§6.2) e non richiedono un avviso per
+lotto.
 
 **Conferma scritta del c2** (quella che sblocca la proposta della 07): data del deploy e commit; i punti 1-5 della
 precondizione in testa alla 07; la dichiarazione che nessun percorso (elenco, dettaglio, alert, calendario,
@@ -713,6 +742,7 @@ nelle loro intestazioni.
 | `bando_v11_06_stati_cinque.sql` | (b), **dopo** la (a) | CHECK di `stato_bando` a 5 valori | **Sì se applicata prima di R0-a**: badge sbagliato, filtro `stato` in 400, `sospeso`/`revocato` nei segmenti |
 | `bando_v11_07_fase_d.sql` | (d) | `DROP VIEW` + ricreazione senza le colonne deprecate; policy di `bando` su `pubblicato`; REVOKE di colonna su `bando` con GRANT solo sulle colonne del contratto | **Sì** se un consumatore legge ancora `bando` con `link_bando`, `stato_processing`, `allegati`, `link_candidatura` o `descrizione_raw` |
 | `bando_v11_12_monitoraggio.sql` | fuori dalle fasi: si applica dopo la 11 e non dipende dalla 07 | l'interfaccia di monitoraggio di §14: le tabelle interne `monitoraggio_riepilogo` e `monitoraggio_chiave` (RLS, nessun privilegio ad `anon` né ad `authenticated`; su `monitoraggio_riepilogo` il ruolo di servizio ha solo `SELECT`, `INSERT` e `UPDATE`, senza `DELETE` né `TRUNCATE`; su `monitoraggio_chiave` nessun privilegio nemmeno al ruolo di servizio), la funzione interna `monitoraggio_job_orario()` e la funzione a chiave `monitoraggio_catalogo(p_chiave)`, eseguibile da `anon`. Il blocco di verifica controlla che l'insieme delle funzioni eseguibili da `anon` cresca solo di `monitoraggio_catalogo` | **No**: solo oggetti nuovi; nessuna tabella, colonna, vista o funzione esistente cambia |
+| `bando_v11_14_sospensioni.sql` | fuori dalle fasi: dopo la 13 (giro 3) | quattro righe nuove nella lista bianca (`sospeso → chiuso` con `chiusura`; `revocato → aperto \| chiuso \| in apertura prossimamente` con `annullamento_revoca`); dal sospeso e dal revocato si esce solo con l'evento della riga; la RPC `bando_correggi_stato(p_bando_id, p_stato, p_nota)` solo per il ruolo di servizio, che registra e applica un evento `correzione_redazionale` (origine `redazione`, `campo='stato_bando'`, `valore_dopo` = lo stato come stringa JSON, cioè la stessa forma scalare del job orario con `campo='stato_bando'`, `in_aggiornamenti=false`, leggibile); la regola del «superato» e tre colonne interne di marcatura su `bando_evento`; il marcatore `bando_capacita_sospensioni()`. Dopo la 14 non si rieseguono la 04, la 11 e la 13 | **No**: nessuna colonna concessa ad `anon` cambia; compaiono eventi `chiusura` su un sospeso e `correzione_redazionale`. La regola di `stato_effettivo` non cambia |
 | `bando_v11_13_stato_da_verificare.sql` | (b), dopo la 12 e prima della 07 | 17 colonne interne di `bando_controllo` per la verifica dello stato, di cui 9 leggibili da `anon` (quelle che la vista usa), con i loro CHECK e un trigger che scarta le letture fatte su domini non verificanti; la funzione pura `bando_stato_da_verificare` (eseguibile da `anon`, §1.6); le cinque colonne in coda a `bando_pubblico` (§3, §4.1); la riga della lista bianca «chiusura del worker da in apertura» (§6.1). Si controlla da sola: casi della regola, funzioni di `anon`, conteggi per stato, colonne | **No**: colonne in coda, select esplicite invariate; `select=*` riceve cinque colonne in più. Dopo la 13 la 07 e il suo rollback la richiedono, perché le loro viste portano le stesse cinque colonne |
 
 Le fusioni dei doppioni **non sono una migrazione**: avvengono nel normale funzionamento e non
@@ -784,13 +814,15 @@ risposte, colonne, embed, header `Content-Range`).
   produttore lo controlla con la chiave di servizio su `bando_controllo.segnale_aggregatore_at`;
 - il produttore, con la chiave di servizio (anche il monitor scrive eventi `worker`, e `metodo` non è concesso ad
   `anon`): `bando_evento?select=id&origine=eq.worker&tipo=eq.chiusura&metodo=like.estrattore:*&rilevato_at=gte.<oggi>`
-  → al massimo **20 righe per giro**, quindi al massimo 40 in un giorno;
+  → nessun tetto per numero dal giro 3 (01/10/2026): il controllo è che ogni riga abbia `url_prova` su un dominio
+  ufficiale e che nessun ente superi il freno automatico;
 - stessa richiesta con `tipo=in.(chiusura,rettifica)` e `select=id,in_aggiornamenti,data_evento,rilevato_at`:
   ogni evento del passo con `in_aggiornamenti=true` ha `data_evento` NULL oppure non più vecchia di 14 giorni
   rispetto a `rilevato_at` (§6.1: solo così è una notizia nuova). A titolo indicativo, nella prima passata quasi
   tutte le righe hanno `in_aggiornamenti=false` (correzioni);
-- `bando_fusione?select=bando_id&fuso_at=gte.<oggi>&slug_originale=not.is.null` → al massimo **10 righe al giorno**
-  (le fusioni fra pubblicati girano una volta, la mattina), e per ogni riga un evento `fusione` leggibile per cursore.
+- `bando_fusione?select=bando_id&fuso_at=gte.<oggi>&slug_originale=not.is.null` → nessun tetto per numero dal giro
+  3 (le fusioni fra pubblicati girano a ogni giro; il primo giro dopo l'attivazione porta le circa 52 misurate
+  l'01/10), e per ogni riga un evento `fusione` leggibile per cursore.
   Le righe con `slug_originale` NULL sono fusioni prima della pubblicazione: non hanno tetto e si ignorano (§6.2).
 
 **Nella fase (c)**: le stesse richieste, rieseguite **sulla vista**, non danno nessun `57014` e hanno un p95 lato
@@ -1180,7 +1212,7 @@ Una misura in `non_misurati` non cambia lo stato: dice solo che quella parte ogg
 | `segnali` | al massimo 40 oggetti `{codice, livello, testo, dal, misura}` |
 | `non_misurati` | sottoinsieme di `servizio`, `job_orario`, `accesso_fonte_riservata`, `credito_ricerca`, `schede_con_sezione`, `da_verificare` |
 | `produttore` | `{ultimo_giro_at, ore_dall_ultimo_giro, giri_24h, riavvii_24h, servizio}`, con `servizio` ∈ `attivo` \| `non_attivo` \| `non_misurato` |
-| `giri` | al massimo 20 oggetti `{id, giro, avviato_at, concluso_at, durata_min, esito, interrotto_per_tetto, passi_non_ok}`. Valori ammessi: `giro` ∈ `00` \| `06` \| `12` \| `18` \| `avvio` \| `manuale`; `esito` ∈ `ok` \| `errore` \| `saltato` \| `interrotto_per_tetto`; `passi_non_ok` è una lista di nomi neutri (`ingresso`, `lettura`, `estrazione`, `arricchimento`, `ricerca_fonti`, `redazione`, `controllo_pagine`, `ricontrolli`, `verifica_stato`, `altro`) |
+| `giri` | al massimo 20 oggetti `{id, giro, avviato_at, concluso_at, durata_min, esito, interrotto_per_tetto, passi_non_ok}`. Valori ammessi: `giro` ∈ `00` \| `06` \| `12` \| `18` \| `avvio` \| `manuale`; `esito` ∈ `ok` \| `errore` \| `saltato` \| `interrotto_per_tetto`; `passi_non_ok` è una lista di nomi neutri (`ingresso`, `lettura`, `estrazione`, `arricchimento`, `ricerca_fonti`, `redazione`, `controllo_pagine`, `ricontrolli`, `verifica_stato`, e dal giro 3 `elenco_enti`, `ricerca_fonti_precoce`, `verifica_ingresso`, `verifica_link`, `rielaborazione`, `doppioni`; `altro` per un nome sconosciuto). Dal giro 3 esiste anche il codice `copertura_incompleta:<passo neutro>`: lo stesso passo ha lasciato bandi fuori in 4 giri di fila |
 | `controlli` | al massimo 10 oggetti `{avviato_at, esito, classificazioni, classificazioni_fallite, eventi_non_applicati}` |
 | `lavorazioni` | al massimo 10 oggetti `{nome, da_min, ttl_min, stato}`, con `nome` ∈ `giro` \| `controllo_pagine` \| `ricerca_fonti` \| `altro` e `stato` ∈ `regolare` \| `lunga` \| `probabile_orfana` |
 | `ingresso` | `{fermi_in_ingresso, fermi_in_lavorazione, ultimo_bando_nuovo_at}` |

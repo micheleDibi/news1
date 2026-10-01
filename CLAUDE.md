@@ -111,6 +111,12 @@ storia git.
   funzionante, mai push).
 - **Niente nuove dipendenze npm** senza chiedere. **Mai stampare i valori di `.env`.** (RIPRESA §7 estende: niente
   pip; niente cookie e token.)
+- **Bandi: niente lotti** (regola permanente di Michele, 01/10/2026). Correzioni, aggiornamenti e controlli valgono
+  per **tutti** i bandi interessati, il prima possibile, soprattutto quelli retroattivi: nessun tetto sul numero di
+  bandi per giro o per lancio (niente «60», «10», «40»). Sono ammessi solo il freno di cortesia per host, un tetto di
+  tempo con rotazione (chi resta fuori parte per primo al giro dopo), la spesa in $ e crediti e le guardie contro gli
+  errori. Ogni passo scrive nella riga del giro quanti bandi erano da fare, quanti fatti e quanti rimasti, così la
+  copertura si vede. Dettaglio: `docs/contracts/bandi-giro-3.md` §1.
 
 ## Da non toccare
 `backend/`, `scraper_bandi/`, `backend/sql/`, `scripts/`, l'area admin. Niente migrazioni, niente scritture su
@@ -207,6 +213,21 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > `src/lib/bandi/**`, `src/lib/liste/bandi.ts`, `src/lib/corpus.ts`, card e pagine dei bandi, `src/lib/api-v1/**` per il
 > campo `stato_da_verificare`), `tests/**`, `docs/api-v1.md`. Contratto interno: `docs/contracts/bandi-giro-2.md` §19.
 > Fuori da questo elenco la regola sopra resta in vigore.
+
+> **Deroga registrata (intervento "giro 3 dei bandi", dall'01/10/2026, branch `claude/bandi-giro-3`).** Su richiesta
+> esplicita dell'utente (8 direttive dell'01/10: resolver prima di preprocess ed enrich, monitor a ogni giro su tutti
+> gli aperti, scheda aggiornata dalle novità, niente lotti, ricontrolli senza limite, gemelli e IndicePA attivi,
+> sospensione e revoca sistemate), e limitatamente a questo intervento, si modificano o creano:
+> `scraper_bandi/app/{settings,db,fonte_ufficiale,date_validation,scarico,preprocessor,bando_preprocess_runner,
+> enricher,bando_enrich_runner,dominio_ufficiale,rielabora_fonte,__main__,bilancio,telemetria,riepilogo_salute,
+> sorveglianza,monitoraggio,eventi,impronte,rigenera,bando_seo_runner,seo_skill,gemelli,verifica_stato,ingresso,
+> stato_bando}.py` e i relativi test e fixture; `backend/app/bandi_pipeline.py` e i suoi test;
+> `backend/sql/bando_v11_14_*` (**scritti e mai eseguiti**: li applica l'utente); `docs/contratto-db-bandi.md`,
+> `docs/contracts/**`, `docs/bandi-monitor/**`; la parte bandi di `src/` (`src/pages/bandi/[slug].astro`,
+> `src/lib/bandi/**`, `src/lib/supabase-bandi.ts`, `src/lib/stato-bando.ts`, `src/lib/api-v1/{feed,testi-doc}.ts`,
+> `src/components/bandi/ElencoBandi.astro`, `src/pages/api/lista/bandi.astro`) e
+> `tests/**`. L'import IndicePA è stato lanciato dall'utente sul server l'01/10 (22.355 domini, 16 spenti con SQL).
+> Contratto interno: `docs/contracts/bandi-giro-3.md`. Fuori da questo elenco la regola sopra resta in vigore.
 
 Inoltre, sempre (non toccati dalle deroghe):
 - Credenziali mai in file tracciati (vivono in `.env`, `scraper_bandi/.env`,
