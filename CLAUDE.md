@@ -47,8 +47,8 @@ locale su macOS; nessuno staging documentato. Per architettura, pipeline e varia
 - `scraper_bandi/` (venv proprio): giro alle 00/06/12/18 da `backend/app/bandi_sender.py` (step in
   `bandi_pipeline.py`): discover → scrape → preprocess → enrich → resolver → seo (più ricontrolli e monitor alle 06 e
   18) fino a `stato_processing='completed'`, condizione della RLS pubblica (`completed AND slug IS NOT NULL`).
-- `docs/analisi-seo-elenchi.md`: fotografia SEO delle tre liste, numeri reali dei DB. `docs/report-seo-elenchi.md`:
-  intervento SEO, cosa è cambiato e cosa resta fuori scope.
+- `docs/bandi-monitor/GUIDA-BANDI.md`: guida completa alla logica del sistema bandi (01/10/2026), da leggere per
+  capire scraping, pipeline, DB, controlli e prossimi passi; `RIPRESA.md` resta il punto di ripresa operativo.
 - Punto di ingresso: `dist/server/entry.mjs` (build) o `astro dev`; ogni richiesta passa prima da `src/middleware.ts`,
   che come prima istruzione applica la guardia sugli header di inoltro (`src/lib/intestazioni-inoltro.ts`:
   `X-Forwarded-Host/Proto/Port` malformati → 400 su tutto il sito), poi content negotiation Markdown e well-known per

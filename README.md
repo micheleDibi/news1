@@ -610,7 +610,7 @@ Ogni categoria ha un colore identificativo proprio:
 - `docs/bandi-monitor/RIPRESA.md` — stato attuale dei bandi, verifiche e comandi (`AVANZAMENTO.md`: cronaca dell'intervento)
 - `docs/contratto-db-bandi.md` — contratto del DB bandi per chi legge con la anon key (BandoFit)
 - `docs/api-v1.md` — API pubblica `/api/v1`
-- `docs/analisi-seo-elenchi.md`, `docs/report-seo-elenchi.md` — analisi e intervento SEO sulle pagine elenco
+- `docs/bandi-monitor/GUIDA-BANDI.md` — guida alla logica del sistema bandi
 - `scraper_bandi/README.md` — pipeline bandi, setup del venv
 - `backend/skill/SKILL.md` — skill ricostruzione articoli news
 - `backend/sql/bando_v4_collapse.sql` — migrazione state machine v4
