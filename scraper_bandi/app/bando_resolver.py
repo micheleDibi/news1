@@ -36,6 +36,7 @@ from .preprocessor import (
     _get_anthropic_client,
     _is_likely_index_url,
     _truncate,
+    scarta_chiuso_del_modello,
 )
 from .settings import get_settings
 from .stato_bando import data_italiana, oggi_roma
@@ -208,9 +209,15 @@ def _validate_resolver_output(
     analysis: dict[str, Any],
     fonte_markdown: str,
     bando_id: Any,
+    *,
+    oggi: Any = None,
 ) -> dict[str, Any]:
     """Stessa validation di preprocessor._validate_analysis ma con log_prefix 'resolver/date'.
     Validation triple-gate sulle 3 date contro markdown FONTE.
+
+    §21.1: e' il ripiego del preprocess (righe `scraped`, mai pubblicate) e lo
+    stato viene dal modello, quindi vale la stessa regola: un 'chiuso' con la
+    scadenza da oggi in poi si scarta. `oggi` sovrascrivibile nei test.
     """
     is_valid = bool(analysis.get("is_valid_bando", False))
     try:
@@ -250,7 +257,14 @@ def _validate_resolver_output(
             )
             pub_date = apt_date = scad_date = None
 
-    stato_final = reconcile_stato_bando(stato_llm, apt_date, scad_date)
+    giorno = oggi or oggi_roma()
+    stato_modello, chiuso_scartato = scarta_chiuso_del_modello(stato_llm, scad_date, giorno)
+    stato_final = reconcile_stato_bando(stato_modello, apt_date, scad_date, today=giorno)
+    if chiuso_scartato:
+        logger.info(
+            "[resolver/{}] 'chiuso' del modello scartato: scadenza {} da oggi in poi",
+            bando_id, scad_date,
+        )
     if is_valid and stato_final != stato_llm and stato_final is not None:
         logger.info(
             "[resolver/{}] stato_bando reconciled: LLM={!r} -> data-driven={!r}",
@@ -267,6 +281,7 @@ def _validate_resolver_output(
         "data_scadenza": scad_date.isoformat() if scad_date else None,
         "_needs_fallback": False,
         "_fallback_used": True,
+        "_chiuso_modello_scartato": chiuso_scartato,
     }
 
 

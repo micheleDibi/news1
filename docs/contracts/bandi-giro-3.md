@@ -429,3 +429,91 @@ interno, si committa senza un quarto ciclo; i P2 vanno nel report finale.
    `transizione_evento` non dà uno stato di arrivo si respinge, salvo che il bando sia già nello stato naturale di
    arrivo del tipo (chiuso, sospeso, revocato). Restano ammessi gli eventi che portano date (proroga su un sospeso come
    sola data, §14; apertura/riapertura con data), come oggi.
+
+## 21. Correzioni dopo il primo giro in produzione (01/10 notte; Michele: ok alle due correzioni)
+Trovate leggendo il giro di avvio e `salute` dopo il deploy delle 21:27. Nessuna migrazione.
+1. **Il «chiuso» del modello con la scadenza futura non vale.** Tre bandi aperti (2773, 1262487, 1262812, pagine
+   ufficiali lette l'01/10 sera: «Aperto», scadenze 26/07/2027, 01/11/2026, 06/10/2026) erano `processed` e `chiuso`:
+   il preprocess aveva accettato lo stato proposto dal modello perché `reconcile_stato_bando` forza «chiuso» solo con la
+   scadenza passata, non il contrario. Un `processed` chiuso non passa da enrich e SEO: resta nascosto per sempre.
+   Regola nuova, **solo nel preprocess** (dove lo stato viene dal modello):
+   - se il modello dice `chiuso` e la scadenza che la riga avrà (validata dal triplo controllo, oppure trovata dal
+     lettore, dalla finestra di presentazione o dall'etichetta OE) è oggi o nel futuro (Roma), il «chiuso» del modello
+     si scarta e vale come `aperto`; poi la riconciliazione di sempre (apertura futura → «in apertura
+     prossimamente»);
+   - un «chiuso» con prova resta: `chiuso_da_lettore` (lettura con `puo_chiudere`) vince come oggi, anche con la
+     scadenza futura (la chiusura anticipata con citazione è la strada giusta per chiudere prima della scadenza);
+   - con la scadenza assente o passata non cambia niente;
+   - il prompt del preprocess lo dice al modello (una riga), senza altre modifiche.
+   **Non si tocca** `reconcile_stato_bando`: la usano anche enrich (rete di sicurezza sullo stato salvato) e
+   rielaborazione (`serve_transizione`) su stati che possono venire da una prova; riaprire lì un chiuso salvato sarebbe
+   un errore. `tests/stato-bando/casi.json` e i gemelli TS e SQL non cambiano. Vale anche per il ripiego del
+   preprocess se passa dalla stessa funzione; `bando_resolver.py` (il resolver vecchio) si allinea solo se il suo stato
+   viene dal modello e la riga non è pubblicata. Il registro conta i casi (`chiuso_modello_scartato`).
+   **Estensione (revisione interna, 01/10 notte):** la stessa regola vale nella **fase A di enrich**
+   (`refine_stato_bando` sulle righe `processed` con stato NULL), che oggi scrive il «chiuso» del modello senza
+   guardare la scadenza: dopo la risposta del modello, `preprocessor.scarta_chiuso_del_modello` sulla `data_scadenza`
+   della riga e `oggi_roma()`, poi `reconcile_stato_bando` (apertura futura → «in apertura prossimamente»), poi la
+   scrittura e la promozione alla fase B come per un «aperto». Il contatore `chiuso_modello_scartato` sta anche fra
+   quelli di enrich. La rete di sicurezza della fase B (stato salvato) **non** cambia. Effetto voluto: un «aperto» o
+   «in apertura» del modello con la scadenza della riga già passata si scrive «chiuso» in fase A e non va alla fase B,
+   come nel preprocess (l'ingresso non pubblica i bandi già chiusi); prima arrivava alla SEO come chiuso.
+   Il confronto è sulla sola data: il giorno della scadenza un «chiuso» del modello vale «aperto» anche dopo l'ora
+   dichiarata. È voluto: la lettura (`stato_effettivo`) lo mostra comunque chiuso dopo l'ora, e il bando pubblicato con
+   la scadenza passata è il caso normale di ogni bando scaduto.
+   Le tre righe sono state corrette a mano (`docs/bandi-monitor/correzioni-giro-3-sera.sql`, eseguito da Michele
+   l'01/10 alle 22 circa). Restano 300 `processed` chiusi **senza** scadenza (quasi tutti di giugno): fuori da questa
+   correzione, annotati in RIPRESA.
+2. **Doppioni in `bando_controllo`.** `bando_runner.aggiorna_controlli` mandava nello stesso UPSERT due righe con lo
+   stesso `bando_id` quando una fonte produce lo stesso elemento due volte (fonte 276: 2 blocchi da 200 falliti con
+   21000 «ON CONFLICT DO UPDATE command cannot affect row a second time»). Ora le righe si raccolgono per `bando_id`
+   prima dell'UPSERT: una sola per bando; per `priorita_controllo` vale il massimo fra le chiavi dello stesso bando e
+   quello già scritto. Fuori dal perimetro del giro 3: Michele ha dato l'ok l'01/10 notte (deroga in CLAUDE.md).
+3. **Chiave IndexNow.** L'allarme `configurazione:indicizzazione` di `salute` è vecchio e vero: la chiave non esiste
+   in nessun `.env` e IndexNow non è mai stato attivo sul sito (`/api/indexnow-key` risponde 404 «not configured»,
+   controllato l'01/10 notte guardando solo lo stato HTTP). Michele ha scelto di attivarlo il 02/10: una chiave nuova
+   di 32 caratteri esadecimali (`openssl rand -hex 16`), generata **una volta** in una variabile di shell e scritta con
+   `>>` nel `.env` del sito e in `scraper_bandi/.env` senza mai stamparla (prima un `echo >>` per l'a capo finale), poi
+   `unset`; subito dopo il confronto delle due righe senza stamparle (`cmp` fra i due `grep '^INDEXNOW_API_KEY='`, che
+   dice solo «uguali» o «diverse»); poi `npm run build` (il sito
+   la legge da `import.meta.env`, inlineata alla build) e il riavvio di sito e sender. Verifica: `/api/indexnow-key` e
+   `/<chiave>.txt` rispondono 200 (la chiave è pubblica per protocollo, ma qui non si stampa lo stesso); nel journal
+   del sender `[IndexNow] POST batch (… URL) → 200` o `202` dopo un giro con schede cambiate.
+4. **Revisione avversaria, ciclo 1** (`.cteam/review/20261001-222723/final.md`, BLOCCANTE, 2 P1). Decisioni del lead:
+   - **P1 «il chiuso del modello trasformato in aperto»: misurato, la regola resta.** Fra i non pubblicati «chiuso»
+     con la scadenza futura **al momento dell'ingresso** ce ne sono 45 in tutta la storia: 42 all'ultimo giorno (la
+     scadenza il giorno stesso o il dopo; con la regola nuova escono «aperti» per quell'ultimo giorno e poi
+     `stato_effettivo` li mostra chiusi), 3 con la scadenza lontana, cioè i tre di §21.1, tutti aperti davvero. Nessuna
+     chiusura anticipata vera sarebbe stata pubblicata come aperta. Nessuna euristica sulla motivazione del modello: non
+     è una prova (non è verificata nel testo). **L'estensione alla fase A di enrich** non era fra le due correzioni
+     approvate da Michele: sta in un **commit a parte** sul branch (solo `bando_enrich_runner.py` e
+     `tests/test_chiuso_modello_enrich.py`) e si unisce a `main` solo con il suo ok. Se dice no: `git revert` di quel
+     commit **e** riallineare i testi che la descrivono (qui §21.1 «Estensione» ed «Effetto voluto»; GUIDA §3.7 fase A e
+     sue Fonti, M12, riga B13 del cap. 8), che stanno nel commit comune.
+   - **P1 «correzione all'indietro su 3 id»: misurato, niente da fare.** I non pubblicati «chiuso» con la scadenza da
+     oggi (Roma) in poi sono 0 dopo la correzione (misura delle 22:50 dell'01/10); i 42 storici dell'ultimo giorno hanno
+     ormai la scadenza passata.
+   - P2 sistemati: `bando_resolver.py` nella deroga di CLAUDE.md; la riga del prompt dice il vero («un 'chiuso' vale
+     'aperto'»); RIPRESA con i numeri giusti e il controllo del giro finito prima del riavvio; la procedura IndexNow con
+     il confronto delle due chiavi; GUIDA allineata.
+   - **Aperti** (P2, non in questo intervento): (a) i 300 `processed` «chiuso» **senza** scadenza: nessun passo li
+     rilegge; proposta per un giro successivo: un passo una tantum della verifica dello stato (dopo l'08/10) sui soli
+     non pubblicati, con la stessa regola delle prove; responsabile il lead, decisione di Michele; (b)
+     `segnali.confronta` non toglie i doppioni per `hash_bando`: con lo stesso elemento ripetuto nascono due eventi di
+     servizio `segnale_fonte` e il contatore `identici` conta doppio (correzione: deduplica in `bando_runner.run`
+     prima di `confronta`); (c) `src/pages/api/indexnow-key.ts` restituisce la chiave a chiunque: con IndexNow attivo
+     chiunque può segnalare URL del sito a nome della chiave (rischio basso: la chiave è pubblica per protocollo nel
+     file `/<chiave>.txt`, ma lì bisogna già conoscerla); correzione proposta, fuori deroga: risposta 200/404 senza
+     corpo. Decide Michele il 02/10, prima di attivare IndexNow.
+   - P2 rimasti dopo il ciclo 2 (`.cteam/review/20261001-225006/final.md`, ESITO OK), per un giro successivo:
+     `fermi_in_lavorazione` conta anche i `processed` chiusi (avviso rumoroso: escluderli o contarli a parte); nel
+     ripiego (`bando_resolver`) la scadenza che scarta il «chiuso» è validata solo sulla pagina elenco (0 casi falsi su
+     45 storici; stessa debolezza che aveva già un «aperto» con data sbagliata); la docstring della regola dice «righe
+     mai pubblicate» ma `analyze_bando` gira anche nella rielaborazione dei pubblicati (effetto nullo: lì lo stato
+     dell'analisi non si legge); chiavi a 0 nel ritorno anticipato del preprocess; numeri di riga nelle Fonti della
+     GUIDA; `AGENTS.md` e `Claude outputs/` non tracciati e non ignorati (decide Michele).
+5. **Chiarimento a BandoFit (01/10 notte, §10.1 del contratto DB).** Il «degrado su 42703/PGRST senza 5xx» della
+   conferma scritta del c2 riguarda solo gli errori dovuti a un cambio di schema (colonna o funzione tolta: 42703,
+   PGRST103/200/201/204/205). I guasti veri (PGRST000-002, rete, 57014) restano 502/504. Le richieste R1-R8: la stampa
+   del codice reale (`--come-inviata`, con commit e data) più, quando Michele lo apre, un estratto dei log del gateway
+   del DB bandi con una richiesta per ciascuna.

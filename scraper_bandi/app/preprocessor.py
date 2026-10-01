@@ -287,6 +287,7 @@ REGOLE:
 == STATO_BANDO DATA-DRIVEN ==
 Lo stato_bando emesso dal LLM sarà RICONCILIATO automaticamente con le date:
 - Se data_scadenza < {oggi} (oggi) -> stato forzato a 'chiuso' (ignoro tua scelta)
+- Se data_scadenza >= {oggi} (oggi) -> un 'chiuso' vale 'aperto'
 - Se data_apertura > {oggi} (oggi) -> stato forzato a 'in apertura prossimamente'
 - Altrimenti rispetta la tua decisione (aperto/chiuso/in apertura)
 
@@ -614,12 +615,35 @@ def _ora(candidate: Any, data: Any, ruolo: str) -> str | None:
     return ora.isoformat() if ora is not None else None
 
 
+def scarta_chiuso_del_modello(stato: str | None, scadenza: Any, oggi: Any) -> tuple[str | None, bool]:
+    """Il «chiuso» del modello con la scadenza da oggi in poi non vale (§21.1). Pura.
+
+    `reconcile_stato_bando` forza 'chiuso' con la scadenza passata, non il
+    contrario: un 'chiuso' sbagliato del modello passava, e un `processed`
+    chiuso non va ne' a enrich ne' alla SEO (resta nascosto per sempre). Qui,
+    se lo stato e' 'chiuso' e la scadenza che la riga avra' e' oggi o nel
+    futuro (data civile di Roma: il giorno della scadenza il bando e' ancora
+    aperto), vale 'aperto'; la riconciliazione di sempre viene dopo (apertura
+    futura -> 'in apertura prossimamente'). Con la scadenza assente o passata
+    non cambia niente. Restituisce `(stato, scartato)`.
+
+    Solo per lo stato proposto dal modello (preprocess e suo ripiego, righe mai
+    pubblicate). Il 'chiuso' con prova del lettore per ente (`puo_chiudere`)
+    lo applica chi chiama, dopo, e vince. `reconcile_stato_bando` non cambia:
+    enrich e rielaborazione la usano su stati che possono venire da una prova.
+    """
+    if stato == "chiuso" and scadenza is not None and scadenza >= oggi:
+        return "aperto", True
+    return stato, False
+
+
 def _validate_analysis(
     analysis: dict[str, Any],
     markdown: str,
     bando_id: Any,
     *,
     provenienza: str | None = None,
+    oggi: Any = None,
 ) -> dict[str, Any]:
     """Validazione output LLM con triple-gate sulle date.
 
@@ -629,8 +653,10 @@ def _validate_analysis(
     dal codice (§6.3).
 
     Poi applica reconciliation guard data-driven:
+      - 'chiuso' del modello con data_scadenza >= oggi -> 'aperto' (§21.1)
       - data_scadenza < oggi -> stato_bando='chiuso'
       - data_apertura > oggi -> 'in apertura prossimamente'
+    `oggi` (data civile di Roma) sovrascrivibile nei test.
     """
     from .date_validation import validate_date_candidate, reconcile_stato_bando
 
@@ -685,7 +711,16 @@ def _validate_analysis(
             pub_date = apt_date = scad_date = None
 
     # Reconciliation data-driven: forza coerenza tra stato_bando e date estratte.
-    stato_final = reconcile_stato_bando(stato_llm, apt_date, scad_date)
+    # Prima si scarta il 'chiuso' del modello con la scadenza da oggi in poi
+    # (§21.1), poi la riconciliazione di sempre.
+    giorno = oggi or oggi_roma()
+    stato_modello, chiuso_scartato = scarta_chiuso_del_modello(stato_llm, scad_date, giorno)
+    stato_final = reconcile_stato_bando(stato_modello, apt_date, scad_date, today=giorno)
+    if chiuso_scartato:
+        logger.info(
+            "[preprocess/{}] 'chiuso' del modello scartato: scadenza {} da oggi in poi",
+            bando_id, scad_date,
+        )
     if is_valid and stato_final != stato_llm and stato_final is not None:
         logger.info(
             "[preprocess/{}] stato_bando reconciled: LLM={!r} -> data-driven={!r} (apt={} scad={})",
@@ -704,6 +739,9 @@ def _validate_analysis(
         "ora_scadenza": _ora(analysis.get("data_scadenza"), scad_date, "scadenza"),
         "_origine_scadenza": "modello" if scad_date else None,
         "_date_presunte_respinte": presunte,
+        # §21.1: il 'chiuso' del modello scartato per la scadenza futura (lo
+        # conta il runner in `chiuso_modello_scartato`)
+        "_chiuso_modello_scartato": chiuso_scartato,
         # Giro 3 (§8, §9): la frase della pagina che giustifica ogni data
         # passata dal gate. La rielaborazione dei pubblicati la porta negli
         # eventi di rettifica; nessuna colonna di `bando` la riceve.
@@ -786,7 +824,8 @@ def completa_dopo_il_modello(
        prossimamente', salvo un 'chiuso' per date. `on_arrival` non si usa.
        Giro 3 (§8): quando il testo letto e' la pagina ufficiale, la
        citazione si cerca nel testo della scheda OE (`markdown_etichetta`).
-    Le date nuove non precedono mai pubblicazione e apertura.
+    Le date nuove non precedono mai pubblicazione e apertura. Con la scadenza
+    finale da oggi in poi il 'chiuso' del modello si scarta (§21.1).
     """
     from .date_validation import estrai_finestra, parse_iso, reconcile_stato_bando
     risultato = dict(analysis)
@@ -825,12 +864,19 @@ def completa_dopo_il_modello(
         if dalla_scheda is not None and _coerente(pub, apt, dalla_scheda):
             scad, origine, ora_scad = dalla_scheda, "etichetta_oe", None
 
-    stato = reconcile_stato_bando(analysis.get("stato_bando"), apt, scad, today=giorno)
+    # §21.1: lo stato in ingresso e' quello del modello, gia' passato dalla
+    # regola con la sua scadenza in `_validate_analysis`. Se e' ancora 'chiuso'
+    # e la scadenza trovata qui (lettore, finestra, etichetta OE) e' da oggi in
+    # poi, il 'chiuso' si scarta anche ora. Il 'chiuso' con prova del lettore
+    # viene dopo e vince: allora nessuno scarto si conta.
+    stato_modello, scartato = scarta_chiuso_del_modello(analysis.get("stato_bando"), scad, giorno)
+    stato = reconcile_stato_bando(stato_modello, apt, scad, today=giorno)
     status2 = False
     if chiuso_da_lettore:
         stato = "chiuso"
     elif status == "2" and stato != "chiuso":
         stato, status2 = "in apertura prossimamente", True
+    scartato = (scartato or bool(analysis.get("_chiuso_modello_scartato"))) and not chiuso_da_lettore
 
     risultato.update({
         "stato_bando": stato,
@@ -839,6 +885,7 @@ def completa_dopo_il_modello(
         "_origine_scadenza": origine if scad else None,
         "_chiuso_da_lettore": chiuso_da_lettore,
         "_status2_in_apertura": status2,
+        "_chiuso_modello_scartato": scartato,
     })
     return risultato
 
@@ -1005,12 +1052,14 @@ async def analyze_bando(
 
     # 5. Validation + reconciliation
     provenienza = provenienza_di(link)
-    analysis = _validate_analysis(raw_analysis, markdown, bando_id, provenienza=provenienza)
+    # Un solo «oggi» per i due punti che decidono lo stato (§21.1).
+    giorno = oggi_roma()
+    analysis = _validate_analysis(raw_analysis, markdown, bando_id, provenienza=provenienza,
+                                  oggi=giorno)
 
     # 6. Dopo il modello (§6.3, §19.5): lettore per ente, finestra, etichetta
     #    OE. Il lettore non legge le schede degli aggregatori.
     if analysis["is_valid_bando"]:
-        giorno = oggi_roma()
         lettura = None
         if provenienza == "ente":
             lettura = lettura_per_ente(pagina, link, str(bando.get("titolo_raw") or ""), giorno)

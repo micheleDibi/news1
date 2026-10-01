@@ -48,6 +48,39 @@ gemelli e IndicePA attivi, sospensione e revoca sistemate. **Finestra sicura** p
 19:00-22:30, mai nell'ora e mezza prima dei giri delle 00, 06, 12 e 18. **L'ordine conta**: prima l'avviso a BandoFit,
 poi la 14, poi il backfill, poi il deploy, con **un solo** riavvio del sender.
 
+> **Stato all'01/10 notte: passi 0-5 fatti.** IndicePA importato (22.355 domini, 16 spenti), 14 e backfill applicati,
+> `main` = `16aaaee` in produzione, sender riavviato alle 21:27: giro di avvio OK in 346 s (nessun passo in errore, 1
+> bando pubblicato, 0,09 $). `salute` alle 21:42: i 12 tipi attivi, nessuna «sospensioni in attesa». Due allarmi
+> **vecchi**, non del giro 3: `configurazione:indicizzazione` (manca `INDEXNOW_API_KEY`) e fonti in verifica sui nuovi
+> al 49%. L'avviso «8 fermi in lavorazione» (finestra di 7 giorni): 7 chiusi davvero (scadenze passate) e 1 aperto
+> salvato «chiuso» (1262487); cercando in tutto il DB i non pubblicati «chiuso» con la scadenza futura ne sono usciti
+> altri 2 (2773 di giugno, fuori dalla finestra, e 1262812 entrato l'01/10). Tutti e 3 aperti sulle pagine ufficiali,
+> corretti a mano con `correzioni-giro-3-sera.sql` alle 22 circa; **da verificare dopo il giro delle 00:00** che siano
+> pubblicati. Dopo la correzione i non pubblicati «chiuso» con la scadenza da oggi in poi sono **0** (misura delle
+> 22:50). Il primo giro completo (fusioni, rielaborazione, monitor su tutti) è quello delle 00:00 del 02/10.
+> Correzioni del codice (contratto §21) sul branch `claude/bandi-giro-3-correzioni`, da unire a `main` con l'ok di
+> Michele (l'estensione alla fase A di enrich è in un commit a parte: §21.4).
+> **IndexNow non è mai stato attivo sul sito**: la chiave non c'è in nessun `.env` (`/api/indexnow-key` risponde «not
+> configured»); Michele l'01/10: «sì, domani». **Passi del 02/10**, nella finestra 12:30-16:30:
+> (0) **prima di ogni riavvio**, il giro delle 12 deve essere finito (dal giro 3 la manutenzione può durare ore, e un
+> riavvio a metà giro fa saltare il giro di avvio: il lavoro riprende alle 18):
+> `journalctl -u edunews-bandi-sender --since today | grep 'PIPELINE COMPLETED' | tail -n 1` deve mostrare un
+> `finished_at` dopo le 12:00; se no, si aspetta e si riprova (al più tardi entro le 16:30, poi 19:00-22:30);
+> (a) `git pull`;
+> (b) chiave nuova nei due `.env`, generata in una variabile di shell e mai stampata, poi il confronto delle due righe
+> (contratto §21.3);
+> (c) `npm run build`, poi `sudo systemctl restart edunews-frontend` e `sudo systemctl restart edunews-bandi-sender`;
+> (d) `salute`: l'allarme `configurazione:indicizzazione` sparisce; `/api/indexnow-key` risponde 200 (`curl -s -o
+> /dev/null -w '%{http_code}\n' https://edunews24.it/api/indexnow-key`, che non stampa la chiave); si legge com'è
+> andato il giro delle 00:00. Interpelli e selezioni (`load_dotenv()` trova il `.env` del sito) la usano dal loro
+> prossimo riavvio.
+> Aperto: 300 bandi `processed` e «chiuso» **senza** scadenza (quasi tutti di giugno), mai ricontrollati (§21.4).
+> **BandoFit (01/10 sera, commit f5ad4d0)**: schermate di sospeso e revocato pronte, rimappatura delle fusioni attiva,
+> verifica da accendere dopo l'08/10 senza obiezioni, c2 in attesa della misura §5.1 (sera del 02/10). Il **pannello di
+> monitoraggio è in produzione**: per accenderlo servono la chiave (giro 2, passo 2: si genera sul server del pannello,
+> Michele inserisce solo l'impronta) e il timer della sorveglianza (passo 4), finora rimandati. Decisione di Michele.
+> Chiedono anche `stato_da_verificare` nella select misurata per il p95 di §11 (accettato).
+
 0. **Backup.** Dashboard del progetto bandi → Database → Backups: c'è il backup di oggi e il PITR è attivo.
 
 1. **Messaggio a BandoFit, prima di tutto il resto.** Il testo lo prepara il lead; Michele lo incolla e **non aspetta

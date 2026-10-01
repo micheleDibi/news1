@@ -397,6 +397,14 @@ def aggiorna_controlli(
     PostgREST aggiorna le sole colonne presenti nel payload, quindi mescolare
     righe con chiavi diverse scriverebbe NULL dove non c'era niente da dire.
     Degrada in silenzio (0) se `bando_controllo` non esiste ancora.
+
+    In ciascun UPSERT **una sola riga per `bando_id`** (§21.2), raccolta prima
+    di spezzare in blocchi: una fonte che produce due volte lo stesso elemento
+    ripete l'hash in `visti`, e due righe dello stesso bando nello stesso
+    blocco fanno fallire l'intero blocco con 21000 («ON CONFLICT DO UPDATE
+    command cannot affect row a second time», fonte 276 l'01/10). Se piu'
+    chiavi puntano allo stesso bando, la priorita' e' la massima fra le loro e
+    quella gia' scritta. Le righe scritte contano quelle davvero mandate.
     """
     visti = list(getattr(confronto, "visti", ()) or ())
     priorita = dict(getattr(confronto, "priorita", {}) or {})
@@ -417,15 +425,19 @@ def aggiorna_controlli(
         scritte = 0
 
         if not presenti or "ultimo_visto_in_fonte_at" in presenti:
-            righe = [
-                {"bando_id": esistenti[h]["id"], "ultimo_visto_in_fonte_at": momento}
-                for h in visti
-                if h in esistenti and esistenti[h].get("id") is not None
-            ]
-            scritte += _upsert_controllo(sb, righe)
+            # Una riga per bando, nell'ordine in cui il bando compare la prima volta.
+            visti_per_bando: dict[Any, dict[str, Any]] = {}
+            for h in visti:
+                riga = esistenti.get(h)
+                if not riga or riga.get("id") is None:
+                    continue
+                visti_per_bando.setdefault(
+                    riga["id"], {"bando_id": riga["id"], "ultimo_visto_in_fonte_at": momento})
+            scritte += _upsert_controllo(sb, list(visti_per_bando.values()))
 
         if priorita and (not presenti or "priorita_controllo" in presenti):
-            righe = []
+            # bando_id -> massima priorita' fra le sue chiavi e quella gia' scritta.
+            massime: dict[Any, int] = {}
             for chiave, valore in priorita.items():
                 riga = esistenti.get(chiave)
                 if not riga or riga.get("id") is None:
@@ -435,8 +447,11 @@ def aggiorna_controlli(
                     valore = max(int(valore), int(attuale))
                 except (TypeError, ValueError):
                     valore = int(valore)
-                righe.append({"bando_id": riga["id"],
-                              "priorita_controllo": max(0, min(100, valore))})
+                valore = max(0, min(100, valore))
+                if valore > massime.get(riga["id"], -1):
+                    massime[riga["id"]] = valore
+            righe = [{"bando_id": bando_id, "priorita_controllo": valore}
+                     for bando_id, valore in massime.items()]
             scritte += _upsert_controllo(sb, righe)
         return scritte
     except Exception as e:

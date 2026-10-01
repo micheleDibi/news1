@@ -706,7 +706,10 @@ lotto.
 precondizione in testa alla 07; la dichiarazione che nessun percorso (elenco, dettaglio, alert, calendario,
 rimappatura, partenariati, AI-check, script) legge la tabella `bando` né una delle 7 colonne tolte dalla 07; le
 richieste R1-R8 prese dai log di produzione; la rimappatura attiva con l'ultimo report; il degrado su 42703/PGRST
-senza 5xx. news1 riesegue con la anon key i controlli (c) di §11 prima di proporre la 07 e quelli (d) subito dopo, e
+senza 5xx. Chiarimenti (01/10 notte, chiesti da BandoFit): il degrado riguarda solo gli errori dovuti a un cambio di
+schema (42703, PGRST103/200/201/204/205), mentre i guasti veri (PGRST000-002, rete, 57014) restano 502/504; per
+R1-R8 vale la stampa del codice reale (`--come-inviata`, con commit e data) più un estratto dei log del gateway del
+DB bandi, una richiesta per ciascuna, quando Michele lo apre. news1 riesegue con la anon key i controlli (c) di §11 prima di proporre la 07 e quelli (d) subito dopo, e
 avvisa BandoFit prima della prima applicazione attiva di sospensioni o revoche.
 
 ### 10.2 Le migrazioni

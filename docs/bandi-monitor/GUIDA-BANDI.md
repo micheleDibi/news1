@@ -1,7 +1,8 @@
 # Guida al sistema bandi
 
-**Data:** 01/10/2026 (dopo il deploy delle 10:10). Aggiornata la sera dell'01/10 con il **giro 3** (codice pronto,
-deploy da fare): §3.2, §3.2-bis, §3.3, §4.6, §4.11.
+**Data:** 01/10/2026 (dopo il deploy delle 10:10). Aggiornata la sera dell'01/10 con il **giro 3** (in produzione
+dalle 21:27 dell'01/10): §3.2, §3.2-bis, §3.3, §4.6, §4.11; la notte dell'01/10 con le correzioni del contratto
+interno §21 (§3.6, §3.7, M12).
 
 **A chi serve.** Al titolare del progetto, per studiare e capire come funziona il sistema dei bandi: da dove arrivano,
 come vengono lavorati e pubblicati, che cosa vedono i lettori, che cosa è acceso oggi e che cosa resta da fare.
@@ -54,7 +55,7 @@ tecniche.
    pubblica legge ancora la tabella `bando` intera.
 9. **Che cosa resta da fare.** L'elenco ragionato è nel capitolo 8 (correzioni, per gravità); il calendario, con chi fa
    cosa, nel capitolo 9.
-10. **Il giro 3 (codice pronto l'01/10, deploy da fare).** Ogni giro delle quattro ore farà anche la manutenzione: il
+10. **Il giro 3 (in produzione dalle 21:27 dell'01/10).** Ogni giro delle quattro ore farà anche la manutenzione: il
     monitor su tutti gli aperti, i ricontrolli del resolver su tutti i bandi senza fonte, il controllo dei link, la
     rielaborazione dei pubblicati dalla pagina ufficiale e i gemelli. La fonte ufficiale si cerca prima del preprocess,
     che legge la pagina dell'ente. Niente più tetti di numero, solo di tempo (regola «niente lotti»), e la spesa si
@@ -1332,9 +1333,14 @@ severe.
    è una data certa e viene accettata.
 
    Se le tre date non sono in ordine (pubblicazione ≤ apertura ≤ scadenza), vengono annullate tutte e tre.
-4. **Le date correggono lo stato.** Una scadenza passata forza «chiuso». Un'apertura futura forza «in apertura». Senza
-   date resta lo stato dato dal modello. Il prompt dice al modello che, senza indizi precisi e con tipo «Opportunità»,
-   «aperto» è il valore ragionevole: da qui nascono molti «aperti senza scadenza».
+4. **Le date correggono lo stato.** Una scadenza passata forza «chiuso». Un'apertura futura forza «in apertura». Con
+   la scadenza di oggi o futura (giorno di Roma) il «chiuso» del modello non vale e diventa «aperto»: il modello a volte
+   sbaglia, e un bando «processed» chiuso non viene più pubblicato (regola dell'01/10 notte, contratto del giro 3
+   §21.1). La regola guarda anche la scadenza trovata dai recuperi del passo 5. Conta solo il giorno: il giorno della
+   scadenza vale «aperto» anche dopo l'ora indicata, e il sito lo mostra chiuso da solo (§4.5). Il «chiuso» del lettore
+   per ente (passo 5) invece resta, perché ha una prova. Senza scadenza e senza un'apertura futura resta lo stato dato
+   dal modello, anche «chiuso». Il prompt dice al modello queste regole, e anche che, senza indizi precisi e con tipo
+   «Opportunità», «aperto» è il valore ragionevole: da qui nascono molti «aperti senza scadenza».
 5. **Recuperi senza modello**, solo se manca la scadenza e il bando è valido:
    - il **lettore per ente** (un programma scritto apposta per leggere il sito di un certo ente), che può anche dire
      «chiuso»;
@@ -1344,7 +1350,8 @@ severe.
    prossimamente», a meno che date o lettore dicano «chiuso».
 
 **Il ripiego.** Se la pagina del bando manca o è troppo corta (meno di 200 caratteri), si legge la pagina **della
-fonte**, cioè l'elenco, con Sonnet 4.6 e le stesse regole sulle date.
+fonte**, cioè l'elenco, con Sonnet 4.6, le stesse regole sulle date e la stessa regola sul «chiuso» del modello
+(passo 4).
 
 Non va confuso con il «resolver della fonte ufficiale» del passo 5: è un'altra cosa che, per un incidente di nomi, si
 chiama `bando_resolver.py` e usa la variabile `RESOLVER_MODEL`.
@@ -1384,8 +1391,8 @@ chiama `bando_resolver.py` e usa la variabile `RESOLVER_MODEL`.
 1 bando, giudicato «chiuso».)
 
 Fonti: `scraper_bandi/app/bando_preprocess_runner.py`, `scraper_bandi/app/preprocessor.py` (righe 34-35, 247, 436,
-446-478, 584-589, 655-727, 847), `scraper_bandi/app/date_validation.py`, `scraper_bandi/app/bando_resolver.py`,
-`scraper_bandi/app/settings.py`.
+446-478, 584-589, 655-727, 847; `scarta_chiuso_del_modello`), `scraper_bandi/app/date_validation.py`,
+`scraper_bandi/app/bando_resolver.py`, `scraper_bandi/app/settings.py`.
 
 ### 3.7 Passo 4: enrich
 
@@ -1413,7 +1420,11 @@ l'enrich un bando non si trova per regione o per settore.
 **Cosa decide, in due fasi:**
 
 - **Fase A: solo per i bandi senza stato.** Haiku sceglie fra aperto, chiuso e in apertura. Lo stato si scrive solo con
-  fiducia almeno 0,6, altrimenti si riprova al giro dopo. Qui le date non vengono controllate.
+  fiducia almeno 0,6, altrimenti si riprova al giro dopo. Dall'01/10 notte (contratto del giro 3, §21.1) le date già
+  salvate nella riga correggono la risposta, come nel preprocess (§3.6, passo 4): con la scadenza di oggi o futura un
+  «chiuso» diventa «aperto»; con la scadenza passata lo stato diventa «chiuso»; con l'apertura futura diventa «in
+  apertura». Si scrive lo stato corretto. Gli aperti e gli «in apertura» passano alla fase B, i chiusi si fermano qui.
+  È voluto: un bando già scaduto non va avanti, come nel preprocess; prima arrivava lo stesso alla SEO, come chiuso.
 - **Fase B: la classificazione.** Partono 7 chiamate Haiku in parallelo, una per catalogo. Il codice scarta qualsiasi
   valore che non sia nel catalogo: **nessuna voce nuova entra mai nei cataloghi**.
 - **Rete di sicurezza finale.** Prima di scrivere, lo stato si ricalcola con le date: se nel frattempo la scadenza è
@@ -1434,8 +1445,9 @@ modalità, programma, stato e **«enriched»**. «Enriched» vuol dire classific
 
 **Oggi (giro di avvio):** 3 bandi classificati, nessuna rifinitura dello stato.
 
-Fonti: `scraper_bandi/app/bando_enrich_runner.py`, `scraper_bandi/app/enricher.py`, `scraper_bandi/app/db.py`
-(`select_bandi_to_enrich`, `update_bando_enriched`), tabelle dei cataloghi e di collegamento.
+Fonti: `scraper_bandi/app/bando_enrich_runner.py` (fase A: `scarta_chiuso_del_modello` e `reconcile_stato_bando`),
+`scraper_bandi/app/enricher.py`, `scraper_bandi/app/db.py` (`select_bandi_to_enrich`, `update_bando_enriched`),
+tabelle dei cataloghi e di collegamento.
 
 ### 3.8 Passo 4-bis: domini (import di IndicePA), solo alle 06
 
@@ -3790,12 +3802,18 @@ RIPRESA §1 e §3.1.
 - **Perché conta.** Contraddice la regola generale «le date vincono».
 - **Proposta.** Far vincere le date anche qui.
 
-**M12. Un «chiuso» del modello resta fermo anche con una scadenza futura.** *Difetto.*
-- **Cosa non va.** I bandi 2773 (scadenza 26/07/2027) e 1262487 (scadenza 01/11/2026) sono «processed chiusi»
-  (ricontato). Nessun passo ricontrolla i processed.
-- **Perché conta.** Due bandi forse aperti non vengono pubblicati (**non verificato**: le loro pagine non sono state
-  aperte).
-- **Proposta.** Riconciliare anche verso «aperto» quando la scadenza validata è futura, e controllare a mano questi due.
+**M12. Un «chiuso» del modello restava fermo anche con una scadenza futura.** *Difetto, corretto nel codice l'01/10
+notte: vale dal deploy delle correzioni (contratto del giro 3, §21.1).*
+- **Cosa non andava.** Il preprocess accettava il «chiuso» del modello anche con la scadenza futura. Un «processed»
+  chiuso non passa né da enrich né dalla SEO, e nessun passo lo ricontrolla: restava nascosto per sempre. Erano così
+  tre bandi: 2773 (scadenza 26/07/2027), 1262487 (01/11/2026) e 1262812 (06/10/2026). Le loro pagine ufficiali, lette
+  l'01/10 sera, dicono «Aperto».
+- **Cosa è stato fatto.** I tre bandi sono stati corretti a mano (`docs/bandi-monitor/correzioni-giro-3-sera.sql`,
+  lanciato da Michele l'01/10 verso le 22). Nel codice, con la scadenza di oggi o futura il «chiuso» del modello vale
+  «aperto»: nel preprocess, nel suo ripiego e nella fase A di enrich (§3.6 passo 4, §3.7). Il «chiuso» del lettore per
+  ente, che ha una prova, resta. I casi si contano in `chiuso_modello_scartato`.
+- **Cosa resta.** 300 «processed» chiusi **senza** scadenza, quasi tutti di giugno: la regola non li tocca (annotati in
+  RIPRESA).
 
 **M13. Sospensione e revoca hanno buchi di progetto.** *Rischio, oggi 0 casi.*
 - **Cosa non va.** I buchi sono elencati in RIPRESA §4.1 i:
@@ -3953,7 +3971,7 @@ Fonti: `scraper_bandi/app/{bilancio,seo_skill,bando_seo_runner,gemelli,verifica_
 | B10 | In attivo un bando «senza appiglio» resta fermo per sempre senza avviso | Bando perso in silenzio | Contarlo in `salute` | Rischio |
 | B11 | La vecchia deduplicazione `canonical_key` è codice morto e incompatibile con i trigger | Accenderla produrrebbe solo errori | Toglierla | Miglioria |
 | B12 | Il punteggio di confidenza non fa da soglia: passano anche bandi a 0,5 | Bandi poco certi pubblicati | Decidere una soglia | Decisione |
-| B13 | La rifinitura dell'enrich decide lo stato con Haiku senza validare le date; una chiamata di classificazione fallita lascia il campo vuoto senza riprovare (11 senza regioni, 11 senza beneficiari) | Dati più poveri, non distinguibili da «nessuno» | Riprovare o segnare il campo | Difetto |
+| B13 | La rifinitura dell'enrich decide lo stato con Haiku senza estrarre né controllare date (dall'01/10 notte lo correggono le date già salvate nella riga, §3.7); una chiamata di classificazione fallita lascia il campo vuoto senza riprovare (11 senza regioni, 11 senza beneficiari) | Dati più poveri, non distinguibili da «nessuno» | Riprovare o segnare il campo | Difetto |
 | B14 | «on_arrival» di ObiettivoEuropa diventa «Preavviso» (`scrapers/adapters/obiettivo_europa.py:14`), ma lo studio del 30/09 dice che vuol dire «a sportello» | Indizio sbagliato al modello | Correggere l'adattatore | Difetto |
 | B15 | Il ripiego Sonnet non applica le regole del giro 2 (status «2», etichetta, ore); il prompt chiede «ragionamento esteso», ma la chiamata non lo attiva | Regole diverse per i bandi senza pagina | Allineare | Difetto |
 | B16 | 569 «processed» chiusi mai archiviati (570 dopo il giro delle 12: la coda cresce); la documentazione del backfill dice che vengono «ripescati», ed è falso | Coda che non si svuota | Decisione RIPRESA §4.1 e (§9.8) | Decisione |

@@ -232,6 +232,7 @@ async def run(
     origini_scadenza: Counter[str] = Counter()
     chiusi_da_lettore = 0
     status2_in_apertura = 0
+    chiuso_modello_scartato = 0
 
     for bid, res in results:
         if isinstance(res, Exception):
@@ -272,6 +273,8 @@ async def run(
                 chiusi_da_lettore += 1
             if analysis.get("_status2_in_apertura"):
                 status2_in_apertura += 1
+            if analysis.get("_chiuso_modello_scartato"):
+                chiuso_modello_scartato += 1
         else:
             rejected_updates.append(update)
 
@@ -307,6 +310,9 @@ async def run(
         "scadenze_da_etichetta_oe": origini_scadenza["etichetta_oe"],
         "chiusi_da_lettore": chiusi_da_lettore,
         "status2_in_apertura": status2_in_apertura,
+        # §21.1: i 'chiuso' del modello scartati perche' la scadenza era da
+        # oggi in poi (la riga va avanti a enrich e SEO invece di restare nascosta)
+        "chiuso_modello_scartato": chiuso_modello_scartato,
         # date che G10 ha respinto perche' presunte: nei 7 giorni d'ombra
         # separa l'effetto del prompt a 8 000 caratteri da quello di G10
         "date_presunte_respinte": date_presunte_respinte,

@@ -227,6 +227,9 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > `src/lib/bandi/**`, `src/lib/supabase-bandi.ts`, `src/lib/stato-bando.ts`, `src/lib/api-v1/{feed,testi-doc}.ts`,
 > `src/components/bandi/ElencoBandi.astro`, `src/pages/api/lista/bandi.astro`) e
 > `tests/**`. L'import IndicePA è stato lanciato dall'utente sul server l'01/10 (22.355 domini, 16 spenti con SQL).
+> Dopo il primo giro in produzione (01/10 notte, branch `claude/bandi-giro-3-correzioni`), su ok esplicito
+> dell'utente, anche `scraper_bandi/app/bando_runner.py` e i suoi test (doppioni in `bando_controllo`, contratto §21)
+> e `scraper_bandi/app/bando_resolver.py` (il ripiego del preprocess: stessa regola del «chiuso» del modello, §21.1).
 > Contratto interno: `docs/contracts/bandi-giro-3.md`. Fuori da questo elenco la regola sopra resta in vigore.
 
 Inoltre, sempre (non toccati dalle deroghe):

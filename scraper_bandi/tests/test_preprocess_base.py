@@ -33,8 +33,13 @@ dv = carica_modulo("date_validation")
 FIXTURE = Path(__file__).parent / "fixtures" / "etichette_stato"
 OGGI = date(2026, 10, 2)
 
-#: Le impronte dei due prompt al 30/09/2026: il giro 2 non li cambia.
-SHA_SYSTEM_PROMPT = "b4f292b7665536e6c02d55f2eaede4c7f173ac34ef8296b5d576dea4ad353baa"
+#: Le impronte dei due prompt: il giro 2 non li cambia. L'01/10/2026 (§21.1 del
+#: contratto del giro 3) il system prompt prende una riga sola nel blocco
+#: «STATO_BANDO DATA-DRIVEN» (con la scadenza da oggi in poi un 'chiuso' vale
+#: 'aperto'): impronta di prima b4f292b7…53baa, la riga nuova la verifica
+#: `test_la_sola_riga_nuova_del_21_1`. Il tool non cambia.
+SHA_SYSTEM_PROMPT = "d0c8da21729dc8f9ee776b50f2080f7adfd2bb69d1dc2f993daa223b1577f594"
+RIGA_21_1 = "- Se data_scadenza >= {oggi} (oggi) -> un 'chiuso' vale 'aperto'\n"
 SHA_ANALYZE_TOOL = "89d1144086ba132c742f6dc7e32f5dc59c59fc067e283ace58373d0028e8fb90"
 
 
@@ -62,6 +67,14 @@ class PromptInvariati(unittest.TestCase):
                          SHA_SYSTEM_PROMPT)
         tool = json.dumps(pre.ANALYZE_TOOL, sort_keys=True, ensure_ascii=False)
         self.assertEqual(hashlib.sha256(tool.encode()).hexdigest(), SHA_ANALYZE_TOOL)
+
+    def test_la_sola_riga_nuova_del_21_1(self):
+        # Tolta la riga del §21.1 il prompt torna quello del giro 2, byte per byte.
+        self.assertEqual(pre.SYSTEM_PROMPT_TEMPLATE.count(RIGA_21_1), 1)
+        prima = pre.SYSTEM_PROMPT_TEMPLATE.replace(RIGA_21_1, "")
+        self.assertEqual(hashlib.sha256(prima.encode()).hexdigest(),
+                         "b4f292b7665536e6c02d55f2eaede4c7f173ac34ef8296b5d576dea4ad353baa")
+        self.assertIn(">= 2 ottobre 2026 (oggi) -> un 'chiuso' vale 'aperto'", pre.system_prompt(OGGI))
 
 
 class BloccoDellaPagina(unittest.TestCase):
