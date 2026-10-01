@@ -112,6 +112,11 @@ Le verifiche visive le ha fatte il committente.
 
 ### Giro 2 dei bandi: sorveglianza e stato da verificare (passi una tantum)
 
+> **01/10/2026: il pannello di BandoFit NON si fa** (decisione di Michele). Quindi si saltano: il passo 2 (la
+> chiave), nel passo 4 l'installazione del timer della sorveglianza, nel passo 5 i controlli di `sorveglia`, e nel
+> passo 8 la prima parte del messaggio (il pannello). La migrazione 12 è applicata (01/10) e resta lì inutilizzata:
+> non dà fastidio. Il codice di `sorveglia` resta nel repo ma nessuno lo lancia.
+
 Branch `claude/bandi-giro-2`, contratto interno `docs/contracts/bandi-giro-2.md`. Due percorsi, un solo
 deploy.
 
