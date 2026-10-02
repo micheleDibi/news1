@@ -315,7 +315,7 @@ revoca ad anon.
 
 Colonne che la 07 toglie dalla vista, con il loro sostituto e la copertura **misurata** con la
 anon key il 30/09/2026 alle 13:26 su 2 180 bandi (misura completa, con gli elenchi degli id:
-`docs/bandi-monitor/misure-colonne-07.md` di news1).
+`docs/bandi-monitor/misure-colonne-07.md` di news1, rimosso l'01/10: `git show a3ea9ef^:docs/bandi-monitor/misure-colonne-07.md`).
 
 | colonna tolta | sostituto | copertura del sostituto oggi |
 |---|---|---|
@@ -339,6 +339,30 @@ tiene non pubblicabili, quindi anon non le legge.
 1. **La 07 è rimandata.** news1 non la propone finché nessun bando aperto o in apertura perde il
    pulsante o gli allegati. Prima di proporla news1 rifà questa misura e la manda a BandoFit.
    Resta la regola di §10: serve anche la conferma scritta che la fase (c) è in produzione.
+   **Dal 02/10/2026 (decisione di Michele): l'interruttore del c2 vale anche per i chiusi.** Il c2 va in
+   produzione quando la misura di news1 **e** lo script di controllo incrociato di BandoFit (sola lettura, anon key,
+   stesso codice della scheda) danno **0 bandi pubblicati, di qualunque stato, che perdono il pulsante o gli
+   allegati**. BandoFit prepara il c2 su un branch senza deploy; quando le due misure danno zero, Michele fa il
+   deploy del c2 senza altri preavvisi e BandoFit manda la conferma scritta di §10.1.
+   **Come si misura** (le due misure devono contare la stessa cosa): per ogni bando di `bando_pubblico`, letto con la
+   anon key, si confronta la scheda **c1** (l'ordine del punto 2 con i ripieghi deprecati) con la scheda **c2** (lo
+   stesso ordine senza `link_candidatura`, `link_bando` e `allegati`), con la normalizzazione degli URL del punto 2 e
+   il filtro degli aggregatori del consumatore. Un bando «perde il pulsante» se in c1 ce l'ha e in c2 no; «perde
+   allegati» se un URL degli allegati di c1 manca in c2. I conteggi si danno per stato (aperti, in apertura, chiusi,
+   sospesi e revocati) con gli id. Dettagli allineati con lo script di BandoFit (`controllo_incrociato_c2.py`, 02/10):
+   su ogni URL del pulsante passa la cintura del consumatore di §5 (un URL scartato fa passare al candidato dopo); la
+   fonte ufficiale vale solo con `fonte_ufficiale_stato='trovata'`; fra righe dello stesso tipo vince l'id più basso;
+   al più 200 righe di `bando_link` per bando, come la scheda; gli allegati si confrontano a liste intere (righe
+   `atto`/`allegato` più jsonb, senza doppioni, **senza** togliere l'URL uguale al pulsante); i gruppi seguono solo
+   `stato_effettivo` (aperti, in apertura, chiusi; poi sospesi, revocati e senza stato, a parte). Si riportano anche,
+   **solo come informazione** e non come perdita: «cambia pulsante» (la destinazione cambia, URL normalizzati) e
+   «perde Fonte ufficiale» (il pulsante secondario perde il ripiego su `link_bando`). Una riga «non passa mai la prova» se `link_verifica` l'ha esaminata in almeno 3
+   giri diversi senza renderla pubblicabile: news1 ne manda gli id, così BandoFit decide se dichiararla nella conferma.
+   **Chi misura e quando**: la prima misura la fa il lead di news1 la sera del 02/10 (sola lettura, anon key); poi la
+   misura diventa **automatica**, un comando di news1 in sola lettura nel giro delle 18 che scrive conteggi e id nella
+   riga del giro (contratto interno giro 3, §23, da realizzare). Fino ad allora news1 la ripete a richiesta di
+   Michele, senza un passo fisso a mano. La misura di news1 è quella della scheda di BandoFit (ordine del punto 2),
+   non quella della scheda di news1, che scarta i `link_candidatura` non `extracted` ed è più severa.
 2. **Nella fase (c)** BandoFit legge `bando_pubblico` e `bando_link`, con questo ordine esplicito:
    - **pulsante principale**: riga `tipo='candidatura'` → `link_candidatura` →
      `fonte_ufficiale_url` → riga `tipo='portale'` → `link_bando`. Con quest'ordine nessuno degli
@@ -698,7 +722,9 @@ Cose che è meglio sapere prima che succedano.
 f5e232d di BandoFit, conferma scritta del 30/09). Legge `bando_pubblico`, `bando_link`, `bando_slug_storico` e
 `bando_fusione`, mai la tabella `bando`. Mantiene i ripieghi deprecati di §5.1 e rimappa i fusi con una
 riconciliazione oraria su `bando_fusione`. Il passo **c2**, cioè togliere i ripieghi, parte dopo una nuova misura di
-§5.1 annunciata con almeno 7 giorni di preavviso; solo dopo il c2 si propone la 07. Prima di una separazione news1
+§5.1 annunciata con almeno 7 giorni di preavviso; solo dopo il c2 si propone la 07. **Dal 02/10/2026** il preavviso
+di 7 giorni è tolto: il c2 si prepara in parallelo e parte con l'interruttore di §5.1 (zero perdite su tutti i
+pubblicati, misura di news1 e script di BandoFit). Prima di una separazione news1
 avvisa BandoFit. Le fusioni automatiche invece sono continue dal giro 3 (§6.2) e non richiedono un avviso per
 lotto.
 

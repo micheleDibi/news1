@@ -31,6 +31,7 @@ rete e senza DB.
 """
 from __future__ import annotations
 
+import calendar
 import csv
 import functools
 import json
@@ -42,7 +43,7 @@ import traceback
 import zlib
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from datetime import date as date_cls, datetime, timedelta
+from datetime import date as date_cls, datetime, time as time_cls, timedelta
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -175,6 +176,13 @@ COLONNE_CONTROLLO: tuple[str, ...] = (
     "bando_id", "prossimo_controllo_at", "ultimo_controllo_at",
     "impronta_contenuto", "controlli_falliti", "priorita_controllo",
     "testo_norm", "impronte_sezioni", "etag", "last_modified",
+)
+
+#: Le colonne di `bando_evento` che servono a capire una voce della coda delle
+#: riscritture (§22.3): quale data, il valore nuovo e quello di prima
+#: (`valore_prima`, oppure `gate.prima` per gli eventi della rielaborazione).
+COLONNE_EVENTO_CODA: tuple[str, ...] = (
+    "id", "bando_id", "tipo", "campo", "valore_prima", "valore_dopo", "gate",
 )
 
 #: Un giro senza la memoria di `bando_controllo` funziona, ma non ha un
@@ -673,6 +681,14 @@ class FonteDati:
     def eventi_recenti(self, bando_id: Any, giorni: int = 30) -> list[dict[str, Any]]:
         return list(self.eventi.get(bando_id, ()))
 
+    def eventi_per_id(self, ids: Iterable[Any]) -> list[dict[str, Any]]:
+        """Le righe di `bando_evento` con questi id: la coda delle riscritture
+        porta solo `evento_id`, e la fase 2 deve sapere se la voce e' una data
+        messa per la prima volta (§22.3). Qui: quelle in `eventi`."""
+        cercati = {str(i) for i in ids if i is not None}
+        return [dict(e) for elenco in self.eventi.values() for e in elenco
+                if str(e.get("id")) in cercati]
+
     def consumo_oggi(self) -> dict[str, float] | None:
         # None = lettura fallita (§18.5): i test lo simulano con `consumo=None`.
         return None if self.consumo is None else dict(self.consumo)
@@ -905,6 +921,21 @@ class FonteDatiSupabase(FonteDati):
             logger.warning("[monitor] eventi recenti del bando {}: {}", bando_id, e)
             return []
 
+    def eventi_per_id(self, ids: Iterable[Any]) -> list[dict[str, Any]]:
+        # Una GET per id (§22.3). Una lettura fallita vale «non so»: la voce
+        # resta in coda per Opus, come prima.
+        from . import db
+        cercati = tuple(dict.fromkeys(i for i in ids if i is not None))
+        if not cercati:
+            return []
+        try:
+            return list(db.select_eventi(
+                ids=cercati, colonne=COLONNE_EVENTO_CODA,
+                client=self._client, strumento=self._adattatore()))
+        except Exception as e:                            # pragma: no cover - ripiego
+            logger.warning("[monitor] eventi della coda {} illeggibili: {}", list(cercati), e)
+            return []
+
     def consumo_oggi(self) -> dict[str, float] | None:
         # None se la lettura fallisce (§18.5): per il monitor vale tetto
         # raggiunto, non «niente speso».
@@ -1091,6 +1122,13 @@ class EsitoControllo:
     #: Novita' oltre il limite del prompt, rimaste in coda dopo una
     #: riscrittura riuscita (si riscrivono al giro dopo).
     novita_rinviate: int = 0
+    #: §22.4: il motivo della riscrittura com'e' tornato dal riscrittore, e se
+    #: era una risposta tagliata dal tetto di token (`RISPOSTA_TRONCATA`).
+    motivo_riscrittura: str = ""
+    riscrittura_troncata: bool = False
+    #: §22.1-22.2: perche' la fase 2 ha rinviato la riscrittura senza chiamare
+    #: Opus (`RINVIO_TEMPO`, `RINVIO_RISERVA`, `RINVIO_SPESA`); '' altrimenti.
+    rinvio_riscrittura: str = ""
     #: La riga era di una pulizia vecchia (`impronte.VERSIONE_PULIZIA`):
     #: impronte, `testo_norm` e link si sono riscritti senza diff ne'
     #: classificazione. E' il contatore `riallineate` del giro.
@@ -1206,6 +1244,10 @@ async def controlla(
     giro, anche con piu' eventi. Rinviata (tetto di spesa) o fallita resta in
     coda per il giro dopo; dopo `TENTATIVI_RISCRITTURA` fallimenti si
     abbandona, e lo si dice. Non solleva mai.
+
+    Dal §22.1 `run` non la usa: controlla tutte le pagine prima
+    (`_controlla_pagina`) e riscrive dopo (`_fase_riscritture`), con la
+    riserva per i giri che restano. Resta per i controlli di un bando solo.
     """
     esito = await _controlla_pagina(riga, **kwargs)
     scrittore = None if kwargs.get("dry_run") else kwargs.get("fonte_dati")
@@ -1744,6 +1786,31 @@ CHIAVE_RISCRITTURA = "__riscrittura__"
 TENTATIVI_RISCRITTURA = 3
 #: L'esito di una riscrittura abbandonata dopo `TENTATIVI_RISCRITTURA`.
 RISCRITTURA_ABBANDONATA = "abbandonata"
+#: L'esito di una coda chiusa senza modello (§22.3): conteneva solo date messe
+#: per la prima volta o date che la prosa dice gia'.
+RISCRITTURA_CHIUSA = "chiusa_senza_modello"
+#: Perche' la fase 2 ha rinviato una riscrittura senza chiamare Opus (§22.2):
+#: tempo del giro finito, riserva dei giri che restano, consumo illeggibile.
+RINVIO_TEMPO = "tempo"
+RINVIO_RISERVA = "riserva"
+RINVIO_SPESA = "spesa"
+#: Il segno che `seo_skill` mette nel motivo di una risposta tagliata dal tetto
+#: di token (§22.4). Lo stesso di `rielabora_fonte.RISPOSTA_TRONCATA`.
+RISPOSTA_TRONCATA = "risposta troncata: max_tokens"
+
+# §22.2: la riserva della spesa giornaliera per i giri che restano. Una
+# riscrittura parte solo se
+#     spesa di regime di oggi + costo massimo <= TETTO_USD_GIORNO - riserva
+# con riserva = QUOTA_RISERVA_GIRO x TETTO_USD_GIORNO per ogni giro di
+# `MONITOR_GIRI` che resta oggi, piu' MARGINE_GIRO_USD per il resto del giro
+# corrente (la verifica dello stato che segue il monitor). Stessa regola sul
+# mese. Taratura del 02/10 su pochi giri: si rilegge dopo 2-3 giorni.
+QUOTA_RISERVA_GIRO = 0.20
+MARGINE_GIRO_USD = 0.25
+#: I token d'ingresso del costo massimo di una riscrittura: 10 309 in media nel
+#: giro delle 00 del 02/10 (riga 174), qui con margine. L'uscita e'
+#: `SEO_MAX_TOKENS`, cosi' il costo segue da solo un cambio del tetto.
+TOKEN_INGRESSO_RISCRITTURA_MAX = 12000
 
 
 def riscrittura_in_coda(riga: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1760,8 +1827,13 @@ async def _riscrivi_se_serve(
     riscrittore: Callable[[Any, list[dict[str, Any]]], Awaitable[Any]] | None,
     scrittore: FonteDati | None,
     adesso: datetime,
+    chiuso_al_giro_dopo: bool = False,
 ) -> None:
-    """La riscrittura con Opus del bando, e la sua coda (giro 3, §6)."""
+    """La riscrittura con Opus del bando, e la sua coda (giro 3, §6).
+
+    `chiuso_al_giro_dopo` (solo la fase 2 di `run`, §22.1): un chiuso la cui
+    riscrittura e' rinviata con la coda invariata torna comunque al giro dopo.
+    """
     coda = riscrittura_in_coda(riga)
     novita = rigenera_mod.unisci_novita((coda or {}).get("novita") or (), esito.novita)
     if not novita or scrittore is None:
@@ -1781,6 +1853,7 @@ async def _riscrivi_se_serve(
         resto = novita[rigenera_mod.MAX_NOVITA_PER_RISCRITTURA:]
         risultato = await riscrittore(riga.get("id"), prime)
         esito.riscrittura = str(getattr(risultato, "esito", "") or rigenera_mod.ESITO_FALLITA)
+        esito.motivo_riscrittura = str(getattr(risultato, "motivo", "") or "")
         tentativi = int((coda or {}).get("tentativi") or 0)
         nuova = None
         if esito.riscrittura == rigenera_mod.ESITO_SCRITTA:
@@ -1793,6 +1866,14 @@ async def _riscrivi_se_serve(
                      "dal": (coda or {}).get("dal") or adesso.isoformat()}
         elif esito.riscrittura == rigenera_mod.ESITO_FALLITA:
             tentativi += 1
+            # §22.4: il motivo di ogni riscrittura non riuscita va nel log, e
+            # una risposta tagliata dal tetto di token si conta: serve a
+            # decidere se alzare `SEO_MAX_TOKENS`.
+            esito.riscrittura_troncata = RISPOSTA_TRONCATA in esito.motivo_riscrittura
+            logger.warning("[monitor] riscrittura del bando {} non riuscita "
+                           "(tentativo {} di {}{}): {}", riga.get("id"), tentativi, TENTATIVI_RISCRITTURA,
+                           ", risposta troncata" if esito.riscrittura_troncata else "",
+                           esito.motivo_riscrittura or "senza motivo")
             if tentativi >= TENTATIVI_RISCRITTURA:
                 logger.warning("[ALLARME] [monitor] riscrittura del bando {} abbandonata dopo {} "
                                "tentativi: {}", riga.get("id"), tentativi,
@@ -1801,7 +1882,16 @@ async def _riscrivi_se_serve(
             else:
                 nuova = {"novita": novita, "tentativi": tentativi,
                          "dal": (coda or {}).get("dal") or adesso.isoformat()}
-    if nuova != coda:
+    salva = nuova != coda
+    if (not salva and chiuso_al_giro_dopo and nuova
+            and esito.riscrittura == rigenera_mod.ESITO_RINVIATA
+            and fase(riga, oggi=adesso.date()) == FASE_CHIUSO):
+        # §22.1: chi e' rinviato passa per primo al giro dopo. Con la coda
+        # invariata non si scriverebbe niente, e al chiuso resterebbe il
+        # `prossimo_controllo_at` della cadenza (3, 10 o 30 giorni) scritto dal
+        # controllo: `_salva_coda` lo riporta ad adesso, come per una coda nuova.
+        salva = True
+    if salva:
         _salva_coda(scrittore, riga, esito, nuova, adesso)
 
 
@@ -1831,6 +1921,364 @@ def _salva_coda(
     except Exception as e:                                # pragma: no cover - ripiego
         logger.warning("[monitor] coda delle riscritture del bando {} non salvata: {}",
                        riga.get("id"), e)
+
+
+# --- giro 3, §22: prima il monitor, poi le riscritture ----------------------
+#
+# Fino al 02/10 la riscrittura di una scheda partiva dentro il ciclo dei
+# controlli, subito dopo la pagina del suo bando (`controlla`), dallo stesso
+# tetto di 5 $ e senza precedenza: nel giro delle 00 del 02/10 le riscritture
+# hanno preso 4,46 $ e il monitor e' rimasto senza modello per il resto della
+# giornata. Ora `run` controlla e classifica tutto (fase 1), poi riscrive
+# (fase 2, `_fase_riscritture`) con cio' che resta dopo la riserva per i giri
+# che restano oggi e nel mese.
+
+def _orario(giro: Any) -> time_cls | None:
+    """«06:00» -> 06:00; None se non e' un orario HH:MM."""
+    ore, _, minuti = str(giro or "").strip().partition(":")
+    if not (ore.isdigit() and minuti.isdigit()):
+        return None
+    if not (0 <= int(ore) <= 23 and 0 <= int(minuti) <= 59):
+        return None
+    return time_cls(int(ore), int(minuti))
+
+
+def giri_rimasti(adesso: datetime | None, giri: Iterable[Any]) -> tuple[int, int]:
+    """(giri che restano oggi, giri che restano nel mese) dopo l'ora attuale. Pura.
+
+    Gli orari di `MONITOR_GIRI` sono quelli dello scheduler, in ora di Roma:
+    l'istante si porta a Roma (`adesso_roma`, cambio d'ora compreso) e si
+    contano gli orari dopo quello attuale. Il giro in corso non conta: alle
+    06:00 restano le 12 e le 18. Il mese somma i giri di oggi e tutti quelli
+    dei giorni che restano.
+    """
+    momento = adesso_roma(adesso)
+    orari = {o for o in (_orario(g) for g in (giri or ())) if o is not None}
+    ora = momento.time()
+    oggi = sum(1 for o in orari if o > ora)
+    giorni_dopo = calendar.monthrange(momento.year, momento.month)[1] - momento.day
+    return oggi, oggi + len(orari) * giorni_dopo
+
+
+def _riserva(tetto_giorno: float, giri: int) -> float:
+    """`QUOTA_RISERVA_GIRO` del tetto giornaliero per giro, piu' il margine."""
+    return round(QUOTA_RISERVA_GIRO * max(0.0, tetto_giorno) * max(0, int(giri))
+                 + MARGINE_GIRO_USD, 6)
+
+
+def riserva_usd(tetto_giorno: float, giri: int) -> float:
+    """La riserva di oggi in $ per `giri` giri che restano (§22.2). Pura.
+
+    Tetto a 0 = nessun tetto, quindi nessuna riserva (come `bilancio._supera`).
+    """
+    tetto = float(tetto_giorno or 0.0)
+    return 0.0 if tetto <= 0 else _riserva(tetto, giri)
+
+
+def costo_massimo_riscrittura(impostazioni: Any) -> float:
+    """Il costo massimo di una riscrittura con Opus, in $ (§22.2). Pura.
+
+    `TOKEN_INGRESSO_RISCRITTURA_MAX` d'ingresso piu' `SEO_MAX_TOKENS` d'uscita
+    al listino del modello SEO: lo stesso `LISTINO_MODELLI` con cui
+    `bilancio.registra_chiamata` conta la spesa vera. Un modello fuori listino
+    vale 0, come in `bilancio` (che alza l'allarme sulla chiamata vera).
+    """
+    listino = getattr(impostazioni, "listino_modelli", None) or {}
+    modello = str(getattr(impostazioni, "seo_model", "") or "")
+    try:
+        uscita = int(getattr(impostazioni, "seo_max_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        uscita = 0
+    costo, _fuori = bilancio.costo_usd(TOKEN_INGRESSO_RISCRITTURA_MAX, uscita, modello, listino)
+    return round(costo, 6)
+
+
+def _dollari(valore: Any) -> float:
+    """Una voce di consumo in $: un valore illeggibile vale 0 (come `bilancio`)."""
+    if isinstance(valore, bool):
+        return 0.0
+    try:
+        return float(valore or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def riscrittura_consentita(
+    consumo: Mapping[str, Any] | None,
+    tetti: bilancio.Tetti,
+    *,
+    costo_massimo: float,
+    giri_oggi: int,
+    giri_mese: int,
+) -> bilancio.Esito:
+    """Una riscrittura puo' partire senza toccare la riserva? (§22.2) Pura.
+
+    `consumo` e' la spesa di regime di oggi con quella di questo giro (monitor
+    e riscritture, `_gia_con`), con `usd_mese` se il mese e' noto; None se la
+    lettura e' fallita. Consentita solo se
+
+        spesa di oggi + costo massimo <= TETTO_USD_GIORNO - riserva(giri di oggi)
+        spesa del mese + costo massimo <= TETTO_USD_MESE - riserva(giri del mese)
+
+    Un tetto a 0 non ha ne' limite ne' riserva; il mese vale solo se il suo
+    consumo e' noto, come in `bilancio.verifica`. Consumo illeggibile con un
+    tetto di regime: rinviata (§18.5). La riserva non passa come `Tetti`
+    ridotti, perche' un tetto sceso a 0 diventerebbe «nessun tetto».
+    """
+    if consumo is None:
+        illeggibile = bilancio.verifica_con_consumo(
+            bilancio.Contatori(), tetti, step=rigenera_mod.STEP_RISCRITTURA, consumo=None)
+        if not illeggibile.consentito:
+            return illeggibile
+        consumo = {}
+    costo = max(0.0, float(costo_massimo or 0.0))
+    giorno = float(tetti.usd_giorno or 0.0)
+    if giorno > 0:
+        speso = _dollari(consumo.get("usd"))
+        riserva = _riserva(giorno, giri_oggi)
+        limite = giorno - riserva
+        if round(speso + costo, 6) > round(limite, 6):
+            return bilancio.Esito(
+                False, True,
+                f"riserva dei giri di oggi: {speso:.4f} + {costo:.4f} $ oltre "
+                f"{limite:.4f} ({giorno:g} meno {riserva:g} di riserva)", voce="usd")
+    mese = float(tetti.usd_mese or 0.0)
+    if mese > 0 and "usd_mese" in consumo:
+        speso = _dollari(consumo.get("usd_mese"))
+        # La quota per giro e' quella del giorno (1 $ con 5 $ al giorno): senza
+        # un tetto giornaliero resta solo il margine del giro corrente.
+        riserva = _riserva(giorno, giri_mese)
+        limite = mese - riserva
+        if round(speso + costo, 6) > round(limite, 6):
+            return bilancio.Esito(
+                False, True,
+                f"riserva dei giri del mese: {speso:.4f} + {costo:.4f} $ oltre "
+                f"{limite:.4f} ({mese:g} meno {riserva:g} di riserva)", voce="usd")
+    return bilancio.OK
+
+
+def date_della_novita(
+    evento: Mapping[str, Any] | None,
+) -> tuple[bool, date_cls | None, date_cls, str] | None:
+    """(data di prima nota, data di prima, data nuova, ruolo) dell'evento di una
+    voce in coda; None se l'evento non sposta una data in prosa. Pura.
+
+    La data di prima viene da `valore_prima` (gli eventi del monitor) oppure da
+    `gate.prima` (la rielaborazione non scrive `valore_prima`). Se non c'e' in
+    nessuno dei due, o non si legge, non e' nota: la voce non si chiude.
+    """
+    if not isinstance(evento, Mapping):
+        return None
+    if str(evento.get("tipo") or "") not in rigenera_mod.TIPI_CON_DATA:
+        return None
+    vecchia, nuova, ruolo = rigenera_mod.date_da_evento(evento)
+    if nuova is None:
+        return None
+    colonna = {r: c for c, r in rigenera_mod.COLONNE_DATA}.get(ruolo)
+    for fonte, chiave in ((evento.get("valore_prima"), colonna), (evento.get("gate"), "prima")):
+        if isinstance(fonte, Mapping) and chiave in fonte:
+            grezza = fonte.get(chiave)
+            letta = _data(grezza)
+            if grezza is not None and letta is None:
+                return False, None, nuova, ruolo
+            return True, letta, nuova, ruolo
+    return False, vecchia, nuova, ruolo
+
+
+async def _chiudi_senza_modello(
+    riga: Mapping[str, Any],
+    esito: EsitoControllo,
+    *,
+    scrittore: FonteDati,
+    rigenerazione: Callable[..., Awaitable[Any]] | None,
+    adesso: datetime,
+) -> bool:
+    """Chiude senza Opus la coda di un bando che chiede solo date gia' a posto
+    in prosa (§22.3). Vero se l'ha chiusa.
+
+    Sono le voci che la rielaborazione mandava a Opus fino al 02/10: una data
+    messa per la prima volta (prima NULL), che la prosa non poteva dire
+    sbagliata, e una data che la prosa dice gia' (o che la sostituzione senza
+    modello porta in linea). Come nel monitor (`date_da_riscrivere`,
+    `_rigenerazione_riuscita`) valgono come riallineamento riuscito. Solo la
+    coda gia' salvata, e solo se ogni voce e' cosi': una voce che non e' una
+    data, un evento che non si rilegge, una data di prima ignota o una prosa
+    che non si riallinea lasciano la coda com'e', per Opus. Con novita' nuove
+    di questo giro il bando si riscrive comunque.
+    """
+    coda = riscrittura_in_coda(riga)
+    if not coda or esito.novita:
+        return False
+    voci = [v for v in (coda.get("novita") or ()) if isinstance(v, Mapping)]
+    ids = [v.get("evento_id") for v in voci]
+    if not voci or any(i is None for i in ids):
+        return False
+    letti = {str(e.get("id")): e for e in scrittore.eventi_per_id(ids)}
+    da_riallineare: list[tuple[dict[str, Any], date_cls, date_cls, str]] = []
+    for evento_id in ids:
+        evento = letti.get(str(evento_id))
+        date = date_della_novita(evento)
+        if evento is None or date is None or not date[0]:
+            return False
+        _nota, vecchia, nuova, ruolo = date
+        if vecchia is not None:
+            da_riallineare.append((dict(evento), vecchia, nuova, ruolo))
+    scritto = False
+    if da_riallineare:
+        if rigenerazione is None:
+            return False
+        preparata = _da_rigenerare(scrittore, riga, rigenerazione)
+        if preparata is None:
+            return False
+        corrente, adattatore = preparata
+        # Incatenate come nella fase 1: la seconda data parte dal testo della prima.
+        for evento, vecchia, nuova, ruolo in da_riallineare:
+            try:
+                prodotto = await adattatore(corrente, evento, vecchia=vecchia, nuova=nuova,
+                                            ruolo=ruolo)
+            except Exception as e:
+                logger.warning("[monitor] rigenerazione della coda del bando {} fallita: {}",
+                               riga.get("id"), e)
+                return False
+            risultato = _esito_rigenerazione(prodotto)
+            if not _rigenerazione_riuscita(risultato):
+                return False
+            scritto = scritto or bool(risultato.get("scritto"))
+            corrente.update(_payload_rigenerazione(prodotto))
+    _salva_coda(scrittore, riga, esito, None, adesso)
+    esito.riscrittura = RISCRITTURA_CHIUSA
+    if scritto:
+        # La sostituzione senza modello ha cambiato la prosa: e' una pagina
+        # nuova, e lo slug va a IndexNow come quello di una riscrittura.
+        esito.slug_riscritto = riga.get("slug")
+    logger.info("[monitor] coda delle riscritture del bando {} chiusa senza modello: {} date "
+                "(messe per la prima volta o gia' in linea)", riga.get("id"), len(ids))
+    return True
+
+
+def ordina_riscritture(
+    coppie: Iterable[tuple[Mapping[str, Any], EsitoControllo]],
+    *,
+    adesso: datetime | None = None,
+) -> list[tuple[Mapping[str, Any], EsitoControllo]]:
+    """I bandi della fase 2 in ordine di `dal` crescente, poi `id` (§22.1). Pura.
+
+    E' la rotazione di §1: chi resta in coda conserva `dal` e passa per primo
+    al giro dopo. Le novita' nuove di questo giro hanno `dal` = adesso (lo
+    stesso che `_riscrivi_se_serve` scriverebbe); una coda con `dal`
+    illeggibile passa per prima, come un bando mai controllato.
+    """
+    momento = adesso_roma(adesso).timestamp()
+
+    def chiave(coppia: tuple[Mapping[str, Any], EsitoControllo]) -> tuple[float, int]:
+        riga = coppia[0]
+        coda = riscrittura_in_coda(riga)
+        if coda is None:
+            quando = momento
+        else:
+            dal = _istante(coda.get("dal"))
+            quando = dal.timestamp() if dal is not None else float("-inf")
+        try:
+            identificativo = int(riga.get("id") or 0)
+        except (TypeError, ValueError):
+            identificativo = 0
+        return quando, identificativo
+
+    return sorted(coppie, key=chiave)
+
+
+def _rinvio(motivo: str) -> Callable[[Any, list[dict[str, Any]]], Awaitable[Any]]:
+    """Un riscrittore che non chiama Opus e risponde «rinviata» con il motivo:
+    con `_riscrivi_se_serve` le novita' nuove si salvano in coda e i tentativi
+    restano quelli che erano."""
+    async def rinvia(bando_id: Any, _novita: list[dict[str, Any]]) -> Any:
+        return rigenera_mod.Riscrittura(
+            bando_id=bando_id, esito=rigenera_mod.ESITO_RINVIATA, motivo=motivo)
+    return rinvia
+
+
+async def _riscrivi_protetto(riga: Mapping[str, Any], esito: EsitoControllo, **kwargs: Any) -> None:
+    """`_riscrivi_se_serve` che non solleva: un bando non ferma la fase 2."""
+    try:
+        await _riscrivi_se_serve(riga, esito, **kwargs)
+    except Exception as e:                                # pragma: no cover - difesa
+        logger.warning("[monitor] riscrittura del bando {} non gestita: {}", riga.get("id"), e)
+
+
+async def _fase_riscritture(
+    coppie: Sequence[tuple[Mapping[str, Any], EsitoControllo]],
+    *,
+    riscrittore: Callable[[Any, list[dict[str, Any]]], Awaitable[Any]] | None,
+    scrittore: FonteDati,
+    rigenerazione: Callable[..., Awaitable[Any]] | None,
+    tetti: bilancio.Tetti,
+    impostazioni: Any,
+    consumo: Callable[[], Mapping[str, Any] | None],
+    fuori_tempo: Callable[[], bool],
+    adesso: datetime,
+    dopo_ogni_bando: Callable[[], None] | None = None,
+) -> float | None:
+    """Fase 2 del giro del monitor (§22.1): le riscritture dei bandi
+    controllati in fase 1 che hanno una coda o novita' nuove.
+
+    Ordine di `dal` (`ordina_riscritture`), nessun tetto di numero. Per ogni
+    bando: il tempo (`TEMPO_MONITOR_S`, lo stesso della fase 1), poi la
+    chiusura senza modello (§22.3), poi la spesa con la riserva
+    (`riscrittura_consentita`), poi `_riscrivi_se_serve` con il riscrittore
+    vero o con uno che rinvia. Tempo finito o riserva toccata: la riscrittura
+    e' rinviata, le novita' del giro si salvano in coda, i tentativi restano,
+    e un chiuso torna al giro dopo invece di aspettare la sua cadenza.
+    Senza riscrittore (ombra, adattatore assente) le novita' si salvano e
+    basta, come prima. `dopo_ogni_bando` gira dopo ogni bando con il
+    riscrittore: in `run` porta nei contatori del giro i fetch e i crediti
+    Firecrawl della riscrittura appena fatta. Ritorna la riserva di oggi in $
+    (None senza riscrittore): va nella riga `rigenerazione_scheda`.
+    """
+    da_fare = ordina_riscritture(
+        [(r, e) for r, e in coppie if e.novita or riscrittura_in_coda(r)], adesso=adesso)
+    if riscrittore is None:
+        for riga, esito in da_fare:
+            await _riscrivi_protetto(riga, esito, riscrittore=None, scrittore=scrittore,
+                                     adesso=adesso)
+        return None
+    giri_oggi, giri_mese = giri_rimasti(adesso, getattr(impostazioni, "monitor_giri", ()) or ())
+    costo = costo_massimo_riscrittura(impostazioni)
+    finito = False
+    for riga, esito in da_fare:
+        chi, rinvio = riscrittore, ""
+        if finito or fuori_tempo():
+            # Chi resta fuori conserva `dal` e parte per primo al giro dopo.
+            finito = True
+            chi, rinvio = _rinvio("tempo del giro finito: riscrittura al giro dopo"), RINVIO_TEMPO
+        else:
+            try:
+                chiusa = await _chiudi_senza_modello(
+                    riga, esito, scrittore=scrittore, rigenerazione=rigenerazione, adesso=adesso)
+            except Exception as e:                        # pragma: no cover - difesa
+                logger.warning("[monitor] coda del bando {} non chiusa: {}", riga.get("id"), e)
+                chiusa = False
+            if chiusa:
+                if dopo_ogni_bando is not None:
+                    dopo_ogni_bando()
+                continue
+            letto = consumo()
+            verifica = riscrittura_consentita(letto, tetti, costo_massimo=costo,
+                                              giri_oggi=giri_oggi, giri_mese=giri_mese)
+            if not verifica.consentito:
+                chi = _rinvio(verifica.motivo)
+                rinvio = RINVIO_SPESA if letto is None else RINVIO_RISERVA
+        await _riscrivi_protetto(riga, esito, riscrittore=chi, scrittore=scrittore, adesso=adesso,
+                                 chiuso_al_giro_dopo=True)
+        if rinvio and esito.riscrittura == rigenera_mod.ESITO_RINVIATA:
+            esito.rinvio_riscrittura = rinvio
+        if dopo_ogni_bando is not None:
+            dopo_ogni_bando()
+    riserva = riserva_usd(tetti.usd_giorno, giri_oggi)
+    rinviate = Counter(e.rinvio_riscrittura for _r, e in da_fare if e.rinvio_riscrittura)
+    if rinviate:
+        logger.info("[monitor] riscritture rinviate senza Opus: {} (riserva di oggi {:g} $, "
+                    "{} giri dopo questo)", dict(rinviate), riserva, giri_oggi)
+    return riserva
 
 
 _RE_HREF = re.compile(r"""href\s*=\s*["']([^"'<>]+)["']""", re.IGNORECASE)
@@ -2820,6 +3268,11 @@ async def run(
     quelle cambiate aspettano il giro dopo (`classificazioni_rinviate`).
     `copertura` sta al primo livello del riepilogo.
 
+    §22: due fasi. Fase 1, il controllo di tutte le pagine
+    (`_controlla_pagina`) con il tetto intero; fase 2, dopo, le riscritture
+    delle schede con Opus (`_fase_riscritture`) nel tempo che resta e solo
+    fuori dalla riserva per i giri che restano oggi e nel mese.
+
     `scarica` non iniettato significa «usa `scarico.py`», che e' il client
     unico del giro (http2, ripiego Firecrawl solo sulla pagina principale,
     contatori dei crediti). `senza_rete=True` lo disattiva del tutto: il giro
@@ -2992,6 +3445,9 @@ async def run(
             tabella_domini = _tabella_domini_del_giro()
 
         esiti: list[EsitoControllo] = []
+        # §22.1: i bandi controllati davvero in fase 1 (non quelli finiti in
+        # eccezione, non i saltati senza scarico), per la fase 2.
+        coppie: list[tuple[Mapping[str, Any], EsitoControllo]] = []
         interrotto = False
         motivo_tetto = ""
         # Il consumo dei passi gia' scritti (oggi e mese di Roma) si legge una
@@ -3054,7 +3510,9 @@ async def run(
                     motivo="senza rete" if senza_rete else "nessuno scarico disponibile"))
                 continue
             try:
-                esito = await controlla(
+                # §22.1: solo il controllo della pagina. La riscrittura della
+                # scheda aspetta la fase 2, dopo tutte le classificazioni.
+                esito = await _controlla_pagina(
                     riga,
                     scarica=scaricatore,
                     classifica=classificatore,
@@ -3075,8 +3533,8 @@ async def run(
                     rinvia_classificazione=rinvia,
                     host_richiede_js=host_js,
                     capacita_14=capacita_14,
-                    riscrittore=None if dry_run else riscrittore,
                 )
+                coppie.append((riga, esito))
             except Exception as e:
                 # §19.3: un'eccezione su un bando e' l'errore di quel bando, non
                 # del giro. Niente colonne (la pagina non ha colpa: niente
@@ -3105,6 +3563,41 @@ async def run(
                 # Scarico iniettato (test, `--senza-rete`): l'unico contatore
                 # disponibile e' quello che il controllo ha dichiarato.
                 contatori.fetch += esito.fetch
+
+        # Fase 2 (§22.1): le riscritture, dopo tutte le classificazioni e nel
+        # tempo che resta, con la riserva per i giri che restano (§22.2). In
+        # dry-run non si scrive niente, nemmeno la coda.
+        riserva_giorno: float | None = None
+
+        def unisci_scarico_della_riscrittura() -> None:
+            # Come nella fase 1: la riscrittura rilegge la pagina
+            # (`genera_per_bando`), e su un host JS, dietro un WAF o con un
+            # app-shell paga il ripiego Firecrawl. Fino al §22 quei fetch e
+            # quei crediti entravano qui perche' la riscrittura stava dentro
+            # `controlla`; ora si fondono dopo ogni bando della fase 2, una
+            # volta sola (in `contatori`, non nella spesa delle riscritture),
+            # cosi' la riga del giro li conta e il tetto dei crediti della
+            # riscrittura dopo (`_gia_con(gia_oggi, contatori)`) li vede.
+            bilancio.unisci_scarico(contatori, _contatori_scarico())
+            _azzera_contatori_scarico()
+
+        if not dry_run:
+            riserva_giorno = await _fase_riscritture(
+                coppie,
+                riscrittore=riscrittore,
+                scrittore=dati,
+                rigenerazione=rigenerazione,
+                tetti=tetti,
+                impostazioni=impostazioni,
+                consumo=lambda: (None if consumo_letto is None
+                                 else _gia_con(gia_oggi, contatori, spesa_riscritture)),
+                fuori_tempo=lambda: orologio() - avvio > tempo_s,
+                adesso=momento,
+                # Scarico iniettato (test, `--senza-rete`): il riscrittore e'
+                # quello iniettato, non c'e' un client del giro da fondere, e
+                # i fetch del controllo sono gia' contati in fase 1.
+                dopo_ogni_bando=unisci_scarico_della_riscrittura if proprio else None,
+            )
 
         # IndexNow riceve solo le pagine il cui **contenuto** e' cambiato: un
         # evento sulle date senza rigenerazione lascia la prosa com'era, e
@@ -3209,6 +3702,10 @@ async def run(
                 1 for e in esiti if e.riscrittura == rigenera_mod.ESITO_FALLITA),
             "riscritture_abbandonate": sum(
                 1 for e in esiti if e.riscrittura == RISCRITTURA_ABBANDONATA),
+            # §22.3-22.4: code chiuse senza Opus (date messe per la prima volta
+            # o gia' in linea) e riscritture tagliate dal tetto di token.
+            "chiuse_senza_modello": sum(1 for e in esiti if e.riscrittura == RISCRITTURA_CHIUSA),
+            "riscritture_troncate": sum(1 for e in esiti if e.riscrittura_troncata),
             "allegati_registrati": sum(e.allegati_registrati for e in esiti),
             "eventi_scartati": sum(e.eventi_scartati for e in esiti),
             "novita_rinviate": sum(e.novita_rinviate for e in esiti),
@@ -3317,7 +3814,7 @@ async def run(
             motivo_rimasti)
         if not dry_run:
             _scrivi_telemetria_riscritture(esiti, spesa_riscritture, giro,
-                                           tempo=orologio() - avvio)
+                                           tempo=orologio() - avvio, riserva=riserva_giorno)
         _scrivi_telemetria(riepilogo, contatori, giro, slug_modificati, interrotto,
                            tempo=orologio() - avvio, passo=passo)
         logger.info("[monitor] {}", riepilogo)
@@ -4000,12 +4497,15 @@ def _scrivi_telemetria_riscritture(
     giro: str | None,
     *,
     tempo: float,
+    riserva: float | None = None,
 ) -> None:
-    """La riga `pipeline_run` step `rigenerazione_scheda` (giro 3, §4 e §6).
+    """La riga `pipeline_run` step `rigenerazione_scheda` (giro 3, §4, §6, §22).
 
     Solo se nel giro c'era almeno una scheda da riscrivere. Candidati i bandi
-    con novita', fatti quelli riscritti; rimasti per spesa (rinviate) o per
-    errore (fallite, abbandonate).
+    con novita', fatti quelli riscritti e le code chiuse senza modello; rimasti
+    per tempo (fase 2 oltre `TEMPO_MONITOR_S`), per spesa (rinviate: riserva,
+    tetto, consumo illeggibile) o per errore (fallite, abbandonate).
+    `riserva` e' la riserva di oggi per i giri che restano (§22.2).
     """
     tentate = [e for e in esiti if e.riscrittura]
     if not tentate:
@@ -4013,13 +4513,22 @@ def _scrivi_telemetria_riscritture(
     scritte = sum(1 for e in tentate if e.riscrittura == rigenera_mod.ESITO_SCRITTA)
     rinviate = sum(1 for e in tentate if e.riscrittura == rigenera_mod.ESITO_RINVIATA)
     saltate = sum(1 for e in tentate if e.riscrittura == rigenera_mod.ESITO_SALTATA)
-    motivo = "spesa" if rinviate else "errore"
+    chiuse = sum(1 for e in tentate if e.riscrittura == RISCRITTURA_CHIUSA)
+    per_tempo = sum(1 for e in tentate if e.rinvio_riscrittura == RINVIO_TEMPO)
+    motivo = "tempo" if per_tempo else "spesa" if rinviate else "errore"
     contatori = {
         **spesa.come_dizionario(),
         "riscritture": scritte, "riscritture_rinviate": rinviate, "riscritture_saltate": saltate,
         "riscritture_fallite": sum(1 for e in tentate if e.riscrittura in (
             rigenera_mod.ESITO_FALLITA, RISCRITTURA_ABBANDONATA)),
-        "copertura": telemetria.copertura(len(tentate) - saltate, scritte, motivo),
+        # §22: la riserva di oggi, le riscritture rinviate per la riserva o per
+        # il tempo, le code chiuse senza modello e le risposte troncate.
+        "riserva_usd": riserva,
+        "rinviate_per_riserva": sum(1 for e in tentate if e.rinvio_riscrittura == RINVIO_RISERVA),
+        "rinviate_per_tempo": per_tempo,
+        "chiuse_senza_modello": chiuse,
+        "riscritture_troncate": sum(1 for e in tentate if e.riscrittura_troncata),
+        "copertura": telemetria.copertura(len(tentate) - saltate, scritte + chiuse, motivo),
     }
     riga = telemetria.PipelineRun(step=rigenera_mod.STEP_RISCRITTURA, giro=giro).concludi(
         durata_s=tempo, contatori=contatori,
@@ -5176,4 +5685,10 @@ __all__ = [
     "ordina_proposte", "priorita", "prossimo_controllo", "prossimo_dopo_errore",
     "replace_contesto", "report_ombra", "run", "seleziona", "selezionabile",
     "testo_da_colonna",
+    # giro 3, §22
+    "COLONNE_EVENTO_CODA", "MARGINE_GIRO_USD", "QUOTA_RISERVA_GIRO", "RINVIO_RISERVA",
+    "RINVIO_SPESA", "RINVIO_TEMPO", "RISCRITTURA_CHIUSA", "RISPOSTA_TRONCATA",
+    "TOKEN_INGRESSO_RISCRITTURA_MAX",
+    "costo_massimo_riscrittura", "date_della_novita", "giri_rimasti", "ordina_riscritture",
+    "riscrittura_consentita", "riserva_usd",
 ]

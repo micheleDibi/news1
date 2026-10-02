@@ -4317,9 +4317,11 @@ class TestHrefMalformati(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await collegate(_bando_collegate()), ("https://ente.it/n/2",))
 
     async def test_un_eccezione_su_un_bando_non_ferma_il_giro(self):
-        # Il bando 1 solleva dentro `controlla`: gli altri si controllano, il
-        # giro conta l'errore e la riga con la spesa si scrive.
-        vero = monitoraggio.controlla
+        # Il bando 1 solleva dentro il controllo della pagina: gli altri si
+        # controllano, il giro conta l'errore e la riga con la spesa si scrive.
+        # Dal §22.1 `run` chiama `_controlla_pagina` (la riscrittura e' nella
+        # fase 2), non piu' `controlla`: il guasto si inietta li'.
+        vero = monitoraggio._controlla_pagina
 
         async def controlla(riga, **kw):
             if riga.get("id") == 1:
@@ -4331,7 +4333,7 @@ class TestHrefMalformati(unittest.IsolatedAsyncioTestCase):
 
         scritta = MagicMock()
         dati = _FonteSenzaLimite(righe=[_bando(id=i, etag="x") for i in range(3)])
-        with patch.object(monitoraggio, "controlla", controlla), \
+        with patch.object(monitoraggio, "_controlla_pagina", controlla), \
                 patch.object(monitoraggio, "_tabella_domini_del_giro", lambda: None), \
                 patch.object(monitoraggio, "_scrivi_telemetria", scritta):
             esito = await monitoraggio.run(

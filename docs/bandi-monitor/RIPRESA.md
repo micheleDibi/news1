@@ -497,12 +497,12 @@ per il giro 3, da applicare** (passo 2 di «Giro 3», sopra): dopo la 14 non si 
   f5e232d di BandoFit, conferma scritta).
   - BandoFit ora legge solo `bando_pubblico`, `bando_link`, `bando_slug_storico` e `bando_fusione`, mai la tabella
     `bando`; tiene i ripieghi deprecati di §5.1 del contratto e rimappa i fusi ogni ora.
-  - La 07 è **rimandata**: si propone solo dopo il c2 di BandoFit (niente ripieghi), che parte dopo una nuova misura
-    di §5.1 annunciata con almeno 7 giorni di preavviso.
+  - La 07 è **rimandata**: si propone solo dopo il c2 di BandoFit (niente ripieghi). *Superato dal 02/10*: niente più
+    preavviso di 7 giorni; il c2 parte quando la misura dà zero perdite su tutti i pubblicati (contratto §5.1 punto 1).
   - **Anche news1 blocca la 07**: la scheda chiede ancora `link_candidatura`, `link_candidatura_source` e `allegati`
     (`COLONNE_DETTAGLIO_COMUNI` in `src/lib/supabase-bandi.ts`), che la 07 toglie dalla vista. Applicata oggi, ogni
     scheda risponderebbe 42703 (503). Prima va migrato il sito, e leggere da `bando_link` non basta ancora: 151 bandi
-    perderebbero tutti gli allegati e 145 non hanno una riga `candidatura` (`misure-colonne-07.md`). È scritto anche
+    perderebbero tutti gli allegati e 145 non hanno una riga `candidatura` (`misure-colonne-07.md`, rimosso l'01/10: `git show a3ea9ef^:docs/bandi-monitor/misure-colonne-07.md`). È scritto anche
     nella testa della 07.
   - Prima di un lotto di fusioni (L4) o di una separazione, e prima della prima applicazione attiva di sospensioni o
     revoche, **avvisare BandoFit** (va in modalità `prova`). **Superato dal giro 3** (decisione di Michele dell'01/10,
@@ -1498,7 +1498,7 @@ rilasciato a mano con `lock_rilascia` (§3.2 punto 10). **Resta da fare il passo
      - `PUBLIC_BANDI_STATI_ESTESI=true` nel `.env` della root prima di `npm run build`, poi il
        riavvio;
 8. la fase (c): **c1 in produzione dal 30/09/2026** (BandoFit 878acb0 e f5e232d); il c2 (niente ripieghi) parte
-   dopo una nuova misura di §5.1 del contratto, annunciata a BandoFit con almeno 7 giorni di preavviso;
+   quando la misura di §5.1 dà zero perdite su tutti i pubblicati (*dal 02/10*, senza preavviso di 7 giorni);
 9. la 07.
 
 **Misurato il 27/09** (PostgREST, solo GET):

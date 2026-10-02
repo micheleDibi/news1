@@ -29,7 +29,10 @@ un bando nuovo, ma **senza** scrivere `stato_processing` (mai
   leggibile** (`transizioni_da_decidere`), da decidere a mano: niente
   riaperture da una sola lettura. Mai `data_pubblicazione`, mai uno stato. Poi
   `rigenera.rigenera` porta la prosa sulla data nuova, senza modello; se non ci
-  riesce, la data passa come novita' a `rigenera.riscrivi_scheda` (Opus, §6);
+  riesce, la data passa come novita' a `rigenera.riscrivi_scheda` (Opus, §6).
+  Come il monitor (§22.3): una data messa per la prima volta (prima NULL) e una
+  prosa che dice gia' la data nuova («contenuto gia' in linea») non vanno a Opus
+  ne' in coda, e si contano in `date_senza_riscrittura`;
 - classificazione: **due letture indipendenti** dell'enrich sulla stessa
   pagina, perche' le risposte di Haiku variano da una lettura all'altra (misura
   del dry-run dell'01/10). Una voce si aggiunge solo se compare in tutte e due,
@@ -51,7 +54,9 @@ un bando nuovo, ma **senza** scrivere `stato_processing` (mai
   un guasto che si ripete non ripaga letture ed enrich a ogni giro.
   `cambi` e `fk_cambiate` contano solo cio' che e' stato scritto. Una
   riscrittura con Opus non riuscita (o non disponibile) mette le novita' nella
-  coda `__riscrittura__` del monitor, che le riprende.
+  coda `__riscrittura__` del monitor, che le riprende; il motivo va nel log, e
+  le risposte tagliate dal tetto di token si contano (`riscritture_troncate`,
+  §22.4).
 
 Spesa: step `backfill:rielaborazione`, tetti del backfill (§4) sulla giornata di
 Roma, cioe' la spesa del lancio piu' quella delle righe del passo gia' scritte
@@ -108,15 +113,26 @@ METODO = "rielaborazione"
 #: Al terzo tentativo rimasto incompleto il bando si marca come fatto, con il
 #: motivo (P2 di #160): come le riscritture del monitor (`TENTATIVI_RISCRITTURA`).
 TENTATIVI_MASSIMI = 3
+#: Gli esiti di `rigenera.rigenera` che non scrivono e non sono un ripiego
+#: (§22.3): il testo dice gia' la data nuova, oppure non c'era una data vecchia
+#: da sostituire. Lo stesso criterio di `monitoraggio._rigenerazione_riuscita`.
+PROSA_GIA_IN_LINEA: tuple[str, ...] = (
+    "contenuto gia' in linea", "nessuna data da sostituire",
+)
+#: Il segno che `seo_skill` aggiunge al motivo di una risposta tagliata dal
+#: tetto di token (§22.4): serve a decidere se alzare `SEO_MAX_TOKENS`.
+RISPOSTA_TRONCATA = "risposta troncata: max_tokens"
 
 CONTATORI: tuple[str, ...] = (
     "esaminati", "rielaborati", "pagine_illeggibili", "non_validi", "errori",
     "date_proposte", "date_applicate", "date_non_applicate", "date_non_provate",
     "date_incoerenti", "discordanze_verificate", "transizioni_da_decidere",
-    "prose_riallineate", "prose_non_riscritte", "junction_cambiate", "fk_cambiate", "junction_discordi", "fk_discordi",
+    "prose_riallineate", "prose_non_riscritte", "date_senza_riscrittura",
+    "junction_cambiate", "fk_cambiate", "junction_discordi", "fk_discordi",
     "junction_parziali", "senza_fonte_leggibile", "incompleti", "marcatori_non_scritti",
     "abbandonati", "riscritture_in_coda",
     "riscritture", "riscritture_non_disponibili", "riscritture_non_riuscite",
+    "riscritture_troncate",
 )
 
 
@@ -712,7 +728,8 @@ async def _date(
     dry_run: bool,
 ) -> list[dict[str, Any]]:
     """Le date nuove. Ritorna le novita' per `riscrivi_scheda`: le date
-    applicate la cui prosa non si e' riallineata senza modello (§18.3)."""
+    applicate che sostituiscono una data vecchia e la cui prosa non si e'
+    riallineata senza modello (§18.3, §22.3)."""
     novita: list[dict[str, Any]] = []
     citazioni = analisi.get("_citazioni") if isinstance(analisi.get("_citazioni"), Mapping) else {}
     candidate: dict[str, tuple[Any, Any, str, str]] = {}
@@ -777,12 +794,28 @@ async def _date(
                   "data_evento": giorno.isoformat(), "citazione": citazione,
                   "valore_prima": {colonna: vecchia.isoformat() if vecchia else None},
                   "valore_dopo": {colonna: nuova.isoformat()}, "url_prova": url}
+        if vecchia is None:
+            # §22.3, come il monitor (`date_da_riscrivere`): una data messa per
+            # la prima volta non puo' essere sbagliata nella prosa, che non la
+            # diceva (il prompt SEO vieta di nominare una data assente). La
+            # colonna e il box dicono gia' la data nuova: niente Opus, niente
+            # coda, e la pagina e' cambiata.
+            contatori["date_senza_riscrittura"] += 1
+            _segna_slug(bando, slug_modificati)
+            continue
         try:
             riallineata = await _rigenera_prosa(bando, evento, vecchia=vecchia, nuova=nuova,
                                                 ruolo=ruolo)
         except Exception as e:
             logger.warning("[rielabora] prosa del bando {} non riallineata: {}", bando.get("id"), e)
             riallineata = None
+        if riallineata is not None and _prosa_gia_in_linea(riallineata[0]):
+            # §22.3, come `monitoraggio._rigenerazione_riuscita`: `rigenera`
+            # non ha scritto perche' il testo dice gia' la data nuova. E' un
+            # riallineamento riuscito, non un caso per Opus.
+            contatori["date_senza_riscrittura"] += 1
+            _segna_slug(bando, slug_modificati)
+            continue
         if riallineata is None or not getattr(riallineata[0], "scritto", False):
             # La data e' in colonna ma la prosa dice ancora quella vecchia: la
             # riscrive Opus, come fa il monitor (§6, §18.3).
@@ -793,9 +826,25 @@ async def _date(
         # La forma di colonna (jsonb rimontato), non il testo dei nodi: la data
         # dopo, o la riscrittura, lavorano su questa.
         bando.update(riallineata[1] or {})
-        if bando.get("slug") and bando["slug"] not in slug_modificati:
-            slug_modificati.append(str(bando["slug"]))
+        _segna_slug(bando, slug_modificati)
     return novita
+
+
+def _segna_slug(bando: Mapping[str, Any], slug_modificati: list[str]) -> None:
+    """La scheda e' cambiata: lo slug va fra quelli da notificare, una volta."""
+    if bando.get("slug") and bando["slug"] not in slug_modificati:
+        slug_modificati.append(str(bando["slug"]))
+
+
+def _prosa_gia_in_linea(esito: Any) -> bool:
+    """`rigenera.rigenera` non ha scritto, e non per un ripiego: il testo dice
+    gia' la data nuova, o non c'era una data vecchia da sostituire (§22.3).
+    Il box templato dopo un controllo fallito (`via="box"` con altri motivi)
+    resta un caso per Opus."""
+    if getattr(esito, "scritto", False):
+        return False
+    return any(str(m).startswith(PROSA_GIA_IN_LINEA)
+               for m in (getattr(esito, "motivi", None) or ()))
 
 
 def _novita_data(evento: Mapping[str, Any]) -> dict[str, Any]:
@@ -978,7 +1027,15 @@ async def _riscrivi(
             slug_modificati.append(str(slug))
     else:
         # Fallita, rinviata per spesa o saltata: le novita' vanno al monitor.
+        # Il motivo nel log (§22.4): `riscrivi_scheda` lo restituisce ma non lo
+        # scrive, e senza non si sa perche' una chiamata pagata e' andata persa.
         contatori["riscritture_non_riuscite"] += 1
+        motivo = str(getattr(esito_riscrittura, "motivo", "") or "")
+        if RISPOSTA_TRONCATA in motivo:
+            contatori["riscritture_troncate"] += 1
+        logger.warning("[rielabora] scheda del bando {} non riscritta ({}): {}", bando_id,
+                       getattr(esito_riscrittura, "esito", "") or "fallita",
+                       motivo or "motivo non dato")
         _accoda(bando_id, novita, contatori, proposta)
 
 

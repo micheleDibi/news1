@@ -230,6 +230,9 @@ Supabase dal frontend. Per git vale la regola globale (vedi "Convenzioni").
 > Dopo il primo giro in produzione (01/10 notte, branch `claude/bandi-giro-3-correzioni`), su ok esplicito
 > dell'utente, anche `scraper_bandi/app/bando_runner.py` e i suoi test (doppioni in `bando_controllo`, contratto §21)
 > e `scraper_bandi/app/bando_resolver.py` (il ripiego del preprocess: stessa regola del «chiuso» del modello, §21.1).
+> Il 02/10, su ok esplicito dell'utente: `src/pages/api/indexnow-key.ts` (risponde solo con lo stato, mai con la
+> chiave; eventuale modulo puro `src/lib/indexnow-chiave.ts` e test) prima di attivare IndexNow, e la precedenza del
+> monitor sul tetto di spesa giornaliero rispetto alle riscritture delle schede (contratto §22, dopo l'ok al piano).
 > Contratto interno: `docs/contracts/bandi-giro-3.md`. Fuori da questo elenco la regola sopra resta in vigore.
 
 Inoltre, sempre (non toccati dalle deroghe):

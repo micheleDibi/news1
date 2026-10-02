@@ -504,7 +504,9 @@ Trovate leggendo il giro di avvio e `salute` dopo il deploy delle 21:27. Nessuna
      prima di `confronta`); (c) `src/pages/api/indexnow-key.ts` restituisce la chiave a chiunque: con IndexNow attivo
      chiunque può segnalare URL del sito a nome della chiave (rischio basso: la chiave è pubblica per protocollo nel
      file `/<chiave>.txt`, ma lì bisogna già conoscerla); correzione proposta, fuori deroga: risposta 200/404 senza
-     corpo. Decide Michele il 02/10, prima di attivare IndexNow.
+     corpo. **Chiuso il 02/10** (Michele: «sì, sistemala e poi attiva»): `/api/indexnow-key` risponde 200 con corpo
+     fisso `ok` se la chiave c'è e 404 «IndexNow key not configured» se no, sempre con `Cache-Control: no-store`; la
+     logica sta nella funzione pura `src/lib/indexnow-chiave.ts` con i suoi test. `/<chiave>.txt` non cambia.
    - P2 rimasti dopo il ciclo 2 (`.cteam/review/20261001-225006/final.md`, ESITO OK), per un giro successivo:
      `fermi_in_lavorazione` conta anche i `processed` chiusi (avviso rumoroso: escluderli o contarli a parte); nel
      ripiego (`bando_resolver`) la scadenza che scarta il «chiuso» è validata solo sulla pagina elenco (0 casi falsi su
@@ -517,3 +519,77 @@ Trovate leggendo il giro di avvio e `salute` dopo il deploy delle 21:27. Nessuna
    PGRST103/200/201/204/205). I guasti veri (PGRST000-002, rete, 57014) restano 502/504. Le richieste R1-R8: la stampa
    del codice reale (`--come-inviata`, con commit e data) più, quando Michele lo apre, un estratto dei log del gateway
    del DB bandi con una richiesta per ciascuna.
+
+## 22. Precedenza del monitor sulla spesa giornaliera (02/10; Michele: «Monitor prima, poi indagine», piano T1+T2 approvato)
+Misura del 02/10 (giro delle 00:00): le riscritture delle schede hanno preso 4,46 $ dei 5 $ (89%), il monitor ha fatto
+10 classificazioni e ne ha rinviate 14; alle 06 zero classificazioni. Indagine (workflow
+`indagine-spesa-riscritture` del 02/10). Cause: le riscritture girano dentro il ciclo del monitor bando per bando, con lo
+stesso tetto e nessuna precedenza; la coda (`bando_controllo.impronte_sezioni.__riscrittura__`) l'ha riempita la
+rielaborazione, che manda a Opus anche le date messe per la prima volta (da NULL) e il «contenuto già in linea», contro
+§18.3 («come fa il monitor»).
+1. **Due fasi nel giro del monitor** (`monitoraggio.run`). Fase 1: controllo e classificazione di tutti i bandi
+   selezionati, come oggi, con il tetto intero. Fase 2, solo dopo e nel tempo che resta di `TEMPO_MONITOR_S`: le
+   riscritture dei bandi controllati in fase 1 che hanno una coda o novità nuove, in ordine di `dal` crescente e poi
+   `id` (chi è rinviato conserva `dal` e passa per primo al giro dopo: rotazione di §1). Nessun tetto sul numero.
+2. **Riserva per i giri che restano.** Una riscrittura parte solo se
+   `spesa di regime di oggi (già scritta + monitor di questo giro + riscritture di questo giro) + costo massimo di una
+   riscrittura ≤ TETTO_USD_GIORNO − riserva`, con `riserva = 0,20 × TETTO_USD_GIORNO` per ogni giro di `MONITOR_GIRI`
+   che resta oggi dopo l'ora attuale (Roma) più 0,25 $ per il resto del giro corrente; `costo massimo` = 12 000 token
+   d'ingresso più `SEO_MAX_TOKENS` d'uscita al listino del modello SEO. Stessa regola sul mese con
+   `TETTO_USD_MESE − (1 $ × giri che restano nel mese + 0,25 $)`. Se non vale: riscrittura **rinviata** (resta in coda,
+   tentativi invariati, motivo `spesa`). Tetto a 0 = nessun tetto e nessuna riserva (come `bilancio._supera`); consumo
+   non leggibile = nessuna riscrittura (§18.5). La riserva non si passa come `Tetti` ridotti (un tetto che scende a 0
+   diventerebbe «nessun tetto»): è un controllo prima della chiamata. Tempo finito: chi resta fuori rimane in coda, le
+   novità del giro si salvano comunque, motivo `tempo`. Telemetria nella riga `rigenerazione_scheda`: `riserva_usd`,
+   `rinviate_per_riserva`, motivo `tempo` accanto a `spesa`.
+3. **Rielaborazione come §18.3.** Le date messe per la prima volta (valore prima NULL) e il caso «contenuto già in linea»
+   (`rigenera` che risponde «nessuna data da sostituire: solo box») non vanno a Opus e non finiscono in coda: valgono
+   come riallineamento riuscito, come nel monitor (`date_da_riscrivere`, `_rigenerazione_riuscita`). Il monitor, in fase
+   2, chiude **senza modello** le voci della coda esistente che contengono solo novità di questo tipo, contandole
+   (`chiuse_senza_modello`).
+4. **Risposte tagliate.** Una riscrittura fallita con «risposta troncata: max_tokens» si conta (`riscritture_troncate`)
+   e si scrive nel log con il motivo, nel monitor e nella rielaborazione. Serve a decidere se alzare `SEO_MAX_TOKENS`
+   (decisione di Michele, dopo la misura; nessun cambio oggi).
+5. **Non si toccano**: `rigenera.py` (riscrittura e controlli), `seo_skill.py`, `bando_seo_runner.py`, `bilancio.py`,
+   `settings.py`, `.env`, l'ordine dei passi in `bandi_pipeline.py`, i tetti di 5 $ e 150 $, `seleziona`, il rinvio delle
+   classificazioni, `TENTATIVI_RISCRITTURA`, schema e migrazioni, `src/`. `monitoraggio.controlla()` resta (la usano i
+   test). Fuori perimetro e annotato: nel monitor `interrotto` non diventa mai vero, quindi `interrotto_per_tetto`
+   resta falso anche quando il tetto scatta.
+6. **Verifica dopo il rilascio** (solo GET su `pipeline_run`): al giro delle 00 la riga del monitor ha
+   `classificazioni_rinviate` = 0 (salvo un monitor che da solo superi il tetto) e `rigenerazione_scheda` ha `usd` entro
+   il limite e `riserva_usd` ≈ 3,25; alle 06, 12 e 18 il monitor ha classificazioni > 0. La quota di 1 $ per giro si
+   rilegge dopo 2-3 giorni.
+7. **Come è stato realizzato (02/10, workflow `spesa-precedenza-monitor`, verifica avversaria a tre lenti).**
+   `monitoraggio.run`: fase 1 con `_controlla_pagina`, fase 2 `_fase_riscritture` (in dry-run non gira); funzioni pure
+   `giri_rimasti`, `costo_massimo_riscrittura` (oggi 0,16 $), `riscrittura_consentita`, `riserva_usd`; la coda si chiude
+   senza modello solo se **ogni** voce è una data messa da NULL o, con la data vecchia nota, la rigenerazione senza
+   modello risponde «già in linea» o scrive (la stessa scrittura senza modello che il monitor fa già in fase 1); code
+   miste vanno intere a Opus. Due difetti trovati dalla verifica e corretti: i crediti Firecrawl delle riscritture in
+   fase 2 si uniscono di nuovo ai contatori del monitor dopo ogni bando; un chiuso con coda rinviato in fase 2 torna
+   al giro dopo (`_salva_coda` anche a coda invariata). `rielabora_fonte`: le date da NULL e il «già in linea» valgono
+   come riallineamento riuscito (`date_senza_riscrittura`), lo slug va in `slug_modificati`; log del motivo di ogni
+   riscrittura non riuscita e `riscritture_troncate`. P2 aperti: il «costo massimo» non è un massimo stretto (il
+   prompt può superare 12 000 token: la riserva può essere sforata di poco); la riserva mensile usa
+   `0,20 × TETTO_USD_GIORNO` per giro, uguale a «1 $» con i 5 $ di oggi; il ritorno al giro dopo di un chiuso rinviato
+   annulla il backoff degli errori di rete di quel bando; con più date incatenate una scrittura intermedia senza modello
+   può restare fuori da `slug_modificati` (`ultimo_cambiamento_at` avanza comunque dal trigger); un caso «già in linea»
+   con la data vecchia ancora nella `descrizione_breve`; buchi di test segnalati dai mutanti.
+8. **Revisione avversaria finale (02/10 11:27, `.cteam/review/20261002-112743/final.md`): ESITO OK.** P2 per un giro
+   successivo: (a) `_chiudi_senza_modello` non ricontrolla che la data nuova sia ancora quella della colonna (serve un
+   ritorno della stessa colonna alla data di prima); (b) `date_della_novita` non legge il `valore_prima` scalare
+   scritto dalla RPC, quindi le voci del monitor non si chiudono mai senza modello (effetto prudente; stesso limite in
+   `rigenera.date_da_evento`); (c) un chiuso con riscrittura rinviata per riserva viene riscaricato a ogni giro (GET e
+   a volte un credito Firecrawl) finché la riserva non si libera: proposta, tornare al giro dopo solo per il rinvio
+   per tempo; (d) `PROSA_GIA_IN_LINEA` accetta anche «nessuna data da sostituire», che il monitor non accetta (ramo oggi
+   irraggiungibile) e §22.3 cita il messaggio sbagliato; (e) `riscritture_troncate` non conta «stop_reason=max_tokens»;
+   (f) §23: il confronto c1/c2 usa la anon key, ma gli id delle righe che non passano la prova e la riga di
+   `pipeline_run` richiedono la service-role, da dire nel piano; (g) `AGENTS.md` non tracciato e vecchio.
+
+## 23. Misura automatica del c2 (02/10; da realizzare)
+Decisione di Michele del 02/10: c2 in parallelo, interruttore «zero perdite su tutti i pubblicati», misura ogni sera
+(contratto DB §5.1 punto 1). Regola permanente «tutto automatico»: la misura non può essere un passo a mano. Si
+realizza un comando di `scraper_bandi` in **sola lettura con la anon key** (nessuna scrittura sul DB tranne la propria
+riga in `pipeline_run`), lanciato dal giro delle 18, che fa il confronto c1/c2 di §5.1 punto 1 («Come si misura») e
+scrive nella riga del giro i conteggi per stato e gli id. Modulo nuovo, passo nuovo in `bandi_pipeline.py`, comando in
+`__main__.py`, test con dati finti. Piano e perimetri da approvare con Michele prima del codice. Fino ad allora la misura
+la fa il lead in sola lettura (la prima la sera del 02/10).

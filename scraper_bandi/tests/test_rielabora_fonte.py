@@ -100,6 +100,8 @@ class _Giro:
         self.client = client
         self.crediti_veri = False
         self.esito_riscrittura = "scritta"
+        # Il motivo che `riscrivi_scheda` restituisce con l'esito (§22.4).
+        self.motivo_riscrittura = ""
         self.classifica_vera = False
         self.catalogo = CATALOGO
         self.allinea = None
@@ -145,7 +147,8 @@ class _Giro:
             # contarla una seconda volta.
             pre.registra_uso("claude-opus-4-7", SimpleNamespace(
                 usage=SimpleNamespace(input_tokens=1000, output_tokens=1000)))
-            return SimpleNamespace(esito=self.esito_riscrittura, slug="contributi-formazione")
+            return SimpleNamespace(esito=self.esito_riscrittura, slug="contributi-formazione",
+                                   motivo=self.motivo_riscrittura)
 
         def allinea(bando_id, dimensione, ids, **_k):
             self.junction_scritte.append((bando_id, dimensione, list(ids)))
@@ -915,6 +918,174 @@ class CodaDelleRiscritture(unittest.TestCase):
         self.assertEqual(riga["impronte_sezioni"], self.MEMORIA)
         self.assertEqual(_marcatore(client), "rielab:v1:incompleto:1")
         self.assertEqual(esito["incompleti"], 1)
+
+
+class RiscrittureSoloSeServono(unittest.TestCase):
+    """§22.3 e §22.4 (02/10): come il monitor, una data messa per la prima
+    volta e una prosa gia' in linea non vanno a Opus ne' in coda; una
+    riscrittura non riuscita dice il motivo, e le risposte tagliate si contano.
+
+    La riscrittura finta risponde «fallita»: se il codice la chiamasse, le
+    novita' finirebbero in coda e si vedrebbe."""
+
+    MEMORIA = {"s1": "impronta-sezione", "__link__": {"a": 1}, "__versione__": 3}
+    # Un nodo con una riga vuota: `rigenera` non lo sa rimontare e non scrive.
+    NON_SCOMPONIBILE = {"sections": [{"type": "paragraph",
+                                      "text": "Scadenza:\n\nentro il 30 ottobre 2026."}]}
+    TRONCATA = ("SEO fallita: payload manca campo required 'livello' "
+                "(risposta troncata: max_tokens)")
+
+    def _giro(self, *, bando=None, **kwargs):
+        giro, client = _giro_vero(prosa="vera", bando=bando, **kwargs)
+        client.tabelle["bando_controllo"] = [{"bando_id": 7,
+                                              "impronte_sezioni": dict(self.MEMORIA)}]
+        giro.esito_riscrittura = "fallita"
+        return giro, client
+
+    def _coda(self, client):
+        return monitoraggio.riscrittura_in_coda(client.tabelle["bando_controllo"][0])
+
+    def _rettifiche(self, client):
+        return {p["p_campo"]: p for nome, p in client.rpc_chiamate
+                if nome == "bando_registra_evento"}
+
+    def _evento_della_rielaborazione(self, parametri, campo, dopo, prima):
+        self.assertEqual((parametri["p_tipo"], parametri["p_origine"], parametri["p_campo"]),
+                         ("rettifica", "pipeline", campo))
+        self.assertIs(parametri["p_applica"], True)
+        self.assertIs(parametri["p_in_aggiornamenti"], False)
+        self.assertEqual(parametri["p_metodo"], "rielaborazione")
+        self.assertIsNone(parametri["p_citazione"])
+        self.assertEqual(parametri["p_valore_dopo"], {campo: dopo})
+        self.assertEqual(parametri["p_gate"]["prima"], prima)
+        self.assertNotIn("p_leggibile", parametri)
+
+    def test_data_da_null_niente_opus_niente_coda(self):
+        # L'apertura non c'era: la prosa non la diceva, quindi non e' sbagliata.
+        analisi = lambda b: _analisi(data_apertura="2026-09-15",  # noqa: E731
+                                     data_scadenza="2026-10-30",
+                                     _citazioni={"data_apertura": "dal 15/09/2026"})
+        giro, client = self._giro(analisi=analisi, testo=TESTO + " Domande dal 15/09/2026.",
+                                  classifica=lambda b: _classifica(regioni_ids=[12]))
+        esito = giro.esegui()
+        self._evento_della_rielaborazione(self._rettifiche(client)["data_apertura"],
+                                          "data_apertura", "2026-09-15", None)
+        self.assertEqual(client.tabelle["bando"][0]["data_apertura"], "2026-09-15")
+        self.assertEqual(giro.riscritture, [], "niente Opus per una data da NULL")
+        self.assertIsNone(self._coda(client), "niente coda al monitor")
+        self.assertEqual(client.tabelle["bando_controllo"][0]["impronte_sezioni"], self.MEMORIA)
+        self.assertEqual(giro.prose_scritte, [], "la prosa non si tocca")
+        self.assertEqual((esito["date_applicate"], esito["date_senza_riscrittura"],
+                          esito["prose_non_riscritte"], esito["riscritture_non_riuscite"],
+                          esito["riscritture_in_coda"]), (1, 1, 0, 0, 0))
+        # Vale come riallineamento riuscito: il bando e' fatto e la pagina e' cambiata.
+        self.assertTrue(_marcatore(client).startswith("rielab:v1:2026-10-02:"))
+        self.assertEqual(esito["copertura"]["fatti"], 1)
+        self.assertEqual(esito["slug_modificati"], ["contributi-formazione"])
+        self.assertEqual(giro.righe_run[0].contatori["date_senza_riscrittura"], 1)
+
+    def test_data_da_null_neanche_con_un_contenuto_non_scomponibile(self):
+        # Il controllo viene prima della prosa: anche se `rigenera` non sapesse
+        # lavorare il contenuto, una data da NULL non e' un caso per Opus.
+        prose: list[tuple] = []
+
+        async def prosa(bando, evento, *, vecchia, nuova, ruolo):
+            prose.append((vecchia, nuova))
+            return None
+
+        analisi = lambda b: _analisi(data_apertura="2026-09-15",  # noqa: E731
+                                     data_scadenza="2026-10-30",
+                                     _citazioni={"data_apertura": "dal 15/09/2026"})
+        giro = _Giro(analisi=analisi, testo=TESTO + " Domande dal 15/09/2026.", prosa=prosa,
+                     classifica=lambda b: _classifica(regioni_ids=[12]))
+        esito = giro.esegui()
+        self.assertEqual(len(giro.eventi), 1)
+        self.assertEqual(prose, [])
+        self.assertEqual(giro.riscritture, [])
+        self.assertEqual((esito["date_senza_riscrittura"], esito["prose_non_riscritte"]), (1, 0))
+
+    def test_contenuto_gia_in_linea_niente_coda(self):
+        # La scheda dice gia' la scadenza nuova: `rigenera` vero risponde
+        # «contenuto gia' in linea» e non scrive. Come nel monitor e' riuscito.
+        contenuto = {"sections": [{"type": "paragraph",
+                                   "text": "Le domande vanno presentate entro il 30 novembre 2026."}]}
+        giro, client = self._giro(bando={"contenuto": contenuto})
+        esito = giro.esegui()
+        self._evento_della_rielaborazione(self._rettifiche(client)["data_scadenza"],
+                                          "data_scadenza", "2026-11-30", "2026-10-30")
+        self.assertEqual(client.tabelle["bando"][0]["data_scadenza"], "2026-11-30")
+        self.assertEqual(giro.prose_scritte, [])
+        self.assertEqual(giro.riscritture, [])
+        self.assertIsNone(self._coda(client))
+        self.assertEqual((esito["date_senza_riscrittura"], esito["prose_riallineate"],
+                          esito["prose_non_riscritte"], esito["riscritture_in_coda"]),
+                         (1, 0, 0, 0))
+        self.assertTrue(_marcatore(client).startswith("rielab:v1:2026-10-02:"))
+        self.assertEqual(esito["slug_modificati"], ["contributi-formazione"])
+
+    def test_la_data_che_sostituisce_va_a_opus_quella_da_null_no(self):
+        # Le due date nello stesso bando: la scadenza sostituisce un valore e
+        # la prosa resta indietro, quindi va a Opus come oggi; l'apertura era
+        # NULL e nella riscrittura non entra.
+        analisi = lambda b: _analisi(  # noqa: E731
+            data_apertura="2026-09-15",
+            _citazioni={"data_apertura": "dal 15/09/2026",
+                        "data_scadenza": "entro il 30/11/2026"})
+        giro, client = self._giro(analisi=analisi, testo=TESTO + " Domande dal 15/09/2026.",
+                                  bando={"contenuto": self.NON_SCOMPONIBILE},
+                                  classifica=lambda b: _classifica(regioni_ids=[12]))
+        giro.esito_riscrittura = "scritta"
+        esito = giro.esegui()
+        rettifiche = self._rettifiche(client)
+        self._evento_della_rielaborazione(rettifiche["data_apertura"], "data_apertura",
+                                          "2026-09-15", None)
+        self._evento_della_rielaborazione(rettifiche["data_scadenza"], "data_scadenza",
+                                          "2026-11-30", "2026-10-30")
+        self.assertEqual(len(giro.riscritture), 1)
+        self.assertEqual([n.get("campo") for n in giro.riscritture[0][1]], ["data_scadenza"])
+        self.assertEqual((esito["date_applicate"], esito["date_senza_riscrittura"],
+                          esito["prose_non_riscritte"], esito["riscritture"]), (2, 1, 1, 1))
+        self.assertIsNone(self._coda(client))
+
+    def test_riscrittura_troncata_si_conta_si_scrive_nel_log_e_va_in_coda(self):
+        from unittest.mock import MagicMock
+        giro, client = self._giro(bando={"contenuto": self.NON_SCOMPONIBILE})
+        giro.motivo_riscrittura = self.TRONCATA
+        registro = MagicMock()
+        with patch.object(rf, "logger", registro):
+            esito = giro.esegui()
+        self.assertEqual(len(giro.riscritture), 1, "la data sostituisce un valore: Opus")
+        self.assertEqual((esito["riscritture_troncate"], esito["riscritture_non_riuscite"],
+                          esito["riscritture_in_coda"]), (1, 1, 1))
+        self.assertIsNotNone(self._coda(client), "in coda come oggi")
+        self.assertTrue(any(self.TRONCATA in c.args for c in registro.warning.call_args_list),
+                        "il motivo della riscrittura fallita e' nel log")
+        self.assertEqual(giro.righe_run[0].contatori["riscritture_troncate"], 1)
+
+    def test_fallita_per_altro_motivo_nel_log_ma_non_troncata(self):
+        from unittest.mock import MagicMock
+        giro, client = self._giro(bando={"contenuto": self.NON_SCOMPONIBILE})
+        giro.motivo_riscrittura = "testo riscritto fuori forma"
+        registro = MagicMock()
+        with patch.object(rf, "logger", registro):
+            esito = giro.esegui()
+        self.assertEqual((esito["riscritture_troncate"], esito["riscritture_non_riuscite"],
+                          esito["riscritture_in_coda"]), (0, 1, 1))
+        self.assertTrue(any("testo riscritto fuori forma" in c.args
+                            for c in registro.warning.call_args_list))
+
+    def test_la_prosa_gia_in_linea_e_solo_quella(self):
+        si = SimpleNamespace
+        self.assertTrue(rf._prosa_gia_in_linea(si(scritto=False, motivi=(
+            "contenuto gia' in linea: nessuna scrittura",))))
+        self.assertTrue(rf._prosa_gia_in_linea(si(scritto=False, motivi=(
+            "nessuna data da sostituire: solo box",))))
+        # Il box dopo un controllo fallito resta un caso per Opus.
+        self.assertFalse(rf._prosa_gia_in_linea(si(scritto=False, motivi=(
+            "la data nuova 2026-11-30 non compare nel testo riscritto",))))
+        self.assertFalse(rf._prosa_gia_in_linea(si(scritto=False, motivi=())))
+        self.assertFalse(rf._prosa_gia_in_linea(si(scritto=True, motivi=(
+            "contenuto gia' in linea: nessuna scrittura",))))
 
 
 class CatalogoIlleggibile(unittest.TestCase):
